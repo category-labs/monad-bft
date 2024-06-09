@@ -17,7 +17,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, TimeoutVariant};
+use monad_validator::epoch_manager::EpochManager;
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -27,6 +28,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    EnterRound(Epoch, Round),
     /// Attempt to send a message to RouterTarget
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     Publish {
@@ -73,11 +75,15 @@ where
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         version: &str,
+        epoch_manager: &EpochManager,
         cmd: PacemakerCommand<SCT>,
     ) -> Self {
         match cmd {
+            PacemakerCommand::EnterRound(round) => {
+                ConsensusCommand::EnterRound(epoch_manager.get_epoch(round), round)
+            }
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
-                target: RouterTarget::Broadcast,
+                target: RouterTarget::Broadcast(tmo.tminfo.epoch, tmo.tminfo.round),
                 message: ConsensusMessage {
                     version: version.into(),
                     message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),

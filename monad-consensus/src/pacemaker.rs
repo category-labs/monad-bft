@@ -64,6 +64,9 @@ enum PhaseHonest {
 
 #[derive(Debug)]
 pub enum PacemakerCommand<SCT: SignatureCollection> {
+    /// event emitted whenever round changes. this is used by the router
+    EnterRound(Round),
+
     /// create the Timeout which can be signed to create a TimeoutMessage
     /// this should be broadcast to all other nodes
     PrepareTimeout(Timeout<SCT>),
@@ -107,7 +110,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// pending timeout messages are cleared.
     /// Creates the command to start the local round timeout
     #[must_use]
-    fn enter_round(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
+    fn enter_round(&mut self, new_round: Round) -> Vec<PacemakerCommand<SCT>> {
         assert!(new_round > self.current_round);
 
         self.phase = PhaseHonest::Zero;
@@ -115,9 +118,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 
         self.current_round = new_round;
 
-        PacemakerCommand::Schedule {
-            duration: self.get_round_timer(),
-        }
+        vec![
+            PacemakerCommand::EnterRound(new_round),
+            PacemakerCommand::Schedule {
+                duration: self.get_round_timer(),
+            },
+        ]
     }
 
     /// invoked on local round timeout
@@ -269,14 +275,14 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         tc: &TimeoutCertificate<SCT>,
         metrics: &mut Metrics,
-    ) -> Option<PacemakerCommand<SCT>> {
+    ) -> Vec<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
-            return None;
+            return Default::default();
         }
         metrics.consensus_events.enter_new_round_tc += 1;
         let new_round = tc.round + Round(1);
         self.last_round_tc = Some(tc.clone());
-        Some(self.enter_round(new_round))
+        self.enter_round(new_round)
     }
 
     /// advance the round based on a QC
@@ -287,14 +293,14 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         qc: &QuorumCertificate<SCT>,
         metrics: &mut Metrics,
-    ) -> Option<PacemakerCommand<SCT>> {
+    ) -> Vec<PacemakerCommand<SCT>> {
         if qc.get_round() < self.current_round {
-            return None;
+            return Default::default();
         }
         metrics.consensus_events.enter_new_round_qc += 1;
         self.last_round_tc = None;
         let new_round = qc.get_round() + Round(1);
-        Some(self.enter_round(new_round))
+        self.enter_round(new_round)
     }
 }
 

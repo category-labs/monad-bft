@@ -14,7 +14,7 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{Epoch, NodeId, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{info, warn};
 
@@ -144,6 +144,7 @@ where
         self_id: NodeId<<Self::SignatureCollectionType as SignatureCollection>::NodeIdPubKey>,
         cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         info: StateRootHashInfo,
+        epoch: Epoch,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
         let mut cmds = Vec::new();
         let entry = self.state_roots.entry(info.seq_num).or_default();
@@ -190,6 +191,7 @@ where
             peer: self_id,
             info,
             sig,
+            epoch,
         });
         cmds
     }
@@ -369,7 +371,7 @@ mod test {
             round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info);
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
         assert_eq!(cmds.len(), 2);
 
         if let AsyncStateVerifyCommand::StateRootUpdate(info) = cmds[0] {
@@ -378,10 +380,17 @@ mod test {
             panic!("Command type mismatch");
         }
 
-        if let AsyncStateVerifyCommand::BroadcastStateRoot { peer, info, sig } = cmds[1] {
+        if let AsyncStateVerifyCommand::BroadcastStateRoot {
+            peer,
+            info,
+            sig,
+            epoch,
+        } = cmds[1]
+        {
             assert_eq!(peer, node0);
             assert_eq!(info, true_info);
             assert_eq!(sig, sign_state_root_info(&certkeys[0], true_info));
+            assert_eq!(epoch, Epoch(5));
         } else {
             panic!("Command type mismatch");
         }
@@ -460,13 +469,20 @@ mod test {
             round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info);
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
         assert_eq!(cmds.len(), 1);
 
-        if let AsyncStateVerifyCommand::BroadcastStateRoot { peer, info, sig } = cmds[0] {
+        if let AsyncStateVerifyCommand::BroadcastStateRoot {
+            peer,
+            info,
+            sig,
+            epoch,
+        } = cmds[0]
+        {
             assert_eq!(peer, node0);
             assert_eq!(info, true_info);
             assert_eq!(sig, sign_state_root_info(&certkeys[0], true_info));
+            assert_eq!(epoch, Epoch(5));
         } else {
             panic!("Command type mismatch");
         }
@@ -627,7 +643,7 @@ mod test {
             round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info);
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
         assert_eq!(cmds.len(), 2);
 
         if let AsyncStateVerifyCommand::StateRootUpdate(info) = cmds[0] {
@@ -636,10 +652,17 @@ mod test {
             panic!("Command type mismatch");
         }
 
-        if let AsyncStateVerifyCommand::BroadcastStateRoot { peer, info, sig } = cmds[1] {
+        if let AsyncStateVerifyCommand::BroadcastStateRoot {
+            peer,
+            info,
+            sig,
+            epoch,
+        } = cmds[1]
+        {
             assert_eq!(peer, node0);
             assert_eq!(info, true_info);
             assert_eq!(sig, sign_state_root_info(&certkeys[0], true_info));
+            assert_eq!(epoch, Epoch(5));
         } else {
             panic!("Command type mismatch");
         }

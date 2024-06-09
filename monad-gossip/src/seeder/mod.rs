@@ -265,26 +265,26 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
     fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.update_tick(time);
         match to {
-            RouterTarget::Broadcast => {
+            RouterTarget::Broadcast(_, _) => {
                 self.events
                     .push_back(GossipEvent::Emit(self.me, message.clone()));
 
-                // TODO should we set this bound more empirically? This is arbitrary right now
-                if message.len() <= 2 * MAX_DATAGRAM_SIZE {
-                    let messages = self
-                        .config
-                        .all_peers
-                        .iter()
-                        .filter(|to| to != &&self.me)
-                        .map(|to| {
-                            GossipEvent::Send(
-                                *to,
-                                Self::prepare_message(MessageType::Direct, message.clone()),
-                            )
-                        });
-                    self.events.extend(messages);
-                    return;
-                }
+                let messages = self
+                    .config
+                    .all_peers
+                    .iter()
+                    .filter(|to| to != &&self.me)
+                    .map(|to| {
+                        GossipEvent::Send(
+                            *to,
+                            Self::prepare_message(MessageType::Direct, message.clone()),
+                        )
+                    });
+                self.events.extend(messages);
+            }
+            RouterTarget::Raptorcast(_, _) => {
+                self.events
+                    .push_back(GossipEvent::Emit(self.me, message.clone()));
 
                 if self.next_chunker_poll.is_none() {
                     self.next_chunker_poll = Some(self.current_tick);

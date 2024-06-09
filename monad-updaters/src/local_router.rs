@@ -113,6 +113,8 @@ where
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             RouterCommand::Publish { .. } => false,
+            RouterCommand::UpdateCurrentRound(_, _) => true,
+            RouterCommand::AddEpochValidatorSet { .. } => true,
         });
         self.exec(commands)
     }
@@ -121,8 +123,10 @@ where
         for command in commands {
             let now = Instant::now();
             match command {
+                RouterCommand::AddEpochValidatorSet { .. } => {}
+                RouterCommand::UpdateCurrentRound(_, _) => {}
                 RouterCommand::Publish { target, message } => match target {
-                    RouterTarget::Broadcast => {
+                    RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
                         let message = message.into();
                         for tx in self.txs.values() {
                             tx.send((now, self.me, message.clone())).unwrap();

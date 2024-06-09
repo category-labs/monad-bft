@@ -8,9 +8,9 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use itertools::Itertools;
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::network::MONAD_GSO_SIZE;
-use monad_raptorcast::{build_messages, parse_message, Validator};
+use monad_raptorcast::{build_messages, parse_message, BuildTarget, EpochValidators, Validator};
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{NodeId, RouterTarget, Stake};
+use monad_types::{NodeId, Stake};
 use raptor_code::SourceBlockDecoder;
 
 #[allow(clippy::useless_vec)]
@@ -30,10 +30,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect_vec();
 
-        let round_validators = keys[1..]
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
-            .collect();
+        let mut validators = EpochValidators {
+            validators: keys
+                .iter()
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .collect(),
+        };
 
         let known_addresses = keys
             .iter()
@@ -46,14 +48,15 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             .collect();
 
         b.iter(|| {
+            let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
                 MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
                 message.clone(),
                 2, // redundancy,
+                0, // epoch_no
                 0, // round_no
-                RouterTarget::Broadcast,
-                &round_validators,
+                BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
             );
         });
@@ -69,10 +72,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect_vec();
 
-        let round_validators = keys[1..]
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
-            .collect();
+        let mut validators = EpochValidators {
+            validators: keys
+                .iter()
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .collect(),
+        };
+        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
 
         let known_addresses = keys
             .iter()
@@ -89,9 +95,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
             message.clone(),
             2, // redundancy,
+            0, // epoch_no
             0, // round_no
-            RouterTarget::Broadcast,
-            &round_validators,
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         )
         .into_iter()

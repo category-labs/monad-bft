@@ -8,9 +8,10 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_executor_glue::{Command, MonadEvent, ValidatorEvent};
+use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
+use monad_types::{Epoch, NodeId, Stake};
 use monad_validator::{
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -29,7 +30,12 @@ where
     _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, BPT)>,
 }
 
-pub(super) struct EpochCommand {}
+pub(super) enum EpochCommand<PT>
+where
+    PT: PubKey,
+{
+    AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
+}
 
 impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
     EpochChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -49,7 +55,10 @@ where
         }
     }
 
-    pub(super) fn update(&mut self, event: ValidatorEvent<SCT>) -> Vec<EpochCommand> {
+    pub(super) fn update(
+        &mut self,
+        event: ValidatorEvent<SCT>,
+    ) -> Vec<EpochCommand<SCT::NodeIdPubKey>> {
         match event {
             ValidatorEvent::UpdateValidators((validator_data, epoch)) => {
                 self.val_epoch_map.insert(
@@ -57,13 +66,16 @@ where
                     validator_data.get_stakes(),
                     ValidatorMapping::new(validator_data.get_cert_pubkeys()),
                 );
-                vec![]
+                vec![EpochCommand::AddEpochValidatorSet(
+                    epoch,
+                    validator_data.get_stakes(),
+                )]
             }
         }
     }
 }
 
-impl<ST, SCT> From<EpochCommand>
+impl<ST, SCT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
     for Vec<
         Command<
             MonadEvent<ST, SCT>,
@@ -77,7 +89,16 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn from(value: EpochCommand) -> Self {
-        Vec::new()
+    fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
+        match command {
+            EpochCommand::AddEpochValidatorSet(epoch, validator_set) => {
+                vec![Command::RouterCommand(
+                    RouterCommand::AddEpochValidatorSet {
+                        epoch,
+                        validator_set,
+                    },
+                )]
+            }
+        }
     }
 }

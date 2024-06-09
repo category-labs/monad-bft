@@ -13,9 +13,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptorcast::{EpochValidators, RaptorCast, RaptorCastConfig, Validator};
+use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_secp::SecpSignature;
-use monad_types::{Deserializable, NodeId, Round, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
@@ -76,21 +76,6 @@ fn service(
         .map(|(peer, address)| (peer, address.parse().unwrap()))
         .collect();
 
-    let epoch_validators: BTreeMap<Round, EpochValidators<SignatureType>> = vec![(
-        Round(u64::MAX),
-        EpochValidators {
-            start_round: Round(0),
-            end_round: Round(u64::MAX),
-            validators: peers
-                .iter()
-                .copied()
-                .map(|peer| (peer, Validator { stake: Stake(1) }))
-                .collect(),
-        },
-    )]
-    .into_iter()
-    .collect();
-
     let (tx_writer, tx_reader): (BTreeMap<_, _>, Vec<_>) = peers
         .iter()
         .copied()
@@ -122,19 +107,21 @@ fn service(
             let all_peers = peers.clone();
             let server_address = *known_addresses.get(&me).unwrap();
             let known_addresses = known_addresses.clone();
-            let epoch_validators = epoch_validators.clone();
 
             rt.spawn(async move {
                 let service_config = RaptorCastConfig {
                     key,
                     known_addresses,
-                    epoch_validators,
                     redundancy: 2,
                     local_addr: server_address.to_string(),
                 };
 
                 let mut service =
                     RaptorCast::<SignatureType, MockMessage, MockMessage>::new(service_config);
+                service.exec(vec![RouterCommand::AddEpochValidatorSet {
+                    epoch: Epoch(0),
+                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),
+                }]);
                 loop {
                     tokio::select! {
                         maybe_message = service.next() => {
@@ -163,7 +150,7 @@ fn service(
         let message = MockMessage::new(broadcast_id, message_len);
         tx_router
             .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast,
+                target: RouterTarget::Broadcast(Epoch(0), Round(0)),
                 message,
             })
             .expect("reader should never be dropped");

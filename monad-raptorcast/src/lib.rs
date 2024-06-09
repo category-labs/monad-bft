@@ -20,16 +20,13 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
-use monad_types::{Deserializable, NodeId, Round, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use raptor_code::SourceBlockDecoder;
 
 pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    // TODO support dynamic updating
-    // TODO we need to GC these
-    pub epoch_validators: BTreeMap<Round, EpochValidators<ST>>,
     // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
@@ -50,15 +47,18 @@ where
     key: ST::KeyPairType,
     redundancy: u8,
 
-    // key is end_round - can use epoch_validators.range(current_round..) and check the returned
-    // start_round to check if there's an applicable validator set
-    //
-    // EpochValidators::start_round is INCLUSIVE, end_round is EXCLUSIVE
-    epoch_validators: BTreeMap<Round, EpochValidators<ST>>,
+    epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+
+    current_epoch: Epoch,
+    current_round: Round,
 
     // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
     // can't be induced by spamming broadcast chunks to any given node
+    // TODO we also need to cap the max number chunks that are decoded - because an adversary could
+    // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
+    // TODO GC these based on time elapsed since first chunk? Right now we do no GC - we can't do
+    // this by round because some node may be trying to sync to us with a much older round.
     message_cache: BTreeMap<MessageCacheKey<CertificateSignaturePubKey<ST>>, SourceBlockDecoder>,
     signature_cache:
         HashMap<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
@@ -75,8 +75,6 @@ pub struct EpochValidators<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub start_round: Round,
-    pub end_round: Round,
     pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
 }
 
@@ -86,7 +84,7 @@ where
 {
     /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
     /// the validator set is reverted back to normal.
-    fn view_without(
+    pub fn view_without(
         &mut self,
         without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> ValidatorsView<ST> {
@@ -103,7 +101,8 @@ where
     }
 }
 
-struct ValidatorsView<'a, ST>
+#[derive(Debug)]
+pub struct ValidatorsView<'a, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -122,7 +121,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Validator {
     pub stake: Stake,
 }
@@ -148,11 +147,14 @@ where
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let dataplane = Dataplane::new(&config.local_addr);
         Self {
-            epoch_validators: config.epoch_validators,
+            epoch_validators: Default::default(),
             known_addresses: config.known_addresses,
 
             key: config.key,
             redundancy: config.redundancy,
+
+            current_epoch: Epoch(0),
+            current_round: Round(0),
 
             message_cache: Default::default(),
             signature_cache: Default::default(),
@@ -178,6 +180,8 @@ where
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             RouterCommand::Publish { .. } => false,
+            RouterCommand::UpdateCurrentRound(_, _) => true,
+            RouterCommand::AddEpochValidatorSet { .. } => true,
         });
         self.exec(commands)
     }
@@ -186,39 +190,124 @@ where
         let self_id = NodeId::new(self.key.pubkey());
         for command in commands {
             match command {
-                RouterCommand::Publish { target, message } => {
-                    // FIXME round should be a parameter of RouterCommand::Publish
-                    let round = Round(0);
-                    let Some(round_validators) = self
-                        .epoch_validators
-                        // as per docs, range(min..max) is inclusive of min, exclusive of max
-                        .range_mut(Round(0)..round)
-                        .next()
-                        .map(|(end_round, v)| {
-                            assert!(&round < end_round);
-                            v
-                        })
-                        .filter(|validators| validators.start_round >= round)
-                    else {
-                        tracing::error!(
-                            "don't have epoch validators populated for round: {:?}",
-                            round
+                RouterCommand::UpdateCurrentRound(epoch, round) => {
+                    assert!(epoch >= self.current_epoch);
+                    self.current_epoch = epoch;
+                    assert!(round >= self.current_round);
+                    self.current_round = round;
+                    while let Some(entry) = self.epoch_validators.first_entry() {
+                        if *entry.key() + Epoch(1) < self.current_epoch {
+                            entry.remove();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                RouterCommand::AddEpochValidatorSet {
+                    epoch,
+                    validator_set,
+                } => {
+                    if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
+                        assert_eq!(validator_set.len(), epoch_validators.validators.len());
+                        assert!(validator_set.into_iter().all(
+                            |(validator_key, validator_stake)| epoch_validators
+                                .validators
+                                .get(&validator_key)
+                                .map(|v| v.stake)
+                                == Some(validator_stake)
+                        ));
+                        tracing::warn!(
+                            "duplicate validator set update (this is safe but unexpected)"
+                        )
+                    } else {
+                        let removed = self.epoch_validators.insert(
+                            epoch,
+                            EpochValidators {
+                                validators: validator_set
+                                    .into_iter()
+                                    .map(|(validator_key, validator_stake)| {
+                                        (
+                                            validator_key,
+                                            Validator {
+                                                stake: validator_stake,
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                            },
                         );
-                        continue;
-                    };
-
+                        assert!(removed.is_none());
+                    }
+                }
+                RouterCommand::Publish { target, message } => {
                     let app_message = message.serialize();
-
                     // send message to self if applicable
-                    match &target {
-                        RouterTarget::Broadcast => {
-                            if round_validators.validators.contains_key(&self_id) {
+                    let (epoch, round, build_target) = match &target {
+                        RouterTarget::Broadcast(epoch, round) => {
+                            if &self.current_round != round {
+                                tracing::error!("tried to publish message outside of current_round window - was RouterCommand::UpdateCurrentRound omitted somewhere?")
+                            }
+                            let Some(epoch_validators) = self.epoch_validators.get_mut(epoch)
+                            else {
+                                tracing::error!(
+                                    "don't have epoch validators populated for epoch: {:?}",
+                                    epoch
+                                );
+                                continue;
+                            };
+
+                            if epoch_validators.validators.contains_key(&self_id) {
                                 let message: M = message.into();
                                 self.pending_events.push_back(message.event(self_id));
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
                             }
+                            let epoch_validators_without_self =
+                                epoch_validators.view_without(vec![&self_id]);
+                            if epoch_validators_without_self.view.is_empty() {
+                                // this is degenerate case where the only validator is self
+                                continue;
+                            }
+
+                            (
+                                epoch,
+                                round,
+                                BuildTarget::Broadcast(epoch_validators_without_self),
+                            )
+                        }
+                        RouterTarget::Raptorcast(epoch, round) => {
+                            if &self.current_round != round {
+                                tracing::error!("tried to publish message outside of current_round window - was RouterCommand::UpdateCurrentRound omitted somewhere?")
+                            }
+                            let Some(epoch_validators) = self.epoch_validators.get_mut(epoch)
+                            else {
+                                tracing::error!(
+                                    "don't have epoch validators populated for epoch: {:?}",
+                                    epoch
+                                );
+                                continue;
+                            };
+
+                            if epoch_validators.validators.contains_key(&self_id) {
+                                let message: M = message.into();
+                                self.pending_events.push_back(message.event(self_id));
+                                if let Some(waker) = self.waker.take() {
+                                    waker.wake()
+                                }
+                            }
+                            let epoch_validators_without_self =
+                                epoch_validators.view_without(vec![&self_id]);
+                            if epoch_validators_without_self.view.is_empty() {
+                                // this is degenerate case where the only validator is self
+                                continue;
+                            }
+
+                            (
+                                epoch,
+                                round,
+                                BuildTarget::Raptorcast(epoch_validators_without_self),
+                            )
                         }
                         RouterTarget::PointToPoint(to) => {
                             if to == &self_id {
@@ -228,16 +317,15 @@ where
                                     waker.wake()
                                 }
                                 continue;
+                            } else {
+                                (
+                                    &self.current_epoch,
+                                    &self.current_round,
+                                    BuildTarget::PointToPoint(to),
+                                )
                             }
                         }
                     };
-
-                    let round_validators_without_self =
-                        round_validators.view_without(vec![&self_id]);
-                    if round_validators_without_self.view.is_empty() {
-                        // this is degenerate case where the only validator is self
-                        continue;
-                    }
 
                     let messages = build_messages::<ST>(
                         &self.key,
@@ -246,9 +334,9 @@ where
                             .expect("GSO size too big"),
                         app_message,
                         self.redundancy,
+                        epoch.0,
                         round.0,
-                        target,
-                        round_validators_without_self.view,
+                        build_target,
                         &self.known_addresses,
                     );
 
@@ -305,37 +393,27 @@ where
                     }
                 };
 
-                let Some(round_validators) = this
-                    .epoch_validators
-                    // as per docs, range(min..max) is inclusive of min, exclusive of max
-                    .range_mut(Round(0)..Round(parsed_message.round))
-                    .next()
-                    .map(|(end_round, v)| {
-                        assert!(&Round(parsed_message.round) < end_round);
-                        v
-                    })
-                    .filter(|validators| validators.start_round >= Round(parsed_message.round))
-                else {
-                    tracing::error!(
-                        "don't have epoch validators populated for round: {:?}",
-                        parsed_message.round
-                    );
-                    continue;
-                };
-
-                if !round_validators
-                    .validators
-                    .contains_key(&parsed_message.author)
-                {
-                    tracing::error!("not in validator set: {:?}", parsed_message.author);
-                    continue;
-                }
-
                 let self_hash = compute_hash(&self_id);
                 if parsed_message.broadcast {
+                    let Some(epoch_validators) =
+                        this.epoch_validators.get_mut(&Epoch(parsed_message.epoch))
+                    else {
+                        tracing::error!(
+                            "don't have epoch validators populated for round: {:?}",
+                            parsed_message.round
+                        );
+                        continue;
+                    };
+                    if !epoch_validators
+                        .validators
+                        .contains_key(&parsed_message.author)
+                    {
+                        tracing::error!("not in validator set: {:?}", parsed_message.author);
+                        continue;
+                    }
                     if self_hash == parsed_message.recipient_hash {
                         let targets =
-                            round_validators.view_without(vec![&parsed_message.author, &self_id]);
+                            epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
                         batch_guard.queue_broadcast(
                             payload_start_idx,
                             payload_end_idx,
@@ -372,8 +450,6 @@ where
                         SourceBlockDecoder::new(num_source_symbols)
                     });
 
-                // TODO gc old messages so that memory growth isn't unbounded
-
                 if entry.fully_specified() {
                     // already decoded
                     continue;
@@ -398,10 +474,26 @@ where
     }
 }
 
+#[derive(Debug)]
+pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
+    Broadcast(
+        // validator stakes for given round_no, not including self
+        // this MUST NOT BE EMPTY
+        ValidatorsView<'a, ST>,
+    ),
+    Raptorcast(
+        // validator stakes for given round_no, not including self
+        // this MUST NOT BE EMPTY
+        ValidatorsView<'a, ST>,
+    ), // sharded raptor-aware broadcast
+    PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
+}
+
 /// Stuff to include:
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
 ///               with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
+/// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Round #
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
@@ -426,6 +518,7 @@ where
 // pub struct M {
 //     signature: [u8; 65],
 //     version: u16,
+//     epoch: u64,
 //     round: u64,
 //     app_message_id: [u8; 20],
 //     app_message_len: u32,
@@ -443,6 +536,7 @@ where
 // }
 const HEADER_LEN: u16 = 65  // Sender signature
             + 2  // Version
+            + 8  // Epoch #
             + 8  // Round #
             + 20 // AppMessage hash
             + 4 // AppMessage length
@@ -466,12 +560,10 @@ pub fn build_messages<ST>(
     gso_size: u16,
     app_message: Bytes,
     redundancy: u8, // 2 == send 1 extra packet for every 1 original
+    epoch_no: u64,
     round_no: u64,
-    target: RouterTarget<CertificateSignaturePubKey<ST>>,
+    build_target: BuildTarget<ST>,
 
-    // validator stakes for given round_no, not including self
-    // this MUST NOT BE EMPTY
-    round_validators: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
@@ -483,7 +575,10 @@ where
 
     let app_message_len: u32 = app_message.len().try_into().expect("message too big");
 
-    let is_broadcast = matches!(target, RouterTarget::Broadcast);
+    let is_broadcast = matches!(
+        build_target,
+        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_)
+    );
 
     // calculate tree depth as a function of app_message_len and body_size
     let tree_depth: u8 = if !is_broadcast && app_message_len <= body_size.into() {
@@ -502,8 +597,7 @@ where
     let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
 
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    // TODO add new RouterTarget for non-raptor broadcast? instead of this heuristic
-    let is_raptor_broadcast = is_broadcast && app_message_len > data_size.into();
+    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
 
     let num_packets: u16 = {
         let mut num_packets: u16 = (app_message_len.div_ceil(data_size.into())
@@ -511,9 +605,9 @@ where
         .try_into()
         .expect("is redundancy too high? doesn't fit in u16");
 
-        if is_broadcast && !is_raptor_broadcast {
+        if let BuildTarget::Broadcast(epoch_validators) = &build_target {
             num_packets = num_packets
-                .checked_mul(round_validators.len() as u16)
+                .checked_mul(epoch_validators.view.len() as u16)
                 .expect("num_packets doesn't fit in u16")
         }
 
@@ -526,13 +620,13 @@ where
         .chunks_mut(gso_size.into())
         .map(|chunk| &mut chunk[(HEADER_LEN + proof_size).into()..])
         .collect_vec();
-    assert_eq!(chunk_datas.len(), num_packets.into());
+    assert_eq!(chunk_datas.len(), num_packets as usize);
 
     // the GSO-aware indices into `message`
     let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
     // popuate chunk_recipient and outbound_gso_idx
-    match &target {
-        RouterTarget::PointToPoint(to) => {
+    match build_target {
+        BuildTarget::PointToPoint(to) => {
             let Some(addr) = known_addresses.get(to) else {
                 tracing::warn!("not sending to {:?}, address unknown", to);
                 return Vec::new();
@@ -543,11 +637,11 @@ where
                 chunk_data[1..1 + 20].copy_from_slice(&compute_hash(to));
             }
         }
-        RouterTarget::Broadcast if !is_raptor_broadcast => {
+        BuildTarget::Broadcast(epoch_validators) => {
             assert!(is_broadcast && !is_raptor_broadcast);
-            let total_validators = round_validators.len();
+            let total_validators = epoch_validators.view.len();
             let mut running_validator_count = 0;
-            for (node_id, validator) in round_validators {
+            for (node_id, validator) in epoch_validators.view.iter() {
                 let start_idx: usize =
                     num_packets as usize * running_validator_count / total_validators;
                 running_validator_count += 1;
@@ -571,15 +665,16 @@ where
                 }
             }
         }
-        RouterTarget::Broadcast => {
-            assert!(is_raptor_broadcast);
+        BuildTarget::Raptorcast(epoch_validators) => {
+            assert!(is_broadcast && is_raptor_broadcast);
             // FIXME should self be included in total_stake?
-            let total_stake: i64 = round_validators
+            let total_stake: i64 = epoch_validators
+                .view
                 .values()
                 .map(|validator| validator.stake.0)
                 .sum();
             let mut running_stake = 0;
-            for (node_id, validator) in round_validators {
+            for (node_id, validator) in epoch_validators.view.iter() {
                 let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
                 running_stake += validator.stake.0;
                 let end_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
@@ -630,6 +725,7 @@ where
     // At this point, everything BELOW chunk_merkle_leaf_idx is populated
     // populate merkle trees/roots/leaf_idx + signatures (cached)
     let version: u16 = 0;
+    let epoch_no: u64 = epoch_no;
     let round_no: u64 = round_no;
     let app_message_hash: [u8; 20] = {
         let mut hasher = HasherType::new();
@@ -665,6 +761,8 @@ where
                 let (cursor_signature, cursor) = cursor.split_at_mut(65);
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
+                let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
+                cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
                 let (cursor_round_no, cursor) = cursor.split_at_mut(8);
                 cursor_round_no.copy_from_slice(&round_no.to_le_bytes());
                 let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
@@ -677,6 +775,7 @@ where
                 cursor.copy_from_slice(merkle_tree.root());
                 // 65  // Sender signature
                 // 2  // Version
+                // 8  // Epoch #
                 // 8  // Round #
                 // 20 // AppMessage hash
                 // 4 // AppMessage length
@@ -719,6 +818,7 @@ where
     pub message: Bytes,
 
     pub author: NodeId<PT>,
+    pub epoch: u64,
     pub round: u64,
     pub app_message_hash: [u8; 20],
     pub app_message_len: u32,
@@ -740,6 +840,7 @@ pub enum MessageValidationError {
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
 ///               with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
+/// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Round #
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
@@ -784,6 +885,9 @@ where
     if version != 0 {
         return Err(MessageValidationError::UnknownVersion);
     }
+
+    let cursor_epoch = split_off(8)?;
+    let epoch = u64::from_le_bytes(cursor_epoch.as_ref().try_into().expect("u64 is 8 bytes"));
 
     let cursor_round = split_off(8)?;
     let round = u64::from_le_bytes(cursor_round.as_ref().try_into().expect("u64 is 8 bytes"));
@@ -885,6 +989,7 @@ where
         message,
 
         author,
+        epoch,
         round,
         app_message_hash,
         app_message_len,
@@ -973,9 +1078,9 @@ mod tests {
     use itertools::Itertools;
     use monad_crypto::hasher::{Hasher, HasherType};
     use monad_secp::SecpSignature;
-    use monad_types::{NodeId, RouterTarget, Stake};
+    use monad_types::{NodeId, Stake};
 
-    use crate::{build_messages, parse_message, Validator};
+    use crate::{build_messages, parse_message, BuildTarget, EpochValidators, Validator};
 
     #[test]
     fn test_roundtrip() {
@@ -988,10 +1093,13 @@ mod tests {
             })
             .collect_vec();
 
-        let round_validators = keys[1..]
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
-            .collect();
+        let mut validators = EpochValidators {
+            validators: keys
+                .iter()
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .collect(),
+        };
+        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
 
         let known_addresses = keys
             .iter()
@@ -1010,6 +1118,7 @@ mod tests {
             hasher.hash()
         };
 
+        const EPOCH: u64 = 5;
         const ROUND: u64 = 5;
         const GSO_SIZE: u16 = 1500;
         let messages = build_messages::<SecpSignature>(
@@ -1017,9 +1126,9 @@ mod tests {
             GSO_SIZE, // gso_size
             app_message.clone(),
             2,     // redundancy,
+            EPOCH, // epoch_no
             ROUND, // round_no
-            RouterTarget::Broadcast,
-            &round_validators,
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1052,10 +1161,13 @@ mod tests {
             })
             .collect_vec();
 
-        let round_validators = keys[1..]
-            .iter()
-            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
-            .collect();
+        let mut validators = EpochValidators {
+            validators: keys
+                .iter()
+                .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+                .collect(),
+        };
+        let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
 
         let known_addresses = keys
             .iter()
@@ -1069,6 +1181,7 @@ mod tests {
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
+        const EPOCH: u64 = 5;
         const ROUND: u64 = 5;
         const GSO_SIZE: u16 = 1500;
         let messages = build_messages::<SecpSignature>(
@@ -1076,9 +1189,9 @@ mod tests {
             GSO_SIZE, // gso_size
             app_message,
             2,     // redundancy,
+            EPOCH, // epoch_no
             ROUND, // round_no
-            RouterTarget::Broadcast,
-            &round_validators,
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 

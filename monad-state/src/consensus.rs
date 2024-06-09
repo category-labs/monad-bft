@@ -139,6 +139,7 @@ where
                             self.consensus.get_keypair(),
                             self.consensus.get_cert_keypair(),
                             self.node_state.version,
+                            self.node_state.epoch_manager,
                             cmd,
                         )
                     })
@@ -216,6 +217,9 @@ where
         let mut parent_cmds: Vec<Command<_, _, _, _, _>> = Vec::new();
 
         match cmd.0 {
+            ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
+                RouterCommand::UpdateCurrentRound(epoch, round),
+            )),
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,

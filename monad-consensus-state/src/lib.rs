@@ -483,15 +483,16 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc, node.metrics)
+                .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         node.version,
+                        node.epoch_manager,
                         cmd,
                     )
-                })
-                .into_iter();
+                });
             cmds.extend(advance_round_cmds);
         }
 
@@ -512,6 +513,7 @@ where
                 &self.keypair,
                 &self.cert_keypair,
                 node.version,
+                node.epoch_manager,
                 cmd,
             )
         }));
@@ -527,6 +529,7 @@ where
                         &self.keypair,
                         &self.cert_keypair,
                         node.version,
+                        node.epoch_manager,
                         cmd,
                     )
                 });
@@ -713,14 +716,20 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager, metrics));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc, metrics).map(|cmd| {
-            ConsensusCommand::from_pacemaker_command(
-                &self.keypair,
-                &self.cert_keypair,
-                version,
-                cmd,
-            )
-        }));
+        cmds.extend(
+            self.pacemaker
+                .advance_round_qc(qc, metrics)
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        &self.keypair,
+                        &self.cert_keypair,
+                        version,
+                        epoch_manager,
+                        cmd,
+                    )
+                }),
+        );
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
@@ -946,7 +955,7 @@ where
                 .sign(&self.keypair);
 
                 vec![ConsensusCommand::Publish {
-                    target: RouterTarget::Broadcast,
+                    target: RouterTarget::Raptorcast(epoch, round),
                     message: msg,
                 }]
             };
@@ -1125,15 +1134,16 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc, metrics)
+                .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         version,
+                        epoch_manager,
                         cmd,
                     )
-                })
-                .into_iter();
+                });
             cmds.extend(advance_round_cmds);
         }
 
@@ -1590,10 +1600,10 @@ mod test {
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        cmds.into_iter()
+        cmds.iter()
             .find_map(|c| match c {
                 ConsensusCommand::Publish {
-                    target: RouterTarget::Broadcast,
+                    target: RouterTarget::Raptorcast(_, _),
                     message,
                 } => match &message.deref().deref().message {
                     ProtocolMessage::Proposal(p) => Some(p.clone()),
@@ -1601,7 +1611,7 @@ mod test {
                 },
                 _ => None,
             })
-            .expect("proposal")
+            .expect(&format!("couldn't extract proposal: {:?}", cmds))
     }
 
     fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockId>
@@ -2299,17 +2309,18 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
+        assert!(matches!(cmds[0], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[0],
+            cmds[1],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::Pacemaker
             }
         ));
-        assert!(matches!(cmds[1], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(cmds[2], ConsensusCommand::RequestSync { .. }));
         assert!(matches!(
-            cmds[2],
+            cmds[3],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::BlockSync(_)
@@ -2367,11 +2378,12 @@ mod test {
 
         assert_eq!(consensus_state.get_current_round(), Round(11));
         assert_eq!(node_state.metrics.consensus_events.rx_missing_state_root, 1);
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert!(matches!(cmds[0], ConsensusCommand::StateRootHash(_)));
         assert!(matches!(cmds[1], ConsensusCommand::LedgerCommit(_)));
+        assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[2],
+            cmds[3],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::Pacemaker
@@ -2892,7 +2904,7 @@ mod test {
             if i >= (num_state * 2 / 3) {
                 let proposal_exists = cmds.into_iter().any(|c| match c {
                     ConsensusCommand::Publish {
-                        target: RouterTarget::Broadcast,
+                        target: RouterTarget::Broadcast(_, _),
                         message,
                     } => matches!(
                         &message.deref().deref().message,

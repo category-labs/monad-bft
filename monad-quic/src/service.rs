@@ -113,6 +113,8 @@ where
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             RouterCommand::Publish { .. } => false,
+            RouterCommand::UpdateCurrentRound(..) => true,
+            RouterCommand::AddEpochValidatorSet { .. } => true,
         });
         self.exec(commands)
     }

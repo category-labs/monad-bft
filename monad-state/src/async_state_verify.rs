@@ -114,9 +114,14 @@ where
                 self.async_state_verify
                     .handle_peer_state_root(peer, info, sig, valset, valmap)
             }
-            AsyncStateVerifyEvent::LocalStateRoot(info) => self
-                .async_state_verify
-                .handle_local_state_root(self.nodeid, self.cert_keypair, info),
+            AsyncStateVerifyEvent::LocalStateRoot(info) => {
+                self.async_state_verify.handle_local_state_root(
+                    self.nodeid,
+                    self.cert_keypair,
+                    info,
+                    self.epoch_manager.get_epoch(info.round),
+                )
+            }
         };
 
         cmds.into_iter()
@@ -145,9 +150,14 @@ where
 {
     fn from(value: WrappedAsyncStateVerifyCommand<SCT>) -> Self {
         match value.0 {
-            AsyncStateVerifyCommand::BroadcastStateRoot { peer, info, sig } => {
+            AsyncStateVerifyCommand::BroadcastStateRoot {
+                peer,
+                info,
+                sig,
+                epoch,
+            } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::Broadcast,
+                    target: RouterTarget::Broadcast(epoch, info.round),
                     message: VerifiedMonadMessage::PeerStateRootMessage(Validated::new(
                         PeerStateRootMessage { peer, info, sig },
                     )),

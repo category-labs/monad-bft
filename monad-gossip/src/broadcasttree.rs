@@ -302,7 +302,7 @@ impl<PT: PubKey> Gossip for BroadcastTree<PT> {
         let root_id_bytes = self.config.my_id.pubkey().bytes();
 
         match to {
-            RouterTarget::Broadcast => {
+            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
                 // emit message to self, obviously no need to break into chunks
                 self.events
                     .push_back(GossipEvent::Emit(self.config.my_id, message.clone()));
@@ -369,7 +369,7 @@ mod tests {
         NopKeyPair, NopSignature,
     };
     use monad_transformer::{BytesTransformer, LatencyTransformer};
-    use monad_types::{NodeId, RouterTarget};
+    use monad_types::{Epoch, NodeId, Round, RouterTarget};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
     use test_case::test_case;
@@ -397,7 +397,11 @@ mod tests {
         }
         .build();
         let app_message = "appmessagepayload".into();
-        g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
+        g.send(
+            Duration::from_secs(1),
+            RouterTarget::Broadcast(Epoch(0), Round(0)),
+            app_message,
+        );
 
         // with 2 nodes in the peerlist, peers[1] will always be a child of
         // peers[0] in the any broadcast tree route. There are 2 routes, so
@@ -435,7 +439,11 @@ mod tests {
         }
         .build();
         let app_message = "appmessagepayload".into();
-        g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
+        g.send(
+            Duration::from_secs(1),
+            RouterTarget::Broadcast(Epoch(0), Round(0)),
+            app_message,
+        );
         // expecting num_routes number of sends plus 1 event for emit to self
         assert_eq!(num_routes + 1, g.events.len());
 
@@ -509,7 +517,11 @@ mod tests {
             .map(|s| s.as_bytes().into())
             .collect::<Vec<Bytes>>();
         for m in app_messages {
-            g.send(Duration::ZERO, RouterTarget::Broadcast, m);
+            g.send(
+                Duration::ZERO,
+                RouterTarget::Broadcast(Epoch(0), Round(0)),
+                m,
+            );
         }
         // plus 1 for the emit to self
         assert_eq!((num_routes + 1) * expected_messages.len(), g.events.len());

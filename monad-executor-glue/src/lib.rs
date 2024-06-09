@@ -21,7 +21,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, Stake, TimeoutVariant};
 
 #[derive(Clone)]
 pub enum RouterCommand<PT: PubKey, OM> {
@@ -30,7 +30,11 @@ pub enum RouterCommand<PT: PubKey, OM> {
         target: RouterTarget<PT>,
         message: OM,
     },
-    // TODO-2 add a RouterCommand for setting peer set for broadcast
+    AddEpochValidatorSet {
+        epoch: Epoch,
+        validator_set: Vec<(NodeId<PT>, Stake)>,
+    },
+    UpdateCurrentRound(Epoch, Round),
 }
 
 pub trait Message: Clone + Send + Sync {

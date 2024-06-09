@@ -32,7 +32,7 @@ rand = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 futures-util = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "service"

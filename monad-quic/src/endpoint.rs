@@ -368,6 +368,8 @@ where
             if !commands.is_empty() {
                 for command in commands {
                     match command {
+                        RouterCommand::UpdateCurrentRound(_, _) => {}
+                        RouterCommand::AddEpochValidatorSet { .. } => {}
                         RouterCommand::Publish { target, message } => {
                             let message = {
                                 let mut _ser_span =

@@ -109,7 +109,7 @@ impl<PT: PubKey> Gossip for UnsafeGossipsub<PT> {
         self.current_tick = time;
         match to {
             // when self.handle_message is called, the broadcast actually happens
-            RouterTarget::Broadcast => self.handle_message(
+            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => self.handle_message(
                 self.config.me,
                 MessageHeader {
                     id: {

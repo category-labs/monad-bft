@@ -209,6 +209,12 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             match command {
                 // we match on all commands to be explicit
                 RouterCommand::Publish { .. } => {}
+                RouterCommand::AddEpochValidatorSet { .. } => {
+                    // TODO
+                }
+                RouterCommand::UpdateCurrentRound(_, _) => {
+                    // TODO
+                }
             }
         }
     }
@@ -253,6 +259,12 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             match command {
                 RouterCommand::Publish { target, message } => {
                     self.router.send_outbound(self.tick, target, message);
+                }
+                RouterCommand::AddEpochValidatorSet { .. } => {
+                    // TODO
+                }
+                RouterCommand::UpdateCurrentRound(_, _) => {
+                    // TODO
                 }
             }
         }

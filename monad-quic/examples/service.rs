@@ -19,7 +19,7 @@ use monad_gossip::{
     Gossip,
 };
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
@@ -186,7 +186,7 @@ fn service(
         let message = MockMessage::new(id, message_len);
         tx_router
             .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast,
+                target: RouterTarget::Broadcast(Epoch(0), Round(0)),
                 message,
             })
             .expect("reader should never be dropped");
@@ -224,7 +224,7 @@ fn service(
         let message = MockMessage::new(broadcast_id, message_len);
         tx_router
             .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast,
+                target: RouterTarget::Broadcast(Epoch(0), Round(0)),
                 message,
             })
             .expect("reader should never be dropped");

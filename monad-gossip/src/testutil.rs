@@ -12,7 +12,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
-use monad_types::{NodeId, RouterTarget};
+use monad_types::{Epoch, NodeId, Round, RouterTarget};
 use rand::Rng;
 
 use super::Gossip;
@@ -281,7 +281,11 @@ pub fn test_broadcast<G: Gossip>(
             rng.fill_bytes(&mut message);
             message.freeze()
         };
-        let target = RouterTarget::Broadcast;
+        let target = RouterTarget::Raptorcast(
+            // FIXME
+            Epoch(0),
+            Round(0),
+        );
 
         for rx_peer in &peer_ids {
             pending_messages.insert((*rx_peer, (*tx_peer, message.clone())));
