@@ -52,6 +52,8 @@ where
 
     // key is end_round - can use epoch_validators.range(current_round..) and check the returned
     // start_round to check if there's an applicable validator set
+    //
+    // EpochValidators::start_round is INCLUSIVE, end_round is EXCLUSIVE
     epoch_validators: BTreeMap<Round, EpochValidators<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
@@ -187,8 +189,16 @@ where
                 RouterCommand::Publish { target, message } => {
                     // FIXME round should be a parameter of RouterCommand::Publish
                     let round = Round(0);
-                    let Some((_, round_validators)) =
-                        self.epoch_validators.range_mut(round..).next()
+                    let Some(round_validators) = self
+                        .epoch_validators
+                        // as per docs, range(min..max) is inclusive of min, exclusive of max
+                        .range_mut(Round(0)..round)
+                        .next()
+                        .map(|(end_round, v)| {
+                            assert!(&round < end_round);
+                            v
+                        })
+                        .filter(|validators| validators.start_round >= round)
                     else {
                         tracing::error!(
                             "don't have epoch validators populated for round: {:?}",
@@ -295,10 +305,16 @@ where
                     }
                 };
 
-                let Some((_, round_validators)) = this
+                let Some(round_validators) = this
                     .epoch_validators
-                    .range_mut(Round(parsed_message.round)..)
+                    // as per docs, range(min..max) is inclusive of min, exclusive of max
+                    .range_mut(Round(0)..Round(parsed_message.round))
                     .next()
+                    .map(|(end_round, v)| {
+                        assert!(&Round(parsed_message.round) < end_round);
+                        v
+                    })
+                    .filter(|validators| validators.start_round >= Round(parsed_message.round))
                 else {
                     tracing::error!(
                         "don't have epoch validators populated for round: {:?}",
