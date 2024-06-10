@@ -34,9 +34,11 @@ class CryptoKeystore:
     
     def convert_to_json(self):
         obj = {
-            "kdf": self.kdf_module.convert_to_dict(),
-            "checksum": self.checksum_module.convert_to_dict(),
+            "ciphertext": self.cipher_module.cipher_message.hex(),
+            "checksum": self.checksum_module.checksum.hex(),
             "cipher": self.cipher_module.convert_to_dict(),
+            "kdf": self.kdf_module.convert_to_dict(),
+            "hash": self.checksum_module.convert_to_dict(),
         }
         return json.dumps(obj)
 

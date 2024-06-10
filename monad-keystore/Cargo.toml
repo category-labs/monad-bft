@@ -5,12 +5,19 @@ edition = "2021"
 
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[[bin]]
+name = "monad-keystore"
+bench = false
+
 [lib]
 bench = false
 
 [dependencies]
 aes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 ctr = { workspace = true }
+dialoguer = { workspace = true }
+hdwallet = { workspace = true }
 hex = { workspace = true }
 monad-crypto = { path = "../monad-crypto" }
 pbkdf2 = { workspace = true, features = ["simple"] }
@@ -19,3 +26,4 @@ scrypt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tiny-bip39 = { workspace = true } 
