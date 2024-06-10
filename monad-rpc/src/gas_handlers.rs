@@ -104,7 +104,9 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonR
         None => 0,
     };
     // Obtain suggested priority fee
-    let priority_fee = suggested_priority_fee(blockdb_env).await.unwrap();
+    let priority_fee = suggested_priority_fee(blockdb_env)
+        .await
+        .unwrap_or_default();
 
     serialize_result(format!("0x{:x}", base_fee_per_gas + priority_fee))
 }
@@ -115,7 +117,9 @@ pub async fn monad_eth_maxPriorityFeePerGas(
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_maxPriorityFeePerGas");
 
-    let priority_fee = suggested_priority_fee(blockdb_env).await.unwrap();
+    let priority_fee = suggested_priority_fee(blockdb_env)
+        .await
+        .unwrap_or_default();
     serialize_result(format!("0x{:x}", priority_fee))
 }
 

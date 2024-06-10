@@ -103,7 +103,7 @@ pub fn parse_tx_receipt(
     let effective_gas_price = base_fee_per_gas
         + min(
             tx.max_fee_per_gas() - base_fee_per_gas,
-            tx.max_priority_fee_per_gas().unwrap(),
+            tx.max_priority_fee_per_gas().unwrap_or_default(),
         );
     let block_hash = Some(block.block.hash_slow());
     let block_number = Some(U256::from(block_num));

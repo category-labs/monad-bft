@@ -68,7 +68,7 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
                 .body
                 .iter()
                 .enumerate()
-                .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap())
+                .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap_or_default())
                 .collect();
             BlockTransactions::Full(transactions)
         }
