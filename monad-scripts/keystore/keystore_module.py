@@ -86,10 +86,7 @@ class ChecksumModule:
         else:
             raise TypeError("invalid hash function")
         
-        return {
-            "checksum_hash": checksum_hash,
-            "checksum": self.checksum.hex(),
-        }
+        return checksum_hash
 
 
 # A Keystore module that represents cipher encryption of the secret
@@ -135,7 +132,6 @@ class CipherModule:
         
         return {
             "cipher_function": cipher_function,
-            "cipher_message": self.cipher_message.hex(),
             "params": {
                 # Convert IV bytes to hex
                 "iv": self.iv.hex()
