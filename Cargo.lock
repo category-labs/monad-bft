@@ -3521,6 +3521,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "chrono",
  "clap 4.4.10",
  "futures",
  "monad-blockdb",

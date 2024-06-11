@@ -8,6 +8,7 @@ use std::{
 
 use alloy_primitives::{Bloom, Bytes, FixedBytes, U256};
 use alloy_rlp::Encodable;
+use chrono::Utc;
 use monad_blockdb::BlockDb;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
@@ -196,11 +197,12 @@ fn generate_header<SCT: SignatureCollection>(
         number: monad_block.payload.seq_num.0,
         gas_limit: header_param.gas_limit,
         gas_used: gas_used.0,
-        // TODO-1: Add to BFT proposal
-        timestamp: 0,
+        // TODO: Validate block timestamp in consensus
+        // Timestamp is set in Unix milliseconds since blocks might be sub-seconds
+        timestamp: Utc::now().timestamp_millis() as u64,
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
-        // TODO: calculate base fee according to EIP1559
+        // TODO: Calculate base fee according to EIP1559
         base_fee_per_gas: Some(1000),
         blob_gas_used: None,
         excess_blob_gas: None,

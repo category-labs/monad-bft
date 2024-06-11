@@ -20,6 +20,7 @@ monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+chrono = { workspace = true }
 prost = { workspace = true }
 reth-primitives = { workspace = true }
 tokio = { workspace = true, features = [
