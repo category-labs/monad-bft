@@ -1,0 +1,18 @@
+[package]
+name = "monad-triedb-utils"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+monad-blockdb = { path = "../monad-blockdb" }
+monad-triedb = { path = "../monad-triedb" }
+
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+tokio.workspace = true
+

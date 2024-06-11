@@ -2,6 +2,7 @@ use std::path::Path;
 
 use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
+use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
@@ -13,7 +14,6 @@ use crate::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
     },
     jsonrpc::JsonRpcError,
-    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug)]

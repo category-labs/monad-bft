@@ -23,9 +23,9 @@ use eth_txn_handlers::{
 };
 use futures::SinkExt;
 use log::{debug, info};
+use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use triedb::TriedbEnv;
 
 use crate::{
     blockdb::BlockDbEnv,
@@ -51,7 +51,7 @@ mod gas_handlers;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
-mod triedb;
+mod receipt;
 mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {

@@ -47,6 +47,7 @@ members = [
     "monad-validator",
     "monad-virtual-bench",
     "monad-wal",
+    "monad-triedb-utils",
 ]
 resolver = "2"
 

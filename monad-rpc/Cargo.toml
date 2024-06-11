@@ -14,6 +14,7 @@ bench = false
 monad-blockdb = { path = "../monad-blockdb" }
 monad-cxx = { path = "../monad-cxx" }
 monad-triedb = { path = "../monad-triedb" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
 
 actix = { workspace = true }
 actix-codec = { workspace = true }

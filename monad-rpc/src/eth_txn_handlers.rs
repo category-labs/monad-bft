@@ -3,6 +3,7 @@ use std::cmp::min;
 use alloy_primitives::aliases::{B256, U128, U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
+use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
 use reth_rpc_types::{AccessListItem, Log, Parity, Signature, Transaction, TransactionReceipt};
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
-    triedb::{decode_receipt, ReceiptDetails, TriedbEnv, TriedbResult},
+    receipt::{decode_receipt, ReceiptDetails},
 };
 
 pub fn parse_tx_content(

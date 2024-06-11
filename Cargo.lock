@@ -3778,6 +3778,7 @@ dependencies = [
  "monad-blockdb",
  "monad-cxx",
  "monad-triedb",
+ "monad-triedb-utils",
  "rayon",
  "reth-primitives",
  "reth-rpc-types",
@@ -3922,6 +3923,19 @@ dependencies = [
  "bindgen 0.69.4",
  "cmake",
  "log",
+]
+
+[[package]]
+name = "monad-triedb-utils"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "log",
+ "monad-blockdb",
+ "monad-triedb",
+ "rayon",
+ "tokio",
 ]
 
 [[package]]

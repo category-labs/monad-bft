@@ -1,15 +1,16 @@
 use alloy_primitives::aliases::{B160, U256};
 use log::{debug, trace};
+use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
+        FixedData,
     },
     hex,
     jsonrpc::JsonRpcError,
-    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug)]
@@ -35,7 +36,10 @@ pub async fn monad_eth_getBalance(
         }
     };
 
-    match triedb_env.get_account(p.account, p.block_number).await {
+    match triedb_env
+        .get_account(p.account.0, p.block_number.into())
+        .await
+    {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(_, balance, _) => serialize_result(format!("0x{:x}", balance)),
         _ => Err(JsonRpcError::internal_error()),
@@ -66,7 +70,7 @@ pub async fn monad_eth_getCode(
     };
 
     let code_hash = match triedb_env
-        .get_account(p.account, p.block_number.clone())
+        .get_account(p.account.0, p.block_number.clone().into())
         .await
     {
         TriedbResult::Null => return serialize_result(format!("0x")),
@@ -74,7 +78,7 @@ pub async fn monad_eth_getCode(
         _ => return Err(JsonRpcError::internal_error()),
     };
 
-    match triedb_env.get_code(code_hash, p.block_number).await {
+    match triedb_env.get_code(code_hash, p.block_number.into()).await {
         TriedbResult::Null => serialize_result(format!("0x")),
         TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
@@ -106,7 +110,11 @@ pub async fn monad_eth_getStorageAt(
     };
 
     match triedb_env
-        .get_storage_at(p.account, p.position.into(), p.block_number)
+        .get_storage_at(
+            p.account.0,
+            Into::<FixedData<32>>::into(p.position).0,
+            p.block_number.into(),
+        )
         .await
     {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
@@ -138,7 +146,10 @@ pub async fn monad_eth_getTransactionCount(
         }
     };
 
-    match triedb_env.get_account(p.account, p.block_number).await {
+    match triedb_env
+        .get_account(p.account.0, p.block_number.into())
+        .await
+    {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(nonce, _, _) => serialize_result(format!("0x{:x}", nonce)),
         _ => Err(JsonRpcError::internal_error()),
