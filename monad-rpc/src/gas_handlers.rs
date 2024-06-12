@@ -2,13 +2,13 @@ use std::path::Path;
 
 use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
+use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    blockdb::BlockDbEnv,
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
@@ -54,7 +54,7 @@ pub async fn monad_eth_estimateGas(
     };
 
     let Some(block_header) = blockdb_env
-        .get_block_by_tag(BlockTags::Number(Quantity(block_number)))
+        .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_number))
         .await
     else {
         debug!("blockdb did not have latest block header");
@@ -104,7 +104,7 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonR
     trace!("monad_eth_gasPrice");
 
     let block = match blockdb_env
-        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
+        .get_block_by_tag(monad_blockdb_utils::BlockTags::Default(BlockTagKey::Latest))
         .await
     {
         Some(block) => block,

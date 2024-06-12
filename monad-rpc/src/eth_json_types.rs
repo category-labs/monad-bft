@@ -101,11 +101,11 @@ pub enum BlockTags {
     Default(BlockTagKey),
 }
 
-impl From<BlockTags> for monad_triedb_utils::BlockTags {
+impl From<BlockTags> for monad_blockdb_utils::BlockTags {
     fn from(t: BlockTags) -> Self {
         match t {
-            BlockTags::Number(q) => monad_triedb_utils::BlockTags::Number(q.0),
-            BlockTags::Default(k) => monad_triedb_utils::BlockTags::Default(k),
+            BlockTags::Number(q) => monad_blockdb_utils::BlockTags::Number(q.0),
+            BlockTags::Default(k) => monad_blockdb_utils::BlockTags::Default(k),
         }
     }
 }

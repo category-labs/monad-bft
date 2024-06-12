@@ -7,12 +7,8 @@ use alloy_primitives::keccak256;
 use alloy_rlp::{Decodable, Encodable};
 use log::debug;
 use monad_blockdb::BlockTagKey;
+use monad_blockdb_utils::BlockTags;
 use monad_triedb::Handle;
-
-pub enum BlockTags {
-    Number(u64),
-    Default(BlockTagKey),
-}
 
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];

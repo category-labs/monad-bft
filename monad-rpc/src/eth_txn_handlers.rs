@@ -3,6 +3,7 @@ use std::cmp::min;
 use alloy_primitives::aliases::{B256, U128, U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
+use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
 use reth_rpc_types::{AccessListItem, Log, Parity, Signature, Transaction, TransactionReceipt};
@@ -10,7 +11,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    blockdb::BlockDbEnv,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
         deserialize_unformatted_data, serialize_result, BlockTags, EthHash, Quantity,
@@ -369,7 +369,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
         }
     };
 
-    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
         return serialize_result(None::<Transaction>);
     };
 

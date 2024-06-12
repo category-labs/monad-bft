@@ -8,6 +8,7 @@ bench = false
 
 [dependencies]
 monad-blockdb = { path = "../monad-blockdb" }
+monad-blockdb-utils = { path = "../monad-blockdb-utils" }
 monad-triedb = { path = "../monad-triedb" }
 
 alloy-primitives = { workspace = true }

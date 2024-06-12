@@ -3217,6 +3217,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-blockdb-utils"
+version = "0.1.0"
+dependencies = [
+ "heed",
+ "monad-blockdb",
+ "rayon",
+ "tokio",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -3820,9 +3830,9 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
- "heed",
  "log",
  "monad-blockdb",
+ "monad-blockdb-utils",
  "monad-cxx",
  "monad-triedb",
  "monad-triedb-utils",
@@ -3980,6 +3990,7 @@ dependencies = [
  "alloy-rlp",
  "log",
  "monad-blockdb",
+ "monad-blockdb-utils",
  "monad-triedb",
  "rayon",
  "tokio",

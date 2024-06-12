@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 monad-blockdb = { path = "../monad-blockdb" }
+monad-blockdb-utils = { path = "../monad-blockdb-utils" }
 monad-cxx = { path = "../monad-cxx" }
 monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
@@ -31,7 +32,6 @@ env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-heed = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 reth-primitives = { workspace = true }

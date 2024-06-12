@@ -2,13 +2,16 @@ use std::path::Path;
 
 use heed::{flags::Flags, Env, EnvOpenOptions};
 use monad_blockdb::{
-    BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockTagTableType,
-    BlockTagValue, BlockValue, EthTxKey, EthTxValue, TxnHashTableType, BLOCK_DB_MAP_SIZE,
-    BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME, BLOCK_TABLE_NAME, BLOCK_TAG_TABLE_NAME,
-    TXN_HASH_TABLE_NAME,
+    BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockTagKey,
+    BlockTagTableType, BlockTagValue, BlockValue, EthTxKey, EthTxValue, TxnHashTableType,
+    BLOCK_DB_MAP_SIZE, BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME, BLOCK_TABLE_NAME,
+    BLOCK_TAG_TABLE_NAME, TXN_HASH_TABLE_NAME,
 };
 
-use crate::eth_json_types::BlockTags;
+pub enum BlockTags {
+    Number(u64),
+    Default(BlockTagKey),
+}
 
 // FIXME: make a blockdb trait
 
@@ -110,7 +113,7 @@ impl BlockDbEnv {
                 BlockTags::Number(q) => {
                     let db_txn = env.read_txn().expect("read txn failed");
                     let result: Option<BlockTableKey> = block_num_dbi
-                        .get(&db_txn, &BlockNumTableKey(q.0))
+                        .get(&db_txn, &BlockNumTableKey(q))
                         .expect("get operation should not fail");
                     result
                 }

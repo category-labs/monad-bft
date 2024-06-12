@@ -1,6 +1,7 @@
 use alloy_primitives::aliases::{U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue};
+use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::BlockHash;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
@@ -8,7 +9,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    blockdb::BlockDbEnv,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthHash,
     },
@@ -163,7 +163,7 @@ pub async fn monad_eth_getBlockByNumber(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_number.into()).await else {
         return serialize_result(None::<Block>);
     };
 
@@ -222,7 +222,7 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
         return serialize_result(format!("0x{:x}", 0));
     };
 
@@ -252,7 +252,7 @@ pub async fn monad_eth_getBlockReceipts(
         }
     };
 
-    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
         return serialize_result(None::<Vec<TransactionReceipt>>);
     };
     let block_num = block.block.number;

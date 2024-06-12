@@ -2,13 +2,13 @@ use std::path::Path;
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
 use log::debug;
+use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    blockdb::BlockDbEnv,
-    eth_json_types::{deserialize_block_tags, BlockTags, Quantity},
+    eth_json_types::{deserialize_block_tags, BlockTags},
     hex,
     jsonrpc::JsonRpcError,
 };
@@ -162,7 +162,7 @@ pub async fn sender_gas_allowance(
         let TriedbResult::Account(_, balance, _) = triedb_env
             .get_account(
                 from.into(),
-                monad_triedb_utils::BlockTags::Number(block_number),
+                monad_blockdb_utils::BlockTags::Number(block_number),
             )
             .await
         else {
@@ -229,7 +229,7 @@ pub async fn monad_eth_call(
     };
 
     let Some(block_header) = blockdb_env
-        .get_block_by_tag(BlockTags::Number(Quantity(block_number)))
+        .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_number))
         .await
     else {
         debug!("blockdb did not have latest block header");

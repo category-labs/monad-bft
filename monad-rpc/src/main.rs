@@ -23,12 +23,12 @@ use eth_txn_handlers::{
 };
 use futures::SinkExt;
 use log::{debug, info};
+use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
 
 use crate::{
-    blockdb::BlockDbEnv,
     call::monad_eth_call,
     eth_txn_handlers::monad_eth_sendRawTransaction,
     gas_handlers::{
@@ -42,7 +42,6 @@ use crate::{
 
 mod account_handlers;
 mod block_handlers;
-mod blockdb;
 mod call;
 mod cli;
 mod eth_json_types;

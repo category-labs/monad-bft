@@ -3,6 +3,7 @@
 members = [
     "monad-async-state-verify",
     "monad-blockdb",
+    "monad-blockdb-utils",
     "monad-blocktree",
     "monad-bls",
     "monad-compress",
@@ -41,13 +42,13 @@ members = [
     "monad-testutil",
     "monad-tracing-counter",
     "monad-transformer",
+    "monad-triedb-utils",
     "monad-twins",
     "monad-types",
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
     "monad-wal",
-    "monad-triedb-utils",
 ]
 resolver = "2"
 
