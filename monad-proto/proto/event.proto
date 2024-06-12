@@ -84,9 +84,12 @@ message ProtoUserTx {
   repeated bytes tx = 1;
 }
 
+message ProtoClearMempool {}
+
 message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
+    ProtoClearMempool clear = 2;
   }
 }
 

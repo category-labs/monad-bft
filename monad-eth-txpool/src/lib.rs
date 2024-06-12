@@ -89,20 +89,17 @@ impl TransactionGroup {
     }
 }
 
-type MapType<K, V> = SortedVectorMap<K, V>;
+type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
 
 #[derive(Default, Debug)]
 pub struct EthTxPool {
-    table: MapType<EthAddress, TransactionGroup>,
+    pool: Pool,
+    garbage: Vec<Pool>,
 }
 
 impl EthTxPool {
-    fn clear(&mut self) {
-        self.table.clear();
-    }
-
     fn remove_nonce_gaps(&mut self) {
-        self.table.iter_mut().for_each(|(_, transaction_group)| {
+        self.pool.iter_mut().for_each(|(_, transaction_group)| {
             let mut high_nonce = None;
             let mut maybe_nonce_to_remove = None;
             for (nonce, _) in &transaction_group.transactions {
@@ -120,7 +117,7 @@ impl EthTxPool {
                 }
             }
         });
-        self.table
+        self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
 
@@ -130,12 +127,12 @@ impl EthTxPool {
             <<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
         >,
     ) {
-        self.table.iter_mut().for_each(|(_, transaction_group)| {
+        self.pool.iter_mut().for_each(|(_, transaction_group)| {
             transaction_group
                 .transactions
                 .retain(|_, transaction| !pending_blocktree_txs.contains(&transaction.hash()))
         });
-        self.table
+        self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
 }
@@ -149,7 +146,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let sender = eth_tx.signer();
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
-        self.table.entry(sender).or_default().add(eth_tx);
+        self.pool.entry(sender).or_default().add(eth_tx);
     }
 
     fn create_proposal(
@@ -167,7 +164,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let mut total_gas = 0;
 
         let mut transaction_iters = self
-            .table
+            .pool
             .iter()
             .map(|(address, group)| (*address, group.transactions.iter()))
             .collect::<HashMap<_, _>>();
@@ -240,9 +237,21 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             proposal_tx_bytes = full_tx_list.len()
         );
 
-        self.clear();
+        if !self.garbage.is_empty() {
+            tracing::warn!(
+                garbage_len = self.garbage.len(),
+                "we have received consecutive proposals without a mempool clear event in between"
+            );
+        }
+
+        let old_pool = std::mem::take(&mut self.pool);
+        self.garbage.push(old_pool);
 
         FullTransactionList::new(full_tx_list)
+    }
+
+    fn clear(&mut self) {
+        self.garbage.clear();
     }
 }
 
@@ -312,17 +321,14 @@ mod test {
         for tx in txs {
             Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
         }
-        assert_eq!(pool.table.len(), 1);
-        assert_eq!(
-            pool.table.first_key_value().unwrap().1.transactions.len(),
-            6
-        );
+        assert_eq!(pool.pool.len(), 1);
+        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 6);
 
         let encoded_txns = Pool::create_proposal(&mut pool, 6, 1_000_000, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
-        assert!(pool.table.is_empty());
+        assert!(pool.pool.is_empty());
     }
 
     #[test]
@@ -331,17 +337,14 @@ mod test {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10);
         let mut pool = EthTxPool::default();
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
-        assert_eq!(pool.table.len(), 1);
-        assert_eq!(
-            pool.table.first_key_value().unwrap().1.transactions.len(),
-            1
-        );
+        assert_eq!(pool.pool.len(), 1);
+        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
         let encoded_txns = Pool::create_proposal(&mut pool, 0, 1_000_000, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
-        assert!(pool.table.is_empty());
+        assert!(pool.pool.is_empty());
     }
 
     #[test]
@@ -350,17 +353,14 @@ mod test {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 6400, 0, 10);
         let mut pool = EthTxPool::default();
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
-        assert_eq!(pool.table.len(), 1);
-        assert_eq!(
-            pool.table.first_key_value().unwrap().1.transactions.len(),
-            1
-        );
+        assert_eq!(pool.pool.len(), 1);
+        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
         let encoded_txns = Pool::create_proposal(&mut pool, 1, 6399, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
-        assert!(pool.table.is_empty());
+        assert!(pool.pool.is_empty());
     }
 
     #[test]
@@ -377,11 +377,8 @@ mod test {
         Pool::insert_tx(&mut pool, t1.envelope_encoded().into());
         Pool::insert_tx(&mut pool, t2.envelope_encoded().into());
         Pool::insert_tx(&mut pool, t3.envelope_encoded().into());
-        assert_eq!(pool.table.len(), 1);
-        assert_eq!(
-            pool.table.first_key_value().unwrap().1.transactions.len(),
-            3
-        );
+        assert_eq!(pool.pool.len(), 1);
+        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 3);
 
         let encoded_txns = Pool::create_proposal(&mut pool, 2, 6400 * 2, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();

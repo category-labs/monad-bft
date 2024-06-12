@@ -238,6 +238,8 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 pub enum MempoolEvent {
     /// Txns that are incoming via RPC (users)
     UserTxns(Vec<Bytes>),
+    /// Remove transactions that were not included in proposal
+    Clear,
 }
 
 impl Debug for MempoolEvent {
@@ -250,6 +252,7 @@ impl Debug for MempoolEvent {
                     &txns.iter().map(Bytes::len).sum::<usize>(),
                 )
                 .finish(),
+            Self::Clear => f.debug_struct("Clear").finish(),
         }
     }
 }
@@ -335,6 +338,7 @@ where
             MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
                 format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
             }
+            MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
                 format!(
                     "AsyncStateVerifyEvent::LocalStateRoot -- round:{} seqnum:{} hash:{}",

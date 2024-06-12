@@ -1,6 +1,9 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_proto::{error::ProtoError, proto::event::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::event::{proto_mempool_event::Event, *},
+};
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, FetchedBlock, MempoolEvent, MetricsEvent, MonadEvent,
@@ -206,6 +209,7 @@ impl From<&MempoolEvent> for ProtoMempoolEvent {
             MempoolEvent::UserTxns(tx) => {
                 proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
             }
+            MempoolEvent::Clear => proto_mempool_event::Event::Clear(ProtoClearMempool {}),
         };
         Self { event: Some(event) }
     }
@@ -217,6 +221,7 @@ impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
+            Some(Event::Clear(_)) => MempoolEvent::Clear,
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,

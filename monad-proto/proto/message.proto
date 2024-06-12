@@ -57,6 +57,6 @@ message ProtoMonadMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
     ProtoRequestBlockSyncMessage block_sync_request = 2;
     ProtoBlockSyncMessage block_sync_response = 3;
-    ProtoPeerStateRootMessage peer_state_root = 5;
+    ProtoPeerStateRootMessage peer_state_root = 4;
   }
 }

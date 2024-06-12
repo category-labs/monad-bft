@@ -954,10 +954,13 @@ where
                 }
                 .sign(&self.keypair);
 
-                vec![ConsensusCommand::Publish {
-                    target: RouterTarget::Raptorcast(epoch, round),
-                    message: msg,
-                }]
+                vec![
+                    ConsensusCommand::Publish {
+                        target: RouterTarget::Raptorcast(epoch, round),
+                        message: msg,
+                    },
+                    ConsensusCommand::ClearMempool,
+                ]
             };
 
         match self.proposal_policy(&parent_bid, proposed_seq_num) {

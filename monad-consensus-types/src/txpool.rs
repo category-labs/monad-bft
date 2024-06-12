@@ -21,6 +21,9 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
         gas_limit: u64,
         pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
     ) -> FullTransactionList;
+
+    /// Reclaims memory used by internal TxPool datastructures
+    fn clear(&mut self);
 }
 
 impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
@@ -37,6 +40,10 @@ impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Siz
         pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
     ) -> FullTransactionList {
         (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
+    }
+
+    fn clear(&mut self) {
+        (**self).clear()
     }
 }
 
@@ -79,4 +86,6 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
             FullTransactionList::new(buf.into())
         }
     }
+
+    fn clear(&mut self) {}
 }

@@ -57,6 +57,8 @@ where
     StateRootHash(Block<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
+    /// Issue to clear mempool
+    ClearMempool,
 }
 
 impl<ST, SCT> ConsensusCommand<ST, SCT>

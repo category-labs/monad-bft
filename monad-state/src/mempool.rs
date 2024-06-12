@@ -50,6 +50,10 @@ where
                 }
                 vec![]
             }
+            MempoolEvent::Clear => {
+                self.txpool.clear();
+                vec![]
+            }
         }
     }
 }

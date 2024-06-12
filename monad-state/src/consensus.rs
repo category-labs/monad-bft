@@ -19,8 +19,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand, MonadEvent,
-    RouterCommand, StateRootHashCommand, TimerCommand,
+    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
+    LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
 use monad_types::{RouterTarget, TimeoutVariant};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetTypeFactory};
@@ -256,6 +256,11 @@ where
             ConsensusCommand::StateRootHash(full_block) => parent_cmds.push(
                 Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(full_block)),
             ),
+            ConsensusCommand::ClearMempool => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::MempoolEvent(MempoolEvent::Clear),
+                )));
+            }
         }
         parent_cmds
     }
