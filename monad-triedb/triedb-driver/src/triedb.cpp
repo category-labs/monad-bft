@@ -109,8 +109,8 @@ void triedb_async_read(
                 }
                 else {
                     length = (int)value_view.size();
-                    value = new uint8_t[value_len];
-                    memcpy((void *)value, value_view.data(), (size_t)length));
+                    value = new uint8_t[length];
+                    memcpy((void *)value, value_view.data(), (size_t)length);
                 }
             }
             delete state;

@@ -28,6 +28,7 @@ RUN apt install -y \
   libbenchmark-dev \
   libbrotli-dev \
   libcap-dev \
+  libcgroup-dev \
   libcli11-dev \
   libgmock-dev \
   libgmp-dev \
