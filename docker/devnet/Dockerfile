@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 WORKDIR /usr/src/monad-bft
 RUN apt update
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     mv target/release/monad-node node
 
 # Runner
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node

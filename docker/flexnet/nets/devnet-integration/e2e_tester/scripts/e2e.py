@@ -41,7 +41,7 @@ if __name__ == "__main__":
             "value": 1000,
             "nonce": i,
             "gas": 21000,
-            "maxFeePerGas": 0,  # the gas fee is set to 0
+            "maxFeePerGas": 1000,  # hardcoded in the eth block header as 1000
             "maxPriorityFeePerGas": 0,
             "chainId": 1,
         }

@@ -1,5 +1,5 @@
 # Builder
-FROM ubuntu:22.04 AS base
+FROM ubuntu:24.04 AS base
 
 RUN apt update
 RUN apt upgrade -y
