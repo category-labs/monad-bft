@@ -59,7 +59,6 @@ where
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
-            VerifiedMonadMessage::CascadeTxns(_) => false,
             VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
         };
 
@@ -147,7 +146,6 @@ where
                     TwinsCapture::Spread(pid)
                 }
             }
-            VerifiedMonadMessage::CascadeTxns(_) => TwinsCapture::Spread(pid),
             VerifiedMonadMessage::PeerStateRootMessage(_) => {
                 if self.drop_state_root {
                     TwinsCapture::Drop

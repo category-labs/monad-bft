@@ -143,7 +143,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         debug!("received tx");
                     }
                 }
-                MempoolEvent::CascadeTxns { sender, txns } => (),
             },
 
             _ => Err("Wrong MonadEvent variant")?,

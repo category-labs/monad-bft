@@ -968,20 +968,12 @@ where
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
 
-                let (prop_txns, leftover_txns) = txpool.create_proposal(
+                let prop_txns = txpool.create_proposal(
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
                     pending_blocktree_txs,
                 );
-                let mut cmds = proposer_builder(prop_txns, h, last_round_tc);
-                if let (Some(txns), Some(target)) = (leftover_txns, self.cascade_target(validators))
-                {
-                    cmds.push(ConsensusCommand::CascadeTxns {
-                        peer: target,
-                        txns: txns.bytes().clone(),
-                    });
-                }
-                cmds
+                proposer_builder(prop_txns, h, last_round_tc)
             }
             ConsensusAction::ProposeEmpty => {
                 tracing::info_span!("create_proposal_empty_span", ?round);
@@ -1148,20 +1140,6 @@ where
         }
 
         cmds
-    }
-
-    // TODO: use a real algorithm to choose target
-    #[must_use]
-    fn cascade_target<VT>(&self, validators: &VT) -> Option<NodeId<SCT::NodeIdPubKey>>
-    where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-    {
-        for (nodeid, _) in validators.get_members().iter() {
-            if *nodeid != self.nodeid {
-                return Some(*nodeid);
-            }
-        }
-        None
     }
 
     pub fn get_pubkey(&self) -> SCT::NodeIdPubKey {

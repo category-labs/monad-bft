@@ -159,7 +159,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         pending_blocktree_txs: HashSet<
             <<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
         >,
-    ) -> (FullTransactionList, Option<FullTransactionList>) {
+    ) -> FullTransactionList {
         self.remove_pending_transactions::<SCT>(&pending_blocktree_txs);
         self.remove_nonce_gaps();
 
@@ -240,12 +240,9 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             proposal_tx_bytes = full_tx_list.len()
         );
 
-        // TODO cascading behaviour for leftover txns once we have an idea of how we want
-        // to forward
         self.clear();
-        let leftovers = None;
 
-        (FullTransactionList::new(full_tx_list), leftovers)
+        FullTransactionList::new(full_tx_list)
     }
 }
 
@@ -321,7 +318,7 @@ mod test {
             6
         );
 
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 6, 1_000_000, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 6, 1_000_000, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
@@ -340,7 +337,7 @@ mod test {
             1
         );
 
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 0, 1_000_000, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 0, 1_000_000, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -359,7 +356,7 @@ mod test {
             1
         );
 
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 1, 6399, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 1, 6399, HashSet::default());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -386,7 +383,7 @@ mod test {
             3
         );
 
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 2, 6400 * 2, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 2, 6400 * 2, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -402,7 +399,7 @@ mod test {
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -417,7 +414,7 @@ mod test {
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -457,7 +454,7 @@ mod test {
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -492,7 +489,7 @@ mod test {
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -535,7 +532,7 @@ mod test {
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let (encoded_txns, _) = Pool::create_proposal(&mut pool, 200, 10, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }

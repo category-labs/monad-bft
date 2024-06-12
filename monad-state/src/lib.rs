@@ -11,10 +11,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{
-            BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage,
-            RequestBlockSyncMessage,
-        },
+        message::{BlockSyncResponseMessage, PeerStateRootMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
@@ -34,8 +31,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message,
-    MetricsCommand, MetricsEvent, MonadEvent, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, Message, MetricsCommand,
+    MetricsEvent, MonadEvent, ValidatorEvent,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
@@ -195,7 +192,6 @@ where
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
     BlockSyncRequest(Validated<RequestBlockSyncMessage>),
     BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
-    CascadeTxns(Validated<CascadeTxMessage>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
 }
 
@@ -223,9 +219,6 @@ where
 
     /// Block sync response
     BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
-
-    /// Cascade TxPool transactions
-    CascadeTxns(Unvalidated<CascadeTxMessage>),
 
     /// Async state verification msgs
     PeerStateRoot(Unvalidated<PeerStateRootMessage<SCT>>),
@@ -255,7 +248,6 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => {
                 MonadMessage::BlockSyncResponse(msg.into())
             }
-            VerifiedMonadMessage::CascadeTxns(msg) => MonadMessage::CascadeTxns(msg.into()),
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
@@ -289,7 +281,6 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => {
                 MonadMessage::BlockSyncResponse(msg.into())
             }
-            VerifiedMonadMessage::CascadeTxns(msg) => MonadMessage::CascadeTxns(msg.into()),
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
@@ -330,10 +321,6 @@ where
                     unvalidated_response: msg,
                 })
             }
-            MonadMessage::CascadeTxns(msg) => MonadEvent::MempoolEvent(MempoolEvent::CascadeTxns {
-                sender: from,
-                txns: msg,
-            }),
             MonadMessage::PeerStateRoot(msg) => {
                 MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::PeerStateRoot {
                     sender: from,

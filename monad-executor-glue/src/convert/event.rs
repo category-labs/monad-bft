@@ -200,43 +200,23 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
     }
 }
 
-impl<SCT: SignatureCollection> From<&MempoolEvent<SCT>> for ProtoMempoolEvent {
-    fn from(value: &MempoolEvent<SCT>) -> Self {
+impl From<&MempoolEvent> for ProtoMempoolEvent {
+    fn from(value: &MempoolEvent) -> Self {
         let event = match value {
             MempoolEvent::UserTxns(tx) => {
                 proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
-            }
-            MempoolEvent::CascadeTxns { sender, txns } => {
-                proto_mempool_event::Event::CascadeTxns(ProtoCascadeTxnsWithSender {
-                    sender: Some(sender.into()),
-                    cascade: Some(txns.into()),
-                })
             }
         };
         Self { event: Some(event) }
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoMempoolEvent> for MempoolEvent<SCT> {
+impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
     type Error = ProtoError;
 
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
-            Some(proto_mempool_event::Event::CascadeTxns(msg)) => MempoolEvent::CascadeTxns {
-                sender: msg
-                    .sender
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "MempoolEvent.cascade_txns.sender".to_owned(),
-                    ))?
-                    .try_into()?,
-                txns: msg
-                    .cascade
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "MempoolEvent.cascade.txns".to_owned(),
-                    ))?
-                    .try_into()?,
-            },
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,

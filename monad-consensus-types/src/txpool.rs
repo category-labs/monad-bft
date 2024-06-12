@@ -14,20 +14,13 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
     /// Handle transactions submitted by users via RPC
     fn insert_tx(&mut self, tx: Bytes);
 
-    /// Returns 2 RLP encoded lists of transactions
-    /// The first list are the transactions to include in the
-    /// proposal, the second is the leftover list.
-    /// The leftover list is intended to be forwarded to another
-    /// Node for inclusion in a future proposal
+    /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
         pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
-    ) -> (FullTransactionList, Option<FullTransactionList>);
-
-    /// Handle transactions cascaded forward by other nodes
-    fn handle_cascading_txns(&mut self) {}
+    ) -> FullTransactionList;
 }
 
 impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
@@ -42,7 +35,7 @@ impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Siz
         tx_limit: usize,
         gas_limit: u64,
         pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
-    ) -> (FullTransactionList, Option<FullTransactionList>) {
+    ) -> FullTransactionList {
         (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
     }
 }
@@ -76,14 +69,14 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
         _pending_txs: HashSet<
             <<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
         >,
-    ) -> (FullTransactionList, Option<FullTransactionList>) {
+    ) -> FullTransactionList {
         if tx_limit == 0 {
-            (FullTransactionList::empty(), None)
+            FullTransactionList::empty()
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
             let mut buf = vec![0; tx_limit * TXN_SIZE];
             self.rng.fill_bytes(buf.as_mut_slice());
-            (FullTransactionList::new(buf.into()), None)
+            FullTransactionList::new(buf.into())
         }
     }
 }

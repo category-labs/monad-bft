@@ -7,10 +7,7 @@ use chrono::{DateTime, Utc};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{
-            BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage,
-            RequestBlockSyncMessage,
-        },
+        message::{BlockSyncResponseMessage, PeerStateRootMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified},
 };
@@ -238,24 +235,14 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MempoolEvent<SCT: SignatureCollection> {
-    /// Txns that are incoming from other Nodes
-    CascadeTxns {
-        sender: NodeId<SCT::NodeIdPubKey>,
-        txns: Unvalidated<CascadeTxMessage>,
-    },
+pub enum MempoolEvent {
     /// Txns that are incoming via RPC (users)
     UserTxns(Vec<Bytes>),
 }
 
-impl<SCT: SignatureCollection> Debug for MempoolEvent<SCT> {
+impl Debug for MempoolEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CascadeTxns { sender, txns } => f
-                .debug_struct("CascadeTxns")
-                .field("sender", &sender)
-                .field("txns", &txns)
-                .finish(),
             Self::UserTxns(txns) => f
                 .debug_struct("UserTxns")
                 .field(
@@ -296,7 +283,7 @@ where
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
-    MempoolEvent(MempoolEvent<SCT>),
+    MempoolEvent(MempoolEvent),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for metrics
@@ -345,9 +332,6 @@ where
             MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
             MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
             MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
-            MonadEvent::MempoolEvent(MempoolEvent::CascadeTxns { sender, txns: _ }) => {
-                format!("MempoolEvent::CascadeTxns from {sender}")
-            }
             MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
                 format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
             }

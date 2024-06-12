@@ -42,16 +42,12 @@ where
         }
     }
 
-    pub(super) fn update(&mut self, event: MempoolEvent<SCT>) -> Vec<MempoolCommand> {
+    pub(super) fn update(&mut self, event: MempoolEvent) -> Vec<MempoolCommand> {
         match event {
             MempoolEvent::UserTxns(txns) => {
                 for tx in txns {
                     self.txpool.insert_tx(tx);
                 }
-                vec![]
-            }
-            MempoolEvent::CascadeTxns { sender, txns } => {
-                self.txpool.handle_cascading_txns();
                 vec![]
             }
         }
