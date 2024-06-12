@@ -289,6 +289,40 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         }
     }
 
+    /// Iterate the block tree and return highest QC that have path to block tree
+    /// root and is committable, if exists
+    pub fn get_high_committable_qc(&self) -> Option<QuorumCertificate<SCT>> {
+        let mut high_commit_qc: Option<QuorumCertificate<SCT>> = None;
+        let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
+        while !iter.is_empty() {
+            let bid = iter.pop_front().expect("iter non-empty");
+            let qc = self
+                .tree
+                .get(&bid)
+                .expect("block in tree")
+                .validated_block
+                .get_qc();
+            if qc.info.vote.ledger_commit_info.is_commitable()
+                && high_commit_qc
+                    .as_ref()
+                    .map(|high_commit_qc| high_commit_qc.get_round() < qc.get_round())
+                    .unwrap_or(true)
+            {
+                high_commit_qc = Some(qc.clone());
+            }
+
+            iter.extend(
+                self.tree
+                    .get(&bid)
+                    .expect("should be in tree")
+                    .children_blocks
+                    .iter()
+                    .cloned(),
+            )
+        }
+        high_commit_qc
+    }
+
     /// Find the missing block along the path from `qc` to the tree root.
     /// Returns the QC certifying that block
     pub fn get_missing_ancestor(
@@ -417,6 +451,25 @@ mod test {
             )
             .unwrap();
         NodeId::new(keypair.pubkey())
+    }
+
+    fn get_vote(block: &Block) -> Vote {
+        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
+            CommitResult::Commit
+        } else {
+            CommitResult::NoCommit
+        };
+        Vote {
+            vote_info: VoteInfo {
+                id: block.get_id(),
+                epoch: block.get_epoch(),
+                round: block.get_round(),
+                parent_id: block.get_parent_id(),
+                parent_round: block.get_parent_round(),
+                seq_num: block.get_seq_num(),
+            },
+            ledger_commit_info,
+        }
     }
 
     #[test]
@@ -1889,5 +1942,202 @@ mod test {
         assert!(blocktree.is_coherent(&b4.get_id()));
         assert!(blocktree.is_coherent(&b5.get_id()));
         assert!(blocktree.is_coherent(&b6.get_id()));
+    }
+
+    #[test]
+    fn test_children_update() {
+        // Initial block tree
+        //   root
+        //    |
+        //   ... missing b1
+        //    |
+        //   b2
+        let payload = Payload {
+            txns: FullTransactionList::empty(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        };
+        let b1 = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
+        let b2 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b1),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let mut blocktree = BlockTree::<MockSignatures<SignatureType>, BlockPolicyType>::new(
+            QuorumCertificate::genesis_qc(),
+        );
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
+        assert!(blocktree.root.children_blocks.is_empty());
+
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+        assert_eq!(blocktree.root.children_blocks, vec![b1.get_id()]);
+        let b1_children = blocktree
+            .tree
+            .get(&b1.get_id())
+            .unwrap()
+            .children_blocks
+            .clone();
+        assert_eq!(b1_children, vec![b2.get_id()]);
+    }
+
+    #[test]
+    fn test_get_high_committable_qc() {
+        // Initial block tree. It can't be constructed with honest consensus.
+        // Just created for testing purpose
+        //      g(b1)
+        //      |
+        //     (b3) - not received
+        //    /   \
+        //  b4     b9
+        //  |      |
+        //  b5     b10
+        //  |      |
+        //  b6     b11
+        //  |
+        //  b7
+
+        // Need to craft b4 and b6 block id such that b6 is before b4 when
+        // populating b3.children
+        let payload = Payload {
+            txns: FullTransactionList::empty(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        };
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
+
+        let b3 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo { vote: get_vote(&g) },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b4 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(4),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b3),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b5 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(5),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b4),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b6 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(6),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b5),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b7 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(7),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b6),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b9 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(9),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b3),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b10 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(10),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b9),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b11 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(11),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: get_vote(&b10),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let mut blocktree = BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(
+            QuorumCertificate::genesis_qc(),
+        );
+        let block_policy = PassthruBlockPolicy;
+
+        // insertion order: insert all blocks except b3, then b3
+        assert!(blocktree.add(g, &block_policy).is_ok());
+        assert!(blocktree.add(b4, &block_policy).is_ok());
+        assert!(blocktree.add(b5, &block_policy).is_ok());
+        assert!(blocktree.add(b6, &block_policy).is_ok());
+        assert!(blocktree.add(b7, &block_policy).is_ok());
+        assert!(blocktree.add(b9, &block_policy).is_ok());
+        assert!(blocktree.add(b10, &block_policy).is_ok());
+        assert!(blocktree.add(b11.clone(), &block_policy).is_ok());
+
+        assert!(blocktree.add(b3, &block_policy).is_ok());
+
+        let high_commit_qc = blocktree.get_high_committable_qc();
+        assert_eq!(high_commit_qc, Some(b11.get_qc().clone()));
     }
 }

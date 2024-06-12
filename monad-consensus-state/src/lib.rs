@@ -366,7 +366,7 @@ where
         }
 
         // at this point, block is valid and can be added to the blocktree
-        cmds.extend(self.try_add_blocktree(&block, Some(state_root_action), node));
+        cmds.extend(self.try_add_and_commit_blocktree(&block, Some(state_root_action), node));
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
         // before R because of network conditions. The proposals are still valid
@@ -588,7 +588,7 @@ where
                         node.metrics,
                     ));
 
-                    cmds.extend(self.try_add_blocktree(&block, None, node));
+                    cmds.extend(self.try_add_and_commit_blocktree(&block, None, node));
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
@@ -655,6 +655,19 @@ where
 
         self.high_qc = qc.clone();
         let mut cmds = Vec::new();
+        cmds.extend(self.try_commit(qc, epoch_manager, metrics));
+        cmds
+    }
+
+    #[must_use]
+    fn try_commit(
+        &mut self,
+        qc: &QuorumCertificate<SCT>,
+        epoch_manager: &mut EpochManager,
+        metrics: &mut Metrics,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        let mut cmds = Vec::new();
+
         if qc.info.vote.ledger_commit_info.is_commitable()
             && self
                 .pending_block_tree
@@ -748,7 +761,7 @@ where
     }
 
     #[must_use]
-    fn try_add_blocktree<VTF, LT, TT>(
+    fn try_add_and_commit_blocktree<VTF, LT, TT>(
         &mut self,
         block: &BPT::ValidatedBlock,
         state_root_action: Option<StateRootAction>,
@@ -764,6 +777,13 @@ where
             .expect("Failed to add block to blocktree");
 
         let mut cmds = Vec::new();
+
+        // commit any committable blocks to set the epoch manager correctly,
+        // then try propose
+        let high_commit_qc = self.pending_block_tree.get_high_committable_qc();
+        if let Some(qc) = high_commit_qc {
+            cmds.extend(self.try_commit(&qc, node.epoch_manager, node.metrics));
+        }
 
         // if the current round is the same as block round, try to vote. else, try to propose
         if block.get_round() == self.pacemaker.get_current_round() {
@@ -2282,15 +2302,23 @@ mod test {
         assert!(find_blocksync_request(&cmds3).is_none());
 
         // arrival of proposal should also prevent block_sync_request from modifying the tree
+        // the proposal repairs path to root and block4.qc commits block 1 and 2
         let cmds2 = n3.handle_proposal_message(author_2, proposal_message_2);
-        assert_eq!(n3.consensus_state.pending_block_tree.size(), 4);
+        assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds2).is_none());
+        let commit_cmds = find_commit_cmd(&cmds2);
+        assert!(commit_cmds.is_some());
+        if let Some(ConsensusCommand::LedgerCommit(blocks)) = commit_cmds {
+            assert_eq!(blocks.len(), 2);
+        } else {
+            unreachable!();
+        }
 
         let sync = BlockSyncResponseMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
         let cmds3 = n3.handle_block_sync(*peer_2, sync);
 
-        assert_eq!(n3.consensus_state.pending_block_tree.size(), 4);
+        assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
     }
 
@@ -3579,6 +3607,7 @@ mod test {
         // handle 3 blocks for only state 0
         for _ in (update_block_round.0 - 1)..(update_block_round.0 + 2) {
             let proposal = env.next_proposal_empty();
+            println!("proposal seq num {:?}", proposal.block.payload.seq_num);
             let (author, _, verified_message) = proposal.destructure();
 
             let state = &mut ctx[0];
@@ -3647,33 +3676,8 @@ mod test {
             let _ = state1.handle_block_sync(nodeid_0, msg);
         }
 
-        // blocks aren't committed immediately after blocksync is finished
-        // state 1 should not have scheduled the next epoch yet
-        let state_1_epoch = state1
-            .epoch_manager
-            .get_epoch(state1.consensus_state.get_current_round());
-        assert_eq!(state_1_epoch, Epoch(1));
-        assert_eq!(
-            state1
-                .epoch_manager
-                .get_epoch(expected_epoch_start_round - Round(1)),
-            Epoch(1)
-        );
-        assert_eq!(
-            state1.epoch_manager.get_epoch(expected_epoch_start_round),
-            Epoch(1)
-        ); // STILL EPOCH 1
-
-        // generate proposal for update_block + 4
-        let proposal = env.next_proposal_empty();
-
-        let (author, _, verified_message) = proposal.destructure();
-        let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> =
-            state1.handle_proposal_message(author, verified_message);
-        // state 1 should not request blocksync
-        assert!(extract_blocksync_requests(cmds).is_empty());
-
-        // state 1 should have committed the update block and scheduled the next epoch
+        // blocks are committed immediately after blocksync is finished
+        // state 1 should have scheduled the next epoch
         let state_1_epoch = state1
             .epoch_manager
             .get_epoch(state1.consensus_state.get_current_round());
@@ -3997,8 +4001,8 @@ mod test {
         // State 1 receives Block 3. It should request blocksync for Block 2, skip voting, and store Block 3
         //      as unvalidated in blocktree
         // State 1 receives Block 2 (blocksync/out-of-order proposal [ARGUMENT]). It should store Block 2 as
-        //      validated in blocktree, and skip voting. Block 3 should still be unvalidated in the blocktree.
-        // State 1 receives Block 4. It should validate Block 3 and Block 4, and send a vote message.
+        //      validated in blocktree, and skip voting. Block 3 should still be validated in the blocktree.
+        // State 1 receives Block 4. It should validate Block 4, and send a vote message.
 
         let num_states = 2;
         let (mut env, mut ctx) = setup::<
@@ -4102,8 +4106,7 @@ mod test {
         // State 1 receives Block 3 (blocksync/out-of-order proposal [ARGUMENT]). It should request blocksync
         //      for Block 2, and store Block 3 as unvalidated in blocktree
         // State 1 receives Block 2. It should store Block 2 as validated in blocktree, and skip voting.
-        //      Block 3 should still be unvalidated in the blocktree.
-        // State 1 receives Block 5. It should validate Block 3, 4 and 5, and send a vote message.
+        //      Block 3/4 has a path to root via Block 2. It should be validated. Block 2 is committed
 
         let num_states = 2;
         let (mut env, mut ctx) = setup::<
@@ -4208,22 +4211,28 @@ mod test {
         if through_blocksync {
             let msg = BlockSyncResponseMessage::BlockFound(proposal_message_2.block);
             // blocksync response for state 2
-            let _ = n1.handle_block_sync(n2.consensus_state.nodeid, msg);
+            let cmds = n1.handle_block_sync(n2.consensus_state.nodeid, msg);
+            assert!(find_blocksync_request(&cmds).is_none());
+            assert!(find_commit_cmd(&cmds).is_some());
+            if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
+                assert_eq!(commit.len(), 2);
+                assert_eq!(commit[0].get_seq_num(), SeqNum(0)); // Commit block 1
+                assert_eq!(commit[1].get_seq_num(), SeqNum(1)); // Commit block 2
+            }
         } else {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
             assert!(find_vote_message(&cmds).is_none());
             assert!(find_blocksync_request(&cmds).is_none());
+            assert!(find_commit_cmd(&cmds).is_some());
+            if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
+                assert_eq!(commit.len(), 2);
+                assert_eq!(commit[0].get_seq_num(), SeqNum(0)); // Commit block 1
+                assert_eq!(commit[1].get_seq_num(), SeqNum(1)); // Commit block 2
+            }
         }
-        // block 2 should be in the blocktree as coherent
-        let block_2_blocktree_entry = n1
-            .consensus_state
-            .pending_block_tree
-            .get_entry(&block_2_id)
-            .expect("should be in the blocktree");
-        assert!(block_2_blocktree_entry.is_coherent);
 
-        // block 3 should still be in the blocktree as not validated
+        // block 3 should still be in the blocktree as coherent
         let block_3_blocktree_entry = n1
             .consensus_state
             .pending_block_tree
@@ -4231,7 +4240,7 @@ mod test {
             .expect("should be in the blocktree");
         assert!(block_3_blocktree_entry.is_coherent);
 
-        // block 4 should still be in the blocktree as not validated
+        // block 4 should still be in the blocktree as coherent
         let block_4_blocktree_entry = n1
             .consensus_state
             .pending_block_tree
