@@ -24,6 +24,7 @@ use eth_txn_handlers::{
     monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
+use gas_oracle::GasOracle;
 use log::{debug, info};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
@@ -49,6 +50,7 @@ mod cli;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod gas_handlers;
+mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
@@ -281,8 +283,8 @@ async fn rpc_select(
             }
         }
         "eth_maxPriorityFeePerGas" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_maxPriorityFeePerGas(reader).await
+            if let Some(gas_oracle) = &app_state.gas_oracle {
+                monad_eth_maxPriorityFeePerGas(gas_oracle).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -333,6 +335,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     blockdb_reader: Option<BlockDbEnv>,
+    gas_oracle: Option<GasOracle>,
     triedb_reader: Option<TriedbEnv>,
     execution_ledger_path: ExecutionLedgerPath,
 }
@@ -349,12 +352,14 @@ impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
         blockdb_reader: Option<BlockDbEnv>,
+        gas_oracle: Option<GasOracle>,
         triedb_reader: Option<TriedbEnv>,
         execution_ledger_path: Option<PathBuf>,
     ) -> Self {
         Self {
             mempool_sender,
             blockdb_reader,
+            gas_oracle,
             triedb_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
         }
@@ -421,10 +426,26 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
+    let triedb_env = args.triedb_path.clone().as_deref().map(TriedbEnv::new);
+
+    let gas_oracle = if blockdb_env.is_some() && args.triedb_path.is_some() {
+        let stream_deps = monad_stream::Deps {
+            blockdb: blockdb_env.clone().unwrap(),
+        };
+        let block_stream = monad_stream::BlockStream::new(
+            stream_deps,
+            args.triedb_path.clone().as_deref().unwrap(),
+        );
+        Some(GasOracle::new(block_stream, None).expect("failed to create gas oracle"))
+    } else {
+        None
+    };
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         blockdb_env,
-        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
+        gas_oracle,
+        triedb_env,
         args.execution_ledger_path,
     );
 
@@ -488,6 +509,7 @@ mod tests {
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             blockdb_reader: None,
+            gas_oracle: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
         }))

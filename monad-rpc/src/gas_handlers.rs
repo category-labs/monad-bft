@@ -14,6 +14,7 @@ use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
     },
+    gas_oracle::GasOracle,
     jsonrpc::JsonRpcError,
 };
 
@@ -209,14 +210,12 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonR
 }
 
 #[allow(non_snake_case)]
-pub async fn monad_eth_maxPriorityFeePerGas(
-    blockdb_env: &BlockDbEnv,
-) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_maxPriorityFeePerGas(gas_oracle: &GasOracle) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_maxPriorityFeePerGas");
-
-    let priority_fee = suggested_priority_fee(blockdb_env)
-        .await
-        .unwrap_or_default();
+    let priority_fee = match gas_oracle.tip().await {
+        Some(price) => price,
+        None => return Err(JsonRpcError::internal_error()),
+    };
     serialize_result(format!("0x{:x}", priority_fee))
 }
 

@@ -8,7 +8,7 @@ use pin_project::pin_project;
 
 #[derive(Clone)]
 pub struct Deps {
-    blockdb: BlockDbEnv,
+    pub blockdb: BlockDbEnv,
 }
 
 impl Deps {
@@ -101,6 +101,8 @@ impl BlockStream {
         }
     }
 }
+
+unsafe impl Send for BlockStream {}
 
 impl Stream for BlockStream {
     type Item = BlockValue;

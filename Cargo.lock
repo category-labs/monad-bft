@@ -3960,6 +3960,7 @@ dependencies = [
  "monad-blockdb",
  "monad-blockdb-utils",
  "monad-cxx",
+ "monad-stream",
  "monad-triedb",
  "monad-triedb-utils",
  "notify",

@@ -109,6 +109,7 @@ mod tests {
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender,
             blockdb_reader: None,
+            gas_oracle: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
         };
