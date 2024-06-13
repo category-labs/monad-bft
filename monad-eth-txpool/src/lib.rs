@@ -81,7 +81,8 @@ mod test {
     use monad_eth_tx::{EthSignedTransaction, EthTransaction};
     use monad_multi_sig::MultiSig;
     use reth_primitives::{
-        hex::decode, sign_message, Transaction, TransactionKind, TransactionSigned, TxLegacy,
+        hex::decode, sign_message, Transaction, TransactionKind, TransactionSigned,
+        TransactionSignedEcRecovered, TxLegacy,
     };
     use tracing::debug;
     use tracing_test::traced_test;
@@ -111,11 +112,7 @@ mod test {
             let signature =
                 sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
-            TransactionSigned {
-                transaction,
-                hash,
-                signature,
-            }
+            TransactionSigned::from_transaction_and_signature(transaction, signature)
         };
         let encoded_txn = tx.envelope_encoded();
         let decoded_txn = EthTransaction::decode(&mut encoded_txn.as_ref())
