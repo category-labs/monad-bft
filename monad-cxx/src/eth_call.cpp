@@ -94,6 +94,11 @@ int64_t monad_evmc_result::get_gas_used() const
     return gas_used;
 }
 
+int64_t monad_evmc_result::get_gas_refund() const
+{
+    return gas_refund;
+}
+
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
     std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
@@ -162,6 +167,7 @@ monad_evmc_result eth_call(
             result.assume_value().output_data +
                 result.assume_value().output_size};
         ret.gas_used = gas_used;
+        ret.gas_refund = result.assume_value().gas_refund;
     }
     return ret;
 }

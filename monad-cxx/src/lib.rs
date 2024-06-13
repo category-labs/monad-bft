@@ -28,6 +28,7 @@ pub enum CallResult {
 
 pub struct SuccessCallResult {
     pub gas_used: u64,
+    pub gas_refund: u64,
     pub output_data: Vec<u8>,
 }
 
@@ -82,10 +83,12 @@ pub fn eth_call(
     let output_data = result.deref().get_output_data().as_slice().to_vec();
     let message = result.deref().get_message().to_string();
     let gas_used = result.deref().get_gas_used() as u64;
+    let gas_refund = result.deref().get_gas_refund() as u64;
 
     match status_code {
         EVMC_SUCCESS => CallResult::Success(SuccessCallResult {
             gas_used,
+            gas_refund,
             output_data,
         }),
         _ => CallResult::Failure(message),

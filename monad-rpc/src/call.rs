@@ -22,7 +22,7 @@ pub struct CallRequest {
     #[serde(flatten)]
     pub gas_price_details: GasPriceDetails,
     pub value: Option<U256>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     pub input: CallInput,
     pub nonce: Option<U64>,
     pub chain_id: Option<U64>,
@@ -45,6 +45,52 @@ impl CallRequest {
             } => Some(max_fee_per_gas),
             _ => None,
         }
+    }
+
+    pub fn fill_gas_prices(&mut self, base_fee: U256) -> Result<(), JsonRpcError> {
+        match self.gas_price_details {
+            GasPriceDetails::Legacy { .. } => {}
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } => {
+                let max_fee_per_gas = match max_fee_per_gas {
+                    Some(max_fee_per_gas) => {
+                        if max_fee_per_gas < base_fee {
+                            return Err(JsonRpcError::eth_call_error(
+                                "max fee less than base".to_string(),
+                            ));
+                        }
+
+                        if max_priority_fee_per_gas.is_some()
+                            && max_fee_per_gas < max_priority_fee_per_gas.unwrap_or_default()
+                        {
+                            return Err(JsonRpcError::eth_call_error(
+                                "priority fee greater than max".to_string(),
+                            ));
+                        }
+
+                        std::cmp::min(
+                            max_fee_per_gas,
+                            base_fee
+                                .checked_add(max_priority_fee_per_gas.unwrap_or_default())
+                                .ok_or_else(|| {
+                                    JsonRpcError::eth_call_error("tip too high".to_string())
+                                })?,
+                        )
+                    }
+                    None => base_fee
+                        .checked_add(max_priority_fee_per_gas.unwrap_or_default())
+                        .ok_or_else(|| JsonRpcError::eth_call_error("tip too high".to_string()))?,
+                };
+
+                self.gas_price_details = GasPriceDetails::Eip1559 {
+                    max_fee_per_gas: Some(max_fee_per_gas),
+                    max_priority_fee_per_gas,
+                };
+            }
+        };
+        Ok(())
     }
 }
 
@@ -93,12 +139,14 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         gas_limit: call_request
                             .gas
-                            .unwrap_or(Uint::from(10_000_000))
+                            .unwrap_or(Uint::from(u64::MAX))
                             .try_into()
                             .map_err(|_| JsonRpcError::invalid_params())?,
-                        to: reth_primitives::TransactionKind::Call(
-                            call_request.to.unwrap_or_default(),
-                        ),
+                        to: if let Some(to) = call_request.to {
+                            reth_primitives::TransactionKind::Call(to)
+                        } else {
+                            reth_primitives::TransactionKind::Create
+                        },
                         value: reth_primitives::TxValue::from(
                             call_request.value.unwrap_or_default(),
                         ),
@@ -133,13 +181,15 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         gas_limit: call_request
                             .gas
-                            .unwrap_or(Uint::from(10_000_000))
+                            .unwrap_or(Uint::from(u64::MAX))
                             .try_into()
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         access_list: reth_primitives::AccessList::default(),
-                        to: reth_primitives::TransactionKind::Call(
-                            call_request.to.unwrap_or_default(),
-                        ),
+                        to: if let Some(to) = call_request.to {
+                            reth_primitives::TransactionKind::Call(to)
+                        } else {
+                            reth_primitives::TransactionKind::Create
+                        },
                         value: reth_primitives::TxValue::from(
                             call_request.value.unwrap_or_default(),
                         ),
@@ -170,19 +220,17 @@ pub async fn sender_gas_allowance(
             return Err(JsonRpcError::internal_error());
         };
 
-        let gas_price = request
-            .max_fee_per_gas()
-            .expect("max_fee_per_gas")
-            .try_into()
-            .map_err(|_| JsonRpcError::invalid_params())?;
-        let gas_limit = balance
+        let gas_price = request.max_fee_per_gas().expect("max_fee_per_gas");
+        let gas_limit = U256::from(balance)
+            .checked_sub(request.value.unwrap_or_default())
+            .ok_or_else(|| {
+                JsonRpcError::eth_call_error(
+                    "insufficient funds for gas * price + value".to_string(),
+                )
+            })?
             .checked_div(gas_price)
             .ok_or_else(JsonRpcError::internal_error)?;
-        Ok(Some(
-            gas_limit
-                .try_into()
-                .map_err(|_| JsonRpcError::internal_error())?,
-        ))
+        Ok(Some(gas_limit))
     } else {
         Ok(None)
     }
@@ -190,7 +238,11 @@ pub async fn sender_gas_allowance(
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CallInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "data",
+        alias = "input"
+    )]
     pub data: Option<alloy_primitives::Bytes>,
 }
 
@@ -236,8 +288,14 @@ pub async fn monad_eth_call(
         return Err(JsonRpcError::internal_error());
     };
 
+    params.transaction.fill_gas_prices(U256::from(
+        block_header.block.base_fee_per_gas.unwrap_or_default(),
+    ))?;
+
     let allowance = if params.transaction.gas.is_none() {
-        sender_gas_allowance(&triedb_env, block_number, &params.transaction).await?
+        sender_gas_allowance(&triedb_env, block_number, &params.transaction)
+            .await?
+            .or_else(|| Some(U256::from(block_header.block.gas_limit)))
     } else {
         None
     };
@@ -249,7 +307,6 @@ pub async fn monad_eth_call(
     let sender = params.transaction.from.unwrap_or_default();
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
     let block_number = block_header.block.header.number;
-
     match monad_cxx::eth_call(
         txn,
         block_header.block.header,
@@ -287,10 +344,11 @@ mod tests {
             }
         );
         let result = serde_json::from_value::<super::CallRequest>(payload).expect("parse failed");
-        matches!(
+        assert!(result.input.data.is_some());
+        assert!(matches!(
             result.gas_price_details,
             super::GasPriceDetails::Legacy { gas_price: _ }
-        );
+        ));
         assert_eq!(
             result.max_fee_per_gas(),
             Some(U256::from_str_radix("9184e72a000", 16).unwrap())
@@ -307,13 +365,13 @@ mod tests {
             }
         );
         let result = serde_json::from_value::<super::CallRequest>(payload).expect("parse failed");
-        matches!(
+        assert!(matches!(
             result.gas_price_details,
             super::GasPriceDetails::Eip1559 {
                 max_fee_per_gas: Some(_),
                 ..
             }
-        );
+        ));
         assert_eq!(
             result.max_fee_per_gas(),
             Some(U256::from_str_radix("9184e72a000", 16).unwrap())
