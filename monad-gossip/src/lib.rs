@@ -5,7 +5,6 @@ use bytes_utils::SegmentedBuf;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
-pub mod broadcasttree;
 mod connection_manager;
 pub use connection_manager::{ConnectionManager, ConnectionManagerEvent};
 pub mod gossipsub;

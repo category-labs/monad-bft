@@ -3469,7 +3469,6 @@ dependencies = [
  "rand_chacha",
  "raptorq",
  "serde",
- "test-case",
  "tracing",
 ]
 

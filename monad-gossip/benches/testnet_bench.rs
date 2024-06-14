@@ -6,7 +6,6 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_gossip::{
-    broadcasttree::{BroadcastTree, BroadcastTreeConfig},
     gossipsub::{UnsafeGossipsub, UnsafeGossipsubConfig},
     mock::{MockGossip, MockGossipConfig},
     testutil::{make_swarm, test_broadcast, test_direct, Swarm},
@@ -21,8 +20,6 @@ const BROADCAST_PAYLOAD_SIZE_BYTES: usize = 5000 * 32;
 const DIRECT_PAYLOAD_SIZE_BYTES: usize = 1024;
 const UP_BANDWIDTH_MBIT: usize = 100;
 const GOSSIPSUB_FANOUT: usize = 7;
-const BROADCASTTREE_ARITY: usize = 6;
-const BROADCASTTREE_NUM_ROUTES: usize = 1;
 
 fn testnet<
     ST: CertificateSignatureRecoverable,
@@ -114,47 +111,9 @@ fn testnet_gossipsub_direct() -> u128 {
     .as_millis()
 }
 
-fn make_broadcasttree<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> BroadcastTree<PT> {
-    BroadcastTreeConfig {
-        all_peers: all_peers.to_vec(),
-        my_id: *me,
-        tree_arity: BROADCASTTREE_ARITY,
-        num_routes: BROADCASTTREE_NUM_ROUTES,
-    }
-    .build()
-}
-
-fn testnet_broadcasttree_broadcast() -> u128 {
-    let mut swarm = testnet::<NopSignature, _>(make_broadcasttree);
-    let mut rng = ChaCha20Rng::from_seed([0; 32]);
-    test_broadcast(
-        &mut rng,
-        &mut swarm,
-        Duration::from_secs(10),
-        BROADCAST_PAYLOAD_SIZE_BYTES,
-        1,
-        1.0,
-    )
-    .as_millis()
-}
-
-fn testnet_broadcasttree_direct() -> u128 {
-    let mut swarm = testnet::<NopSignature, _>(make_broadcasttree);
-    let mut rng = ChaCha20Rng::from_seed([0; 32]);
-    test_direct(
-        &mut rng,
-        &mut swarm,
-        Duration::from_secs(10),
-        DIRECT_PAYLOAD_SIZE_BYTES,
-    )
-    .as_millis()
-}
-
 monad_virtual_bench::virtual_bench_main! {
     testnet_mock_gossip_broadcast,
     testnet_mock_gossip_direct,
     testnet_gossipsub_broadcast,
     testnet_gossipsub_direct,
-    testnet_broadcasttree_broadcast,
-    testnet_broadcasttree_direct,
 }
