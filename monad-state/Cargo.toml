@@ -24,6 +24,7 @@ monad-validator = { path = "../monad-validator" }
 
 bytes = { workspace = true }
 itertools = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
 prost = { workspace = true }
 tracing = { workspace = true }
 
@@ -37,7 +38,8 @@ monad-testutil = { path = "../monad-testutil" }
 
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+test-case = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
-test-case = "3.3.1"

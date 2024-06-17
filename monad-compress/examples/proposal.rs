@@ -38,7 +38,7 @@ fn main() {
 
     let validator_stakes = Vec::from_iter(valset.get_members().clone());
 
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(Epoch(1), validator_stakes, ValidatorMapping::new(valmap));
     let election = SimpleRoundRobin::default();
@@ -58,7 +58,9 @@ fn main() {
         .destructure()
         .2;
 
-    let epoch = epoch_manager.get_epoch(proposal.block.round);
+    let epoch = epoch_manager
+        .get_epoch(proposal.block.round)
+        .expect("epoch exists");
     let proposer_leader = election.get_leader(
         proposal.block.round,
         val_epoch_map.get_val_set(&epoch).unwrap().get_members(),

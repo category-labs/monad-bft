@@ -170,10 +170,12 @@ where
         // If the node is lagging too far behind, it wouldn't know when the
         // next epoch is starting. The epoch retrieved here may be incorrect.
         // TODO: Need to check that case. Should trigger statesync.
-        let epoch = epoch_manager.get_epoch(self.obj.obj.get_round());
+        let epoch = epoch_manager
+            .get_epoch(self.obj.obj.get_round())
+            .ok_or(Error::InvalidEpoch)?;
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
 
         let author = verify_author(
             validator_set.get_members(),
@@ -337,10 +339,10 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        if self.obj.block.epoch != epoch_manager.get_epoch(self.obj.block.round) {
-            return Err(Error::InvalidEpoch);
+        match epoch_manager.get_epoch(self.obj.block.round) {
+            Some(epoch) if self.obj.block.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
         }
-        Ok(())
     }
 }
 
@@ -376,10 +378,10 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
 
     /// Check local epoch manager record for vote.round is equal to vote.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        if self.obj.vote.vote_info.epoch != epoch_manager.get_epoch(self.obj.vote.vote_info.round) {
-            return Err(Error::InvalidEpoch);
+        match epoch_manager.get_epoch(self.obj.vote.vote_info.round) {
+            Some(epoch) if self.obj.vote.vote_info.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
         }
-        Ok(())
     }
 }
 
@@ -419,10 +421,10 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        if self.obj.timeout.tminfo.epoch != epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
-            return Err(Error::InvalidEpoch);
+        match epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
+            Some(epoch) if self.obj.timeout.tminfo.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
         }
-        Ok(())
     }
 }
 
@@ -469,10 +471,12 @@ impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
         // If the node is lagging too far behind, it wouldn't know when the
         // next epoch is starting. The epoch retrieved here may be incorrect.
         // TODO: Need to check that case. Should trigger statesync.
-        let epoch = epoch_manager.get_epoch(self.obj.info.round);
+        let epoch = epoch_manager
+            .get_epoch(self.obj.info.round)
+            .ok_or(Error::InvalidEpoch)?;
         let valset = val_epoch_map
             .get_val_set(&epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
 
         if !valset.is_member(&self.obj.peer) {
             return Err(Error::InvalidAuthor);
@@ -507,31 +511,35 @@ where
 {
     if let Some(tc) = tc {
         let tc_epoch = tc.epoch;
-        let local_tc_epoch = epoch_manager.get_epoch(tc.round);
+        let local_tc_epoch = epoch_manager
+            .get_epoch(tc.round)
+            .ok_or(Error::InvalidEpoch)?;
         if tc_epoch != local_tc_epoch {
             return Err(Error::InvalidEpoch);
         }
         let validator_set = val_epoch_map
             .get_val_set(&tc_epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&tc_epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
     let qc_epoch = qc.get_epoch();
-    let local_qc_epoch = epoch_manager.get_epoch(qc.get_round());
+    let local_qc_epoch = epoch_manager
+        .get_epoch(qc.get_round())
+        .ok_or(Error::InvalidEpoch)?;
     if qc_epoch != local_qc_epoch {
         return Err(Error::InvalidEpoch);
     }
 
     let validator_set = val_epoch_map
         .get_val_set(&qc_epoch)
-        .ok_or(Error::ValidatorDataUnavailable)?;
+        .ok_or(Error::ValidatorSetDataUnavailable)?;
     let validator_cert_pubkeys = val_epoch_map
         .get_cert_pubkeys(&qc_epoch)
-        .ok_or(Error::ValidatorDataUnavailable)?;
+        .ok_or(Error::ValidatorSetDataUnavailable)?;
     verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())
@@ -582,7 +590,7 @@ where
 /// Verify the quorum certificate
 ///
 /// Verify the signature collection and super majority stake signed
-fn verify_qc<SCT, VT>(
+pub fn verify_qc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     qc: &QuorumCertificate<SCT>,
@@ -1062,7 +1070,7 @@ mod test {
             &certkeys[0],
         ));
 
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(
             Epoch(1),
@@ -1129,7 +1137,7 @@ mod test {
             SignatureCollectionType,
         >::new(tmo, &certkeys[0]));
 
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(
             Epoch(1),
@@ -1192,7 +1200,7 @@ mod test {
         let author = &keys[0];
         let author_cert_key = &cert_keys[0];
 
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
@@ -1231,7 +1239,7 @@ mod test {
 
         let author_cert_key = &cert_keys[0];
 
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
 
         let vote = Vote {
             vote_info: VoteInfo {
@@ -1264,7 +1272,7 @@ mod test {
 
         let author_cert_key = &cert_keys[0];
 
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
@@ -1325,7 +1333,7 @@ mod test {
         let sigcol = SignatureCollectionType::new(sigs, &valmap, msg.as_ref()).unwrap();
 
         // moved here because of valmap ownership
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
@@ -1407,7 +1415,7 @@ mod test {
         };
 
         // moved here because of valmap ownership
-        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 

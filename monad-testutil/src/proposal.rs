@@ -85,7 +85,7 @@ where
         } else {
             // entering new round from qc
             self.round += Round(1);
-            self.epoch = epoch_manager.get_epoch(self.round);
+            self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
             &self.qc
         };
 
@@ -93,7 +93,7 @@ where
             .iter()
             .zip(certkeys)
             .find(|(k, _)| {
-                let epoch = epoch_manager.get_epoch(self.round);
+                let epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
                 k.pubkey()
                     == election
                         .get_leader(
@@ -119,7 +119,7 @@ where
         );
 
         let validator_cert_pubkeys = val_epoch_map
-            .get_cert_pubkeys(&epoch_manager.get_epoch(self.round))
+            .get_cert_pubkeys(&epoch_manager.get_epoch(self.round).expect("epoch exists"))
             .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
         self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
@@ -201,7 +201,7 @@ where
 
         // entering new round through tc
         self.round += Round(1);
-        self.epoch = epoch_manager.get_epoch(self.round);
+        self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
         self.last_tc = Some(tc);
         tmo_msgs
     }

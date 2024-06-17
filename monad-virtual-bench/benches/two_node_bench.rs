@@ -49,14 +49,14 @@ fn two_nodes_virtual() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],

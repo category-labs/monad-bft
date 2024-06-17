@@ -39,7 +39,7 @@ impl certificate_signature::PubKey for PubKey {
     }
 
     fn bytes(&self) -> Vec<u8> {
-        Self::bytes(self)
+        Self::bytes_compressed(self)
     }
 }
 

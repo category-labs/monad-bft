@@ -103,7 +103,7 @@ fn test_consensus_message_event_proposal_bls() {
         Vec::from_iter(valset.get_members().clone()),
         ValidatorMapping::new(valmap),
     );
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let election = SimpleRoundRobin::default();
     let mut propgen: ProposalGen<
         SignatureType,

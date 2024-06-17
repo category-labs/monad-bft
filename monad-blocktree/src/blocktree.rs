@@ -294,8 +294,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
     pub fn get_high_committable_qc(&self) -> Option<QuorumCertificate<SCT>> {
         let mut high_commit_qc: Option<QuorumCertificate<SCT>> = None;
         let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
-        while !iter.is_empty() {
-            let bid = iter.pop_front().expect("iter non-empty");
+        while let Some(bid) = iter.pop_front() {
             let qc = self
                 .tree
                 .get(&bid)

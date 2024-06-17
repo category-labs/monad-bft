@@ -105,7 +105,7 @@ pub fn generate_log(
             .enumerate()
             .map(|(seed, state_builder)| {
                 let pubkey = state_builder.key.pubkey();
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<LogSwarm>::new(
                     ID::new(NodeId::new(pubkey)),
                     state_builder,
@@ -114,7 +114,7 @@ pub fn generate_log(
                         false, // sync
                     ),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, val_set_update_interval),
+                    MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(100),
                     ))],

@@ -19,9 +19,9 @@ pub struct Cli {
     #[arg(long)]
     pub node_config: PathBuf,
 
-    /// Set the genesis config path
+    /// Set the forkpoint config path
     #[arg(long)]
-    pub genesis_config: PathBuf,
+    pub forkpoint_config: PathBuf,
 
     // Set the path where the write-ahead log will be stored
     #[arg(long)]

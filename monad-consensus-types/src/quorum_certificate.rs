@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_types::*;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     ledger::*,
@@ -12,9 +13,16 @@ use crate::{
 pub const GENESIS_QC_HASH: Hash = Hash([0xAA; 32]);
 
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuorumCertificate<SCT> {
     pub info: QcInfo,
+    #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
+    #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
+    #[serde(bound(
+        serialize = "SCT: SignatureCollection",
+        deserialize = "SCT: SignatureCollection",
+    ))]
     pub signatures: SCT,
     signature_hash: Hash,
 }
@@ -29,7 +37,34 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+fn serialize_signature_collection<S, SCT>(
+    signature_collection: &SCT,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    SCT: SignatureCollection,
+    S: Serializer,
+{
+    let hex_str = "0x".to_string() + &hex::encode(signature_collection.serialize());
+    serializer.serialize_str(&hex_str)
+}
+
+fn deserialize_signature_collection<'de, D, SCT>(deserializer: D) -> Result<SCT, D::Error>
+where
+    SCT: SignatureCollection,
+    D: Deserializer<'de>,
+{
+    let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
+    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
+        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
+    } else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QcInfo {
     pub vote: Vote,
 }

@@ -139,7 +139,7 @@ fn many_nodes_nop_timeout() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::<NopSwarm>::new(
                     ID::new(me),
@@ -160,7 +160,7 @@ fn many_nodes_nop_timeout() -> u128 {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,
@@ -216,7 +216,7 @@ fn many_nodes_bls_timeout() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::<BlsSwarm>::new(
                     ID::new(me),
@@ -237,7 +237,7 @@ fn many_nodes_bls_timeout() -> u128 {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,

@@ -12,12 +12,10 @@ use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_blockdb::BlockDbBuilder;
-use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     payload::{NopStateRoot, StateRoot, StateRootValidator},
     state_root_hash::StateRootHash,
-    validator_data::ValidatorData,
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -36,7 +34,6 @@ use monad_gossip::{
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
@@ -68,6 +65,7 @@ mod cli;
 use cli::Cli;
 
 mod config;
+use config::{SignatureCollectionType, SignatureType};
 mod mode;
 
 mod error;
@@ -76,9 +74,6 @@ use monad_opentelemetry_executor::OpenTelemetryExecutor;
 
 mod state;
 use state::{build_otel_provider, NodeState};
-
-type SignatureType = SecpSignature;
-type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
 fn main() {
     let mut cmd = Cli::command();
@@ -141,13 +136,18 @@ async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
 ) -> Result<(), ()> {
-    let gossip = if node_state.genesis_config.validators.len() > 1 {
+    let gossip = if node_state.forkpoint_config.forkpoint.validator_sets[0]
+        .validators
+        .0
+        .len()
+        > 1
+    {
         SeederConfig::<Raptor<SignatureType>> {
-            all_peers: node_state
-                .genesis_config
+            all_peers: node_state.forkpoint_config.forkpoint.validator_sets[0]
                 .validators
+                .0
                 .iter()
-                .map(|peer| NodeId::new(peer.secp256k1_pubkey))
+                .map(|peer| NodeId::new(peer.node_id.pubkey()))
                 .collect(),
             key: {
                 // TODO make this less jank
@@ -166,11 +166,11 @@ async fn run(
         .boxed()
     } else {
         MockGossipConfig {
-            all_peers: node_state
-                .genesis_config
+            all_peers: node_state.forkpoint_config.forkpoint.validator_sets[0]
                 .validators
+                .0
                 .iter()
-                .map(|peer| NodeId::new(peer.secp256k1_pubkey))
+                .map(|peer| NodeId::new(peer.node_id.pubkey()))
                 .collect(),
             me: NodeId::new(node_state.secp256k1_identity.pubkey()),
             message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
@@ -191,20 +191,8 @@ async fn run(
     )
     .await;
 
-    let validators = ValidatorData(
-        node_state
-            .genesis_config
-            .validators
-            .into_iter()
-            .map(|peer| {
-                (
-                    NodeId::new(peer.secp256k1_pubkey),
-                    peer.stake,
-                    peer.bls12_381_pubkey,
-                )
-            })
-            .collect(),
-    );
+    let validators = node_state.forkpoint_config.forkpoint.validator_sets[0].clone();
+
     let val_set_update_interval = SeqNum(2000);
 
     let metrics_executor: BoxUpdater<
@@ -238,7 +226,10 @@ async fn run(
             },
         ),
         checkpoint: MockCheckpoint::default(),
-        state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
+        state_root_hash: MockStateRootHashNop::new(
+            validators.validators.clone(),
+            val_set_update_interval,
+        ),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         metrics: metrics_executor,
@@ -269,12 +260,12 @@ async fn run(
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
-        validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
+        forkpoint: node_state.forkpoint_config.forkpoint,
         consensus_config: ConsensusConfig {
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,

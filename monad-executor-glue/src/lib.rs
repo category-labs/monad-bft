@@ -13,7 +13,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block, metrics::Metrics, signature_collection::SignatureCollection,
-    state_root_hash::StateRootHashInfo, validator_data::ValidatorData,
+    state_root_hash::StateRootHashInfo, validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -231,7 +231,7 @@ impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
-    UpdateValidators((ValidatorData<SCT>, Epoch)),
+    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 #[derive(Clone, PartialEq, Eq)]

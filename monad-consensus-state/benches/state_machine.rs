@@ -323,7 +323,7 @@ fn setup<
                 val_stakes.clone(),
                 ValidatorMapping::new(val_cert_pubkeys.clone()),
             );
-            let epoch_manager = EpochManager::new(SeqNum(100), Round(20));
+            let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
             let default_key =
                 <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32]).unwrap();
@@ -347,6 +347,8 @@ fn setup<
                     state_sync_threshold: SeqNum(100),
                 },
                 EthAddress::default(),
+                QuorumCertificate::genesis_qc(),
+                Epoch(1),
                 std::mem::replace(&mut dupkeys[i as usize], default_key),
                 std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
             );
@@ -370,7 +372,7 @@ fn setup<
         val_stakes,
         ValidatorMapping::new(val_cert_pubkeys),
     );
-    let epoch_manager = EpochManager::new(SeqNum(100), Round(20));
+    let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
     let env: EnvContext<ST, SCT, VTF, LT> = EnvContext {
         proposal_gen: ProposalGen::<ST, SCT>::new(),

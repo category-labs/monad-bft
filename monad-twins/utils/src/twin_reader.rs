@@ -16,7 +16,7 @@ use monad_consensus_types::{
     payload::{StateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     txpool::TxPool,
-    validator_data::ValidatorData,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -27,7 +27,7 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
-use monad_state::{MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
 use monad_types::{NodeId, Round, SeqNum};
@@ -127,7 +127,7 @@ where
                 state_root_validator: self.state_config.state_root_validator.clone(),
                 async_state_verify: self.state_config.async_state_verify.clone(),
 
-                validators: self.state_config.validators.clone(),
+                forkpoint: self.state_config.forkpoint.clone(),
                 key: CertificateKeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
                 certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(
                     &mut self.certkey_secret.clone(),
@@ -314,7 +314,7 @@ where
         _,
     >(&keys, &certkeys, ValidatorSetFactory::default());
 
-    let validator_data = ValidatorData::<S::SignatureCollectionType>::new(
+    let validator_data = ValidatorSetData::<S::SignatureCollectionType>::new(
         validator_mapping
             .map
             .iter()
@@ -350,7 +350,7 @@ where
             block_policy: S::BlockPolicyType::default(),
             state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             async_state_verify: S::AsyncStateRootVerify::default(),
-            validators: validator_data.clone(),
+            forkpoint: Forkpoint::genesis(validator_data.clone()),
 
             key,
             certkey,

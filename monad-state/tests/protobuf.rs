@@ -137,7 +137,7 @@ test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let version = "TEST";
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -201,7 +201,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let version = "TEST";
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -219,7 +219,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
-        epoch: epoch_manager.get_epoch(Round(1)),
+        epoch: epoch_manager.get_epoch(Round(1)).expect("epoch exists"),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
@@ -252,7 +252,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     // timeout message for Round(3)
     // TODO-3: add more high_qc_rounds
     let tc = make_tc::<ST, SCT>(
-        epoch_manager.get_epoch(Round(2)),
+        epoch_manager.get_epoch(Round(2)).expect("epoch exists"),
         Round(2),
         HighQcRound { qc_round: Round(1) },
         keypairs.as_slice(),
@@ -261,7 +261,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     );
 
     let tmo_info = TimeoutInfo {
-        epoch: epoch_manager.get_epoch(Round(3)),
+        epoch: epoch_manager.get_epoch(Round(3)).expect("epoch exists"),
         round: Round(3),
         high_qc: qc,
     };
@@ -306,7 +306,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let version = "TEST";
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -366,7 +366,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let version = "TEST";
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -396,7 +396,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     };
 
     let tc = make_tc::<ST, SCT>(
-        epoch_manager.get_epoch(tc_round),
+        epoch_manager.get_epoch(tc_round).expect("epoch exists"),
         tc_round,
         high_qc_round,
         keypairs.as_slice(),
@@ -462,7 +462,7 @@ test_all_combination!(test_block_sync_request, |_| {
 test_all_combination!(test_block_sync_response_not_available, |num_keys| {
     let (_keypairs, _cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -502,7 +502,7 @@ test_all_combination!(test_block_sync_response_not_available, |num_keys| {
 test_all_combination!(test_block_sync_response_found, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),

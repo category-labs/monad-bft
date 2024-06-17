@@ -101,7 +101,7 @@ fn verify_qcs(
 fn test_votes(num_nodes: u32) {
     let (_, valset, vmap, votes) = setup_ctx(num_nodes, 1);
 
-    let mut voteset = VoteState::<SignatureCollectionType>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::new(Round(0));
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let (author, v) = &votes[i as usize];
@@ -125,7 +125,7 @@ fn test_votes(num_nodes: u32) {
 fn test_reset(num_nodes: u32, num_rounds: u32) {
     let (_, valset, vmap, votes) = setup_ctx(num_nodes, num_rounds.into());
 
-    let mut voteset = VoteState::<SignatureCollectionType>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::new(Round(0));
     let mut qcs = Vec::new();
 
     for k in 0..num_rounds {
@@ -152,7 +152,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 fn test_minority(num_nodes: u32) {
     let (_, valset, vmap, votes) = setup_ctx(num_nodes, 1);
 
-    let mut voteset = VoteState::<SignatureCollectionType>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::new(Round(0));
     let mut qcs = Vec::new();
 
     let majority = 2 * num_nodes / 3 + 1;

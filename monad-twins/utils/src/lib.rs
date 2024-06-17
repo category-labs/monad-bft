@@ -59,7 +59,7 @@ where
 
     for TwinsNodeConfig {
         id,
-        state_config,
+        state_config: state_builder,
         default_partition,
         partition,
     } in nodes.into_values()
@@ -79,10 +79,10 @@ where
                 Duration::from_millis(delta),
             )),
         ];
-        let validators = state_config.validators.clone();
+        let validators = state_builder.forkpoint.validator_sets[0].clone();
         swarm.add_state(NodeBuilder::<S>::new(
             id,
-            state_config,
+            state_builder,
             MockWALoggerConfig::default(),
             NoSerRouterConfig::new(
                 ids.iter()
@@ -90,7 +90,10 @@ where
                     .collect(),
             )
             .build(),
-            MockStateRootHashNop::new(validators, monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
+            MockStateRootHashNop::new(
+                validators.validators,
+                monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
+            ),
             outbound_pipeline,
             vec![],
             seed,

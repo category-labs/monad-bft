@@ -12,14 +12,14 @@ use opentelemetry_otlp::WithExportConfig;
 
 use crate::{
     cli::Cli,
-    config::{GenesisConfig, NodeConfig},
+    config::{ForkpointConfig, NodeConfig},
     error::NodeSetupError,
     mode::RunModeCommand,
 };
 
 pub struct NodeState {
     pub node_config: NodeConfig,
-    pub genesis_config: GenesisConfig,
+    pub forkpoint_config: ForkpointConfig,
 
     pub secp256k1_identity: KeyPair,
     pub gossip_identity: KeyPair,
@@ -62,14 +62,14 @@ impl NodeState {
         );
 
         let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.node_config)?)?;
-        let genesis_config: GenesisConfig =
-            toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
+        let forkpoint_config: ForkpointConfig =
+            toml::from_str(&std::fs::read_to_string(cli.forkpoint_config)?)?;
 
         let run_mode = cli.run_mode.unwrap_or_default();
 
         Ok(Self {
             node_config,
-            genesis_config,
+            forkpoint_config,
 
             secp256k1_identity: secp_key,
             gossip_identity: gossip_key,

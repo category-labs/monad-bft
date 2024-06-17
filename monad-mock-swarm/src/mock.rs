@@ -341,6 +341,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
     > {
         &self.ledger
     }
+
+    pub fn state_root_hash_executor(&self) -> &S::StateRootHashExecutor {
+        &self.state_root_hash
+    }
 }
 
 pub struct MockTimer<E> {

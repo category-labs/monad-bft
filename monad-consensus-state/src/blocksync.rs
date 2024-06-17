@@ -21,7 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::{BlockId, NodeId, SeqNum, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
-use tracing::{debug, info_span, warn, Span};
+use tracing::{debug, info_span, Span};
 
 use crate::command::ConsensusCommand;
 
@@ -246,6 +246,7 @@ where
     /// Handle the response to a BlockSync request
     /// If the request was not fulfilled, the request is tried again with
     /// a different node
+    /// FIXME: does it reset timeout?
     pub fn handle_response<VT, BP, BV>(
         &mut self,
         author: &NodeId<SCT::NodeIdPubKey>,
@@ -303,12 +304,14 @@ where
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
+        // FIXME: we're not resetting block sync timeout on success. This can be wrong
         debug!("Block sync timeout bid={:?}", bid);
         // avoid duplicate logging
         let mut cmds = vec![ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(
             bid,
         ))];
 
+        // if the timeout block id is not found in pending requests, a response was received to remove it
         if let Some(pending_req) = self.requests.remove(&bid) {
             cmds.extend(self.request_helper(
                 &pending_req.qc,
@@ -316,8 +319,6 @@ where
                 pending_req.retry_cnt + 1,
                 metrics,
             ));
-        } else {
-            warn!("Unexpected block sync timeout bid={:?}", bid);
         }
         cmds
     }

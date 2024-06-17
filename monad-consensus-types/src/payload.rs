@@ -202,6 +202,9 @@ pub trait StateRootValidator {
     /// Check the validity of the state root hash in a Proposal from the sequence
     /// number and state root hash it includes
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: StateRootHash) -> StateRootResult;
+
+    /// Return delay parameter
+    fn get_delay(&self) -> SeqNum;
 }
 
 impl<T: StateRootValidator + ?Sized> StateRootValidator for Box<T> {
@@ -219,6 +222,10 @@ impl<T: StateRootValidator + ?Sized> StateRootValidator for Box<T> {
 
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: StateRootHash) -> StateRootResult {
         (**self).validate(seq_num, block_state_root_hash)
+    }
+
+    fn get_delay(&self) -> SeqNum {
+        (**self).get_delay()
     }
 }
 
@@ -327,6 +334,10 @@ impl StateRootValidator for StateRoot {
             }
         }
     }
+
+    fn get_delay(&self) -> SeqNum {
+        self.delay
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -344,6 +355,10 @@ impl StateRootValidator for NopStateRoot {
     }
 
     fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
+
+    fn get_delay(&self) -> SeqNum {
+        SeqNum(u64::MAX)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -361,6 +376,10 @@ impl StateRootValidator for MissingNextStateRoot {
     }
 
     fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
+
+    fn get_delay(&self) -> SeqNum {
+        SeqNum(u64::MAX)
+    }
 }
 
 #[cfg(test)]

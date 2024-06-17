@@ -128,13 +128,13 @@ pub fn recover_nodes_msg_delays(
             .zip(logger_configs.clone())
             .enumerate()
             .map(|(seed, (state_builder, logger_config))| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<ReplaySwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     logger_config,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, val_set_update_interval),
+                    MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
                         delta,
                     ))],
@@ -199,13 +199,13 @@ pub fn recover_nodes_msg_delays(
             .zip(logger_configs)
             .enumerate()
             .map(|(seed, (state_builder, logger_config))| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<ReplaySwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     logger_config,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, val_set_update_interval),
+                    MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     seed.try_into().unwrap(),

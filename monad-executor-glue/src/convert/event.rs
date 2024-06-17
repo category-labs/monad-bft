@@ -163,9 +163,9 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
 impl<SCT: SignatureCollection> From<&ValidatorEvent<SCT>> for ProtoValidatorEvent {
     fn from(value: &ValidatorEvent<SCT>) -> Self {
         let event = match value {
-            ValidatorEvent::UpdateValidators((validator_data, epoch)) => {
+            ValidatorEvent::UpdateValidators((validator_set_data, epoch)) => {
                 proto_validator_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
-                    validator_data: Some(validator_data.into()),
+                    validator_set_data: Some(validator_set_data.into()),
                     epoch: Some(epoch.into()),
                 })
             }
@@ -181,9 +181,9 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
         let event = match value.event {
             Some(proto_validator_event::Event::UpdateValidators(event)) => {
                 let vs = event
-                    .validator_data
+                    .validator_set_data
                     .ok_or(ProtoError::MissingRequiredField(
-                        "ValidatorEvent::update_validators::validator_data".to_owned(),
+                        "ValidatorEvent::update_validators::validator_set_data".to_owned(),
                     ))?
                     .try_into()?;
                 let e = event

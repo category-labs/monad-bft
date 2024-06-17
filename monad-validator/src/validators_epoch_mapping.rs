@@ -69,16 +69,27 @@ where
             SignatureCollectionKeyPairType<SCT>,
         >,
     ) {
-        let res = self.validator_map.insert(
-            epoch,
-            (
-                self.validator_set_factory
-                    .create(val_stakes)
-                    .expect("ValidatorData should not have duplicates or invalid entries"),
-                val_cert_pubkeys,
-            ),
+        // On consensus restart, the same validator set might be inserted a
+        // second time when we commit the same boundary block again. Assert that
+        // value is the same if entry exists
+        let value = (
+            self.validator_set_factory
+                .create(val_stakes)
+                .expect("ValidatorSetData should not have duplicates or invalid entries"),
+            val_cert_pubkeys,
         );
-
-        assert!(res.is_none());
+        match self.validator_map.entry(epoch) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                assert_eq!(
+                    entry.get().0.get_members(),
+                    value.0.get_members(),
+                    "Validator set mismatch"
+                );
+                assert_eq!(entry.get().1.map, value.1.map, "Validator mapping mismatch")
+            }
+        }
     }
 }

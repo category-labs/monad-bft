@@ -1,8 +1,9 @@
 use monad_crypto::hasher::{Hashable, Hasher};
+use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, Serialize, Deserialize)]
 pub enum CommitResult {
     NoCommit,
     Commit,

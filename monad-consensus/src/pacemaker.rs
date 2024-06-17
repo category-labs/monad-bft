@@ -286,7 +286,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
         metrics.consensus_events.enter_new_round_tc += 1;
         let new_round = tc.round + Round(1);
-        let new_epoch = epoch_manager.get_epoch(new_round);
+        let new_epoch = epoch_manager
+            .get_epoch(new_round)
+            .expect("epoch always available for higher round");
         self.last_round_tc = Some(tc.clone());
         self.enter_round(new_epoch, new_round)
     }
@@ -307,7 +309,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         metrics.consensus_events.enter_new_round_qc += 1;
         self.last_round_tc = None;
         let new_round = qc.get_round() + Round(1);
-        let new_epoch = epoch_manager.get_epoch(new_round);
+        let new_epoch = epoch_manager
+            .get_epoch(new_round)
+            .expect("epoch always available for higher round");
         self.enter_round(new_epoch, new_round)
     }
 
@@ -315,7 +319,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// sync pacemaker with current records in epoch manager
     #[must_use]
     pub fn advance_epoch(&mut self, epoch_manager: &EpochManager) -> Vec<PacemakerCommand<SCT>> {
-        let new_epoch = epoch_manager.get_epoch(self.current_round);
+        let new_epoch = epoch_manager
+            .get_epoch(self.current_round)
+            .expect("current epoch available");
         if new_epoch <= self.current_epoch {
             return Default::default();
         }
@@ -644,7 +650,7 @@ mod test {
             .expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
-        let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
+        let epoch_manager = EpochManager::new(SeqNum(1000), Round(50), &[(Epoch(1), Round(0))]);
         let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
@@ -745,7 +751,7 @@ mod test {
             None,
         );
 
-        let mut epoch_manager = EpochManager::new(SeqNum(100), Round(20));
+        let mut epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
         epoch_manager.schedule_epoch_start(SeqNum(100), Round(100));
 
         let (keys, certkeys, _valset, vmap) = create_keys_w_validators::<

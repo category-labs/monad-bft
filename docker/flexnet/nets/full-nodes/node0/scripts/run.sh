@@ -6,7 +6,7 @@ monad-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
     --node-config /monad/config/node.toml \
-    --genesis-config /monad/config/genesis.toml \
+    --forkpoint-config /monad/config/forkpoint.toml \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
     --execution-ledger-path /monad/ledger \

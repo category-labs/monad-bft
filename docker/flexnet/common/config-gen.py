@@ -255,21 +255,50 @@ if __name__ == "__main__":
         pass
 
     # global: create genesis.toml
+    # root_qc in genesis forkpoint is the genesis qc. It's hard coded in monad-bft
+    root_qc = {}
+    root_qc["signatures"] = (
+        "0x0a3ca4656f72646572736269747665633a3a6f726465723a3a4c7362306468656164a2657769647468184065696e6465780064626974730064646174618012c001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    )
+    root_qc["signature_hash"] = (
+        "0x0fb1346d3fd54a316e2b16d74be47c4d285c15e1d406fc9c1e2126448c51397a"
+    )
+    root_qc["info"] = {
+        "vote": {
+            "vote_info": {
+                "id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "epoch": 1,
+                "round": 0,
+                "parent_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "parent_round": 0,
+                "seq_num": "18446744073709551615",
+            },
+            "ledger_commit_info": "NoCommit",
+        }
+    }
+
     validators = []
     for vol_path in volume_list:
         volume = vol_path.name
         validators.append(
             {
-                "secp256k1_pubkey": peers[volume].secp_pubkey,
-                "bls12_381_pubkey": peers[volume].bls_pubkey,
+                "node_id": peers[volume].secp_pubkey,
+                "cert_pubkey": peers[volume].bls_pubkey,
                 "stake": 1,
             }
         )
 
-    genesis_toml = {"validators": validators}
+    epoch1_validators = {"epoch": 1, "round": 0, "validators": validators}
+    epoch2_validators = {"epoch": 2, "validators": validators}
+
+    genesis_toml = {
+        "state_roots": [],
+        "root_qc": root_qc,
+        "validator_sets": [epoch1_validators, epoch2_validators],
+    }
 
     for vol_path in volume_list:
-        genesis_toml_path = vol_path / "config" / "genesis.toml"
+        genesis_toml_path = vol_path / "config" / "forkpoint.toml"
         genesis_toml_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(genesis_toml_path, "wb+") as f:

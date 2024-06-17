@@ -5,5 +5,5 @@ Starting a Monad consensus node generates a blockdb directory, a ledger director
 Run the following in the repo root directory:
 1. `export RUST_LOG=info`
     - The logging level can be adjusted as needed.
-2. `cargo run --bin monad-node -- --secp-identity docker/devnet/monad/config/id-secp --bls-identity docker/devnet/monad/config/id-bls --node-config docker/devnet/monad/config/node.toml --genesis-config docker/devnet/monad/config/genesis.toml --wal-path docker/devnet/monad/wal --mempool-ipc-path docker/devnet/monad/mempool.sock --execution-ledger-path docker/devnet/monad/ledger --blockdb-path docker/devnet/monad/blockdb`
+2. `cargo run --bin monad-node -- --secp-identity docker/devnet/monad/config/id-secp --bls-identity docker/devnet/monad/config/id-bls --node-config docker/devnet/monad/config/node.toml --forkpoint-config docker/devnet/monad/config/forkpoint.toml --wal-path docker/devnet/monad/wal --mempool-ipc-path docker/devnet/monad/mempool.sock --execution-ledger-path docker/devnet/monad/ledger --blockdb-path docker/devnet/monad/blockdb`
     - The generated files and directories path (`--wal-path`, `--mempool-ipc-path`, `--execution-ledger-path`, `--blockdb-path`) can be changed.

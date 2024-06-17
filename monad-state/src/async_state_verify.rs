@@ -100,7 +100,10 @@ where
 
                 let PeerStateRootMessage { peer, info, sig } = validated;
 
-                let epoch = self.epoch_manager.get_epoch(info.round);
+                let epoch = self
+                    .epoch_manager
+                    .get_epoch(info.round)
+                    .expect("epoch exists");
                 let valset = self
                     .val_epoch_map
                     .get_val_set(&epoch)
@@ -119,7 +122,9 @@ where
                     self.nodeid,
                     self.cert_keypair,
                     info,
-                    self.epoch_manager.get_epoch(info.round),
+                    self.epoch_manager
+                        .get_epoch(info.round)
+                        .expect("record for local execution round"),
                 )
             }
         };

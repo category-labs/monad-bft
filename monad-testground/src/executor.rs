@@ -8,7 +8,7 @@ use monad_consensus_types::{
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
     txpool::MockTxPool,
-    validator_data::ValidatorData,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -28,7 +28,7 @@ use monad_ipc::{generate_uds_path, IpcReceiver};
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
-    MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
+    Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
@@ -71,7 +71,7 @@ where
     SCT: SignatureCollection,
 {
     Mock {
-        genesis_validator_data: ValidatorData<SCT>,
+        genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     },
 }
@@ -172,7 +172,7 @@ where
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
 
-    pub validators: ValidatorData<SCT>,
+    pub validators: ValidatorSetData<SCT>,
     pub consensus_config: ConsensusConfig,
 }
 
@@ -203,12 +203,12 @@ where
         block_policy: PassthruBlockPolicy {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
-        validators: config.validators,
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
+        forkpoint: Forkpoint::genesis(config.validators),
         consensus_config: config.consensus_config,
         _pd: PhantomData,
     }

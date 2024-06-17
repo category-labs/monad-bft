@@ -6,12 +6,25 @@ use std::{
 
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
-use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_consensus_types::{
+    payload::StateRootValidator,
+    quorum_certificate::QuorumCertificate,
+    signature_collection::SignatureCollection,
+    validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
+    voting::ValidatorMapping,
+};
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+};
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
-use monad_state::{MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_validator::validator_set::BoxedValidatorSetTypeFactory;
+use monad_types::{Epoch, SeqNum};
+use monad_updaters::state_root_hash::MockableStateRootHash;
+use monad_validator::validator_set::{
+    BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
+};
 use monad_wal::{PersistenceLogger, PersistenceLoggerBuilder};
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -104,12 +117,12 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,
                 ),
-                validators: self.state_builder.validators,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
                 val_set_update_interval: self.state_builder.val_set_update_interval,
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
+                forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
                 _pd: PhantomData,
             },
@@ -295,5 +308,88 @@ impl<S: SwarmRelation> Node<S> {
             return Some(event);
         }
         None
+    }
+
+    fn build_validator_set_data(
+        validator_set: &<S::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+        validator_mapping: &ValidatorMapping<<<S::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType, <<S::SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::KeyPairType>,
+    ) -> ValidatorSetData<S::SignatureCollectionType> {
+        let mut validator_set_data = Vec::new();
+        for (node_id, stake) in validator_set.get_members() {
+            let cert_pubkey = validator_mapping
+                .map
+                .get(node_id)
+                .expect("validator set and mapping are paired");
+            validator_set_data.push(ValidatorData {
+                node_id: *node_id,
+                stake: *stake,
+                cert_pubkey: *cert_pubkey,
+            });
+        }
+        ValidatorSetData(validator_set_data)
+    }
+
+    pub fn get_forkpoint(&self) -> Forkpoint<S::SignatureCollectionType> {
+        // ledger is length n, this gets the QC(n-1)
+        let root_qc = self
+            .executor
+            .ledger()
+            .get_blocks()
+            .last()
+            .map(|b| b.qc.clone())
+            .unwrap_or(QuorumCertificate::genesis_qc());
+
+        let delay = self
+            .state
+            .consensus()
+            .get_state_root_validator()
+            .get_delay();
+
+        let state_root_executor = self.executor.state_root_hash_executor();
+
+        let blocks = self.executor.ledger().get_blocks();
+        let mut state_roots = Vec::new();
+
+        for i in ((root_qc.get_seq_num().0 - delay.0 + 1)..=(root_qc.get_seq_num().0 + 1)).rev() {
+            let b = &blocks[i as usize];
+            assert_eq!(b.payload.seq_num, SeqNum(i));
+            let state_root = state_root_executor.compute_state_root_hash(b);
+            state_roots.push(state_root);
+        }
+
+        let epoch_manager = self.state.epoch_manager();
+        let val_epoch_mapping = self.state.validators_epoch_mapping();
+
+        // fetch all epoch & validator sets after root_qc epoch
+
+        // If the node on the highest round fails and causes a liveness failure,
+        // the network might be on an older epoch. Need the previous epoch to
+        // validate
+        let mut epoch = root_qc.get_epoch();
+        let mut validator_sets = Vec::new();
+
+        while let Some(validator_set) = val_epoch_mapping.get_val_set(&epoch) {
+            let validator_mapping = val_epoch_mapping
+                .get_cert_pubkeys(&epoch)
+                .expect("Validator set and mapping always match");
+            let validator_set_data =
+                Self::build_validator_set_data(validator_set, validator_mapping);
+
+            validator_sets.push(ValidatorSetDataWithEpoch {
+                epoch,
+                round: epoch_manager.epoch_starts.get(&epoch).copied(),
+                validators: validator_set_data,
+            });
+
+            epoch = epoch + Epoch(1);
+        }
+
+        assert!(validator_sets.len() >= 2 && validator_sets.len() <= 4);
+
+        Forkpoint {
+            root_qc,
+            state_roots,
+            validator_sets,
+        }
     }
 }

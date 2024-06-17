@@ -222,20 +222,23 @@ where
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
+        root_qc: QuorumCertificate<SCT>,
+        consensus_epoch: Epoch,
 
         // TODO-2 deprecate
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self {
-        let genesis_qc = QuorumCertificate::genesis_qc();
+        let qc_round = root_qc.get_round();
+        // processing root qc brings consensus to qc_round + 1
+        let consensus_round = qc_round + Round(1);
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_qc.clone()),
-            vote_state: VoteState::default(),
-            high_qc: genesis_qc,
+            pending_block_tree: BlockTree::new(root_qc.clone()),
+            vote_state: VoteState::new(consensus_round),
+            high_qc: root_qc,
             state_root_validator,
-            // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(config.delta, Epoch(1), Round(1), None),
-            safety: Safety::default(),
+            pacemaker: Pacemaker::new(config.delta, consensus_epoch, consensus_round, None),
+            safety: Safety::new(qc_round, qc_round),
             nodeid: NodeId::new(my_pubkey),
             config,
 
@@ -291,12 +294,16 @@ where
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT>,
     {
-        let _handle_proposal_span = tracing::info_span!("handle_proposal_span", ?author).entered();
+        let _handle_proposal_span =
+            tracing::info_span!("handle_proposal_span", "{}", author).entered();
         debug!("Proposal Message: {:?}", p);
         node.metrics.consensus_events.handle_proposal += 1;
         let mut cmds = Vec::new();
 
-        let epoch = node.epoch_manager.get_epoch(p.block.round);
+        let epoch = node
+            .epoch_manager
+            .get_epoch(p.block.round)
+            .expect("epoch verified");
         let validator_set = node
             .val_epoch_map
             .get_val_set(&epoch)
@@ -402,7 +409,10 @@ where
 
         let mut cmds = Vec::new();
 
-        let epoch = node.epoch_manager.get_epoch(vote_msg.vote.vote_info.round);
+        let epoch = node
+            .epoch_manager
+            .get_epoch(vote_msg.vote.vote_info.round)
+            .expect("epoch verified");
         let validator_set = node
             .val_epoch_map
             .get_val_set(&epoch)
@@ -457,7 +467,10 @@ where
         debug!("Remote timeout msg: {:?}", tm);
         node.metrics.consensus_events.remote_timeout_msg += 1;
 
-        let epoch = node.epoch_manager.get_epoch(tm.tminfo.round);
+        let epoch = node
+            .epoch_manager
+            .get_epoch(tm.tminfo.round)
+            .expect("epoch verified");
         let validator_set = node
             .val_epoch_map
             .get_val_set(&epoch)
@@ -555,7 +568,10 @@ where
     {
         let mut cmds = vec![];
 
-        let current_epoch = node.epoch_manager.get_epoch(self.get_current_round());
+        let current_epoch = node
+            .epoch_manager
+            .get_epoch(self.get_current_round())
+            .expect("current epoch exists");
         let val_set = node
             .val_epoch_map
             .get_val_set(&current_epoch)
@@ -856,7 +872,10 @@ where
             // error-prone
             let (next_round, next_validator_set) = {
                 let next_round = round + Round(1);
-                let next_epoch = node.epoch_manager.get_epoch(next_round);
+                let next_epoch = node
+                    .epoch_manager
+                    .get_epoch(next_round)
+                    .expect("higher epoch always exists");
                 let Some(next_validator_set) = node.val_epoch_map.get_val_set(&next_epoch) else {
                     todo!("handle non-existent validatorset for next round epoch");
                 };
@@ -896,7 +915,10 @@ where
             let round = self.pacemaker.get_current_round();
             // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
             // error-prone
-            let epoch = node.epoch_manager.get_epoch(round);
+            let epoch = node
+                .epoch_manager
+                .get_epoch(round)
+                .expect("current epoch exists");
             let Some(validator_set) = node.val_epoch_map.get_val_set(&epoch) else {
                 todo!("handle non-existent validatorset for next round epoch");
             };
@@ -925,14 +947,18 @@ where
         self.last_proposed_round = round;
 
         let last_round_tc = self.pacemaker.get_last_round_tc().clone();
-        cmds.extend(self.process_new_round_event(
-            node.tx_pool,
-            validator_set,
-            last_round_tc,
-            node.epoch_manager.get_epoch(round),
-            node.metrics,
-            node.version,
-        ));
+        cmds.extend(
+            self.process_new_round_event(
+                node.tx_pool,
+                validator_set,
+                last_round_tc,
+                node.epoch_manager
+                    .get_epoch(round)
+                    .expect("higher epoch exists"),
+                node.metrics,
+                node.version,
+            ),
+        );
         cmds
     }
 
@@ -1203,6 +1229,10 @@ where
         &self.block_sync_requester
     }
 
+    pub fn get_state_root_validator(&self) -> &SVT {
+        &self.state_root_validator
+    }
+
     pub fn get_current_epoch(&self) -> Epoch {
         self.pacemaker.get_current_epoch()
     }
@@ -1242,6 +1272,7 @@ mod test {
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
             NopStateRoot, StateRoot, StateRootValidator, INITIAL_DELAY_STATE_ROOT_HASH,
         },
+        quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
         timeout::Timeout,
@@ -1551,7 +1582,8 @@ mod test {
                     val_stakes.clone(),
                     ValidatorMapping::new(val_cert_pubkeys.clone()),
                 );
-                let epoch_manager = EpochManager::new(SeqNum(100), Round(20));
+                let epoch_manager =
+                    EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
                 let default_key =
                     <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32]).unwrap();
@@ -1573,6 +1605,8 @@ mod test {
                         state_sync_threshold: SeqNum(100),
                     },
                     EthAddress::default(),
+                    QuorumCertificate::genesis_qc(),
+                    Epoch(1),
                     std::mem::replace(&mut dupkeys[i as usize], default_key),
                     std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
                 );
@@ -1596,7 +1630,7 @@ mod test {
             val_stakes.clone(),
             ValidatorMapping::new(val_cert_pubkeys.clone()),
         );
-        let epoch_manager = EpochManager::new(SeqNum(100), Round(20));
+        let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
         let env: EnvContext<ST, SCT, VTF, LT> = EnvContext {
             proposal_gen: ProposalGen::<ST, SCT>::new(),
@@ -2815,7 +2849,10 @@ mod test {
 
         // determine the leader of round 11 because we are going to skip sending them the round 9
         // proposal while the other nodes get it and send their votes
-        let epoch = env.epoch_manager.get_epoch(Round(11));
+        let epoch = env
+            .epoch_manager
+            .get_epoch(Round(11))
+            .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(11),
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
@@ -3010,7 +3047,10 @@ mod test {
 
         // determine the leader of round after missing round so we can skip sending them missing
         // round and then send the votes for missing round
-        let epoch = env.epoch_manager.get_epoch(Round(missing_round + 1));
+        let epoch = env
+            .epoch_manager
+            .get_epoch(Round(missing_round + 1))
+            .expect("epoch exists");
         let next_leader = env.election.get_leader(
             Round(missing_round + 1),
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
@@ -3111,7 +3151,7 @@ mod test {
         let verified_p2 = env.next_proposal_empty();
         let (_, _, p2) = verified_p2.destructure();
 
-        let epoch = env.epoch_manager.get_epoch(Round(4));
+        let epoch = env.epoch_manager.get_epoch(Round(4)).expect("epoch exists");
         let invalid_author = env.election.get_leader(
             Round(4),
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
@@ -3185,7 +3225,8 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert!(current_epoch == Epoch(1));
 
             let expected_epoch_start_round =
@@ -3194,9 +3235,15 @@ mod test {
             assert!(
                 node.epoch_manager
                     .get_epoch(expected_epoch_start_round - Round(1))
+                    .unwrap()
                     == Epoch(1)
             );
-            assert!(node.epoch_manager.get_epoch(expected_epoch_start_round) == Epoch(2));
+            assert!(
+                node.epoch_manager
+                    .get_epoch(expected_epoch_start_round)
+                    .unwrap()
+                    == Epoch(2)
+            );
         }
     }
 
@@ -3274,17 +3321,21 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
                 node.epoch_manager
-                    .get_epoch(expected_epoch_start_round - Round(1)),
+                    .get_epoch(expected_epoch_start_round - Round(1))
+                    .unwrap(),
                 Epoch(1)
             );
             assert_eq!(
-                node.epoch_manager.get_epoch(expected_epoch_start_round),
+                node.epoch_manager
+                    .get_epoch(expected_epoch_start_round)
+                    .unwrap(),
                 Epoch(2)
             );
         }
@@ -3309,7 +3360,8 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
         }
 
@@ -3321,7 +3373,8 @@ mod test {
         let _ = node.handle_proposal_message(author, verified_message);
         let current_epoch = node
             .epoch_manager
-            .get_epoch(node.consensus_state.get_current_round());
+            .get_epoch(node.consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(current_epoch, Epoch(2));
     }
 
@@ -3398,17 +3451,21 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
                 node.epoch_manager
-                    .get_epoch(expected_epoch_start_round - Round(1)),
+                    .get_epoch(expected_epoch_start_round - Round(1))
+                    .unwrap(),
                 Epoch(1)
             );
             assert_eq!(
-                node.epoch_manager.get_epoch(expected_epoch_start_round),
+                node.epoch_manager
+                    .get_epoch(expected_epoch_start_round)
+                    .unwrap(),
                 Epoch(2)
             );
         }
@@ -3425,7 +3482,8 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
         }
 
@@ -3437,7 +3495,8 @@ mod test {
         let _ = node.handle_proposal_message(author, verified_message);
         let current_epoch = node
             .epoch_manager
-            .get_epoch(node.consensus_state.get_current_round());
+            .get_epoch(node.consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(current_epoch, Epoch(2));
     }
 
@@ -3515,17 +3574,21 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
                 node.epoch_manager
-                    .get_epoch(expected_epoch_start_round - Round(1)),
+                    .get_epoch(expected_epoch_start_round - Round(1))
+                    .unwrap(),
                 Epoch(1)
             );
             assert_eq!(
-                node.epoch_manager.get_epoch(expected_epoch_start_round),
+                node.epoch_manager
+                    .get_epoch(expected_epoch_start_round)
+                    .unwrap(),
                 Epoch(2)
             );
         }
@@ -3550,7 +3613,8 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
         }
 
@@ -3569,7 +3633,8 @@ mod test {
 
         let current_epoch = node
             .epoch_manager
-            .get_epoch(node.consensus_state.get_current_round());
+            .get_epoch(node.consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(current_epoch, Epoch(2));
     }
 
@@ -3637,34 +3702,44 @@ mod test {
         // verify state 0 is still in epoch 1
         let state_0_epoch = ctx[0]
             .epoch_manager
-            .get_epoch(ctx[0].consensus_state.get_current_round());
+            .get_epoch(ctx[0].consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(state_0_epoch, Epoch(1));
 
         // verify state 0 scheduled the next epoch correctly
         assert_eq!(
             ctx[0]
                 .epoch_manager
-                .get_epoch(expected_epoch_start_round - Round(1)),
+                .get_epoch(expected_epoch_start_round - Round(1))
+                .unwrap(),
             Epoch(1)
         );
         assert_eq!(
-            ctx[0].epoch_manager.get_epoch(expected_epoch_start_round),
+            ctx[0]
+                .epoch_manager
+                .get_epoch(expected_epoch_start_round)
+                .unwrap(),
             Epoch(2)
         );
 
         // state 1 should still not have scheduled next epoch since it didn't commit update_block
         let state_1_epoch = ctx[1]
             .epoch_manager
-            .get_epoch(ctx[1].consensus_state.get_current_round());
+            .get_epoch(ctx[1].consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(state_1_epoch, Epoch(1));
         assert_eq!(
             ctx[1]
                 .epoch_manager
-                .get_epoch(expected_epoch_start_round - Round(1)),
+                .get_epoch(expected_epoch_start_round - Round(1))
+                .unwrap(),
             Epoch(1)
         );
         assert_eq!(
-            ctx[1].epoch_manager.get_epoch(expected_epoch_start_round),
+            ctx[1]
+                .epoch_manager
+                .get_epoch(expected_epoch_start_round)
+                .unwrap(),
             Epoch(1)
         ); // STILL EPOCH 1
 
@@ -3693,16 +3768,21 @@ mod test {
         // state 1 should have scheduled the next epoch
         let state_1_epoch = state1
             .epoch_manager
-            .get_epoch(state1.consensus_state.get_current_round());
+            .get_epoch(state1.consensus_state.get_current_round())
+            .unwrap();
         assert_eq!(state_1_epoch, Epoch(1));
         assert_eq!(
             state1
                 .epoch_manager
-                .get_epoch(expected_epoch_start_round - Round(1)),
+                .get_epoch(expected_epoch_start_round - Round(1))
+                .unwrap(),
             Epoch(1)
         );
         assert_eq!(
-            state1.epoch_manager.get_epoch(expected_epoch_start_round),
+            state1
+                .epoch_manager
+                .get_epoch(expected_epoch_start_round)
+                .unwrap(),
             Epoch(2)
         ); // NOW EPOCH 2
     }
@@ -3781,17 +3861,21 @@ mod test {
             // verify all states are still in epoch 1
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
                 node.epoch_manager
-                    .get_epoch(expected_epoch_start_round - Round(1)),
+                    .get_epoch(expected_epoch_start_round - Round(1))
+                    .unwrap(),
                 Epoch(1)
             );
             assert_eq!(
-                node.epoch_manager.get_epoch(expected_epoch_start_round),
+                node.epoch_manager
+                    .get_epoch(expected_epoch_start_round)
+                    .unwrap(),
                 Epoch(2)
             );
         }
@@ -3813,7 +3897,8 @@ mod test {
             // verify state is now in epoch 2
             let current_epoch = node
                 .epoch_manager
-                .get_epoch(node.consensus_state.get_current_round());
+                .get_epoch(node.consensus_state.get_current_round())
+                .unwrap();
             assert_eq!(current_epoch, Epoch(2));
         }
     }

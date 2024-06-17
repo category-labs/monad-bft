@@ -19,11 +19,13 @@ monad-types = { path = "../monad-types" }
 alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true }
 bytes = { workspace = true }
+hex = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
 
 [dev-dependencies]
 test-case = { workspace = true }

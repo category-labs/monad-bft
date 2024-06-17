@@ -102,13 +102,13 @@ fn nodes_with_random_latency(latency_seed: u64) {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, SeqNum(3000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(3000)),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],

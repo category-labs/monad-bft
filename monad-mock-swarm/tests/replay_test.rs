@@ -176,13 +176,13 @@ fn replay_one_honest(failure_idx: &[usize]) {
             .into_iter()
             .map(|state_builder| {
                 let me = NodeId::new(state_builder.key.pubkey());
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,
                     MockMemLoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],
@@ -286,13 +286,13 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     {
         let state_builder = state_configs_duplicates.remove(f0);
-        let validators = state_builder.validators.clone();
+        let validators = state_builder.forkpoint.validator_sets[0].clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(node_ids[f0]),
             state_builder,
             node0_logger_config,
             NoSerRouterConfig::new(all_peers.clone()).build(),
-            MockStateRootHashNop::new(validators, SeqNum(2000)),
+            MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
             vec![GenericTransformer::Latency(LatencyTransformer::new(
                 Duration::from_millis(1),
             ))],
@@ -303,13 +303,13 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     {
         let state_builder = state_configs_duplicates.remove(f1 - 1);
-        let validators = state_builder.validators.clone();
+        let validators = state_builder.forkpoint.validator_sets[0].clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(node_ids[f1]),
             state_builder,
             node1_logger_config,
             NoSerRouterConfig::new(all_peers).build(),
-            MockStateRootHashNop::new(validators, SeqNum(2000)),
+            MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
             vec![GenericTransformer::Latency(LatencyTransformer::new(
                 Duration::from_millis(1),
             ))],

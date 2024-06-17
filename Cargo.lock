@@ -3352,6 +3352,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
+ "hex",
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
@@ -3359,6 +3360,7 @@ dependencies = [
  "prost",
  "rand",
  "rand_chacha",
+ "serde",
  "test-case",
  "tracing",
  "zerocopy 0.6.5",
@@ -3370,10 +3372,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "criterion",
+ "hex",
  "monad-proto",
  "rcgen",
  "ring 0.17.6",
  "rustls",
+ "serde",
  "sha2",
  "x509-parser",
  "zerocopy 0.6.5",
@@ -3929,7 +3933,9 @@ dependencies = [
  "prost",
  "rand",
  "rand_chacha",
+ "serde",
  "test-case",
+ "toml 0.7.8",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -4095,6 +4101,7 @@ dependencies = [
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "monad-crypto",
  "monad-proto",
  "serde",

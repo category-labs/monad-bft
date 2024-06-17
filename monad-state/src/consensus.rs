@@ -144,7 +144,8 @@ where
                     let current_epoch = self
                         .node_state
                         .epoch_manager
-                        .get_epoch(self.consensus.get_current_round());
+                        .get_epoch(self.consensus.get_current_round())
+                        .expect("current epoch exists");
                     let val_set = self
                         .node_state
                         .val_epoch_map

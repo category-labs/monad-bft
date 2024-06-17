@@ -86,7 +86,8 @@ mod test {
             let current_epoch = node
                 .state
                 .epoch_manager()
-                .get_epoch(node.state.consensus().get_current_round());
+                .get_epoch(node.state.consensus().get_current_round())
+                .expect("epoch exists");
             assert!(current_epoch == epoch);
         }
     }
@@ -115,10 +116,17 @@ mod test {
 
             // verify the epoch is scheduled correctly
             assert_ne!(
-                epoch_manager.get_epoch(epoch_start_round - Round(1)),
+                epoch_manager
+                    .get_epoch(epoch_start_round - Round(1))
+                    .expect("epoch exists"),
                 expected_epoch
             );
-            assert_eq!(epoch_manager.get_epoch(epoch_start_round), expected_epoch);
+            assert_eq!(
+                epoch_manager
+                    .get_epoch(epoch_start_round)
+                    .expect("epoch exists"),
+                expected_epoch
+            );
 
             epoch_start_rounds.push(epoch_start_round);
         }
@@ -166,13 +174,13 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators, val_set_update_interval),
+                        MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         seed.try_into().unwrap(),
@@ -260,13 +268,13 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators, val_set_update_interval),
+                        MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
                         vec![],
                         seed.try_into().unwrap(),
@@ -321,7 +329,8 @@ mod test {
             blackout_node
                 .state
                 .epoch_manager()
-                .get_epoch(epoch_start_round),
+                .get_epoch(epoch_start_round)
+                .expect("epoch exists"),
             Epoch(1)
         );
 
@@ -406,13 +415,14 @@ mod test {
             SeqNum(100),              // state_sync_threshold
         );
 
-        let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0]
-            .validators
-            .0
-            .clone()
-            .iter()
-            .map(|(node_id, _, _)| *node_id)
-            .collect();
+        let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].forkpoint.validator_sets
+            [0]
+        .validators
+        .0
+        .clone()
+        .iter()
+        .map(|vdata| vdata.node_id)
+        .collect();
         let (validators_epoch_3, validators_epoch_4) = genesis_validators.split_at(2);
         // validators for epoch 1 = genesis_validators
         // validators for epoch 2 = genesis_validators
@@ -433,13 +443,13 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(validators, val_set_update_interval),
+                        MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
                         vec![],
                         seed.try_into().unwrap(),
@@ -600,13 +610,13 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashSwap::new(validators, val_set_update_interval),
+                        MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         seed.try_into().unwrap(),

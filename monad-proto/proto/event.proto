@@ -40,7 +40,7 @@ message ProtoFetchedBlock {
 }
 
 message ProtoUpdateValidatorsEvent {
-  monad_proto.validator_data.ProtoValidatorData validator_data = 1;
+  monad_proto.validator_data.ProtoValidatorSetData validator_set_data = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
 }
 

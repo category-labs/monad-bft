@@ -80,7 +80,10 @@ where
     }
 
     fn get_leader(&self, round: Round) -> NodeId<CertificateSignaturePubKey<ST>> {
-        let epoch = self.epoch_manager.get_epoch(round);
+        let epoch = self
+            .epoch_manager
+            .get_epoch(round)
+            .expect("epoch for current and future rounds always exist");
         let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
             todo!("handle non-existent validatorset for next k round epoch");
         };

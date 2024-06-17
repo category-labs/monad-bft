@@ -29,15 +29,6 @@ pub struct VoteState<SCT: SignatureCollection> {
     earliest_round: Round,
 }
 
-impl<SCT: SignatureCollection> Default for VoteState<SCT> {
-    fn default() -> Self {
-        VoteState {
-            pending_votes: BTreeMap::new(),
-            earliest_round: Round(0),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct RoundVoteState<PT: PubKey, ST: CertificateSignature> {
     /// Pending votes, keyed by vote hash
@@ -66,6 +57,13 @@ impl<SCT> VoteState<SCT>
 where
     SCT: SignatureCollection,
 {
+    pub fn new(round: Round) -> Self {
+        VoteState {
+            earliest_round: round,
+            pending_votes: Default::default(),
+        }
+    }
+
     #[must_use]
     pub fn process_vote<VT>(
         &mut self,
@@ -221,7 +219,7 @@ mod test {
 
     #[test]
     fn clean_older_votes() {
-        let mut votestate = VoteState::<SignatureCollectionType>::default();
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
         let (keys, cert_keys, valset, val_map) = create_keys_w_validators::<
             SignatureType,
             SignatureCollectionType,
@@ -275,7 +273,7 @@ mod test {
 
     #[test]
     fn handle_future_votes() {
-        let mut votestate = VoteState::<SignatureCollectionType>::default();
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
         let (keys, cert_keys, valset, vmap) = create_keys_w_validators::<
             SignatureType,
             SignatureCollectionType,
@@ -310,7 +308,7 @@ mod test {
 
     #[test]
     fn duplicate_votes() {
-        let mut votestate = VoteState::<SignatureCollectionType>::default();
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
             SignatureType,
             SignatureCollectionType,
@@ -331,7 +329,7 @@ mod test {
 
     #[test]
     fn invalid_votes_no_qc() {
-        let mut votestate = VoteState::<SignatureCollectionType>::default();
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
             SignatureType,
             SignatureCollectionType,
@@ -395,7 +393,7 @@ mod test {
 
     #[test]
     fn invalid_votes_qc() {
-        let mut votestate = VoteState::<SignatureCollectionType>::default();
+        let mut votestate = VoteState::<SignatureCollectionType>::new(Round(0));
 
         let keys = create_keys::<SignatureType>(4);
         let certkeys = create_certificate_keys::<SignatureCollectionType>(4);

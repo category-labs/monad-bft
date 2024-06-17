@@ -58,13 +58,13 @@ fn two_nodes() {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
                         delta,
                     ))],

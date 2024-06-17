@@ -35,11 +35,11 @@ impl PubKey for BlsPubKey {
     type Error = BlsError;
 
     fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
-        Self::deserialize(pubkey)
+        Self::uncompress(pubkey)
     }
 
     fn bytes(&self) -> Vec<u8> {
-        self.serialize()
+        self.compress()
     }
 }
 

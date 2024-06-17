@@ -12,13 +12,17 @@ bench = false
 monad-proto = { path = "../monad-proto" }
 
 blake3 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
 sha2 = { workspace = true }
 zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
 ring = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true, features = ["dangerous_configuration"] }
+rustls = { workspace = true, optional = true, features = [
+    "dangerous_configuration",
+] }
 x509-parser = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -26,6 +26,13 @@ impl Default for Safety {
 }
 
 impl Safety {
+    pub fn new(highest_vote_round: Round, highest_qc_round: Round) -> Self {
+        Safety {
+            highest_vote_round,
+            highest_qc_round,
+        }
+    }
+
     fn update_highest_vote_round(&mut self, r: Round) {
         self.highest_vote_round = cmp::max(r, self.highest_vote_round);
     }

@@ -83,7 +83,7 @@ fn test_proposal_hash() {
         SignatureCollectionType,
         _,
     >(1, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
         ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -96,9 +96,9 @@ fn test_proposal_hash() {
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
-            epoch_manager.get_epoch(Round(234)),
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
             Round(234),
-            epoch_manager.get_epoch(Round(233)),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
             keypairs
                 .iter()
@@ -126,7 +126,7 @@ fn test_proposal_missing_tc() {
         SignatureCollectionType,
         _,
     >(1, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -138,9 +138,9 @@ fn test_proposal_missing_tc() {
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
-            epoch_manager.get_epoch(Round(234)),
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
             Round(234),
-            epoch_manager.get_epoch(Round(232)),
+            epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
             Round(232),
             keypairs
                 .iter()
@@ -164,7 +164,7 @@ fn test_proposal_author_not_sender() {
         SignatureCollectionType,
         _,
     >(2, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
         ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -180,9 +180,9 @@ fn test_proposal_author_not_sender() {
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
-            epoch_manager.get_epoch(Round(234)),
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
             Round(234),
-            epoch_manager.get_epoch(Round(233)),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
             keypairs
                 .iter()
@@ -217,7 +217,7 @@ fn test_proposal_invalid_author() {
         NodeId::new(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
         ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
@@ -230,9 +230,9 @@ fn test_proposal_invalid_author() {
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
-            epoch_manager.get_epoch(Round(234)),
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
             Round(234),
-            epoch_manager.get_epoch(Round(233)),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
             &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
         ),
@@ -271,7 +271,7 @@ fn test_proposal_invalid_qc() {
             non_staked_keypair.pubkey(),
         ),
     ]);
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(
         Epoch(1),
@@ -283,9 +283,9 @@ fn test_proposal_invalid_qc() {
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
-            epoch_manager.get_epoch(Round(234)),
+            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
             Round(234),
-            epoch_manager.get_epoch(Round(233)),
+            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
             Round(233),
             &[non_staked_keypair.pubkey()],
         ),

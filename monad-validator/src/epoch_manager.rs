@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use monad_types::{Epoch, Round, SeqNum};
+use tracing::debug;
 
 /// Stores epoch related information and the associated round numbers
 /// of each epoch
@@ -18,26 +19,37 @@ pub struct EpochManager {
 }
 
 impl EpochManager {
-    pub fn new(val_set_update_interval: SeqNum, epoch_start_delay: Round) -> Self {
+    pub fn new(
+        val_set_update_interval: SeqNum,
+        epoch_start_delay: Round,
+        known_epochs: &[(Epoch, Round)],
+    ) -> Self {
         let mut epoch_manager = Self {
             val_set_update_interval,
             epoch_start_delay,
             epoch_starts: BTreeMap::new(),
         };
 
-        epoch_manager.insert_epoch_start(Epoch(1), Round(0));
+        for (epoch, round) in known_epochs {
+            epoch_manager.insert_epoch_start(*epoch, *round);
+        }
 
         epoch_manager
     }
 
     /// Insert a new epoch start if the epoch doesn't exist already
     fn insert_epoch_start(&mut self, epoch: Epoch, round: Round) {
-        assert!(
-            !self.epoch_starts.contains_key(&epoch),
-            "should't insert epoch start twice"
-        );
-
-        self.epoch_starts.insert(epoch, round);
+        // On consensus restart, the same epoch might be scheduled a second time
+        // when we commit the same boundary block again. Assert that value is
+        // the same if entry exists
+        match self.epoch_starts.entry(epoch) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(round);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                assert_eq!(*entry.get(), round, "Conflicting epoch start round");
+            }
+        }
     }
 
     /// Schedule next epoch start if the committed block is the last one in the current epoch
@@ -46,13 +58,18 @@ impl EpochManager {
             let next_epoch = block_num.to_epoch(self.val_set_update_interval) + Epoch(1);
             let epoch_start_round = block_round + self.epoch_start_delay;
             self.insert_epoch_start(next_epoch, epoch_start_round);
+            debug!(
+                "schedule epoch start epoch {:?} round {:?} block round {:?}",
+                next_epoch, epoch_start_round, block_round
+            );
         }
     }
 
-    /// Get the epoch of the given round
-    pub fn get_epoch(&self, round: Round) -> Epoch {
-        let epoch_start = self.epoch_starts.iter().rfind(|&k| k.1 <= &round).unwrap();
+    /// Get the epoch of the given round. Returns None if round is from an older
+    /// epoch whose record we've purged already
+    pub fn get_epoch(&self, round: Round) -> Option<Epoch> {
+        let epoch_start = self.epoch_starts.iter().rfind(|&k| k.1 <= &round);
 
-        *epoch_start.0
+        epoch_start.map(|(&epoch, _)| epoch)
     }
 }
