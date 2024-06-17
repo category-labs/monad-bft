@@ -91,7 +91,8 @@ COPY --from=builder /usr/src/monad-bft/rpc /usr/local/bin/monad-rpc
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 
 ENV RUST_LOG=info
-CMD monad-rpc \
+# time delay to ensure consensus node is fully started
+CMD sleep 2 && monad-rpc \
     --ipc-path /monad/mempool.sock \
     --blockdb-path /monad/blockdb \
     --execution-ledger-path /monad/ledger \

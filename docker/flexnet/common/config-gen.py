@@ -3,7 +3,6 @@ Run this script from the net top-level directory, e.g. net0
 """
 
 import argparse
-import base64
 import subprocess
 from pathlib import Path
 import sys
@@ -16,6 +15,11 @@ from dataclasses import dataclass
 import tomli_w
 import json
 import random
+
+from secrets import randbits
+from Crypto.Protocol.KDF import scrypt
+from Crypto.Hash import SHA256 as SHA256
+from Crypto.Cipher import AES as AES
 
 blst_bindings_path = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "blst/bindings/python"
@@ -83,12 +87,55 @@ def gen_secret_bytes(config_path: Path, volume: str, seed: bytes) -> bytes:
         return seeded_32_bytes(path_bytes + volume_bytes + seed)
 
 
+def gen_keystore_file(secret, config_path):
+    scrypt_params = {
+        'salt': randbits(256).to_bytes(32, 'big'),
+        'key_len': 32,
+        'N': 2**18,
+        'r': 8,
+        'p': 1,
+    }
+    iv = randbits(128).to_bytes(16, 'big')
+    password = ""
+
+    encryption_key = scrypt(password=password, **scrypt_params)
+    encryption_key = encryption_key if isinstance(encryption_key, bytes) else encryption_key[0]
+
+    cipher = AES.new(
+        key=encryption_key[:16],
+        mode=AES.MODE_CTR,
+        initial_value=iv,
+        nonce=b''
+    )
+    cipher_message = cipher.encrypt(secret)
+    checksum = SHA256.new(encryption_key[16:32] + cipher_message).digest()
+
+    for (k, v) in scrypt_params.items():
+        scrypt_params[k] = v.hex() if isinstance(v, bytes) else v
+    keystore_json = {
+        "ciphertext": cipher_message.hex(),
+        "checksum": checksum.hex(),
+        "cipher": {
+            "cipher_function": "AES_128_CTR",
+            "params": {
+                "iv": iv.hex()
+            }
+        },
+        "kdf": {
+            "kdf_name": "scrypt",
+            "params": scrypt_params
+        },
+        "hash": "SHA256",
+    }
+
+    with open(config_path, 'w+') as f:
+        f.write(json.dumps(keystore_json))
+
+
 def gen_secp_key(config_path, volume, seed):
     secret = gen_secret_bytes(config_path, volume, seed)
-    secret_b64 = base64.standard_b64encode(secret)
 
-    with open(config_path / "id-secp", "w+") as f:
-        f.write(secret_b64.decode("utf-8"))
+    gen_keystore_file(secret, config_path / "id-secp")
 
     sk = secp256k1.PrivateKey(secret)
     pk = "0x" + sk.pubkey.serialize().hex()
@@ -99,10 +146,8 @@ def gen_secp_key(config_path, volume, seed):
 
 def gen_bls_key(config_path, volume, seed):
     secret = gen_secret_bytes(config_path, volume, seed)
-    secret_b64 = base64.standard_b64encode(secret)
 
-    with open(config_path / "id-bls", "w+") as f:
-        f.write(secret_b64.decode("utf-8"))
+    gen_keystore_file(secret, config_path / "id-bls")
 
     sk = blst.SecretKey()
     sk.keygen(secret)
