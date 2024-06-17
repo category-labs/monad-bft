@@ -465,11 +465,7 @@ mod tests {
         let sender_secret_key = B256::repeat_byte(0xcc);
         let signature =
             sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned {
-            transaction,
-            hash,
-            signature,
-        };
+        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
 
         (txn.recalculate_hash(), txn.envelope_encoded().to_string())
     }
@@ -493,11 +489,7 @@ mod tests {
         let sender_secret_key = B256::repeat_byte(0xcc);
         let signature =
             sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned {
-            transaction,
-            hash,
-            signature,
-        };
+        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
 
         (txn.recalculate_hash(), txn.envelope_encoded().to_string())
     }

@@ -242,9 +242,5 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let sender_secret_key = FixedBytes::repeat_byte(1);
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
-    TransactionSigned {
-        transaction,
-        hash,
-        signature,
-    }
+    TransactionSigned::from_transaction_and_signature(transaction, signature)
 }

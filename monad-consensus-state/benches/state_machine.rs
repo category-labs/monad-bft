@@ -421,11 +421,7 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let sender_secret_key = B256::random();
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
-    TransactionSigned {
-        transaction,
-        hash,
-        signature,
-    }
+    TransactionSigned::from_transaction_and_signature(transaction, signature)
 }
 fn make_txns() -> (Vec<TransactionSigned>, FullTransactionList) {
     let txns = (0..NUM_TRANSACTIONS)
