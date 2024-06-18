@@ -22,11 +22,12 @@ use eth_txn_handlers::{
     monad_eth_getTransactionByHash, monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
-use log::{debug, info};
+use log::{debug, error, info};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
+use tokio::time::{sleep, Duration};
 
 use crate::{
     call::monad_eth_call,
@@ -368,6 +369,8 @@ pub fn create_app<S: 'static>(
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
 
+const IPC_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
@@ -378,11 +381,25 @@ async fn main() -> std::io::Result<()> {
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
     let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
+
+    let mut sender;
+    loop {
+        match MempoolTxIpcSender::new(args.ipc_path.clone()).await {
+            Ok(s) => {
+                sender = s;
+                break;
+            }
+            Err(_) => {
+                error!(
+                    "IPC socket file {:?} does not exist. Waiting for consensus node to come up. Trying again in {:?}.",
+                    args.ipc_path.clone().to_str(),
+                    IPC_RETRY_TIMEOUT
+                );
+                sleep(IPC_RETRY_TIMEOUT).await;
+            }
+        }
+    }
     tokio::spawn(async move {
-        // FIXME: continuously try and reconnect if fail
-        let mut sender = MempoolTxIpcSender::new(args.ipc_path)
-            .await
-            .expect("IPC sock must exist");
         while let Ok(tx) = ipc_receiver.recv_async().await {
             sender.send(tx).await.expect("IPC send failed");
         }
