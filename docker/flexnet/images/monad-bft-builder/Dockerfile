@@ -1,6 +1,7 @@
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 RUN apt update
+RUN apt-get update
 RUN apt install -y ca-certificates \
     curl \
     gnupg \

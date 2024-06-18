@@ -1,5 +1,5 @@
 # RPC server
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"

@@ -3,6 +3,7 @@
 blockdb="./monad/blockdb"
 ledger="./monad/ledger"
 mempool_sock="./monad/mempool.sock"
+triedb="./monad/triedb"
 wal="./monad/wal"
 
 # Check if directories/files from previous run exist, delete them if they exist

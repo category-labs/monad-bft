@@ -92,7 +92,7 @@ sleep 5
 # cleanup function to stop docker containers
 cleanup() {
     echo "Cleaning up..."
-    docker stop $EXEC_CONTAINER_ID $CONS_CONTAINER_ID $RPC_CONTAINER_ID
+    docker stop $EXECUTION_CONTAINER_ID $CONSENSUS_CONTAINER_ID $RPC_CONTAINER_ID
     kill $CURL_PID
     echo "Stopped execution, consensus, and RPC Docker containers."
 }

@@ -1,7 +1,7 @@
 # Default monad node
 
 # runner stage
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 WORKDIR /usr/src/monad-bft
 
 RUN apt update && apt install -y net-tools iputils-ping iproute2
