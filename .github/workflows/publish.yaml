@@ -25,7 +25,7 @@ jobs:
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: peach10.monad.spacetime.org
+          registry: peach10.devcore4.com
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
@@ -34,7 +34,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.monad.spacetime.org/${{ env.IMAGE_NAME }}
+            peach10.devcore4.com/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -73,7 +73,7 @@ jobs:
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: peach10.monad.spacetime.org
+          registry: peach10.devcore4.com
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
@@ -82,7 +82,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.monad.spacetime.org/monad-crypto/monad-rpc
+            peach10.devcore4.com/monad-crypto/monad-rpc
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -110,7 +110,7 @@ jobs:
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: peach10.monad.spacetime.org
+          registry: peach10.devcore4.com
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
@@ -119,7 +119,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.monad.spacetime.org/monad-crypto/blockwatch
+            peach10.devcore4.com/monad-crypto/blockwatch
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -161,7 +161,7 @@ jobs:
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: peach10.monad.spacetime.org
+          registry: peach10.devcore4.com
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
           password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
 
@@ -170,7 +170,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.monad.spacetime.org/monad-crypto/monad-execution
+            peach10.devcore4.com/monad-crypto/monad-execution
           tags: |
             type=ref,event=branch
             type=sha,prefix=
