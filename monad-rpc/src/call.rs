@@ -4,6 +4,7 @@ use alloy_primitives::{Address, Uint, U256, U64, U8};
 use log::debug;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
+use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -204,15 +205,15 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
 pub async fn sender_gas_allowance(
     triedb_env: &TriedbEnv,
-    block_number: u64,
+    block: &Block,
     request: &CallRequest,
-) -> Result<Option<U256>, JsonRpcError> {
+) -> Result<u64, JsonRpcError> {
     if request.from.is_some() && request.max_fee_per_gas().is_some() {
         let from = request.from.expect("sender address");
         let TriedbResult::Account(_, balance, _) = triedb_env
             .get_account(
                 from.into(),
-                monad_blockdb_utils::BlockTags::Number(block_number),
+                monad_blockdb_utils::BlockTags::Number(block.number),
             )
             .await
         else {
@@ -230,9 +231,10 @@ pub async fn sender_gas_allowance(
             })?
             .checked_div(gas_price)
             .ok_or_else(JsonRpcError::internal_error)?;
-        Ok(Some(gas_limit))
+
+        gas_limit.try_into().or_else(|_| Ok(block.gas_limit))
     } else {
-        Ok(None)
+        Ok(block.gas_limit)
     }
 }
 
@@ -292,16 +294,14 @@ pub async fn monad_eth_call(
         block_header.block.base_fee_per_gas.unwrap_or_default(),
     ))?;
 
-    let allowance = if params.transaction.gas.is_none() {
-        sender_gas_allowance(&triedb_env, block_number, &params.transaction)
-            .await?
-            .or_else(|| Some(U256::from(block_header.block.gas_limit)))
+    let allowance: Option<u64> = if params.transaction.gas.is_none() {
+        Some(sender_gas_allowance(&triedb_env, &block_header.block, &params.transaction).await?)
     } else {
         None
     };
 
     if allowance.is_some() {
-        params.transaction.gas = allowance;
+        params.transaction.gas = allowance.map(U256::from);
     };
 
     let sender = params.transaction.from.unwrap_or_default();

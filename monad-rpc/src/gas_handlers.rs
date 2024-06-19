@@ -84,16 +84,14 @@ pub async fn monad_eth_estimateGas(
         block_header.block.base_fee_per_gas.unwrap_or_default(),
     ))?;
 
-    let allowance = if params.tx.gas.is_none() {
-        sender_gas_allowance(&triedb_env, block_number, &params.tx)
-            .await?
-            .or_else(|| Some(U256::from(block_header.block.gas_limit)))
+    let allowance: Option<u64> = if params.tx.gas.is_none() {
+        Some(sender_gas_allowance(&triedb_env, &block_header.block, &params.tx).await?)
     } else {
         None
     };
 
     if allowance.is_some() {
-        params.tx.gas = allowance;
+        params.tx.gas = allowance.map(U256::from);
     };
 
     let sender = params.tx.from.unwrap_or_default();
