@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashSet},
 };
 
 use alloy_rlp::Decodable;
@@ -167,7 +167,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             .pool
             .iter()
             .map(|(address, group)| (*address, group.transactions.iter()))
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
 
         let mut virtual_time: VirtualTimestamp = 0;
 
@@ -532,6 +532,53 @@ mod test {
         let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, HashSet::default());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
+    }
+
+    #[test]
+    #[traced_test]
+    fn nondeterminism() {
+        let s1: B256 =
+            hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
+        let s2: B256 =
+            hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
+        let s3: B256 =
+            hex!("29b6132c13a004a476484efd02bbd0614527f8f34b94a360201c611b111deac9").into(); // pubkey starts with CCC
+        let s4: B256 =
+            hex!("871683e86bef90f2e790e60e4245916c731f540eec4a998697c2cbab4e156868").into(); // pubkey starts with DDD
+        let s5: B256 =
+            hex!("9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8").into(); // pubkey starts with EEE
+        let txs = vec![
+            make_tx(s1, 1, 1, 0, 10),
+            make_tx(s1, 1, 1, 1, 10),
+            make_tx(s2, 1, 1, 0, 10),
+            make_tx(s2, 1, 1, 1, 10),
+            make_tx(s3, 1, 1, 0, 10),
+            make_tx(s3, 1, 1, 1, 10),
+            make_tx(s4, 1, 1, 0, 10),
+            make_tx(s4, 1, 1, 1, 10),
+            make_tx(s5, 1, 1, 0, 10),
+            make_tx(s5, 1, 1, 1, 10),
+        ];
+        let expected_txs = vec![
+            make_tx(s5, 1, 1, 0, 10),
+            make_tx(s5, 1, 1, 1, 10),
+            make_tx(s4, 1, 1, 0, 10),
+            make_tx(s4, 1, 1, 1, 10),
+            make_tx(s3, 1, 1, 0, 10),
+            make_tx(s3, 1, 1, 1, 10),
+            make_tx(s2, 1, 1, 0, 10),
+            make_tx(s2, 1, 1, 1, 10),
+            make_tx(s1, 1, 1, 0, 10),
+            make_tx(s1, 1, 1, 1, 10),
+        ];
+
+        let mut pool = EthTxPool::default();
+        for tx in txs.iter() {
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+        }
+        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, HashSet::default());
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert_eq!(expected_txs, decoded_txns);
     }
 }
 
