@@ -17,14 +17,14 @@ use sorted_vector_map::SortedVectorMap;
 type VirtualTimestamp = u64;
 
 /// Needed to have control over Ord implementation
-#[derive(Debug, Default, Eq, PartialEq)]
-struct WrappedTransaction {
-    inner: EthTransaction,
+#[derive(Debug, Eq, PartialEq)]
+struct WrappedTransaction<'a> {
+    inner: &'a EthTransaction,
     sender: EthAddress,
     insertion_time: VirtualTimestamp,
 }
 
-impl WrappedTransaction {
+impl<'a> WrappedTransaction<'a> {
     pub fn effective_tip_per_gas(&self) -> u128 {
         match self.inner.transaction {
             Transaction::Legacy(TxLegacy { gas_price, .. })
@@ -49,11 +49,11 @@ impl WrappedTransaction {
     }
 
     pub fn inner(&self) -> &EthTransaction {
-        &self.inner
+        self.inner
     }
 }
 
-impl Ord for WrappedTransaction {
+impl<'a> Ord for WrappedTransaction<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self
             .effective_tip_per_gas()
@@ -66,7 +66,7 @@ impl Ord for WrappedTransaction {
     }
 }
 
-impl PartialOrd for WrappedTransaction {
+impl<'a> PartialOrd for WrappedTransaction<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -183,7 +183,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
                 }
                 Some((_, transaction)) => {
                     max_heap.push(WrappedTransaction {
-                        inner: transaction.clone(),
+                        inner: transaction,
                         sender: *account,
                         insertion_time: virtual_time,
                     });
@@ -218,7 +218,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
                 None => {}
                 Some((_, transaction)) => {
                     max_heap.push(WrappedTransaction {
-                        inner: transaction.clone(),
+                        inner: transaction,
                         sender: address,
                         insertion_time: virtual_time,
                     });
