@@ -3473,6 +3473,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-tx",
  "monad-multi-sig",
+ "monad-perf-util",
  "monad-types",
  "rand",
  "rand_chacha",
@@ -3741,6 +3742,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "monad-perf-util"
+version = "0.1.0"
 
 [[package]]
 name = "monad-proto"

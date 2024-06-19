@@ -1,5 +1,14 @@
 #!/bin/bash
 set +x
+
+if [ -f "ctl_fd.fifo" ]; then
+  rm "ctl_fd.fifo"
+fi
+
+if [ -f "ctl_fd_ack.fifo" ]; then
+  rm "ctl_fd_ack.fifo"
+fi
+
 mkfifo ctl_fd.fifo
 exec {ctl_fd}<>ctl_fd.fifo
 mkfifo ctl_fd_ack.fifo

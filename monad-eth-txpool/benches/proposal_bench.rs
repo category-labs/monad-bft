@@ -5,6 +5,7 @@ use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_txpool::{EthBlockPolicy, EthTxPool};
 use monad_multi_sig::MultiSig;
+use monad_perf_util::PerfController;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use reth_primitives::{
@@ -81,20 +82,47 @@ fn create_pool_and_transactions() -> BenchController {
 fn criterion_benchmark(c: &mut Criterion) {
     let proposal_txn_limit: usize = NUM_TRANSACTIONS;
     let mut group = c.benchmark_group("proposal");
-    group.bench_function("create_proposal", |b| {
-        b.iter_batched_ref(
-            create_pool_and_transactions,
-            |controller| {
-                TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
-                    &mut controller.pool,
-                    proposal_txn_limit,
-                    controller.gas_limit,
-                    Default::default(),
-                );
-            },
-            BatchSize::SmallInput,
-        )
-    });
+
+    match PerfController::from_env() {
+        Ok(mut perf) => {
+            group.bench_function("create_proposal", |b| {
+                b.iter_batched_ref(
+                    create_pool_and_transactions,
+                    |controller| {
+                        perf.enable();
+                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                            &mut controller.pool,
+                            proposal_txn_limit,
+                            controller.gas_limit,
+                            Default::default(),
+                        );
+                        perf.disable();
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+        Err(e) => {
+            println!(
+                "failed to initialize perf controller, continuing without sampling. did you define the `PERF_CTL_FD` and `PERF_CTL_FD_ACK` environment variables? error: {:?}",
+                e
+            );
+            group.bench_function("create_proposal", |b| {
+                b.iter_batched_ref(
+                    create_pool_and_transactions,
+                    |controller| {
+                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                            &mut controller.pool,
+                            proposal_txn_limit,
+                            controller.gas_limit,
+                            Default::default(),
+                        );
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
 }
 
 criterion_group!(benches, criterion_benchmark);
