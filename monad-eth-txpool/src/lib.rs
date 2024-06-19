@@ -17,27 +17,31 @@ use sorted_vector_map::SortedVectorMap;
 type VirtualTimestamp = u64;
 
 /// Needed to have control over Ord implementation
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct WrappedTransaction<'a> {
     inner: &'a EthTransaction,
-    sender: EthAddress,
     insertion_time: VirtualTimestamp,
+    price_gas_limit_ratio: f64,
+}
+
+fn effective_tip_per_gas(transaction: &EthTransaction) -> u128 {
+    match transaction.transaction {
+        Transaction::Legacy(TxLegacy { gas_price, .. })
+        | Transaction::Eip2930(TxEip2930 { gas_price, .. }) => gas_price,
+        Transaction::Eip1559(TxEip1559 {
+            max_priority_fee_per_gas,
+            ..
+        })
+        | Transaction::Eip4844(TxEip4844 {
+            max_priority_fee_per_gas,
+            ..
+        }) => max_priority_fee_per_gas,
+    }
 }
 
 impl<'a> WrappedTransaction<'a> {
     pub fn effective_tip_per_gas(&self) -> u128 {
-        match self.inner.transaction {
-            Transaction::Legacy(TxLegacy { gas_price, .. })
-            | Transaction::Eip2930(TxEip2930 { gas_price, .. }) => gas_price,
-            Transaction::Eip1559(TxEip1559 {
-                max_priority_fee_per_gas,
-                ..
-            })
-            | Transaction::Eip4844(TxEip4844 {
-                max_priority_fee_per_gas,
-                ..
-            }) => max_priority_fee_per_gas,
-        }
+        effective_tip_per_gas(self.inner)
     }
 
     pub fn hash(&self) -> EthTxHash {
@@ -53,16 +57,16 @@ impl<'a> WrappedTransaction<'a> {
     }
 }
 
+impl<'a> Eq for WrappedTransaction<'a> {}
+
 impl<'a> Ord for WrappedTransaction<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self
-            .effective_tip_per_gas()
-            .cmp(&other.effective_tip_per_gas())
-        {
-            order @ Ordering::Less | order @ Ordering::Greater => order,
-            // Use the VirtualTimestamp as a tie-breaker
-            Ordering::Equal => self.insertion_time.cmp(&other.insertion_time),
-        }
+        // Unwrap safety: Okay to unwrap here so long as we guarantee price_gas_limit_ratio is not NaN
+        // when inserting into the mempool. partial_cmp is guaranteed to return Some(_) if neither
+        // operand is NaN
+        (self.price_gas_limit_ratio, self.insertion_time)
+            .partial_cmp(&(other.price_gas_limit_ratio, other.insertion_time))
+            .unwrap()
     }
 }
 
@@ -74,12 +78,13 @@ impl<'a> PartialOrd for WrappedTransaction<'a> {
 
 #[derive(Clone, Debug, Default)]
 struct TransactionGroup {
-    transactions: SortedVectorMap<Nonce, EthTransaction>,
+    transactions: SortedVectorMap<Nonce, (EthTransaction, f64)>,
 }
 
 impl TransactionGroup {
-    fn add(&mut self, transaction: EthTransaction) {
-        self.transactions.insert(transaction.nonce(), transaction);
+    fn add(&mut self, transaction: EthTransaction, ratio: f64) {
+        self.transactions
+            .insert(transaction.nonce(), (transaction, ratio));
     }
 }
 
@@ -139,7 +144,18 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let sender = EthAddress(eth_tx.signer());
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
-        self.pool.entry(sender).or_default().add(eth_tx);
+        // we are going to compute a price : gas_limit ratio so we cannot have zero in the denominator
+        if eth_tx.gas_limit() == 0 {
+            return;
+        }
+
+        let ratio = (effective_tip_per_gas(&eth_tx) as f64) / (eth_tx.gas_limit() as f64);
+
+        if ratio.is_nan() {
+            return;
+        }
+
+        self.pool.entry(sender).or_default().add(eth_tx, ratio);
     }
 
     fn create_proposal(
@@ -176,16 +192,16 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let mut max_heap = BinaryHeap::<WrappedTransaction>::new();
 
         // queue one eligible transaction for each account (they will be the ones with the lowest nonce)
-        for (account, transaction_iter) in transaction_iters.iter_mut() {
+        for (_, transaction_iter) in transaction_iters.iter_mut() {
             match transaction_iter.next() {
                 None => {
                     unreachable!()
                 }
-                Some((_, transaction)) => {
+                Some((_, (transaction, price_gas_limit_ratio))) => {
                     max_heap.push(WrappedTransaction {
                         inner: transaction,
-                        sender: *account,
                         insertion_time: virtual_time,
+                        price_gas_limit_ratio: *price_gas_limit_ratio,
                     });
                     virtual_time += 1;
                 }
@@ -194,12 +210,8 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
 
         // loop invariant: `max_heap` contains one transaction per account (lowest nonce).
         // the root of the heap will be the best priced eligible transaction
-        while !max_heap.is_empty() {
-            let WrappedTransaction {
-                inner: best_tx,
-                sender: address,
-                ..
-            } = max_heap.pop().unwrap();
+        while let Some(WrappedTransaction { inner: best_tx, .. }) = max_heap.pop() {
+            let address = EthAddress(best_tx.signer());
 
             if txs.len() == tx_limit {
                 break;
@@ -216,11 +228,11 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             // maintain the loop invariant because we just removed one element from the heap
             match transaction_iters.get_mut(&address).unwrap().next() {
                 None => {}
-                Some((_, transaction)) => {
+                Some((_, (transaction, price_gas_limit_ratio))) => {
                     max_heap.push(WrappedTransaction {
                         inner: transaction,
-                        sender: address,
                         insertion_time: virtual_time,
+                        price_gas_limit_ratio: *price_gas_limit_ratio,
                     });
                     virtual_time += 1;
                 }
@@ -504,6 +516,75 @@ mod test {
         let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
+    }
+
+    #[test]
+    #[traced_test]
+    fn suboptimal_block() {
+        let s1: B256 =
+            hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
+        let s2: B256 =
+            hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
+        let txs = vec![
+            make_tx(s1, 2, 10, 0, 10),
+            make_tx(s2, 1, 1, 0, 10),
+            make_tx(s2, 1, 1, 1, 10),
+            make_tx(s2, 1, 1, 2, 10),
+            make_tx(s2, 1, 1, 3, 10),
+            make_tx(s2, 1, 1, 4, 10),
+            make_tx(s2, 1, 1, 5, 10),
+            make_tx(s2, 1, 1, 6, 10),
+            make_tx(s2, 1, 1, 7, 10),
+            make_tx(s2, 1, 1, 8, 10),
+            make_tx(s2, 1, 1, 9, 10),
+        ];
+        let expected_txs = vec![
+            make_tx(s2, 1, 1, 0, 10),
+            make_tx(s2, 1, 1, 1, 10),
+            make_tx(s2, 1, 1, 2, 10),
+            make_tx(s2, 1, 1, 3, 10),
+            make_tx(s2, 1, 1, 4, 10),
+            make_tx(s2, 1, 1, 5, 10),
+            make_tx(s2, 1, 1, 6, 10),
+            make_tx(s2, 1, 1, 7, 10),
+            make_tx(s2, 1, 1, 8, 10),
+            make_tx(s2, 1, 1, 9, 10),
+        ];
+
+        let mut pool = EthTxPool::default();
+        for tx in txs.iter() {
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+        }
+        let encoded_txns = Pool::create_proposal(
+            &mut pool,
+            10,
+            10,
+            &EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            Default::default(),
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert_eq!(decoded_txns, expected_txs);
+    }
+    #[test]
+    #[traced_test]
+    fn zero_gas_limit() {
+        let s1: B256 =
+            hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
+        let txs = vec![make_tx(s1, 1, 0, 0, 10)];
+        let expected_txs: Vec<EthSignedTransaction> = vec![];
+
+        let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
+        for tx in txs.iter() {
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+        }
+        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert_eq!(expected_txs, decoded_txns);
     }
 
     #[test]
