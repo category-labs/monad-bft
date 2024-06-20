@@ -203,10 +203,42 @@ pub trait BlockPolicy<SCT: SignatureCollection> {
         + BlockType<SCT, NodeIdPubKey = SCT::NodeIdPubKey>
         + Hashable
         + Send;
+
+    fn check_coherency(
+        &self,
+        block: &Self::ValidatedBlock,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+    ) -> bool;
+
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
+}
+
+impl<SCT: SignatureCollection, T: BlockPolicy<SCT> + ?Sized> BlockPolicy<SCT> for Box<T> {
+    type ValidatedBlock = T::ValidatedBlock;
+
+    fn check_coherency(
+        &self,
+        block: &Self::ValidatedBlock,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+    ) -> bool {
+        (**self).check_coherency(block, extending_blocks)
+    }
+
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
+        (**self).update_committed_block(block)
+    }
 }
 
 /// A block policy which does not validate the inner contents of the block
+#[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
+
 impl<SCT: SignatureCollection> BlockPolicy<SCT> for PassthruBlockPolicy {
     type ValidatedBlock = Block<SCT>;
+
+    fn check_coherency(&self, _: &Self::ValidatedBlock, _: Vec<&Self::ValidatedBlock>) -> bool {
+        true
+    }
+
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
 }

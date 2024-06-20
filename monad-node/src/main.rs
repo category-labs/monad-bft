@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,6 +23,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::Hash,
 };
+use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
@@ -261,6 +263,9 @@ async fn run(
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
+        },
+        block_policy: EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),

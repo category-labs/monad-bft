@@ -1,22 +1,16 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashSet},
+    collections::{BTreeMap, BinaryHeap},
 };
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
-    payload::FullTransactionList,
-    quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
-    txpool::TxPool,
+    payload::FullTransactionList, signature_collection::SignatureCollection, txpool::TxPool,
 };
-use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{
-    EthAddress, EthFullTransactionList, EthSignedTransaction, EthTransaction, EthTxHash, Nonce,
-};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
+use monad_eth_types::{EthAddress, Nonce};
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 use sorted_vector_map::SortedVectorMap;
 
@@ -78,7 +72,7 @@ impl PartialOrd for WrappedTransaction {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct TransactionGroup {
     transactions: SortedVectorMap<Nonce, EthTransaction>,
 }
@@ -91,47 +85,46 @@ impl TransactionGroup {
 
 type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct EthTxPool {
     pool: Pool,
     garbage: Vec<Pool>,
 }
 
 impl EthTxPool {
-    fn remove_nonce_gaps(&mut self) {
-        self.pool.iter_mut().for_each(|(_, transaction_group)| {
-            let mut high_nonce = None;
-            let mut maybe_nonce_to_remove = None;
-            for (nonce, _) in &transaction_group.transactions {
-                if high_nonce.is_some() && *nonce != high_nonce.unwrap() + 1 {
-                    maybe_nonce_to_remove = Some(*nonce);
-                    break;
-                }
-                high_nonce = Some(*nonce);
-            }
-
-            match maybe_nonce_to_remove {
-                None => {}
-                Some(nonce_to_remove) => {
-                    let _ = transaction_group.transactions.split_off(&nonce_to_remove);
-                }
-            }
-        });
-        self.pool
-            .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
-    }
-
-    fn remove_pending_transactions<SCT: SignatureCollection>(
+    fn remove_invalid_nonces(
         &mut self,
-        pending_blocktree_txs: &HashSet<
-            <<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
-        >,
+        block_policy: &EthBlockPolicy,
+        blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
     ) {
-        self.pool.iter_mut().for_each(|(_, transaction_group)| {
-            transaction_group
-                .transactions
-                .retain(|_, transaction| !pending_blocktree_txs.contains(&transaction.hash()))
-        });
+        self.pool
+            .iter_mut()
+            .for_each(|(eth_address, transaction_group)| {
+                let mut high_nonce =
+                    block_policy.get_latest_nonce(eth_address, &blocktree_nonce_deltas);
+                let mut maybe_nonce_to_remove = None;
+
+                // Remove transactions with nonces lower than the lowest valid nonce
+                let lowest_valid_nonce = high_nonce.map(|nonce| nonce + 1).unwrap_or(0);
+                transaction_group
+                    .transactions
+                    .retain(|&nonce, _| nonce >= lowest_valid_nonce);
+
+                for (nonce, _) in &transaction_group.transactions {
+                    if high_nonce.is_some() && *nonce != high_nonce.unwrap() + 1 {
+                        maybe_nonce_to_remove = Some(*nonce);
+                        break;
+                    }
+                    high_nonce = Some(*nonce);
+                }
+
+                match maybe_nonce_to_remove {
+                    None => {}
+                    Some(nonce_to_remove) => {
+                        let _ = transaction_group.transactions.split_off(&nonce_to_remove);
+                    }
+                }
+            });
         self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
@@ -143,7 +136,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
         let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
-        let sender = eth_tx.signer();
+        let sender = EthAddress(eth_tx.signer());
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
         self.pool.entry(sender).or_default().add(eth_tx);
@@ -153,12 +146,21 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         &mut self,
         tx_limit: usize,
         proposal_gas_limit: u64,
-        pending_blocktree_txs: HashSet<
-            <<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
-        >,
+        block_policy: &EthBlockPolicy,
+        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
     ) -> FullTransactionList {
-        self.remove_pending_transactions::<SCT>(&pending_blocktree_txs);
-        self.remove_nonce_gaps();
+        // Get the latest nonce deltas at the parent block (block to extend)
+        let mut blocktree_nonce_deltas = BTreeMap::new();
+        for extending_block in extending_blocks {
+            let block_nonces = extending_block.get_nonces();
+            for (&address, &nonce) in block_nonces {
+                blocktree_nonce_deltas
+                    .entry(address)
+                    .and_modify(|curr_nonce| *curr_nonce = nonce)
+                    .or_insert(nonce);
+            }
+        }
+        self.remove_invalid_nonces(block_policy, blocktree_nonce_deltas);
 
         let mut txs = Vec::new();
         let mut total_gas = 0;
@@ -257,90 +259,36 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::collections::BTreeMap;
 
-    use alloy_primitives::{hex, Address, B256};
+    use alloy_primitives::{hex, B256};
     use alloy_rlp::Decodable;
     use monad_consensus_types::txpool::TxPool;
     use monad_crypto::NopSignature;
-    use monad_eth_tx::EthSignedTransaction;
+    use monad_eth_block_policy::utils::generate_random_block_with_txns;
+    use monad_eth_tx::{utils::make_tx, EthSignedTransaction};
+    use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
-    use reth_primitives::{
-        sign_message, Transaction, TransactionKind, TransactionSigned, TxLegacy,
-    };
     use tracing_test::traced_test;
 
     use crate::{EthBlockPolicy, EthTxPool};
 
-    fn make_tx(
-        sender: B256,
-        gas_price: u128,
-        gas_limit: u64,
-        nonce: u64,
-        input_len: usize,
-    ) -> TransactionSigned {
-        let input = vec![0; input_len];
-        let transaction = Transaction::Legacy(TxLegacy {
-            chain_id: Some(1337),
-            nonce,
-            gas_price,
-            gas_limit,
-            to: TransactionKind::Call(Address::repeat_byte(0u8)),
-            value: 0.into(),
-            input: input.into(),
-        });
-
-        let hash = transaction.signature_hash();
-
-        let sender_secret_key = sender;
-        let signature =
-            sign_message(sender_secret_key, hash).expect("signature should always succeed");
-
-        TransactionSigned::from_transaction_and_signature(transaction, signature)
-    }
-
     type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy>;
-
-    #[test]
-    #[traced_test]
-    fn test_nonce_gap_transaction_not_included() {
-        let txs = vec![
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 1, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 2, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 4, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 5, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 6, 10),
-        ];
-        let expected_txs = vec![
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 1, 10),
-            make_tx(B256::repeat_byte(0xAu8), 1, 1, 2, 10),
-        ];
-        let mut pool = EthTxPool::default();
-        for tx in txs {
-            Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
-        }
-        assert_eq!(pool.pool.len(), 1);
-        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 6);
-
-        let encoded_txns = Pool::create_proposal(&mut pool, 6, 1_000_000, HashSet::default());
-
-        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
-        assert_eq!(decoded_txns, expected_txs);
-        assert!(pool.pool.is_empty());
-    }
 
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10);
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
-        let encoded_txns = Pool::create_proposal(&mut pool, 0, 1_000_000, HashSet::default());
+        let encoded_txns =
+            Pool::create_proposal(&mut pool, 0, 1_000_000, &eth_block_policy, Vec::new());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -352,11 +300,14 @@ mod test {
     fn test_create_proposal_with_insufficient_gas_limit() {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 6400, 0, 10);
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
-        let encoded_txns = Pool::create_proposal(&mut pool, 1, 6399, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 1, 6399, &eth_block_policy, Vec::new());
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -374,13 +325,17 @@ mod test {
             make_tx(B256::repeat_byte(0xAu8), 1, 6400, 1, 10),
         ];
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         Pool::insert_tx(&mut pool, t1.envelope_encoded().into());
         Pool::insert_tx(&mut pool, t2.envelope_encoded().into());
         Pool::insert_tx(&mut pool, t3.envelope_encoded().into());
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 3);
 
-        let encoded_txns = Pool::create_proposal(&mut pool, 2, 6400 * 2, HashSet::default());
+        let encoded_txns =
+            Pool::create_proposal(&mut pool, 2, 6400 * 2, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -393,10 +348,13 @@ mod test {
         let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s2, 2, 2, 3, 10)];
         let expected_txs = vec![make_tx(s2, 2, 2, 3, 10), make_tx(s1, 1, 1, 0, 10)];
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -408,10 +366,13 @@ mod test {
         let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s1, 2, 2, 0, 10)];
         let expected_txs = vec![make_tx(s1, 2, 2, 0, 10)];
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -448,10 +409,14 @@ mod test {
             make_tx(s2, 1, 1, 2, 10),
         ];
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
+        let encoded_txns =
+            Pool::create_proposal(&mut pool, 200, 300, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -483,10 +448,14 @@ mod test {
         ];
 
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 200, 300, HashSet::default());
+        let encoded_txns =
+            Pool::create_proposal(&mut pool, 200, 300, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -526,10 +495,13 @@ mod test {
         ];
 
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -573,111 +545,169 @@ mod test {
         ];
 
         let mut pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, HashSet::default());
+        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(expected_txs, decoded_txns);
     }
-}
 
-/// A consensus block that has gone through the EthereumValidator and makes the decoded and
-/// verified transactions availabe to access
-#[derive(Debug, Clone)]
-pub struct EthValidatedBlock<SCT: SignatureCollection> {
-    pub block: Block<SCT>,
-    pub validated_txns: Vec<EthSignedTransaction>,
-}
+    #[test]
+    fn test_zero_nonce_included_in_block() {
+        // The first transaction from an account with 0 nonce should be including in the block
 
-impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
-    pub fn get_validated_txn_hashes(&self) -> Vec<EthTxHash> {
-        self.validated_txns.iter().map(|t| t.hash()).collect()
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
+
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            10_000,
+            50_000,
+            &eth_block_policy,
+            Vec::new(),
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert_eq!(decoded_txns, vec![txn_nonce_zero]);
     }
 
-    pub fn get_nonces(&self) -> Vec<u64> {
-        self.validated_txns.iter().map(|t| t.nonce()).collect()
+    #[test]
+    fn test_invalid_nonce_not_in_block() {
+        // A transaction with nonce 3 should not be included in the block if the la
+
+        let sender_1_key = B256::random();
+        // Txn with nonce = 0
+        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        // Txn with nonce = 1
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+        // Txn with nonce = 3
+        let txn_nonce_three = make_tx(sender_1_key, 1, 1, 3, 10);
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
+
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into());
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            10_000,
+            50_000,
+            &eth_block_policy,
+            Vec::new(),
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        // only transactions with nonce 0 and 1 should be included
+        assert_eq!(decoded_txns, vec![txn_nonce_zero, txn_nonce_one]);
     }
 
-    pub fn get_total_gas(&self) -> u64 {
-        self.validated_txns
-            .iter()
-            .fold(0, |acc, tx| acc + tx.gas_limit())
-    }
-}
+    #[test]
+    fn test_nonce_exists_in_committed_block() {
+        // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
-impl<SCT: SignatureCollection> PartialEq for EthValidatedBlock<SCT> {
-    fn eq(&self, other: &Self) -> bool {
-        self.block == other.block
-    }
-}
-impl<SCT: SignatureCollection> Eq for EthValidatedBlock<SCT> {}
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
-impl<SCT: SignatureCollection> Hashable for EthValidatedBlock<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.block.get_id().hash(state);
-    }
-}
+        let mut eth_tx_pool = EthTxPool::default();
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
+        };
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
 
-impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
-    type NodeIdPubKey = SCT::NodeIdPubKey;
-    type TxnHash = EthTxHash;
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            10_000,
+            50_000,
+            &eth_block_policy,
+            Vec::new(),
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
-    fn get_id(&self) -> BlockId {
-        self.block.get_id()
+        assert_eq!(decoded_txns, vec![]);
     }
 
-    fn get_round(&self) -> Round {
-        self.block.round
+    #[test]
+    fn test_nonce_exists_in_pending_block() {
+        // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
+
+        let sender_1_key = B256::random();
+        // generate two transactions, both with nonce = 0
+        let txn_1_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let txn_2_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 1000);
+
+        let mut eth_tx_pool = EthTxPool::default();
+        // create the extending block with txn 1
+        let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+        };
+
+        // insert txn 2 into the tx pool
+        Pool::insert_tx(&mut eth_tx_pool, txn_2_nonce_zero.envelope_encoded().into());
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            10_000,
+            50_000,
+            &eth_block_policy,
+            vec![&extending_block],
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert_eq!(decoded_txns, vec![]);
     }
 
-    fn get_epoch(&self) -> Epoch {
-        self.block.epoch
-    }
+    #[test]
+    fn test_combine_nonces_of_blocks() {
+        // TxPool should combine the nonces of commited block and pending blocks to check nonce
 
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        self.block.author
-    }
+        let sender_1_key = B256::random();
 
-    fn get_parent_id(&self) -> BlockId {
-        self.block.qc.get_block_id()
-    }
+        // txn with nonce = 1
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+        // txn with nonce = 2
+        let txn_nonce_two = make_tx(sender_1_key, 1, 1, 2, 10);
+        // txn with nonce = 3
+        let txn_nonce_three = make_tx(sender_1_key, 1, 1, 3, 10);
 
-    fn get_parent_round(&self) -> Round {
-        self.block.qc.get_round()
-    }
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
+        };
 
-    fn get_seq_num(&self) -> SeqNum {
-        self.block.payload.seq_num
-    }
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_two.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into());
 
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        self.get_validated_txn_hashes()
-    }
+        // create the extending block 1 with txn 1
+        let extending_block_1 = generate_random_block_with_txns(vec![txn_nonce_one]);
+        // create the extending block 2 with txn 2
+        let extending_block_2 = generate_random_block_with_txns(vec![txn_nonce_two]);
 
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        &self.block.qc
-    }
+        let encoded_txns = eth_tx_pool.create_proposal(
+            10_000,
+            50_000,
+            &eth_block_policy,
+            vec![&extending_block_1, &extending_block_2],
+        );
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        self.block
+        assert_eq!(decoded_txns, vec![txn_nonce_three]);
     }
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        &self.block
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        self.validated_txns.len()
-    }
-
-    fn is_txn_list_empty(&self) -> bool {
-        self.validated_txns.is_empty()
-    }
-}
-
-/// A block policy for ethereum payloads
-pub struct EthBlockPolicy;
-impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
-    type ValidatedBlock = EthValidatedBlock<SCT>;
 }

@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use alloy_rlp::Encodable;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
-use monad_eth_txpool::{EthBlockPolicy, EthTxPool};
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_txpool::EthTxPool;
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
 use rand::{Rng, RngCore, SeedableRng};
@@ -40,12 +43,16 @@ struct BenchController {
     pub pool: EthTxPool,
     pub transactions: FullTransactionList,
     pub gas_limit: u64,
+    pub block_policy: EthBlockPolicy,
 }
 
 type SignatureCollectionType = MultiSig<NopSignature>;
 
 fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
+    let eth_block_policy = EthBlockPolicy {
+        latest_nonces: BTreeMap::new(),
+    };
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);
 
@@ -76,6 +83,7 @@ fn create_pool_and_transactions() -> BenchController {
         pool: txpool,
         transactions: txns_list,
         gas_limit: proposal_gas_limit,
+        block_policy: eth_block_policy,
     }
 }
 
@@ -94,6 +102,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             &mut controller.pool,
                             proposal_txn_limit,
                             controller.gas_limit,
+                            &controller.block_policy,
                             Default::default(),
                         );
                         perf.disable();
@@ -115,6 +124,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             &mut controller.pool,
                             proposal_txn_limit,
                             controller.gas_limit,
+                            &controller.block_policy,
                             Default::default(),
                         );
                     },

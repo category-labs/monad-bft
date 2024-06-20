@@ -1,5 +1,5 @@
 [package]
-name = "monad-eth-block-validator"
+name = "monad-eth-block-policy"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,9 +9,12 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-types = { path = "../monad-eth-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-multi-sig = { path = "../monad-multi-sig" }
+monad-types = { path = "../monad-types" }
 
 alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
 tracing = { workspace = true }

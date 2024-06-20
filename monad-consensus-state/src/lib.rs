@@ -1,4 +1,4 @@
-use std::{collections::HashSet, marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -73,6 +73,8 @@ where
     safety: Safety,
     /// Policy for validating incoming proposals
     block_validator: BVT,
+    /// Policy for validating chain extension
+    block_policy: BPT,
     /// State machine used to request missing blocks from previous rounds
     block_sync_requester: BlockSyncRequester<ST, SCT>,
     /// Destination address for proposal payments
@@ -155,12 +157,9 @@ where
 }
 
 /// Possible actions a leader node can take when entering a new round
-pub enum ConsensusAction<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
+pub enum ConsensusAction<'a, SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
     /// Create a proposal with this state-root-hash and txn hash list
-    Propose(
-        StateRootHash,
-        HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
-    ),
+    Propose(StateRootHash, Vec<&'a BPT::ValidatedBlock>),
     /// Create an empty block proposal
     ProposeEmpty,
 }
@@ -210,6 +209,7 @@ where
     /// Arguments
     ///
     /// block_validator - validation for incoming proposals
+    /// block_policy - policy for valid extension of current chain
     /// my_pubkey - pubkey for NodeId used to identify this Node to the network
     /// config - collection of configurable parameters for core consensus algorithm
     /// beneficiary - Eth format address to deliver proposer rewards to
@@ -217,6 +217,7 @@ where
     /// cert_keypair - keypair used for certificate level signing
     pub fn new(
         block_validator: BVT,
+        block_policy: BPT,
         state_root_validator: SVT,
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
@@ -239,6 +240,7 @@ where
             config,
 
             block_validator,
+            block_policy,
             // timeout has to be proportional to delta, too slow/fast is bad
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
@@ -678,6 +680,8 @@ where
 
                 for block in blocks_to_commit.iter() {
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
+                    self.block_policy.update_committed_block(block);
+
                     if block.is_txn_list_empty() {
                         metrics.consensus_events.commit_empty_block += 1;
                     }
@@ -756,7 +760,7 @@ where
         TT: TxPool<SCT, BPT>,
     {
         self.pending_block_tree
-            .add(block.clone())
+            .add(block.clone(), &self.block_policy)
             .expect("Failed to add block to blocktree");
 
         let mut cmds = Vec::new();
@@ -964,7 +968,7 @@ where
             };
 
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
-            ConsensusAction::Propose(h, pending_blocktree_txs) => {
+            ConsensusAction::Propose(h, pending_blocktree_blocks) => {
                 let _create_proposal_span =
                     tracing::info_span!("create_proposal_span", ?round).entered();
                 metrics.consensus_events.creating_proposal += 1;
@@ -974,7 +978,8 @@ where
                 let prop_txns = txpool.create_proposal(
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
-                    pending_blocktree_txs,
+                    &self.block_policy,
+                    pending_blocktree_blocks,
                 );
                 proposer_builder(prop_txns, h, last_round_tc)
             }
@@ -1010,12 +1015,12 @@ where
         };
 
         // Propose when there's a path to root
-        let pending_blocktree_tx_hashes = self
+        let pending_blocktree_blocks = self
             .pending_block_tree
-            .get_tx_hashes_on_path_to_root(parent_bid)
+            .get_blocks_on_path_from_root(parent_bid)
             .expect("there should be a path to root");
 
-        ConsensusAction::Propose(h, pending_blocktree_tx_hashes)
+        ConsensusAction::Propose(h, pending_blocktree_blocks)
     }
 
     #[must_use]
@@ -1180,7 +1185,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{marker::PhantomData, ops::Deref, time::Duration};
+    use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
 
     use itertools::Itertools;
     use monad_consensus::{
@@ -1193,7 +1198,7 @@ mod test {
     };
     use monad_consensus_types::{
         block::{Block, BlockPolicy, BlockType, PassthruBlockPolicy},
-        block_validator::MockValidator,
+        block_validator::{BlockValidator, MockValidator},
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
@@ -1213,6 +1218,12 @@ mod test {
         hasher::Hash,
         NopPubKey, NopSignature,
     };
+    use monad_eth_block_policy::EthBlockPolicy;
+    use monad_eth_block_validator::EthValidator;
+    use monad_eth_tx::{
+        utils::make_tx, EthFullTransactionList, EthSignedTransaction, EthTransaction,
+    };
+    use monad_eth_txpool::EthTxPool;
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
@@ -1228,6 +1239,7 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
+    use reth_primitives::B256;
     use test_case::test_case;
     use tracing_test::traced_test;
 
@@ -1236,14 +1248,16 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type BlockValidatorType = MockValidator;
     type StateRootValidatorType = NopStateRoot;
 
-    struct NodeContext<'a, ST, SCT, BPT, VTF, SVT, LT, TT>
+    struct NodeContext<'a, ST, SCT, BPT, BVT, VTF, SVT, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT, ValidatedBlock = Block<SCT>>,
+        BPT: BlockPolicy<SCT>,
+        BVT: BlockValidator<SCT, BPT>,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT>,
@@ -1255,17 +1269,18 @@ mod test {
         metrics: Metrics,
         version: &'a str,
 
-        consensus_state: ConsensusState<ST, SCT, BPT, MockValidator, SVT>,
+        consensus_state: ConsensusState<ST, SCT, BPT, BVT, SVT>,
 
         phantom: PhantomData<ST>,
     }
 
-    impl<'a, ST, SCT, BPT, VTF, SVT, LT, TT> NodeContext<'a, ST, SCT, BPT, VTF, SVT, LT, TT>
+    impl<'a, ST, SCT, BPT, BVT, VTF, SVT, LT, TT> NodeContext<'a, ST, SCT, BPT, BVT, VTF, SVT, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT, ValidatedBlock = Block<SCT>>,
+        BPT: BlockPolicy<SCT>,
+        BVT: BlockValidator<SCT, BPT>,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool<SCT, BPT>,
@@ -1273,7 +1288,7 @@ mod test {
         fn get_state(
             &'a mut self,
         ) -> (
-            &mut ConsensusState<ST, SCT, BPT, MockValidator, SVT>,
+            &mut ConsensusState<ST, SCT, BPT, BVT, SVT>,
             NodeState<'a, ST, SCT, VTF, LT, TT>,
         ) {
             (
@@ -1462,7 +1477,8 @@ mod test {
     fn setup<
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT, ValidatedBlock = Block<SCT>>,
+        BPT: BlockPolicy<SCT>,
+        BVT: BlockValidator<SCT, BPT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -1471,11 +1487,13 @@ mod test {
         num_states: u32,
         valset_factory: VTF,
         election: LT,
+        block_policy: impl Fn() -> BPT,
+        block_validator: impl Fn() -> BVT,
         txpool: TT,
         state_root: impl Fn() -> SVT,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<'static, ST, SCT, BPT, VTF, SVT, LT, TT>>,
+        Vec<NodeContext<'static, ST, SCT, BPT, BVT, VTF, SVT, LT, TT>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -1488,7 +1506,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<_, _, _, _, _, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, BVT, _, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1505,8 +1523,9 @@ mod test {
                         &mut [127; 32],
                     )
                     .unwrap();
-                let cs = ConsensusState::<ST, SCT, BPT, _, SVT>::new(
-                    MockValidator,
+                let cs = ConsensusState::<ST, SCT, BPT, BVT, SVT>::new(
+                    block_validator(),
+                    block_policy(),
                     state_root(),
                     keys[i as usize].pubkey(),
                     ConsensusConfig {
@@ -1553,6 +1572,20 @@ mod test {
         };
 
         (env, ctxs)
+    }
+
+    fn generate_full_tx_list(eth_tx_list: Vec<EthSignedTransaction>) -> FullTransactionList {
+        let eth_full_tx_list = EthFullTransactionList(
+            eth_tx_list
+                .into_iter()
+                .map(|signed_txn| {
+                    let sender_address = signed_txn.recover_signer().unwrap();
+                    EthTransaction::from_signed_transaction(signed_txn, sender_address)
+                })
+                .collect(),
+        );
+
+        FullTransactionList::new(eth_full_tx_list.rlp_encode())
     }
 
     fn extract_vote_msgs<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<VoteMessage<SCT>>
@@ -1661,6 +1694,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1669,6 +1703,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1718,6 +1754,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1726,6 +1763,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1757,6 +1796,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1765,6 +1805,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1805,6 +1847,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1813,6 +1856,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1853,6 +1898,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1861,6 +1907,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1937,6 +1985,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1945,6 +1994,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -1986,6 +2037,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -1994,6 +2046,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2058,6 +2112,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2066,6 +2121,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2240,14 +2297,24 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let num_state = 4;
-        let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, BlockPolicyType, _, StateRoot, _, _>(
-                num_state,
-                ValidatorSetFactory::default(),
-                SimpleRoundRobin::default(),
-                MockTxPool::default(),
-                || StateRoot::new(SeqNum(1)),
-            );
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            BlockValidatorType,
+            _,
+            StateRoot,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
+            MockTxPool::default(),
+            || StateRoot::new(SeqNum(1)),
+        );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         let p1 = env.next_proposal_empty();
@@ -2264,14 +2331,24 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let num_state = 4;
-        let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, BlockPolicyType, _, StateRoot, _, _>(
-                num_state,
-                ValidatorSetFactory::default(),
-                SimpleRoundRobin::default(),
-                MockTxPool::default(),
-                || StateRoot::new(SeqNum(1)),
-            );
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            BlockValidatorType,
+            _,
+            StateRoot,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
+            MockTxPool::default(),
+            || StateRoot::new(SeqNum(1)),
+        );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         env.next_proposal(
@@ -2316,14 +2393,24 @@ mod test {
     #[test]
     fn test_missing_state_root() {
         let num_state = 4;
-        let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, BlockPolicyType, _, StateRoot, _, _>(
-                num_state,
-                ValidatorSetFactory::default(),
-                SimpleRoundRobin::default(),
-                MockTxPool::default(),
-                || StateRoot::new(SeqNum(5)),
-            );
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            BlockValidatorType,
+            _,
+            StateRoot,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
+            MockTxPool::default(),
+            || StateRoot::new(SeqNum(5)),
+        );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         // prepare 10 blocks
@@ -2384,6 +2471,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             MissingNextStateRoot,
             _,
@@ -2392,6 +2480,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             MissingNextStateRoot::default,
         );
@@ -2456,14 +2546,24 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let num_state = 4;
-        let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, BlockPolicyType, _, StateRoot, _, _>(
-                num_state,
-                ValidatorSetFactory::default(),
-                SimpleRoundRobin::default(),
-                MockTxPool::default(),
-                || StateRoot::new(SeqNum(1)),
-            );
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            BlockValidatorType,
+            _,
+            StateRoot,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
+            MockTxPool::default(),
+            || StateRoot::new(SeqNum(1)),
+        );
         let node = &mut ctx[0];
 
         // delay gap in setup is 1
@@ -2554,6 +2654,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2562,6 +2663,8 @@ mod test {
             num_state,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2640,6 +2743,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2648,6 +2752,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2730,6 +2836,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2738,6 +2845,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2786,6 +2895,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2794,6 +2904,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2822,6 +2934,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2830,6 +2943,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2930,6 +3045,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2938,6 +3054,8 @@ mod test {
             num_state as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -2988,6 +3106,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -2996,6 +3115,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3045,6 +3166,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3053,6 +3175,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3167,6 +3291,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3175,6 +3300,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3280,6 +3407,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3288,6 +3416,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3410,6 +3540,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3418,6 +3549,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3564,6 +3697,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3572,6 +3706,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3672,6 +3808,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3680,6 +3817,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3738,6 +3877,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3746,6 +3886,8 @@ mod test {
             num_states,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3803,6 +3945,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3811,6 +3954,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3860,6 +4005,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3868,6 +4014,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -3962,6 +4110,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -3970,6 +4119,8 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
         );
@@ -4087,5 +4238,312 @@ mod test {
             .get_entry(&block_4_id)
             .expect("should be in the blocktree");
         assert!(block_4_blocktree_entry.is_coherent);
+    }
+
+    /// Coherency check for a block with a valid first transaction from an account (nonce = 0) should
+    /// pass and the state should vote for the block
+    #[test]
+    fn test_coherent_block_zero_nonce() {
+        let num_states = 2;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        let sender_1_key = B256::random();
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![make_tx(sender_1_key, 1, 1, 0, 10)]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+    }
+
+    /// Coherency check for a block with invalid first transaction should fail and
+    /// state should not vote for the block
+    #[test]
+    fn test_incoherent_block_invalid_nonce() {
+        let num_states = 2;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        let sender_1_key = B256::random();
+        // state receives block 1
+        let cp = env.next_proposal(
+            // first nonce from an account should be 0. this tx list is invalid
+            generate_full_tx_list(vec![make_tx(sender_1_key, 1, 1, 1, 10)]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should not vote for block 1
+        assert!(find_vote_message(&cmds).is_none());
+        // block 1 should be in the blocktree as non coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(!block_1_blocktree_entry.is_coherent);
+    }
+
+    #[test]
+    fn test_coherent_block_valid_nonce() {
+        let num_states = 2;
+
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+        let txn_nonce_two = make_tx(sender_1_key, 1, 1, 2, 10);
+        let txn_nonce_three = make_tx(sender_1_key, 1, 1, 3, 10);
+
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1 with nonce zero txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 with txns with nonce one and two
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_one, txn_nonce_two]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should vote for block 2
+        assert!(find_vote_message(&cmds).is_some());
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // state receives block 3 with txns with nonce three
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_three]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // should vote for block 3
+        assert!(find_vote_message(&cmds).is_some());
+        // should commit block 1
+        assert!(find_commit_cmd(&cmds).is_some());
+        // block 3 should be in the blocktree as coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
+
+        // block policy should be updated with latest account nonces from block 1
+        assert!(n1
+            .consensus_state
+            .block_policy
+            .latest_nonces
+            .get(&sender_1_address)
+            .is_some_and(|nonce| *nonce == 0));
+    }
+
+    #[test]
+    fn test_branched_coherent_block_valid_nonce() {
+        let num_states = 2;
+
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let txn_1_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+        let txn_2_nonce_one = make_tx(sender_1_key, 1, 1, 1, 1000);
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1 with nonce zero txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 with nonce one txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_1_nonce_one]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_round_2_id = proposal_message_2.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should vote for block 2
+        assert!(find_vote_message(&cmds).is_some());
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // the round times out, so the QC for block 2 is not created
+        let _timeouts = env.next_tc(Epoch(1));
+
+        // state receives block 2 (in round 3) with nonce one txn
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_2_nonce_one]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_2_round_3_id = proposal_message_3.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // should vote for block 2
+        assert!(find_vote_message(&cmds).is_some());
+        // block 2 from round 3 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 2 from round 2 should also be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_round_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
     }
 }

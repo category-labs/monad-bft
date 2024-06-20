@@ -1,9 +1,7 @@
-use std::collections::HashSet;
-
 use bytes::Bytes;
 
 use crate::{
-    block::{BlockPolicy, BlockType, PassthruBlockPolicy},
+    block::{BlockPolicy, PassthruBlockPolicy},
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
 };
@@ -19,7 +17,8 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
+        block_policy: &BPT,
+        pending_blocks: Vec<&BPT::ValidatedBlock>,
     ) -> FullTransactionList;
 
     /// Reclaims memory used by internal TxPool datastructures
@@ -37,9 +36,10 @@ impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Siz
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
+        block_policy: &BPT,
+        pending_blocks: Vec<&BPT::ValidatedBlock>,
     ) -> FullTransactionList {
-        (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
+        (**self).create_proposal(tx_limit, gas_limit, block_policy, pending_blocks)
     }
 
     fn clear(&mut self) {
@@ -73,9 +73,8 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
         &mut self,
         tx_limit: usize,
         _gas_limit: u64,
-        _pending_txs: HashSet<
-            <<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
-        >,
+        _block_policy: &PassthruBlockPolicy,
+        _pending_blocks: Vec<&<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock>,
     ) -> FullTransactionList {
         if tx_limit == 0 {
             FullTransactionList::empty()

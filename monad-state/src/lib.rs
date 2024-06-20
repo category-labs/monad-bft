@@ -352,6 +352,7 @@ where
     pub leader_election: LT,
     pub transaction_pool: TT,
     pub block_validator: BVT,
+    pub block_policy: BPT,
     pub state_root_validator: SVT,
     pub async_state_verify: ASVT,
     pub validators: ValidatorData<SCT>,
@@ -399,6 +400,7 @@ where
 
         let consensus_process = ConsensusState::new(
             self.block_validator,
+            self.block_policy,
             self.state_root_validator,
             self.key.pubkey(),
             self.consensus_config,

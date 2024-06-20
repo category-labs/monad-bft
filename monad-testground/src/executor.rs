@@ -200,6 +200,7 @@ where
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
+        block_policy: PassthruBlockPolicy {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
         validators: config.validators,

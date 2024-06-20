@@ -79,6 +79,7 @@ fn two_nodes_bls() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

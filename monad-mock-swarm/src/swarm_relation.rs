@@ -49,7 +49,7 @@ where
     type SignatureCollectionType: SignatureCollection<
         NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
     >;
-    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType>;
+    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType> + Send + Sync + Unpin;
 
     type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
 

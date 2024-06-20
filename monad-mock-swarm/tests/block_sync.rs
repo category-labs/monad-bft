@@ -9,7 +9,8 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
+        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+        payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -46,6 +47,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -163,6 +165,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -242,6 +245,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -371,6 +375,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay

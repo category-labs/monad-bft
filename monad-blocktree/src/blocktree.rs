@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fmt,
     result::Result as StdResult,
 };
@@ -19,16 +19,12 @@ type Result<T> = StdResult<T, BlockTreeError>;
 #[non_exhaustive]
 pub enum BlockTreeError {
     BlockNotExist(BlockId),
-    HashPolicy((BlockId, String)),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BlockNotExist(bid) => write!(f, "Block not exist: {:?}", bid),
-            Self::HashPolicy((bid, description)) => {
-                write!(f, "HashPolicy decoding error {:?}: {:?}", bid, description)
-            }
         }
     }
 }
@@ -202,14 +198,14 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    pub fn add(&mut self, b: BP::ValidatedBlock) -> Result<()> {
-        if !self.is_valid_to_insert(&b) {
+    pub fn add(&mut self, block: BP::ValidatedBlock, block_policy: &BP) -> Result<()> {
+        if !self.is_valid_to_insert(&block) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
 
-        let new_block_id = b.get_id();
-        let parent_id = b.get_parent_id();
+        let new_block_id = block.get_id();
+        let parent_id = block.get_parent_id();
         let is_coherent = false;
 
         // Get all the children blocks in the blocktree
@@ -222,7 +218,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
 
         // Create the new blocktree entry
         let new_block_entry = BlockTreeEntry {
-            validated_block: b,
+            validated_block: block,
             is_coherent,
             children_blocks,
         };
@@ -249,7 +245,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
 
         // Update coherency if parent is coherent
         if is_parent_coherent {
-            self.update_coherency(new_block_id);
+            self.update_coherency(new_block_id, block_policy);
         }
 
         inc_count!(blocktree.add.success);
@@ -257,29 +253,39 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         Ok(())
     }
 
-    pub fn update_coherency(&mut self, block_id: BlockId) {
+    pub fn update_coherency(&mut self, block_id: BlockId, block_policy: &BP) {
         let mut block_ids_to_update: VecDeque<BlockId> = vec![block_id].into();
 
         while !block_ids_to_update.is_empty() {
             // Next block to check coherency
             let next_block = block_ids_to_update.pop_front().unwrap();
+            let block = &self
+                .tree
+                .get(&next_block)
+                .expect("block should exist")
+                .validated_block;
 
-            self.tree
-                .entry(next_block)
-                .and_modify(|entry| entry.is_coherent = true);
+            let mut extending_blocks = self
+                .get_blocks_on_path_from_root(&next_block)
+                .expect("path to root must exist");
+            // Remove the block itself
+            extending_blocks.pop();
 
-            block_ids_to_update.extend(
-                self.tree
-                    .get(&next_block)
-                    .expect("should be in tree")
-                    .children_blocks
-                    .iter()
-                    .cloned(),
-            );
-        }
+            if block_policy.check_coherency(block, extending_blocks) {
+                self.tree.entry(next_block).and_modify(|entry| {
+                    entry.is_coherent = true;
+                });
 
-        for block_id in block_ids_to_update {
-            self.update_coherency(block_id);
+                // Can check coherency of children blocks now
+                block_ids_to_update.extend(
+                    self.tree
+                        .get(&next_block)
+                        .expect("should be in tree")
+                        .children_blocks
+                        .iter()
+                        .cloned(),
+                );
+            }
         }
     }
 
@@ -318,28 +324,27 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         false
     }
 
-    /// Fetches transactions on the path in [`b`, root)
-    pub fn get_tx_hashes_on_path_to_root(
-        &self,
-        b: &BlockId,
-    ) -> Option<HashSet<<BP::ValidatedBlock as BlockType<SCT>>::TxnHash>> {
-        let mut txs = HashSet::new();
+    /// Fetches blocks on path from root
+    pub fn get_blocks_on_path_from_root(&self, b: &BlockId) -> Option<Vec<&BP::ValidatedBlock>> {
+        let mut blocks = Vec::new();
         if b == &self.root.block_id {
-            return Some(txs);
+            return Some(blocks);
         }
 
         let mut visit = *b;
 
         while let Some(blocktree_entry) = self.tree.get(&visit) {
             let btb = &blocktree_entry.validated_block;
-            if btb.get_parent_id() == self.root.block_id {
-                return Some(txs);
-            }
+            blocks.push(btb);
 
-            txs.extend(btb.get_txn_hashes());
+            if btb.get_parent_id() == self.root.block_id {
+                blocks.reverse();
+                return Some(blocks);
+            }
 
             visit = btb.get_parent_id();
         }
+
         None
     }
 
@@ -610,14 +615,15 @@ mod test {
         //        b6
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
 
-        assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(blocktree.add(b3.clone()).is_ok());
-        assert!(blocktree.add(b4.clone()).is_ok());
-        assert!(blocktree.add(b5.clone()).is_ok());
-        assert!(blocktree.add(b6.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b4.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b5.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b6.clone(), &block_policy).is_ok());
         println!("{:?}", blocktree);
 
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -657,7 +663,7 @@ mod test {
         //  |
         //  b7
 
-        assert!(blocktree.add(b7).is_ok());
+        assert!(blocktree.add(b7, &block_policy).is_ok());
 
         let v8 = VoteInfo {
             id: b5.get_id(),
@@ -684,7 +690,7 @@ mod test {
             ),
         );
 
-        assert!(blocktree.add(b8).is_ok());
+        assert!(blocktree.add(b8, &block_policy).is_ok());
         println!("{:?}", blocktree);
     }
 
@@ -752,9 +758,10 @@ mod test {
         let gid = g.get_id();
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g, &block_policy).is_ok());
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(
             blocktree.get_block(&b2.get_id()).unwrap().get_parent_id(),
@@ -762,7 +769,7 @@ mod test {
         );
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert_eq!(blocktree.tree.len(), 3);
         assert!(blocktree.is_coherent(&b1.get_id()));
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -884,10 +891,11 @@ mod test {
         //  b3
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
-        assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(blocktree.add(b3).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b3, &block_policy).is_ok());
 
         assert_eq!(blocktree.size(), 4);
 
@@ -955,10 +963,11 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g).is_ok());
-        assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.add(b1).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g, &block_policy).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b1, &block_policy).is_ok());
 
         assert_eq!(blocktree.tree.len(), 2);
     }
@@ -1058,20 +1067,21 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b1.get_id()));
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
-        assert!(blocktree.add(b4.clone()).is_ok());
+        assert!(blocktree.add(b4.clone(), &block_policy).is_ok());
         assert!(!blocktree.is_coherent(&b4.get_id()));
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.is_coherent(&b1.get_id()));
         assert!(blocktree.is_coherent(&b2.get_id()));
         assert!(blocktree.is_coherent(&b3.get_id()));
@@ -1187,19 +1197,20 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
-        assert!(blocktree.add(b4.clone()).is_ok());
+        assert!(blocktree.add(b4.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
@@ -1287,17 +1298,18 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         // root must be coherent but b2 isn't
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
 
         // all blocks must be coherent
@@ -1403,10 +1415,11 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         // root must be coherent but b3 should not
@@ -1414,7 +1427,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         // add block 2
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b2.qc);
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
@@ -1424,7 +1437,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         // add block 1
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
 
@@ -1532,10 +1545,11 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         // root must be coherent but b3 should not
@@ -1543,7 +1557,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         // add block 1
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         // root and block 1 must be coherent but b3 should not
@@ -1552,7 +1566,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         // add block 2
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
 
@@ -1651,13 +1665,14 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         // root must be coherent but b2 and b3 should not
@@ -1665,7 +1680,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
 
@@ -1832,22 +1847,23 @@ mod test {
 
         let mut blocktree =
             BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
-        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
-        assert!(blocktree.add(b4.clone()).is_ok());
+        assert!(blocktree.add(b4.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b2.qc);
 
-        assert!(blocktree.add(b5.clone()).is_ok());
+        assert!(blocktree.add(b5.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b5.qc).unwrap() == b3.qc);
 
-        assert!(blocktree.add(b6.clone()).is_ok());
+        assert!(blocktree.add(b6.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b6.qc).unwrap() == b3.qc);
 
         // root must be coherent but rest of the blocks should not
@@ -1858,7 +1874,7 @@ mod test {
         assert!(!blocktree.is_coherent(&b5.get_id()));
         assert!(!blocktree.is_coherent(&b6.get_id()));
 
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());

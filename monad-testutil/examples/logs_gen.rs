@@ -80,6 +80,7 @@ pub fn generate_log(
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(state_root_delay), // state_root_delay

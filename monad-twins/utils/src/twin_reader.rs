@@ -103,7 +103,7 @@ impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT> Clone
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT> + Clone,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     TT: TxPool<SCT, BPT> + Default,
@@ -123,6 +123,7 @@ where
                 leader_election: self.state_config.leader_election.clone(),
                 transaction_pool: TT::default(),
                 block_validator: self.state_config.block_validator.clone(),
+                block_policy: self.state_config.block_policy.clone(),
                 state_root_validator: self.state_config.state_root_validator.clone(),
                 async_state_verify: self.state_config.async_state_verify.clone(),
 
@@ -266,6 +267,7 @@ where
     S::LeaderElection: Default + Clone,
     S::TxPool: Default,
     S::BlockValidator: Default + Clone,
+    S::BlockPolicyType: Default + Clone,
     S::AsyncStateRootVerify: Default + Clone,
 {
     let raw_str = fs::read_to_string(path).expect("unable to read file in twins testing");
@@ -345,6 +347,7 @@ where
             leader_election: S::LeaderElection::default(),
             transaction_pool: S::TxPool::default(),
             block_validator: S::BlockValidator::default(),
+            block_policy: S::BlockPolicyType::default(),
             state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             async_state_verify: S::AsyncStateRootVerify::default(),
             validators: validator_data.clone(),

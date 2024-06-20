@@ -4,7 +4,8 @@ use std::{collections::BTreeSet, env};
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -75,6 +76,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 // avoid state_root trigger in rand latency setting

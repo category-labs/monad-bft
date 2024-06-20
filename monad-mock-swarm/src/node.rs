@@ -2,14 +2,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
     marker::PhantomData,
     time::Duration,
-    usize,
 };
 
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
-use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::BlockValidator, txpool::TxPool,
-};
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
@@ -88,14 +84,10 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
                 TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+            BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
         >,
-
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
-
-    // why is this needed
-        <S as SwarmRelation>::TxPool: TxPool<S::SignatureCollectionType, PassthruBlockPolicy>,
-        <S as SwarmRelation>::BlockValidator: BlockValidator<S::SignatureCollectionType, PassthruBlockPolicy>,
     {
         NodeBuilder {
             id: self.id,
@@ -107,6 +99,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 leader_election: Box::new(self.state_builder.leader_election),
                 transaction_pool: Box::new(self.state_builder.transaction_pool),
                 block_validator: Box::new(self.state_builder.block_validator),
+                block_policy: self.state_builder.block_policy,
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,

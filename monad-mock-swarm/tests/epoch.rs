@@ -142,6 +142,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -232,6 +233,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -388,6 +390,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -573,6 +576,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || PassthruBlockPolicy,
             || {
                 StateRoot::new(
                     SeqNum(4), // state_root_delay

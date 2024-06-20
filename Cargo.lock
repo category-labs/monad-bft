@@ -3327,6 +3327,7 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-tx",
  "monad-eth-txpool",
@@ -3439,14 +3440,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-block-policy"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-tx",
+ "monad-eth-types",
+ "monad-multi-sig",
+ "monad-types",
+ "rand",
+ "tracing",
+]
+
+[[package]]
 name = "monad-eth-block-validator"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-policy",
  "monad-eth-tx",
- "monad-eth-txpool",
+ "monad-eth-types",
  "tracing",
 ]
 
@@ -3471,7 +3489,9 @@ dependencies = [
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-policy",
  "monad-eth-tx",
+ "monad-eth-types",
  "monad-multi-sig",
  "monad-perf-util",
  "monad-types",
@@ -3695,6 +3715,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool",
  "monad-eth-types",

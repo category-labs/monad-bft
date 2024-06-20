@@ -95,6 +95,7 @@ pub fn recover_nodes_msg_delays(
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
         delta,                   // delta
@@ -180,6 +181,7 @@ pub fn recover_nodes_msg_delays(
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
         delta,                   // delta

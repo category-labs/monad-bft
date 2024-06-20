@@ -129,6 +129,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -154,6 +155,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

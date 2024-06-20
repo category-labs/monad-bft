@@ -5,9 +5,11 @@ pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
+pub type Nonce = u64;
+
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EthAddress(pub Address);
 
 impl EthAddress {

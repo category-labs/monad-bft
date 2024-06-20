@@ -19,6 +19,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     leader_election: impl Fn() -> S::LeaderElection,
     transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
+    block_policy: impl Fn() -> S::BlockPolicyType,
     state_root_validator: impl Fn() -> S::StateRootValidator,
     async_state_verify: impl Fn(fn(Stake) -> Stake) -> S::AsyncStateRootVerify,
 
@@ -70,6 +71,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             leader_election: leader_election(),
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
+            block_policy: block_policy(),
             state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(state_root_quorum_threshold),
             validators: validator_data.clone(),

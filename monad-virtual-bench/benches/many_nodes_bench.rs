@@ -115,6 +115,7 @@ fn many_nodes_nop_timeout() -> u128 {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -191,6 +192,7 @@ fn many_nodes_bls_timeout() -> u128 {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || PassthruBlockPolicy,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay

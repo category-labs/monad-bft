@@ -146,7 +146,9 @@ fn service(
                         // future for spawning the helper task.
                         //
                         // This can be resolved once we have a preferred secret management solution
-                        std::mem::transmute(&key)
+                        std::mem::transmute::<&monad_crypto::NopKeyPair, &monad_crypto::NopKeyPair>(
+                            &key,
+                        )
                     },
 
                     timeout: Duration::from_millis(700),

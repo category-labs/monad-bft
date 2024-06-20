@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
 use crate::{
-    block::{Block, BlockPolicy},
+    block::{Block, BlockPolicy, PassthruBlockPolicy},
     signature_collection::SignatureCollection,
 };
 
@@ -35,16 +35,17 @@ impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: BlockValidator<SCT, BPT
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT, ValidatedBlock = Block<SCT>>>
-    BlockValidator<SCT, BPT> for MockValidator
-{
-    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock> {
+impl<SCT: SignatureCollection> BlockValidator<SCT, PassthruBlockPolicy> for MockValidator {
+    fn validate(
+        &self,
+        block: Block<SCT>,
+    ) -> Option<<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock> {
         Some(block)
     }
 
     fn other_validation(
         &self,
-        _block: &BPT::ValidatedBlock,
+        _block: &<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock,
         _author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
     ) -> bool {
         true

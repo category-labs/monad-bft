@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use alloy_rlp::Decodable;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
@@ -5,8 +7,9 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::EthSignedTransaction;
-use monad_eth_txpool::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_types::EthAddress;
 use tracing::warn;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -29,7 +32,6 @@ impl EthValidator {
 }
 
 // FIXME: add specific error returns for the different failures
-//
 impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValidator {
     fn validate(
         &self,
@@ -42,8 +44,14 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
             return None;
         };
 
-        // recovering the signers verifies that these are valid signatures
-        let _ = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())?;
+        // recover the account nonces in this block
+        let mut nonces = BTreeMap::new();
+        for eth_txn in eth_txns.iter() {
+            // recovering the signer verifies that this is a valid signature
+            let eth_address = EthAddress(eth_txn.recover_signer()?);
+
+            nonces.insert(eth_address, eth_txn.nonce());
+        }
 
         if eth_txns.len() > self.tx_limit {
             return None;
@@ -57,6 +65,7 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
         Some(EthValidatedBlock {
             block,
             validated_txns: eth_txns,
+            nonces,
         })
     }
 

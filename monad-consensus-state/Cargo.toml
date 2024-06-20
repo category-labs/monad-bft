@@ -24,6 +24,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
+monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-testutil = { path = "../monad-testutil" }
 monad-multi-sig = { path = "../monad-multi-sig" }

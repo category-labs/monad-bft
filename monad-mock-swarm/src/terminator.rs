@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration, usize};
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;

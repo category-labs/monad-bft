@@ -1,8 +1,5 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::BlockValidator, txpool::TxPool,
-};
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::MonadEvent;
 use monad_transformer::{LinkMessage, Pipeline, ID};
@@ -205,11 +202,10 @@ where
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
                 TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+            BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
         > + 'static,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
-        <S as SwarmRelation>::TxPool: TxPool<S::SignatureCollectionType, PassthruBlockPolicy>,
-        <S as SwarmRelation>::BlockValidator: BlockValidator<S::SignatureCollectionType, PassthruBlockPolicy>,
     {
         SwarmBuilder(self.0.into_iter().map(NodeBuilder::debug).collect())
     }

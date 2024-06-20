@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ops::Deref, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
@@ -22,7 +22,8 @@ use monad_crypto::{
     },
     NopPubKey, NopSignature,
 };
-use monad_eth_txpool::{EthBlockPolicy, EthTxPool};
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
 use monad_testutil::{
@@ -294,7 +295,6 @@ fn setup<
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     TT: TxPool<SCT, EthBlockPolicy> + Default,
-    // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 >(
     num_states: u32,
     valset_factory: VTF,
@@ -334,6 +334,9 @@ fn setup<
                 .unwrap();
             let cs = ConsensusState::<ST, SCT, _, _, SVT>::new(
                 EthValidator::new(10_000, u64::MAX),
+                EthBlockPolicy {
+                    latest_nonces: BTreeMap::new(),
+                },
                 state_root(),
                 keys[i as usize].pubkey(),
                 ConsensusConfig {
