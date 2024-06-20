@@ -42,7 +42,9 @@ use monad_updaters::{
     nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
     timer::TokioTimer, BoxUpdater, Updater,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::{
     sdk::trace::TracerProvider,
@@ -249,7 +251,7 @@ async fn run(
     let mut builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: SimpleRoundRobin::default(),
+        leader_election: WeightedRoundRobin::default(),
         transaction_pool: EthTxPool::default(),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
