@@ -1,0 +1,159 @@
+services:
+  build_python:
+    build:
+      context: ${FLEXNET_IMAGE_ROOT}/python
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
+    image: monad-python:latest
+
+  build_monad_bft:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
+      args:
+        ETH_CALL_TARGET: "monad_shared"
+        TRIEDB_TARGET: "triedb_driver"
+    image: monad-bft-builder:latest
+
+  runner_image0:
+    build: 
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
+    image: image0:latest
+
+  runner_rpc:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
+    image: rpc:latest
+
+
+  node0:
+    image: image0:latest
+    volumes:
+      - ./node0:/monad
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - execution0
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  execution0:
+    image: monad-execution:latest
+    volumes:
+      - ./node0:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    entrypoint: ["bash", "/monad/scripts/execution.sh"]
+  
+  rpc0:
+    image: rpc:latest
+    volumes:
+      - ./node0:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    ports:
+      - "8080:8080"
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
+
+  node1:
+    image: image0:latest
+    volumes:
+      - ./node1:/monad
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - execution1
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  execution1:
+    image: monad-execution:latest
+    volumes:
+      - ./node1:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    entrypoint: ["bash", "/monad/scripts/execution.sh"]
+
+  rpc1:
+    image: rpc:latest
+    volumes:
+      - ./node1:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    ports:
+      - "8081:8080"
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
+
+  node2:
+    image: image0:latest
+    volumes:
+      - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - execution2
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  execution2:
+    image: monad-execution:latest
+    volumes:
+      - ./node2:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    entrypoint: ["bash", "/monad/scripts/execution.sh"]
+
+  rpc2:
+    image: rpc:latest
+    volumes:
+      - ./node2:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    ports:
+      - "8082:8080"
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
+
+  node3:
+    image: image0:latest
+    volumes:
+      - ./node3:/monad
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - execution3
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  execution3:
+    image: monad-execution:latest
+    volumes:
+      - ./node3:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    entrypoint: ["bash", "/monad/scripts/execution.sh"]
+
+  rpc3:
+    image: rpc:latest
+    volumes:
+      - ./node3:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    ports:
+      - "8083:8080"
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
+
+  tester:
+    image: monad-python:latest
+    volumes:
+      - ./e2e_tester:/monad
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  # jupyter:
+  #   image: monad-python-dev
+  #   volumes:
+  #     - ${MONAD_BFT_ROOT}:/monad
+  #   command: jupyter notebook --ip='0.0.0.0' --port=38888 --allow-root
+  #   ports:
+  #     - "38888:38888"
+
+networks:
+  default:
+    driver: bridge
+    
