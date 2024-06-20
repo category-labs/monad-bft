@@ -19,7 +19,9 @@ ctr = { workspace = true }
 dialoguer = { workspace = true }
 hdwallet = { workspace = true }
 hex = { workspace = true }
+monad-bls = { path = "../monad-bls" }
 monad-crypto = { path = "../monad-crypto" }
+monad-secp = { path = "../monad-secp" }
 pbkdf2 = { workspace = true, features = ["simple"] }
 rand = { workspace = true }
 scrypt = { workspace = true }

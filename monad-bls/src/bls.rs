@@ -98,9 +98,7 @@ pub struct BlsPubKey(blst_core::PublicKey);
 
 impl std::fmt::Debug for BlsPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("BlsPubKey")
-            .field(&hex::encode(self.compress()))
-            .finish()
+        write!(f, "{}", hex::encode(self.compress()))
     }
 }
 

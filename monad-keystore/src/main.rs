@@ -1,13 +1,15 @@
 /// A placeholder CLI tool to generate the keystore json file
 /// The key generation tool is unaudited
 /// DO NOT USE IN PRODUCTION YET
-/// `cargo run -- --mode create --keystore-path <path_for_file_to_be_created>`
+/// `cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_for_file_to_be_created>`
 use std::path::PathBuf;
 
 use bip39::{Language, Mnemonic, MnemonicType, Seed};
 use clap::Parser;
 use dialoguer::{theme::ColorfulTheme, Input};
 use hdwallet::ExtendedPrivKey;
+use monad_bls::BlsKeyPair;
+use monad_secp::KeyPair;
 
 use crate::keystore::Keystore;
 
@@ -24,25 +26,38 @@ struct Args {
     #[arg(long)]
     mode: String,
 
+    /// Key type
+    #[arg(long)]
+    key_type: String,
+
     /// Path to read/write keystore file
     #[arg(long)]
     keystore_path: PathBuf,
+
+    /// Password to encrypt private key
+    #[arg(long)]
+    password: Option<String>,
 }
 
 fn main() {
     let args = Args::parse();
     let mode = args.mode;
+    let key_type = args.key_type;
     let keystore_path = args.keystore_path;
 
     match mode.as_str() {
         "create" => {
             println!("It is recommended to generate key in air-gapped machine to be secure.");
             println!("This tool is currently not fit for production use.");
-            let password: String = Input::with_theme(&ColorfulTheme::default())
-                .with_prompt("Provide a password to encrypt generated key.")
-                .allow_empty(true)
-                .interact_text()
-                .unwrap();
+            let password: String = if args.password.is_some() {
+                args.password.unwrap()
+            } else {
+                Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Provide a password to encrypt generated key.")
+                    .allow_empty(true)
+                    .interact_text()
+                    .unwrap()
+            };
 
             // create a new randomly generated mnemonic phrase
             let mnemonic = Mnemonic::new(MnemonicType::Words12, Language::English);
@@ -56,6 +71,24 @@ fn main() {
                 "Keep your private key securely {:?}",
                 hex::encode(private_key)
             );
+
+            // generate public key
+            match key_type.as_str() {
+                "bls" => {
+                    let bls_keypair = BlsKeyPair::from_bytes(private_key.to_vec());
+                    let pubkey = bls_keypair.unwrap().pubkey();
+                    println!("BLS public key: {:?}", pubkey);
+                }
+                "secp" => {
+                    let secp_keypair = KeyPair::from_bytes(&mut private_key.to_vec());
+                    let pubkey = secp_keypair.unwrap().pubkey();
+                    println!("Secp public key: {:?}", pubkey);
+                }
+                _ => {
+                    println!("Unsupported key type, try again.");
+                    return;
+                }
+            }
 
             // generate keystore json file
             let result =

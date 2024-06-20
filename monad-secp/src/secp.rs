@@ -26,11 +26,9 @@ impl std::error::Error for Error {}
 impl std::fmt::Debug for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let ser = self.bytes_compressed();
-        write!(
-            f,
-            "{:02x}{:02x}..{:02x}{:02x}",
-            ser[0], ser[1], ser[30], ser[31]
-        )?;
+        for byte in ser {
+            write!(f, "{:02x}", byte)?;
+        }
         Ok(())
     }
 }
