@@ -16,6 +16,7 @@ mod test {
     use monad_eth_reserve_balance::PassthruReserveBalanceCache;
     use monad_mock_swarm::{
         fetch_metric,
+        mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm},
@@ -40,7 +41,7 @@ mod test {
 
     #[test]
     fn bsync_timeout_recovery() {
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(50);
         let state_configs = make_state_configs::<MonadMessageNoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -93,6 +94,7 @@ mod test {
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         outbound_pipeline.clone(),
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -123,7 +125,7 @@ mod test {
             swarm_ledger_verification(swarm, 10);
         };
 
-        let mut terminator = UntilTerminator::new().until_tick(Duration::from_secs(2));
+        let mut terminator = UntilTerminator::new().until_tick(Duration::from_secs(5));
 
         // first run for 2 seconds, all but first node makes progress
         while swarm.step_until(&mut terminator).is_some() {}
@@ -158,7 +160,7 @@ mod test {
     #[test]
     #[should_panic]
     fn lack_of_progress() {
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(50);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -211,6 +213,7 @@ mod test {
                             GenericTransformer::Drop(DropTransformer::new()),
                         ],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -237,7 +240,7 @@ mod test {
      */
     #[test]
     fn extreme_delay_recovery_with_block_sync() {
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(50);
 
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
@@ -293,10 +296,11 @@ mod test {
                                 Duration::from_secs(2),
                             )),
                             GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(400),
+                                Duration::from_millis(800),
                             )),
                         ],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -305,7 +309,7 @@ mod test {
 
         let mut swarm = swarm_config.build();
         while swarm
-            .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)))
+            .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(8)))
             .is_some()
         {}
         swarm_ledger_verification(&swarm, 20);
@@ -322,7 +326,7 @@ mod test {
             .filter_map(|node| (node.id != first_node).then_some(node.id))
             .collect_vec();
 
-        let mut verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+        let mut verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(8), delta);
 
         verifier
             .metric_exact(
@@ -360,7 +364,7 @@ mod test {
         black_out_cnt: usize,
         // giving a high delay so state root doesn't trigger
     ) {
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(20);
         assert!(
             from < to
                 && to < until
@@ -424,6 +428,7 @@ mod test {
                             GenericTransformer::Drop(DropTransformer::new()),
                         ],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })

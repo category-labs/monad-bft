@@ -381,6 +381,7 @@ mod test {
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),
+            timestamp: 0,
         };
 
         let vote = Vote {

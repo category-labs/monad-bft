@@ -21,6 +21,7 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             round: Some((&value.round).into()),
             payload: Some((&value.payload).into()),
             qc: Some((&value.qc).into()),
+            timestamp: value.timestamp,
         }
     }
 }
@@ -36,6 +37,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                     "Block<AggregateSignatures>.author".to_owned(),
                 ))?
                 .try_into()?,
+            value.timestamp,
             value
                 .epoch
                 .ok_or(Self::Error::MissingRequiredField(

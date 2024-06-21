@@ -97,6 +97,10 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
         0
     }
 
+    fn get_timestamp(&self) -> u64 {
+        0
+    }
+
     fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
         unimplemented!()
     }
@@ -139,6 +143,7 @@ where
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
         seq_num: SeqNum(0),
+        timestamp: 0,
     };
     let qcinfo = QcInfo {
         vote: Vote {
@@ -165,6 +170,7 @@ where
 
     Block::<SCT>::new(
         author,
+        0,
         Epoch(1),
         block_round,
         &Payload {

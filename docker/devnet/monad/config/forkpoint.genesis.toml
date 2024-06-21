@@ -19,6 +19,7 @@ round = 0
 parent_id = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 parent_round = 0
 seq_num = "0"
+timestamp = 0
 
 [[validator_sets]]
 epoch = 1

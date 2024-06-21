@@ -1187,6 +1187,7 @@ mod test {
 
         let block = Block::<SignatureCollectionType>::new(
             NodeId::new(author.pubkey()),
+            0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
             &Payload {
@@ -1230,6 +1231,7 @@ mod test {
                 parent_id: BlockId(Hash([0x09_u8; 32])),
                 parent_round: Round(9),
                 seq_num: SeqNum(10),
+                timestamp: 0,
             },
             ledger_commit_info: CommitResult::Commit,
         };
@@ -1290,6 +1292,7 @@ mod test {
             parent_id: BlockId(Hash([0x0a_u8; 32])),
             parent_round: Round(9),
             seq_num: SeqNum(7),
+            timestamp: 0,
         };
 
         let qcinfo = QcInfo {
@@ -1340,6 +1343,7 @@ mod test {
             parent_id: BlockId(Hash([0x0a_u8; 32])),
             parent_round: Round(9),
             seq_num: SeqNum(7),
+            timestamp: 0,
         };
 
         let qcinfo = QcInfo {

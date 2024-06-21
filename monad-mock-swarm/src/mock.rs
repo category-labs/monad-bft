@@ -1,5 +1,6 @@
 use std::{
     cmp::Reverse,
+    collections::VecDeque,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unpin},
     ops::DerefMut,
@@ -17,6 +18,7 @@ use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, Message, MonadEvent, RouterCommand, TimerCommand,
+    TimestampCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
@@ -24,6 +26,7 @@ use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockLedger,
     loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
+    timestamp::TimestampAdjuster,
 };
 use priority_queue::PriorityQueue;
 
@@ -47,6 +50,9 @@ pub struct MockExecutor<S: SwarmRelation> {
         TimerEvent<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
         Reverse<Duration>,
     >,
+
+    timestamper: Timestamper,
+
     router: S::RouterScheduler,
 }
 
@@ -84,6 +90,69 @@ impl<E> PartialEq for TimerEvent<E> {
 
 impl<E> Eq for TimerEvent<E> {}
 
+pub struct Timestamper {
+    events: VecDeque<Duration>,
+    period: Duration,
+    timestamp_drift: Duration,
+    drift_adjustment: Duration,
+
+    adjuster: TimestampAdjuster,
+}
+
+impl Timestamper {
+    pub fn new(start_time: Duration, config: TimestamperConfig) -> Self {
+        Self {
+            events: VecDeque::from([start_time]),
+            period: config.period,
+            timestamp_drift: config.timestamp_drift,
+            drift_adjustment: Duration::from_millis(0),
+            adjuster: TimestampAdjuster::new(config.max_adjust_delta, config.adjust_period),
+        }
+    }
+
+    pub fn next_tick(&mut self) -> Duration {
+        let t = self.events.pop_front().unwrap();
+        self.events.push_back(t + self.period);
+
+        self.drift_adjustment += self.timestamp_drift;
+        self.adjusted_time(t)
+    }
+
+    pub fn peek_next(&self) -> Option<&Duration> {
+        self.events.front()
+    }
+
+    fn adjusted_time(&self, t: Duration) -> Duration {
+        let adjust = self.adjuster.get_adjustment();
+        let delta = Duration::from_millis(adjust.unsigned_abs());
+        if adjust.is_negative() {
+            (t + self.drift_adjustment).saturating_sub(delta)
+        } else {
+            t + self.drift_adjustment + delta
+        }
+    }
+}
+
+pub struct TimestamperConfig {
+    pub period: Duration,
+    pub timestamp_drift: Duration,
+
+    pub max_adjust_delta: u64,
+    pub adjust_period: usize,
+}
+
+impl Default for TimestamperConfig {
+    fn default() -> Self {
+        Self {
+            period: Duration::from_millis(10),
+            timestamp_drift: Duration::from_millis(0),
+
+            max_adjust_delta: 10_000,
+            adjust_period: 9,
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ExecutorEventType {
     Router,
@@ -92,12 +161,14 @@ enum ExecutorEventType {
     StateRootHash,
     Ipc,
     Loopback,
+    Timestamp,
 }
 
 impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
         state_root_hash: S::StateRootHashExecutor,
+        timestamp_config: TimestamperConfig,
         tick: Duration,
     ) -> Self {
         Self {
@@ -111,6 +182,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
             tick,
 
             timer: PriorityQueue::new(),
+            timestamper: Timestamper::new(tick, timestamp_config),
             router,
         }
     }
@@ -149,6 +221,11 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 self.timer
                     .peek()
                     .map(|(_, tick)| (tick.0, ExecutorEventType::Timer)),
+            )
+            .chain(
+                self.timestamper
+                    .peek_next()
+                    .map(|tick| (*tick, ExecutorEventType::Timestamp)),
             )
             .chain(
                 self.ledger
@@ -196,6 +273,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             state_root_hash_cmds,
             loopback_cmds,
             control_panel_cmds,
+            timestamp_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -213,6 +291,12 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                         Reverse(self.tick + duration),
                     );
                 }
+            }
+        }
+
+        for command in timestamp_cmds {
+            match command {
+                TimestampCommand::AdjustDelta(t) => self.timestamper.adjuster.handle_adjustment(t),
             }
         }
 
@@ -296,6 +380,12 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 ExecutorEventType::Ipc => {
                     return futures::executor::block_on(self.ipc.next())
                         .map(MockExecutorEvent::Event)
+                }
+                ExecutorEventType::Timestamp => {
+                    let event = self.timestamper.next_tick();
+                    MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(
+                        event.as_millis().try_into().unwrap(),
+                    ))
                 }
             };
 

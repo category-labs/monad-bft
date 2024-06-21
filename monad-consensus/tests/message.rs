@@ -202,6 +202,7 @@ fn proposal_msg_hash() {
 
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
+        0,
         epoch,
         round,
         &Payload {

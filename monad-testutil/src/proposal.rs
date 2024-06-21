@@ -36,6 +36,7 @@ pub struct ProposalGen<ST, SCT> {
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
     last_tc: Option<TimeoutCertificate<SCT>>,
+    timestamp: u64,
     phantom: PhantomData<ST>,
 }
 
@@ -62,6 +63,7 @@ where
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
+            timestamp: 0,
             phantom: PhantomData,
         }
     }
@@ -88,6 +90,7 @@ where
             self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
             &self.qc
         };
+        self.timestamp += 1;
 
         let (leader_key, leader_certkey) = keys
             .iter()
@@ -106,6 +109,7 @@ where
 
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),
+            self.timestamp,
             self.epoch,
             self.round,
             &Payload {
@@ -222,6 +226,7 @@ where
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),
             seq_num: block.payload.seq_num,
+            timestamp: block.timestamp,
         };
         let qcinfo = QcInfo {
             vote: Vote {

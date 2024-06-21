@@ -50,6 +50,7 @@ fn setup_block(
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
         seq_num: SeqNum(0),
+        timestamp: 0,
     };
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
@@ -63,6 +64,7 @@ fn setup_block(
 
     Block::<MockSignatures<SignatureType>>::new(
         author,
+        0,
         block_epoch,
         block_round,
         &Payload {

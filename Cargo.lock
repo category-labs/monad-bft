@@ -4384,6 +4384,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rayon",
+ "sorted-vec",
  "test-case",
  "thiserror",
  "tokio",
@@ -6393,6 +6394,12 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "sorted-vec"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6734caf0b6f51addd5eeacca12fb39b2c6c14e8d4f3ac42f3a78955c0467458"
 
 [[package]]
 name = "sorted_vector_map"

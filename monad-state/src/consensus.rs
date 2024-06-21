@@ -23,6 +23,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
     LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
+    TimestampCommand,
 };
 use monad_types::{NodeId, RouterTarget, SeqNum, TimeoutVariant};
 use monad_validator::{
@@ -30,7 +31,9 @@ use monad_validator::{
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
+use crate::{
+    handle_validation_error, BlockTimestamp, MonadState, MonadVersion, VerifiedMonadMessage,
+};
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
@@ -57,6 +60,7 @@ where
     version: &'a MonadVersion,
 
     state_root_validator: &'a SVT,
+    block_timestamp: &'a BlockTimestamp,
     block_validator: &'a BVT,
     beneficiary: &'a EthAddress,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -98,6 +102,7 @@ where
             version: &monad_state.version,
 
             state_root_validator: &monad_state.state_root_validator,
+            block_timestamp: &monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -127,6 +132,7 @@ where
             version: self.version.protocol_version,
 
             state_root_validator: self.state_root_validator,
+            block_timestamp: self.block_timestamp,
             block_validator: self.block_validator,
             beneficiary: self.beneficiary,
             nodeid: self.nodeid,
@@ -305,6 +311,9 @@ where
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::MempoolEvent(MempoolEvent::Clear),
                 )));
+            }
+            ConsensusCommand::TimestampUpdate(t) => {
+                parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }
         }
         parent_cmds

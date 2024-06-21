@@ -376,6 +376,7 @@ where
                 delta: Duration::from_millis(delta_ms),
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
+                timestamp_latency_estimate_ms: 10,
             },
             _pd: PhantomData,
         })

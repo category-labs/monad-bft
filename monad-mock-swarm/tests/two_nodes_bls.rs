@@ -10,6 +10,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
+    mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::SwarmRelation,
@@ -69,7 +70,7 @@ impl SwarmRelation for BLSSwarm {
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
-    let delta = Duration::from_millis(1);
+    let delta = Duration::from_millis(20);
 
     let state_configs = make_state_configs::<BLSSwarm>(
         2, // num_nodes
@@ -110,6 +111,7 @@ fn two_nodes_bls() {
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })

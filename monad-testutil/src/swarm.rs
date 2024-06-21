@@ -93,6 +93,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 delta,
                 max_blocksync_retries,
                 state_sync_threshold,
+                timestamp_latency_estimate_ms: 10,
             },
             _pd: PhantomData,
         })

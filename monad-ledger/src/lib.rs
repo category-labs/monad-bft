@@ -202,8 +202,7 @@ fn generate_header<SCT: SignatureCollection>(
         number: monad_block.payload.seq_num.0,
         gas_limit: header_param.gas_limit,
         gas_used: gas_used.0,
-        // TODO-1: Add to BFT proposal
-        timestamp: 0,
+        timestamp: monad_block.get_timestamp(),
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
         // TODO: calculate base fee according to EIP1559

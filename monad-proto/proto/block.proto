@@ -29,4 +29,5 @@ message ProtoBlock {
   monad_proto.basic.ProtoRound round = 3;
   ProtoPayload payload = 4;
   monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 5;
+  uint64 timestamp = 6;
 }

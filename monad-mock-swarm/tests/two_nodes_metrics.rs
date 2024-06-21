@@ -9,8 +9,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator,
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::NoSerSwarm, terminator::UntilTerminator,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -28,6 +28,9 @@ use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 #[test]
 #[ignore = "monad-tracing-counter to deprecate soon"]
 fn two_nodes_metrics() {
+    let delta = 20;
+    let latency = 10;
+
     let fmt_layer = tracing_subscriber::fmt::layer();
     let counter_layer = CounterLayer::default();
 
@@ -55,13 +58,13 @@ fn two_nodes_metrics() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
-        5,                        // max_blocksync_retries
-        SeqNum(100),              // state_sync_threshold
+        Duration::from_millis(delta), // delta
+        0,                            // proposal_tx_limit
+        SeqNum(2000),                 // val_set_update_interval
+        Round(50),                    // epoch_start_delay
+        majority_threshold,           // state root quorum threshold
+        5,                            // max_blocksync_retries
+        SeqNum(100),                  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -79,9 +82,10 @@ fn two_nodes_metrics() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
+                        Duration::from_millis(latency),
                     ))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })

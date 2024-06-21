@@ -62,6 +62,7 @@ fn test_consensus_message_event_vote_multisig() {
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
         seq_num: SeqNum(0),
+        timestamp: 0,
     };
     let vote = Vote {
         vote_info: vi,

@@ -75,6 +75,11 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             MonadEvent::ControlPanelEvent(event) => {
                 proto_monad_event::Event::ControlPanelEvent(event.into())
             }
+            MonadEvent::TimestampUpdateEvent(event) => {
+                proto_monad_event::Event::TimestampUpdateEvent(ProtoTimestampUpdate {
+                    update: *event,
+                })
+            }
         };
         Self { event: Some(event) }
     }
@@ -113,6 +118,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::ControlPanelEvent(e)) => {
                 MonadEvent::ControlPanelEvent(e.try_into()?)
+            }
+            Some(proto_monad_event::Event::TimestampUpdateEvent(event)) => {
+                MonadEvent::TimestampUpdateEvent(event.update)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),

@@ -127,6 +127,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             parent_id: GENESIS_BLOCK_ID,
             parent_round: Round(0),
             seq_num: GENESIS_SEQ_NUM,
+            timestamp: 0,
         };
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
@@ -177,4 +178,20 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     pub fn get_seq_num(&self) -> SeqNum {
         self.info.vote.vote_info.seq_num
     }
+
+    pub fn get_timestamp(&self) -> u64 {
+        self.info.vote.vote_info.timestamp
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TimestampAdjustmentDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TimestampAdjustment {
+    pub delta: u64,
+    pub direction: TimestampAdjustmentDirection,
 }

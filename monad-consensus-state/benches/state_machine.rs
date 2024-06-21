@@ -7,7 +7,8 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_state::{
-    command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
+    command::ConsensusCommand, timestamp::BlockTimestamp, ConsensusConfig, ConsensusState,
+    ConsensusStateWrapper,
 };
 use monad_consensus_types::{
     checkpoint::RootInfo,
@@ -188,6 +189,7 @@ where
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
     reserve_balahce_cache: PassthruReserveBalanceCache,
+    block_timestamp: BlockTimestamp,
     beneficiary: EthAddress,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
     consensus_config: ConsensusConfig,
@@ -234,6 +236,7 @@ where
             block_validator: &self.block_validator,
             block_policy: &mut self.block_policy,
             reserve_balance_cache: &mut self.reserve_balahce_cache,
+            block_timestamp: &mut self.block_timestamp,
             beneficiary: &self.beneficiary,
             nodeid: &self.nodeid,
             config: &self.consensus_config,
@@ -331,6 +334,7 @@ fn setup<
                 delta: Duration::from_secs(1),
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
+                timestamp_latency_estimate_ms: 10,
             };
             let genesis_qc = QuorumCertificate::genesis_qc();
             let cs = ConsensusState::new(
@@ -368,6 +372,10 @@ fn setup<
                     reserve_balance_check_mode: 0,
                 },
                 reserve_balahce_cache: PassthruReserveBalanceCache::default(),
+                block_timestamp: BlockTimestamp::new(
+                    100,
+                    consensus_config.timestamp_latency_estimate_ms,
+                ),
                 beneficiary: EthAddress::default(),
                 nodeid: NodeId::new(keys[i as usize].pubkey()),
                 consensus_config,
@@ -520,6 +528,7 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
 
     Block::new(
         NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
+        0,
         Epoch(1),
         Round(1),
         &Payload {
@@ -729,6 +738,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                                     parent_id: BlockId(Hash([0u8; 32])),
                                     parent_round: Round(0),
                                     seq_num: SeqNum(0),
+                                    timestamp: 0,
                                 },
                                 ledger_commit_info: CommitResult::Commit,
                             },

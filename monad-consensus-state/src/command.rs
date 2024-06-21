@@ -12,6 +12,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::Block,
     checkpoint::Checkpoint,
+    quorum_certificate::TimestampAdjustment,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_crypto::certificate_signature::{
@@ -57,6 +58,7 @@ where
     // - to handle this command, we need to call message_state.set_round()
     /// Issue to clear mempool
     ClearMempool,
+    TimestampUpdate(TimestampAdjustment),
 }
 
 impl<ST, SCT> ConsensusCommand<ST, SCT>

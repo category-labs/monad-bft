@@ -16,6 +16,7 @@ use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     fetch_metric,
+    mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -34,7 +35,11 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 
 #[test]
 fn many_nodes_noser() {
-    let delta = Duration::from_millis(1);
+    // block commits every 2∆ on happy path; 20ms * 1024 = 41s
+    // but consensus starts with a timeout
+    let delta = Duration::from_millis(20);
+    let runtime = Duration::from_secs(42);
+    let num_expected_blocks = 1024;
     let state_configs = make_state_configs::<NoSerSwarm>(
         40, // num_nodes
         ValidatorSetFactory::default,
@@ -74,6 +79,7 @@ fn many_nodes_noser() {
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -81,10 +87,10 @@ fn many_nodes_noser() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
-    swarm_ledger_verification(&swarm, 1024);
+    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(runtime));
+    swarm_ledger_verification(&swarm, num_expected_blocks);
 
-    let mut verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+    let mut verifier = MockSwarmVerifier::default().tick_range(runtime, delta);
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier.metrics_happy_path(&node_ids, &swarm);
 
@@ -150,6 +156,7 @@ fn many_nodes_quic_latency() {
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -193,7 +200,7 @@ fn many_nodes_quic_latency() {
 #[test]
 fn many_nodes_quic_bw() {
     let zero_instant = Instant::now();
-    let delta = Duration::from_millis(100);
+    let delta = Duration::from_millis(200);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         40, // num_nodes
@@ -251,9 +258,10 @@ fn many_nodes_quic_bw() {
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,
                         ))),
-                        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(10))),
+                        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(30))),
                     ],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -271,7 +279,7 @@ fn many_nodes_quic_bw() {
     swarm_ledger_verification(&swarm, min_ledger_len);
 
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(107), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(72), Duration::from_secs(1));
 
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier

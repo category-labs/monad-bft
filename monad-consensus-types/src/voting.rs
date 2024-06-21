@@ -71,6 +71,8 @@ pub struct VoteInfo {
     pub parent_round: Round,
     /// seqnum of the proposed block
     pub seq_num: SeqNum,
+    /// timestamp of the proposed block
+    pub timestamp: u64,
 }
 
 impl std::fmt::Debug for VoteInfo {
@@ -82,6 +84,7 @@ impl std::fmt::Debug for VoteInfo {
             .field("pid", &self.parent_id)
             .field("pr", &self.parent_round)
             .field("sn", &self.seq_num)
+            .field("ts", &self.timestamp)
             .finish()
     }
 }
@@ -94,6 +97,7 @@ impl Hashable for VoteInfo {
         self.parent_id.hash(state);
         state.update(self.parent_round.as_bytes());
         state.update(self.seq_num.as_bytes());
+        state.update(self.timestamp.as_bytes());
     }
 }
 
@@ -106,6 +110,7 @@ impl DontCare for VoteInfo {
             parent_id: BlockId(Hash([0x0_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),
+            timestamp: 0,
         }
     }
 }
@@ -129,6 +134,7 @@ mod test {
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),
+            timestamp: 0,
         };
 
         let mut hasher = HasherType::new();
@@ -138,6 +144,7 @@ mod test {
         hasher.update(vi.parent_id.0);
         hasher.update(vi.parent_round);
         hasher.update(vi.seq_num.as_bytes());
+        hasher.update(vi.timestamp.as_bytes());
 
         let h1 = hasher.hash();
         let h2 = HasherType::hash_object(&vi);
@@ -155,6 +162,7 @@ mod test {
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),
+            timestamp: 0,
         };
 
         let v = Vote {

@@ -19,6 +19,7 @@ mod test {
     use monad_eth_reserve_balance::PassthruReserveBalanceCache;
     use monad_mock_swarm::{
         fetch_metric,
+        mock::TimestamperConfig,
         mock_swarm::SwarmBuilder,
         node::{Node, NodeBuilder},
         swarm_relation::{NoSerSwarm, SwarmRelation},
@@ -151,7 +152,7 @@ mod test {
     fn schedule_and_advance_epoch() {
         let val_set_update_interval = SeqNum(1000);
 
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -191,6 +192,7 @@ mod test {
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -245,7 +247,7 @@ mod test {
     fn schedule_epoch_after_blocksync() {
         let val_set_update_interval = SeqNum(1000);
 
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -288,6 +290,7 @@ mod test {
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -405,6 +408,9 @@ mod test {
     fn verify_correct_leaders_in_epoch() {
         let val_set_update_interval = SeqNum(1000);
 
+        let delta = 40;
+        let latency = 20;
+
         let state_configs = make_state_configs::<ValidatorSwapSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -419,13 +425,13 @@ mod test {
                 )
             },
             PeerAsyncStateVerify::new,
-            Duration::from_millis(2), // delta
-            0,                        // proposal_tx_limit
-            val_set_update_interval,  // val_set_update_interval
-            Round(20),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
-            5,                        // max_blocksync_retries
-            SeqNum(100),              // state_sync_threshold
+            Duration::from_millis(delta), // delta
+            0,                            // proposal_tx_limit
+            val_set_update_interval,      // val_set_update_interval
+            Round(20),                    // epoch_start_delay
+            majority_threshold,           // state root quorum threshold
+            5,                            // max_blocksync_retries
+            SeqNum(100),                  // state_sync_threshold
         );
 
         let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].forkpoint.validator_sets
@@ -448,7 +454,7 @@ mod test {
             .collect();
 
         let regular_pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
-            Duration::from_millis(1),
+            Duration::from_millis(latency),
         ))];
 
         let swarm_config = SwarmBuilder::<ValidatorSwapSwarm>(
@@ -464,6 +470,7 @@ mod test {
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -591,7 +598,7 @@ mod test {
         epoch_start_delay: Round,
         until_block: usize,
     ) {
-        let delta = Duration::from_millis(1);
+        let delta = Duration::from_millis(20);
         let state_configs = make_state_configs::<ValidatorSwapSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -631,6 +638,7 @@ mod test {
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })

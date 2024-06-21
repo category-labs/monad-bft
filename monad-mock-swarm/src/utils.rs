@@ -81,7 +81,7 @@ pub mod test_tool {
             randao_reveal: RandaoReveal::default(),
         };
 
-        Block::new(fake_node_id(), Epoch(1), round, &payload, &fake_qc())
+        Block::new(fake_node_id(), 0, Epoch(1), round, &payload, &fake_qc())
     }
 
     pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {

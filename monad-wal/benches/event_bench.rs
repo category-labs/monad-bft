@@ -124,6 +124,7 @@ fn bench_vote(c: &mut Criterion) {
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
         seq_num: SeqNum(0),
+        timestamp: 0,
     };
 
     let v = Vote {
@@ -175,6 +176,7 @@ fn bench_timeout(c: &mut Criterion) {
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
         seq_num: SeqNum(0),
+        timestamp: 0,
     };
 
     let qcinfo = QcInfo {

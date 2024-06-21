@@ -35,6 +35,7 @@ fn block_hash_id() {
 
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
+        0,
         epoch,
         round,
         &Payload {

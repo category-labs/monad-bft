@@ -43,10 +43,12 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     blocksync::{BlockSyncRequester, BlockSyncResult},
     command::ConsensusCommand,
+    timestamp::BlockTimestamp,
 };
 
 pub mod blocksync;
 pub mod command;
+pub mod timestamp;
 
 /// core consensus algorithm
 pub struct ConsensusState<ST, SCT, RBCT, BPT>
@@ -139,6 +141,9 @@ where
     pub state_root_validator: &'a SVT,
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
+    /// Track local timestamp and validate proposal timestamps
+    pub block_timestamp: &'a BlockTimestamp,
+
     /// Destination address for proposal payments
     pub beneficiary: &'a EthAddress,
     /// This nodes public NodeId; what other nodes see in the validator set
@@ -170,6 +175,8 @@ pub struct ConsensusConfig {
     /// Lagging (0, state_sync_threshold) blocks: request blocksync
     /// Lagging  >= state_sync_threshold  blocks: trigger statesync
     pub state_sync_threshold: SeqNum,
+
+    pub timestamp_latency_estimate_ms: u64,
 }
 
 /// Possible actions a leader node can take when entering a new round
@@ -342,6 +349,9 @@ where
             return cmds;
         }
 
+        // a valid proposal will advance the pacemaker round so capture the original round before
+        // handling the proposal certificate
+        let original_round = self.consensus.pacemaker.get_current_round();
         cmds.extend(self.proposal_certificate_handling(&p));
 
         // author, leader, round checks
@@ -382,6 +392,20 @@ where
             self.metrics
                 .consensus_events
                 .failed_verify_randao_reveal_sig += 1;
+            return cmds;
+        }
+
+        if let Some(ts_delta) = self
+            .block_timestamp
+            .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
+        {
+            // only update timestamp if the block advanced us our round
+            if block.get_round() > original_round {
+                cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+            }
+        } else {
+            self.metrics.consensus_events.failed_ts_validation += 1;
+            warn!("Timestamp validation failed");
             return cmds;
         }
 
@@ -1004,6 +1028,8 @@ where
                 header.state_root = hash;
                 let b = Block::new(
                     node_id,
+                    self.block_timestamp
+                        .get_valid_block_timestamp(high_qc.get_timestamp()),
                     epoch,
                     round,
                     &Payload {
@@ -1228,6 +1254,12 @@ where
 
         cmds
     }
+
+    fn validate_timestamp(&self) -> Vec<ConsensusCommand<ST, SCT>> {
+        let mut cmds = vec![];
+
+        cmds
+    }
 }
 
 #[cfg(test)]
@@ -1295,7 +1327,10 @@ mod test {
     use test_case::test_case;
     use tracing_test::traced_test;
 
-    use crate::{ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper};
+    use crate::{
+        timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
+        ConsensusStateWrapper,
+    };
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -1330,6 +1365,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         reserve_balance_cache: RBCT,
+        block_timestamp: BlockTimestamp,
         beneficiary: EthAddress,
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig,
@@ -1369,6 +1405,7 @@ mod test {
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
                 reserve_balance_cache: &mut self.reserve_balance_cache,
+                block_timestamp: &mut self.block_timestamp,
                 beneficiary: &self.beneficiary,
                 nodeid: &self.nodeid,
                 config: &self.consensus_config,
@@ -1568,6 +1605,7 @@ mod test {
                     delta: Duration::from_secs(1),
                     max_blocksync_retries: 5,
                     state_sync_threshold: SeqNum(100),
+                    timestamp_latency_estimate_ms: 1,
                 };
                 let genesis_qc = QuorumCertificate::genesis_qc();
                 let cs = ConsensusState::new(
@@ -1598,6 +1636,7 @@ mod test {
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     reserve_balance_cache: reserve_balance_cache(),
+                    block_timestamp: BlockTimestamp::new(1000, 1),
                     beneficiary: EthAddress::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,
@@ -1739,6 +1778,17 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)))
     }
 
+    fn find_timestamp_update_cmd<ST, SCT>(
+        cmds: &[ConsensusCommand<ST, SCT>],
+    ) -> Option<&ConsensusCommand<ST, SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        cmds.iter()
+            .find(|c| matches!(c, ConsensusCommand::TimestampUpdate(_)))
+    }
+
     // genesis_qc start with "0" sequence number and Round(0)
     // hence round == seqnum if no round times out
     fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
@@ -1783,6 +1833,7 @@ mod test {
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
             seq_num: GENESIS_SEQ_NUM + SeqNum(1),
+            timestamp: 0,
         };
         let v = Vote {
             vote_info: vi,
@@ -1952,6 +2003,56 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn timestamp_update_only_for_higher_round() {
+        let num_state = 4;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            ReserveBalanceCacheType,
+            BlockValidatorType,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
+            || MockValidator,
+            MockTxPool::default(),
+            || NopStateRoot,
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        // our initial starting logic has consensus in round 1 so the first proposal does not
+        // increase the round
+        let p1 = env.next_proposal_empty();
+        let (author, _, verified_message) = p1.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+
+        let p2 = env.next_proposal_empty();
+        let (author, _, verified_message) = p2.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
+        assert!(find_timestamp_update_cmd(&cmds).is_some());
+
+        // send same proposal again -- its valid but won't increase round so should not produce a
+        // timestamp delta
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+        assert!(find_timestamp_update_cmd(&cmds).is_none());
+
+        for _ in 0..4 {
+            env.next_proposal_empty();
+        }
+        let p7 = env.next_proposal_empty();
+        let (author, _, verified_message) = p7.destructure();
+        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+        assert!(find_timestamp_update_cmd(&cmds).is_some());
     }
 
     #[test]
@@ -2457,7 +2558,7 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 5);
+        assert_eq!(cmds.len(), 6);
         assert!(matches!(cmds[0], ConsensusCommand::CheckpointSave(_)));
         assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
@@ -2475,6 +2576,7 @@ mod test {
                 on_timeout: TimeoutVariant::BlockSync(_)
             }
         ));
+        assert!(matches!(cmds[5], ConsensusCommand::TimestampUpdate(_)));
         assert_eq!(
             wrapped_state.metrics.consensus_events.rx_execution_lagging,
             1
@@ -2548,7 +2650,7 @@ mod test {
             wrapped_state.metrics.consensus_events.rx_missing_state_root,
             1
         );
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 5);
         assert!(matches!(cmds[0], ConsensusCommand::LedgerCommit(_)));
         assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave(_)));
         assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
@@ -2559,6 +2661,7 @@ mod test {
                 on_timeout: TimeoutVariant::Pacemaker
             }
         ));
+        assert!(matches!(cmds[4], ConsensusCommand::TimestampUpdate(_)));
     }
 
     /// Test consensus behaviour of a leader who is supposed to propose
@@ -3197,6 +3300,7 @@ mod test {
         assert!(invalid_author != p2.block.author);
         let invalid_b2 = Block::new(
             invalid_author,
+            0,
             epoch,
             p2.block.round,
             &p2.block.payload,

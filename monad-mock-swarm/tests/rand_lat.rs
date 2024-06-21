@@ -11,6 +11,7 @@ use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
     fetch_metric,
+    mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -113,6 +114,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })

@@ -14,8 +14,8 @@ use monad_crypto::{
 };
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
-    terminator::UntilTerminator,
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::SwarmRelation, terminator::UntilTerminator,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -186,6 +186,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
                         MockStateRootHashNop::new(validators.validators, epoch_length),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -253,6 +254,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             MockStateRootHashNop::new(validators.validators, epoch_length),
             vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
             vec![],
+            TimestamperConfig::default(),
             42.try_into().unwrap(),
         ));
 
@@ -451,6 +453,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
                         MockStateRootHashNop::new(validators.validators, epoch_length),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })
@@ -541,6 +544,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
                 MockStateRootHashNop::new(validators.validators, epoch_length),
                 vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                 vec![],
+                TimestamperConfig::default(),
                 42.try_into().unwrap(),
             ));
         }

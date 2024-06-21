@@ -25,7 +25,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent},
+    mock::{MockExecutor, MockExecutorEvent, TimestamperConfig},
     mock_swarm::SwarmEventType,
     swarm_relation::{DebugSwarmRelation, SwarmRelation, SwarmRelationStateType},
 };
@@ -48,6 +48,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub state_root_executor: S::StateRootHashExecutor,
     pub outbound_pipeline: S::Pipeline,
     pub inbound_pipeline: S::Pipeline,
+    pub timestamper_config: TimestamperConfig,
     pub seed: u64,
 }
 impl<S: SwarmRelation> NodeBuilder<S> {
@@ -69,6 +70,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         state_root_executor: S::StateRootHashExecutor,
         outbound_pipeline: S::Pipeline,
         inbound_pipeline: S::Pipeline,
+        timestamper_config: TimestamperConfig,
         seed: u64,
     ) -> Self {
         Self {
@@ -78,6 +80,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             state_root_executor,
             outbound_pipeline,
             inbound_pipeline,
+            timestamper_config,
             seed,
         }
     }
@@ -123,13 +126,19 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             state_root_executor: Box::new(self.state_root_executor),
             outbound_pipeline: Box::new(self.outbound_pipeline),
             inbound_pipeline: Box::new(self.inbound_pipeline),
+            timestamper_config: self.timestamper_config,
             seed: self.seed,
         }
     }
     pub fn build(self, tick: Duration) -> Node<S> {
-        let mut executor: MockExecutor<S> =
-            MockExecutor::new(self.router_scheduler, self.state_root_executor, tick);
+        let mut executor: MockExecutor<S> = MockExecutor::new(
+            self.router_scheduler,
+            self.state_root_executor,
+            self.timestamper_config,
+            tick,
+        );
         let (state, init_commands) = self.state_builder.build();
+
         executor.exec(init_commands);
 
         let mut rng = ChaChaRng::seed_from_u64(self.seed);

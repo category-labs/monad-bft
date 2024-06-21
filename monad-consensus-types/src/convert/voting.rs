@@ -20,6 +20,7 @@ impl From<&VoteInfo> for ProtoVoteInfo {
             parent_id: Some((&vi.parent_id).into()),
             parent_round: Some((&vi.parent_round).into()),
             seq_num: Some((&vi.seq_num).into()),
+            timestamp: vi.timestamp,
         }
     }
 }
@@ -61,6 +62,7 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
                     "VoteInfo.seq_num".to_owned(),
                 ))?
                 .try_into()?,
+            timestamp: proto_vi.timestamp,
         })
     }
 }

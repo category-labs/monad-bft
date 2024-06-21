@@ -53,6 +53,8 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     /// get a reference to the block's QC
     fn get_qc(&self) -> &QuorumCertificate<SCT>;
 
+    fn get_timestamp(&self) -> u64;
+
     fn get_unvalidated_block(self) -> Block<SCT>;
 
     fn get_unvalidated_block_ref(&self) -> &Block<SCT>;
@@ -78,6 +80,8 @@ pub struct Block<SCT: SignatureCollection> {
     /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
 
+    pub timestamp: u64,
+
     /// Unique hash used to identify the block
     id: BlockId,
 }
@@ -95,6 +99,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("author", &self.author)
             .field("epoch", &self.epoch)
             .field("round", &self.round)
+            .field("timestamp", &self.timestamp)
             .field("qc", &self.qc)
             .field("id", &self.id)
             .field("txn_payload_len", &self.payload.txns.bytes().len())
@@ -114,6 +119,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
+        timestamp: u64,
         epoch: Epoch,
         round: Round,
         payload: &Payload,
@@ -121,6 +127,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
     ) -> Self {
         Self {
             author,
+            timestamp,
             epoch,
             round,
             payload: payload.clone(),
@@ -129,6 +136,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
                 let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
                 let mut state = HasherType::new();
                 author.hash(&mut state);
+                state.update(timestamp.as_bytes());
                 state.update(epoch.as_bytes());
                 state.update(round.as_bytes());
                 payload.hash(&mut state);
@@ -191,6 +199,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 
     fn get_qc(&self) -> &QuorumCertificate<SCT> {
         &self.qc
+    }
+
+    fn get_timestamp(&self) -> u64 {
+        self.timestamp
     }
 
     fn get_unvalidated_block(self) -> Block<SCT> {

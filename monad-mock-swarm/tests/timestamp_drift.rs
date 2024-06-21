@@ -1,6 +1,7 @@
 mod common;
 use std::{collections::BTreeSet, time::Duration};
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
@@ -9,41 +10,26 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
-    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
+    mock::TimestamperConfig,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::NoSerSwarm,
+    terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_tracing_counter::{
-    counter::{CounterLayer, MetricFilter},
-    counter_status,
-};
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use tracing_core::LevelFilter;
-use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 
 #[test]
-#[ignore = "monad-tracing-counter to deprecate soon"]
-fn many_nodes_metrics() {
-    let fmt_layer = tracing_subscriber::fmt::layer();
-    let counter_layer = CounterLayer::default();
-
-    let subscriber = Registry::default()
-        .with(
-            fmt_layer
-                .with_filter(MetricFilter {})
-                .with_filter(Targets::new().with_default(LevelFilter::INFO)),
-        )
-        .with(counter_layer);
-
-    tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
-
-    let delta = Duration::from_millis(20);
+fn drift_one_node() {
+    let delta = Duration::from_millis(30);
+    let latency = Duration::from_millis(20);
     let state_configs = make_state_configs::<NoSerSwarm>(
-        40, // num_nodes
+        4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         MockTxPool::default,
@@ -57,7 +43,7 @@ fn many_nodes_metrics() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
-        0,                  // proposal_tx_limit
+        10,                 // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
@@ -74,15 +60,27 @@ fn many_nodes_metrics() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
+                let seed: u64 = seed.try_into().unwrap();
+                let drift = if seed == 1 {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::from_millis(0)
+                };
+                let mut ts_config = TimestamperConfig {
+                    timestamp_drift: drift,
+                    ..Default::default()
+                };
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        latency,
+                    ))],
                     vec![],
-                    TimestamperConfig::default(),
-                    seed.try_into().unwrap(),
+                    ts_config,
+                    seed,
                 )
             })
             .collect(),
@@ -90,11 +88,18 @@ fn many_nodes_metrics() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)))
+        .step_until(&mut UntilTerminator::new().until_block(1026))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 1024);
-    let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    // the calculation is correct with two nodes because NoSerRouterScheduler
+    // always sends the message over the network/transformer, even for it's for
+    // self. Otherwise the time is shorter with two nodes, like QUIC test
+    let mut verifier =
+        MockSwarmVerifier::default().tick_range(happy_path_tick_by_block(1026, latency), latency);
+    verifier.metrics_happy_path(&node_ids, &swarm);
     assert!(verifier.verify(&swarm));
-    counter_status!();
+
+    swarm_ledger_verification(&swarm, 1024);
 }

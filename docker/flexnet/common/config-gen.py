@@ -273,6 +273,7 @@ if __name__ == "__main__":
                 "parent_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "parent_round": 0,
                 "seq_num": "0",
+                "timestamp": 0,
             },
             "ledger_commit_info": "NoCommit",
         }

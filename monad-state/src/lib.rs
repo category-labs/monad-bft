@@ -15,7 +15,7 @@ use monad_consensus::{
     },
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{ConsensusConfig, ConsensusState};
+use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
@@ -419,6 +419,7 @@ where
     async_state_verify: ASVT,
 
     state_root_validator: SVT,
+    block_timestamp: BlockTimestamp,
     block_validator: BVT,
     block_policy: BPT,
     reserve_balance_cache: RBCT,
@@ -725,6 +726,17 @@ where
         let nodeid = NodeId::new(self.key.pubkey());
         let delay = self.state_root_validator.get_delay();
 
+        let delta: u64 = self
+            .consensus_config
+            .delta
+            .as_millis()
+            .try_into()
+            .expect("consensus config delta should not be too large for a u64");
+        let block_timestamp = BlockTimestamp::new(
+            5 * delta,
+            self.consensus_config.timestamp_latency_estimate_ms,
+        );
+
         let mut monad_state = MonadState {
             keypair: self.key,
             cert_keypair: self.certkey,
@@ -741,6 +753,7 @@ where
             async_state_verify: self.async_state_verify,
 
             state_root_validator: self.state_root_validator,
+            block_timestamp,
             block_validator: self.block_validator,
             block_policy: self.block_policy,
             reserve_balance_cache: self.reserve_balance_cache,
@@ -904,6 +917,10 @@ where
                     ))]
                 }
             },
+            MonadEvent::TimestampUpdateEvent(t) => {
+                self.block_timestamp.update_time(t);
+                vec![]
+            }
         }
     }
 }
@@ -953,6 +970,7 @@ mod test {
                     parent_id: BlockId(Hash([0x06_u8; 32])),
                     parent_round: Round(4027),
                     seq_num: SeqNum(2999),
+                    timestamp: 1,
                 },
                 ledger_commit_info: CommitResult::NoCommit,
             },

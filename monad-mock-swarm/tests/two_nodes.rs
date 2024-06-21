@@ -18,6 +18,7 @@ use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     fetch_metric,
+    mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -79,6 +80,7 @@ fn two_nodes_noser() {
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -162,6 +164,7 @@ fn two_nodes_quic_latency() {
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -227,7 +230,7 @@ fn two_nodes_quic_bw() {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
     let zero_instant = Instant::now();
-    let delta = Duration::from_millis(1);
+    let delta = Duration::from_millis(40);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         2, // num_nodes
@@ -282,10 +285,13 @@ fn two_nodes_quic_bw() {
                     .build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![
-                        BytesTransformer::Latency(LatencyTransformer::new(delta)),
-                        BytesTransformer::Bw(BwTransformer::new(8, Duration::from_millis(10))),
+                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
+                            20,
+                        ))),
+                        BytesTransformer::Bw(BwTransformer::new(2, Duration::from_millis(10))),
                     ],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -306,7 +312,7 @@ fn two_nodes_quic_bw() {
     // this is empirical, don't want to spend too much time figuring out a
     // degenerative case
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(7), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(114), Duration::from_secs(1));
     assert!(verifier.verify(&swarm));
 
     let node_ids = swarm.states().keys().copied().collect_vec();

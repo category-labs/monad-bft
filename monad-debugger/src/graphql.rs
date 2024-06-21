@@ -220,6 +220,7 @@ enum GraphQLMonadEvent<'s> {
     StateRootEvent(GraphQLStateRootEvent<'s>),
     AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent<'s>),
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
+    TimestampEvent(GraphQLTimestampEvent),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -235,6 +236,9 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             }
             MonadEventType::ControlPanelEvent(event) => {
                 Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
+            }
+            MonadEvent::TimestampUpdateEvent(event) => {
+                Self::TimestampEvent(GraphQLTimestampEvent(*event))
             }
         }
     }
@@ -292,6 +296,15 @@ struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent);
 
 #[Object]
 impl<'s> GraphQLControlPanelEvent<'s> {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLTimestampEvent(u64);
+
+#[Object]
+impl GraphQLTimestampEvent {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

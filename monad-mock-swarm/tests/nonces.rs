@@ -22,6 +22,7 @@ mod test {
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
     use monad_mock_swarm::{
+        mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
         swarm_relation::SwarmRelation,
@@ -131,6 +132,7 @@ mod test {
                             CONSENSUS_DELTA,
                         ))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })

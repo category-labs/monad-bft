@@ -7,7 +7,10 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
-use monad_mock_swarm::{mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::BytesSwarm};
+use monad_mock_swarm::{
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::BytesSwarm,
+};
 use monad_router_scheduler::{BytesRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
@@ -70,6 +73,7 @@ pub fn simulation_make() -> *mut Simulation {
                             Duration::from_millis(10),
                         ))],
                         vec![],
+                        TimestamperConfig::default(),
                         seed.try_into().unwrap(),
                     )
                 })

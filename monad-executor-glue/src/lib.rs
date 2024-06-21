@@ -15,6 +15,7 @@ use monad_consensus_types::{
     block::Block,
     checkpoint::Checkpoint,
     metrics::Metrics,
+    quorum_certificate::TimestampAdjustment,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
     validator_data::{ParsedValidatorData, ValidatorSetData},
@@ -133,6 +134,11 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
+#[derive(Debug)]
+pub enum TimestampCommand {
+    AdjustDelta(TimestampAdjustment),
+}
+
 pub enum Command<E, OM, B, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
@@ -143,6 +149,7 @@ pub enum Command<E, OM, B, SCT: SignatureCollection> {
     StateRootHashCommand(StateRootHashCommand),
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
+    TimestampCommand(TimestampCommand),
 }
 
 impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
@@ -157,6 +164,7 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
         Vec<StateRootHashCommand>,
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,
+        Vec<TimestampCommand>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -166,6 +174,7 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
         let mut state_root_hash_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
+        let mut timestamp_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -177,6 +186,7 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
+                Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
             }
         }
         (
@@ -188,6 +198,7 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
             state_root_hash_cmds,
             loopback_cmds,
             control_panel_cmds,
+            timestamp_cmds,
         )
     }
 }
@@ -353,6 +364,8 @@ where
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent),
+    /// Events to update the block timestamper
+    TimestampUpdateEvent(u64),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -417,6 +430,7 @@ where
             }
             MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
+            MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
         };
 
         write!(f, "{}", s)

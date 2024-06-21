@@ -58,6 +58,10 @@ message ProtoBlockSyncResponseWithSender {
   monad_proto.message.ProtoBlockSyncMessage response = 2;
 }
 
+message ProtoTimestampUpdate {
+   uint64 update = 1;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
@@ -132,5 +136,6 @@ message ProtoMonadEvent{
     ProtoStateUpdateEvent state_root_event = 5;
     ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
     ProtoControlPanelEvent control_panel_event = 7;
+    ProtoTimestampUpdate timestamp_update_event = 8;
   }
 }

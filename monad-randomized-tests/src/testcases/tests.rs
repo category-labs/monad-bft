@@ -11,8 +11,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator,
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::NoSerSwarm, terminator::UntilTerminator,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -68,6 +68,7 @@ fn random_latency_test(latency_seed: u64) {
                         RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -136,6 +137,7 @@ fn delayed_message_test(latency_seed: u64) {
                         )),
                     ],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })

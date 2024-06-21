@@ -504,6 +504,7 @@ mod test {
 
         let block_1 = Block::new(
             NodeId::new(keypair.pubkey()),
+            0,
             Epoch(1),
             Round(0),
             &payload,
@@ -524,6 +525,7 @@ mod test {
 
         let block_2 = Block::new(
             NodeId::new(keypair.pubkey()),
+            0,
             Epoch(1),
             Round(1),
             &payload,
@@ -544,6 +546,7 @@ mod test {
 
         let block_3 = Block::new(
             NodeId::new(keypair.pubkey()),
+            0,
             Epoch(1),
             Round(2),
             &payload,
@@ -882,6 +885,7 @@ mod test {
 
             Block::new(
                 *valset.get_members().iter().next().unwrap().0,
+                0,
                 Epoch(1),
                 Round(0),
                 &payload,
@@ -1046,6 +1050,7 @@ mod test {
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
                         seq_num: SeqNum(1),
+                        timestamp: 0,
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -1075,6 +1080,7 @@ mod test {
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
                         seq_num: SeqNum(2),
+                        timestamp: 0,
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -1103,6 +1109,7 @@ mod test {
                         parent_id: BlockId(Hash([0x03_u8; 32])),
                         parent_round: Round(0),
                         seq_num: SeqNum(3),
+                        timestamp: 0,
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },

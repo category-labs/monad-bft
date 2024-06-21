@@ -233,6 +233,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
         &self.block.qc
     }
 
+    fn get_timestamp(&self) -> u64 {
+        self.block.timestamp
+    }
+
     fn get_unvalidated_block(self) -> Block<SCT> {
         self.block
     }

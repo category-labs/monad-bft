@@ -17,8 +17,8 @@ use monad_crypto::{
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
-    terminator::UntilTerminator,
+    mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::SwarmRelation, terminator::UntilTerminator,
 };
 use monad_multi_sig::MultiSig;
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
@@ -165,6 +165,7 @@ fn many_nodes_nop_timeout() -> u128 {
                         BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
                     ],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -242,6 +243,7 @@ fn many_nodes_bls_timeout() -> u128 {
                         BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
                     ],
                     vec![],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })

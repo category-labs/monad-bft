@@ -20,6 +20,7 @@ pub struct ConsensusEvents {
     pub local_timeout: u64,
     pub handle_proposal: u64,
     pub failed_txn_validation: u64,
+    pub failed_ts_validation: u64,
     pub invalid_proposal_round_leader: u64,
     pub out_of_order_proposals: u64,
     pub created_vote: u64,

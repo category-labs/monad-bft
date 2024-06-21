@@ -7,6 +7,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_mock_swarm::{
+    mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::SwarmRelation,
@@ -92,6 +93,7 @@ where
             ),
             outbound_pipeline,
             vec![],
+            TimestamperConfig::default(),
             seed,
         ));
     }

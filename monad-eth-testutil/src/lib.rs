@@ -57,6 +57,7 @@ pub fn generate_random_block_with_txns(
 
     let block = Block::new(
         NodeId::new(keypair.pubkey()),
+        0,
         Epoch(1),
         Round(1),
         &Payload {

@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, time::Duration};
 
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
@@ -37,7 +37,7 @@ use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
     loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    timer::TokioTimer, BoxUpdater, Updater,
+    timer::TokioTimer, tokio_timestamp::TokioTimestamp, BoxUpdater, Updater,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -106,6 +106,7 @@ pub fn make_monad_executor<ST, SCT>(
     IpcReceiver<ST, SCT>,
     ControlPanelIpcReceiver<ST, SCT>,
     LoopbackExecutor<MonadEvent<ST, SCT>>,
+    TokioTimestamp<ST, SCT>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -146,6 +147,7 @@ where
                 val_set_update_interval,
             )),
         },
+        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 86400),
         ipc: IpcReceiver::new(generate_uds_path().into(), 100).expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(generate_uds_path().into(), 1000)
             .expect("usd bind failed"),

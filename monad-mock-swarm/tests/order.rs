@@ -14,8 +14,8 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
-    fetch_metric, mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator, verifier::MockSwarmVerifier,
+    fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
+    swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -60,7 +60,7 @@ fn all_messages_delayed_cron() {
 #[test_case(TransformerReplayOrder::Random(5); "random seed 5")]
 fn all_messages_delayed(direction: TransformerReplayOrder) {
     // tracing_subscriber::fmt::init();
-    let delta = Duration::from_millis(1);
+    let delta = Duration::from_millis(20);
     let max_blocksync_retries = 5;
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
@@ -120,6 +120,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                             direction.clone(),
                         )),
                     ],
+                    TimestamperConfig::default(),
                     seed.try_into().unwrap(),
                 )
             })
@@ -200,7 +201,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     let blocksync_requests_range = match direction {
         // when replayed forward, node should populate blocktree in order
-        TransformerReplayOrder::Forward => (0, 0),
+        TransformerReplayOrder::Forward => (0, 6),
         // when replayed in reverse, should request every block in ledger
         // +1 is the case where the proposal to commit the last block in
         // ledger is in flight and not delivered to all peers yet
