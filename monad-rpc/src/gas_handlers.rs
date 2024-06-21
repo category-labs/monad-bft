@@ -60,6 +60,13 @@ pub async fn monad_eth_estimateGas(
         }
     };
 
+    let state_overrides = &params.state_overrides;
+    for (_address, state_override) in state_overrides {
+        if state_override.state.is_some() && state_override.state_diff.is_some() {
+            return Err(JsonRpcError::invalid_params());
+        }
+    }
+
     let triedb_env = TriedbEnv::new(triedb_path);
 
     let block_number = match params.block {
@@ -97,7 +104,7 @@ pub async fn monad_eth_estimateGas(
 
     let sender = params.tx.from.unwrap_or_default();
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
-    let state_overrides = to_string(&params.state_overrides).unwrap_or_default();
+    let state_overrides_json_string = to_string(&state_overrides).unwrap_or_default();
 
     if matches!(txn.kind(), TransactionKind::Call(_)) && txn.input().is_empty() {
         return serialize_result(format!("0x{:x}", 21_000));
@@ -110,7 +117,7 @@ pub async fn monad_eth_estimateGas(
         block_number,
         triedb_path,
         execution_ledger_path,
-        state_overrides.clone(),
+        state_overrides_json_string.clone(),
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
             gas_used,
@@ -134,7 +141,7 @@ pub async fn monad_eth_estimateGas(
                 block_number,
                 triedb_path,
                 execution_ledger_path,
-                state_overrides.clone(),
+                state_overrides_json_string.clone(),
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
                     gas_used, ..
@@ -167,7 +174,7 @@ pub async fn monad_eth_estimateGas(
             block_number,
             triedb_path,
             execution_ledger_path,
-            state_overrides.clone(),
+            state_overrides_json_string.clone(),
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;

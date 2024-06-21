@@ -99,12 +99,12 @@ namespace
                 state.set_code(address, code);
             }
 
-            // storage is called "state"
-            if (state_delta.contains("state")) {
+            // storage is called "state" -> remove single storage
+            if (state_delta.contains("stateDiff")) {
                 // we need to access the account first before accessing its
                 // storage
                 state.get_nonce(address);
-                for (auto const &[k, v] : state_delta.at("state").items()) {
+                for (auto const &[k, v] : state_delta.at("stateDiff").items()) {
                     bytes32_t storage_key;
                     bytes32_t storage_value;
                     std::memcpy(
@@ -123,7 +123,30 @@ namespace
                 }
             }
 
-            // TODO: StateDiff
+            // storage is called "state" -> remove all override
+            if (state_delta.contains("state")) {
+                // we need to access the account first before accessing its
+                // storage
+                state.get_nonce(address);
+                state.add_override_address(address);
+                for (auto const &[k, v] : state_delta.at("state").items()) {
+                    bytes32_t storage_key;
+                    bytes32_t storage_value;
+                    std::memcpy(
+                        storage_key.bytes,
+                        evmc::from_hex(k).value().data(),
+                        32);
+
+                    auto const storage_value_byte_string =
+                        evmc::from_hex(v.get<std::string>()).value();
+                    std::copy_n(
+                        storage_value_byte_string.begin(),
+                        storage_value_byte_string.length(),
+                        storage_value.bytes);
+
+                    state.set_storage(address, storage_key, storage_value);
+                }
+            }
         }
 
         // nonce validation hack

@@ -259,7 +259,8 @@ pub struct StateOverride {
     pub code: Option<Bytes>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<HashMap<B256, B256>>,
-    // TODO: statediff
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_diff: Option<HashMap<B256, B256>>,
 }
 
 pub type StateOverrides = HashMap<Address, StateOverride>;
@@ -286,6 +287,13 @@ pub async fn monad_eth_call(
             return Err(JsonRpcError::invalid_params());
         }
     };
+
+    let state_overrides = &params.state_overrides;
+    for state_override in state_overrides.values() {
+        if state_override.state.is_some() && state_override.state_diff.is_some() {
+            return Err(JsonRpcError::invalid_params());
+        }
+    }
 
     let triedb_env: TriedbEnv = TriedbEnv::new(triedb_path);
 
@@ -325,7 +333,7 @@ pub async fn monad_eth_call(
     let sender = params.transaction.from.unwrap_or_default();
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
     let block_number = block_header.block.header.number;
-    let state_overrides = to_string(&params.state_overrides).unwrap_or_default();
+    let state_overrides_json_string = to_string(&state_overrides).unwrap_or_default();
 
     match monad_cxx::eth_call(
         txn,
@@ -334,7 +342,7 @@ pub async fn monad_eth_call(
         block_number,
         triedb_path,
         execution_ledger_path,
-        state_overrides,
+        state_overrides_json_string,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
             Ok(json!(hex::encode(&output_data)))
