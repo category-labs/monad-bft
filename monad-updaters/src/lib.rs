@@ -9,8 +9,10 @@ pub mod ledger;
 pub mod loopback;
 pub mod nop_metrics;
 pub mod parent;
-pub mod state_root_hash;
 pub mod validator_set;
+
+#[cfg(feature = "tokio")]
+pub mod state_root_hash;
 
 #[cfg(feature = "tokio")]
 pub mod timer;

@@ -41,8 +41,8 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
-    nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    timer::TokioTimer, BoxUpdater, Updater,
+    nop_metrics::NopMetricsExecutor, parent::ParentExecutor,
+    state_root_hash::StateRootHashTriedbPoll, timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -205,7 +205,7 @@ async fn run(
             })
             .collect(),
     );
-    let val_set_update_interval = SeqNum(2000);
+    let val_set_update_interval = SeqNum(20000);
 
     let metrics_executor: BoxUpdater<
         'static,
@@ -238,7 +238,11 @@ async fn run(
             },
         ),
         checkpoint: MockCheckpoint::default(),
-        state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
+        state_root_hash: StateRootHashTriedbPoll::new(
+            &node_state.triedb_path,
+            validators.clone(),
+            val_set_update_interval,
+        ),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         metrics: metrics_executor,
@@ -291,6 +295,7 @@ async fn run(
         mode::RunModeCommand::TestMode {
             byzantine_execution,
         } => {
+            /*
             if byzantine_execution {
                 executor
                     .state_root_hash
@@ -303,6 +308,7 @@ async fn run(
                         StateRootHash(Hash(hash))
                     });
             }
+            */
             // use real StateRootValidator
             builder.state_root_validator = Box::new(StateRoot::new(SeqNum(4)));
         }

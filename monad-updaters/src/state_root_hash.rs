@@ -1,6 +1,7 @@
 use std::{
     marker::PhantomData,
     ops::DerefMut,
+    path::Path,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
@@ -15,10 +16,11 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_types::{Epoch, SeqNum, Stake};
+use monad_triedb::Handle as TriedbHandle;
+use monad_types::{Epoch, Round, SeqNum, Stake};
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 pub trait MockableStateRootHash:
     Executor<Command = StateRootHashCommand<Block<Self::SignatureCollection>>>
@@ -383,5 +385,164 @@ where
         }
 
         event
+    }
+}
+
+/// Updater that gets state root hash updates by polling triedb
+pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
+    triedb_recv: tokio::sync::mpsc::Receiver<StateRootHashInfo>,
+
+    // TODO: where will we get this validator set updates
+    // validator set updates
+    genesis_validator_data: ValidatorData<SCT>,
+    next_val_data: Option<ValidatorSetUpdate<SCT>>,
+    val_set_update_interval: SeqNum,
+
+    waker: Option<Waker>,
+    phantom: PhantomData<ST>,
+}
+
+impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
+    pub fn new(
+        triedb_path: &Path,
+        genesis_validator_data: ValidatorData<SCT>,
+        val_set_update_interval: SeqNum,
+    ) -> Self {
+        // TODO: the channel size should be the delay gap
+        let (triedb_send, triedb_recv) = tokio::sync::mpsc::channel(10);
+
+        let path = triedb_path.to_path_buf();
+        rayon::spawn(move || {
+            // FIXME: handle error, maybe retry
+            let handle = TriedbHandle::try_new(path.as_path()).unwrap();
+            let mut block_num = handle.latest_block();
+
+            loop {
+                let latest_block_num = handle.latest_block();
+                debug!("latest_block_num from triedb: {}", latest_block_num);
+
+                if latest_block_num > block_num {
+                    for n in block_num..latest_block_num {
+                        let result = handle.get_state_root(n);
+                        debug!("srh = {:?}", result);
+
+                        if let Some(state_root) = result {
+                            let state_root = state_root
+                                .try_into()
+                                .expect("state root from triedb must be 32 Bytes");
+                            let s = StateRootHashInfo {
+                                state_root_hash: StateRootHash(Hash(state_root)),
+                                round: Round(0),
+                                seq_num: SeqNum(0),
+                            };
+
+                            triedb_send.blocking_send(s).unwrap();
+                        } else {
+                            warn!("no state root for blocknum {}", n);
+                        }
+                    }
+
+                    block_num = latest_block_num;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+
+        Self {
+            triedb_recv,
+            genesis_validator_data,
+            next_val_data: None,
+            val_set_update_interval,
+
+            waker: None,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<ST, SCT> Stream for StateRootHashTriedbPoll<ST, SCT>
+where
+    Self: Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Item = MonadEvent<ST, SCT>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if this.waker.is_none() {
+            this.waker = Some(cx.waker().clone());
+        }
+
+        if let Some(next_val_data) = this.next_val_data.take() {
+            return Poll::Ready(Some(MonadEvent::ValidatorEvent(
+                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
+                    next_val_data.validator_data,
+                    next_val_data.epoch,
+                )),
+            )));
+        }
+
+        let s = this.triedb_recv.poll_recv(cx);
+        s.map(|s| {
+            s.map(|info| {
+                MonadEvent::AsyncStateVerifyEvent(
+                    monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
+                )
+            })
+        })
+    }
+}
+
+impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
+where
+    SCT: SignatureCollection,
+{
+    type Command = StateRootHashCommand<Block<SCT>>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            StateRootHashCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        let mut wake = false;
+
+        for command in commands {
+            match command {
+                StateRootHashCommand::LedgerCommit(block) => {
+                    if block
+                        .get_seq_num()
+                        .is_epoch_end(self.val_set_update_interval)
+                    {
+                        if self.next_val_data.is_some() {
+                            error!("Validator set data is not consumed");
+                        }
+                        let seq_num = block.get_seq_num();
+                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+                        assert_eq!(
+                            locked_epoch,
+                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                        );
+                        self.next_val_data = Some(ValidatorSetUpdate {
+                            epoch: locked_epoch,
+                            validator_data: self.genesis_validator_data.clone(),
+                        });
+                    }
+                    wake = true;
+                }
+            }
+        }
+
+        if wake {
+            if let Some(waker) = self.waker.take() {
+                waker.wake()
+            }
+        }
     }
 }

@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(long)]
     pub mempool_ipc_path: PathBuf,
 
+    /// Set the monad triedb path
+    #[arg(long)]
+    pub triedb_path: PathBuf,
+
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,
