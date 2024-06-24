@@ -17,6 +17,7 @@ use monad_consensus_types::{
     payload::{NopStateRoot, StateRoot, StateRootValidator},
     state_root_hash::StateRootHash,
 };
+use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::Hash,
@@ -231,6 +232,8 @@ async fn run(
             val_set_update_interval,
         ),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
+        control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
+            .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         metrics: metrics_executor,
     };

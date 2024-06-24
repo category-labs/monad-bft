@@ -443,6 +443,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
                 MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
                 MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
+                MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
             };
 
             let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
@@ -561,6 +562,7 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::StateRootEvent(_) => "staterootevent",
             MonadEvent::AsyncStateVerifyEvent(_) => "asyncstateverifyevent",
             MonadEvent::MetricsEvent(_) => "metricsevent",
+            WalEvent::ControlPanelEvent(_) => "controlpanelevent",
         };
 
         buckets

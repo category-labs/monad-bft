@@ -8,14 +8,14 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::Executor;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, LoopbackCommand,
-    MetricsCommand, RouterCommand, StateRootHashCommand, TimerCommand,
+    CheckpointCommand, Command, ControlPanelCommand, ExecutionLedgerCommand, LedgerCommand,
+    LoopbackCommand, MetricsCommand, RouterCommand, StateRootHashCommand, TimerCommand,
 };
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, EL, C, S, IPC, LO, M> {
+pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -24,13 +24,14 @@ pub struct ParentExecutor<R, T, L, EL, C, S, IPC, LO, M> {
     pub state_root_hash: S,
     /// ipc is a Stream, not an executor
     pub ipc: IPC,
+    pub control_panel: CP,
     pub loopback: LO,
     pub metrics: M,
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, IPCE, LOE, ME, E, OM, B, C, SCT: SignatureCollection> Executor
-    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, LOE, ME>
+impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, ME, E, OM, B, C, SCT: SignatureCollection> Executor
+    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, ME>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -39,6 +40,7 @@ where
     LE: Executor<Command = LedgerCommand<SCT::NodeIdPubKey, B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand<B>>,
+    CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     ME: Executor<Command = MetricsCommand>,
 {
@@ -55,6 +57,7 @@ where
             _state_root_hash_cmds,
             loopback_cmds,
             metrics_cmds,
+            control_panel_commands,
         ) = Command::split_commands(commands);
 
         self.router.replay(router_cmds);
@@ -63,7 +66,8 @@ where
         self.execution_ledger.replay(execution_ledger_cmds);
         self.checkpoint.replay(checkpoint_cmds);
         self.loopback.replay(loopback_cmds);
-        self.metrics.replay(metrics_cmds)
+        self.metrics.replay(metrics_cmds);
+        self.control_panel.replay(control_panel_commands);
     }
 
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, SCT>>) {
@@ -77,6 +81,7 @@ where
             state_root_hash_cmds,
             loopback_cmds,
             metrics_cmds,
+            control_panel_cmds,
         ) = Command::split_commands(commands);
 
         self.router.exec(router_cmds);
@@ -87,16 +92,19 @@ where
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
         self.metrics.exec(metrics_cmds);
+        self.control_panel.exec(control_panel_cmds);
     }
 }
 
-impl<E, R, T, L, EL, C, S, IPC, LO, M> Stream for ParentExecutor<R, T, L, EL, C, S, IPC, LO, M>
+impl<E, R, T, L, EL, C, S, IPC, CP, LO, M> Stream
+    for ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
     IPC: Stream<Item = E> + Unpin,
+    CP: Stream<Item = E> + Unpin,
     LO: Stream<Item = E> + Unpin,
     M: Stream<Item = E> + Unpin,
     Self: Unpin,
@@ -108,6 +116,7 @@ where
         futures::future::select_all(vec![
             this.timer.next().boxed_local(),
             this.ipc.next().boxed_local(),
+            this.control_panel.next().boxed_local(),
             this.ledger.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
             this.loopback.next().boxed_local(),
@@ -119,7 +128,7 @@ where
     }
 }
 
-impl<R, T, L, EL, C, S, IPC, LO, M> ParentExecutor<R, T, L, EL, C, S, IPC, LO, M> {
+impl<R, T, L, EL, C, S, IPC, CP, LO, M> ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

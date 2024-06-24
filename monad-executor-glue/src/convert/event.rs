@@ -6,8 +6,8 @@ use monad_proto::{
 };
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, FetchedBlock, MempoolEvent, MetricsEvent, MonadEvent,
-    ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, FetchedBlock, MempoolEvent,
+    MetricsEvent, MonadEvent, ValidatorEvent,
 };
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
@@ -73,6 +73,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
             }
             MonadEvent::MetricsEvent(event) => proto_monad_event::Event::MetricsEvent(event.into()),
+            MonadEvent::ControlPanelEvent(event) => {
+                proto_monad_event::Event::ControlPanelEvent(event.into())
+            }
         };
         Self { event: Some(event) }
     }
@@ -111,6 +114,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::MetricsEvent(event)) => {
                 MonadEvent::MetricsEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::ControlPanelEvent(e)) => {
+                MonadEvent::ControlPanelEvent(e.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -353,6 +359,43 @@ impl TryFrom<ProtoMetricsEvent> for MetricsEvent {
                 "MetricsEvent::Timeout".to_owned(),
             ))? {
                 proto_metrics_event::Event::Timeout(proto_timeout) => MetricsEvent::Timeout,
+            }
+        })
+    }
+}
+
+impl From<&ControlPanelEvent> for ProtoControlPanelEvent {
+    fn from(value: &ControlPanelEvent) -> Self {
+        match value {
+            ControlPanelEvent::GetValidatorSet => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::GetValidatorSetEvent(
+                    ProtoGetValidatorSetEvent {},
+                )),
+            },
+            ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
+                    ProtoClearMetricsEvent {},
+                )),
+            },
+        }
+    }
+}
+
+impl TryFrom<ProtoControlPanelEvent> for ControlPanelEvent {
+    type Error = ProtoError;
+
+    fn try_from(e: ProtoControlPanelEvent) -> Result<Self, Self::Error> {
+        Ok({
+            let ProtoControlPanelEvent { event } = e;
+            match event.ok_or(ProtoError::MissingRequiredField(
+                "ControlPanelEvent::GetValidatorSetEvent".to_owned(),
+            ))? {
+                proto_control_panel_event::Event::GetValidatorSetEvent(_) => {
+                    ControlPanelEvent::GetValidatorSet
+                }
+                proto_control_panel_event::Event::ClearMetricsEvent(_) => {
+                    ControlPanelEvent::ClearMetricsEvent
+                }
             }
         })
     }

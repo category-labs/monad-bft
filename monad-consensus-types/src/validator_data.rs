@@ -184,3 +184,74 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorSetData> for ValidatorSetDa
         Ok(vlist)
     }
 }
+
+pub fn serialize_nodeid<S, SCT>(
+    node_id: &NodeId<SCT::NodeIdPubKey>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    SCT: SignatureCollection,
+{
+    let hex_str = "0x".to_string() + &hex::encode(node_id.pubkey().bytes());
+    serializer.serialize_str(&hex_str)
+}
+
+pub fn deserialize_nodeid<'de, D, SCT>(
+    deserializer: D,
+) -> Result<NodeId<SCT::NodeIdPubKey>, D::Error>
+where
+    D: Deserializer<'de>,
+    SCT: SignatureCollection,
+{
+    let buf = <String as Deserialize>::deserialize(deserializer)?;
+    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
+        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
+    } else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    Ok(NodeId::new(
+        <SCT as SignatureCollection>::NodeIdPubKey::from_bytes(&bytes)
+            .map_err(<D::Error as serde::de::Error>::custom)?,
+    ))
+}
+/// This type is a duplicate of ValidatorData because
+/// #[serde(flatten)] breaks bincode ser/de
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Validator<SCT: SignatureCollection> {
+    #[serde(serialize_with = "serialize_nodeid::<_, SCT>")]
+    #[serde(deserialize_with = "deserialize_nodeid::<_, SCT>")]
+    #[serde(bound = "SCT: SignatureCollection")]
+    pub node_id: NodeId<SCT::NodeIdPubKey>,
+    pub stake: Stake,
+    #[serde(serialize_with = "serialize_cert_pubkey::<_, SCT>")]
+    #[serde(deserialize_with = "deserialize_cert_pubkey::<_, SCT>")]
+    pub cert_pubkey: SignatureCollectionPubKeyType<SCT>,
+}
+
+/// This type is a duplicate of ValidatorDataWithEpoch because
+/// #[serde(flatten)] breaks bincode ser/de and we also don't need round information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedValidatorData<SCT: SignatureCollection> {
+    pub epoch: Epoch,
+    #[serde(bound = "SCT: SignatureCollection")]
+    pub validators: Vec<Validator<SCT>>,
+}
+impl<SCT: SignatureCollection> From<ValidatorSetDataWithEpoch<SCT>> for ParsedValidatorData<SCT> {
+    fn from(validator_set_data: ValidatorSetDataWithEpoch<SCT>) -> Self {
+        Self {
+            epoch: validator_set_data.epoch,
+            validators: validator_set_data
+                .validators
+                .0
+                .iter()
+                .map(|v| Validator {
+                    node_id: v.node_id,
+                    stake: v.stake,
+                    cert_pubkey: v.cert_pubkey,
+                })
+                .collect::<Vec<_>>(),
+        }
+    }
+}

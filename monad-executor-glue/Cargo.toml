@@ -23,6 +23,7 @@ bincode = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 prost = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 monad-multi-sig = { path = "../monad-multi-sig" }

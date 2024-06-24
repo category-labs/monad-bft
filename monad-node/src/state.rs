@@ -28,6 +28,7 @@ pub struct NodeState {
     pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
+    pub control_panel_ipc_path: PathBuf,
     pub blockdb_path: PathBuf,
     pub triedb_path: PathBuf,
     pub otel_endpoint: Option<String>,
@@ -81,6 +82,7 @@ impl NodeState {
             blockdb_path: cli.blockdb_path,
             triedb_path: cli.triedb_path,
             mempool_ipc_path: cli.mempool_ipc_path,
+            control_panel_ipc_path: cli.control_panel_ipc_path,
             otel_endpoint: cli.otel_endpoint,
             record_metrics_interval: cli
                 .record_metrics_interval_seconds

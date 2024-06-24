@@ -12,5 +12,6 @@ monad-node \
     --wal-path /monad/wal \
     --blockdb-path /monad/blockdb \
     --mempool-ipc-path /monad/mempool.sock \
+    --control-panel-ipc-path /monad/controlpanel.sock \
     --execution-ledger-path /monad/ledger \
     test-mode > /monad/logs/client.log 2>&1

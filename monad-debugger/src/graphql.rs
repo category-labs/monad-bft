@@ -4,8 +4,8 @@ use async_graphql::{Context, NewType, Object, Union};
 use monad_consensus_types::{metrics::Metrics, state_root_hash::StateRootHashInfo};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, MempoolEvent, MetricsEvent, MonadEvent,
-    ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent,
+    MetricsEvent, MonadEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -220,6 +220,7 @@ enum GraphQLMonadEvent<'s> {
     StateRootEvent(GraphQLStateRootEvent<'s>),
     AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent<'s>),
     MetricsEvent(GraphQLMetricsEvent<'s>),
+    ControlPanelEvent(GraphQLControlPanelEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -234,6 +235,9 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
                 Self::AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent(event))
             }
             MonadEventType::MetricsEvent(event) => Self::MetricsEvent(GraphQLMetricsEvent(event)),
+            MonadEventType::ControlPanelEvent(event) => {
+                Self::ControlPanelEvent(GraphQLControlPanelEvent(event))
+            }
         }
     }
 }
@@ -290,6 +294,15 @@ struct GraphQLMetricsEvent<'s>(&'s MetricsEvent);
 
 #[Object]
 impl<'s> GraphQLMetricsEvent<'s> {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent);
+
+#[Object]
+impl<'s> GraphQLControlPanelEvent<'s> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

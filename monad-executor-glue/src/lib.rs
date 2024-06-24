@@ -12,13 +12,17 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::Block, metrics::Metrics, signature_collection::SignatureCollection,
-    state_root_hash::StateRootHashInfo, validator_data::ValidatorSetData,
+    block::Block,
+    metrics::Metrics,
+    signature_collection::SignatureCollection,
+    state_root_hash::StateRootHashInfo,
+    validator_data::{ParsedValidatorData, ValidatorSetData},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, Stake, TimeoutVariant};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub enum RouterCommand<PT: PubKey, OM> {
@@ -76,6 +80,53 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GetValidatorSet<SCT: SignatureCollection> {
+    Request,
+    #[serde(bound = "SCT: SignatureCollection")]
+    Response(ParsedValidatorData<SCT>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ReadCommand<SCT: SignatureCollection + Clone> {
+    #[serde(bound = "SCT: SignatureCollection")]
+    GetValidatorSet(GetValidatorSet<SCT>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum UpdateValidatorSet<SCT: SignatureCollection> {
+    #[serde(bound(
+        deserialize = "SCT: SignatureCollection",
+        serialize = "SCT: SignatureCollection",
+    ))]
+    Request(ParsedValidatorData<SCT>),
+    Response,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ClearMetrics {
+    Request,
+    Response(Metrics),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WriteCommand<SCT: SignatureCollection> {
+    #[serde(bound(
+        deserialize = "SCT: SignatureCollection",
+        serialize = "SCT: SignatureCollection",
+    ))]
+    UpdateValidatorSet(UpdateValidatorSet<SCT>),
+    ClearMetrics(ClearMetrics),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ControlPanelCommand<SCT: SignatureCollection> {
+    #[serde(bound = "SCT: SignatureCollection")]
+    Read(ReadCommand<SCT>),
+    #[serde(bound = "SCT: SignatureCollection")]
+    Write(WriteCommand<SCT>),
+}
+
 pub enum LoopbackCommand<E> {
     Forward(E),
 }
@@ -94,6 +145,7 @@ pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     StateRootHashCommand(StateRootHashCommand<B>),
     LoopbackCommand(LoopbackCommand<E>),
     MetricsCommand(MetricsCommand),
+    ControlPanelCommand(ControlPanelCommand<SCT>),
 }
 
 impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
@@ -108,6 +160,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<StateRootHashCommand<B>>,
         Vec<LoopbackCommand<E>>,
         Vec<MetricsCommand>,
+        Vec<ControlPanelCommand<SCT>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -117,6 +170,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         let mut state_root_hash_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
         let mut metrics_cmds = Vec::new();
+        let mut control_panel_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -128,6 +182,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
                 Command::MetricsCommand(cmd) => metrics_cmds.push(cmd),
+                Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
             }
         }
         (
@@ -139,6 +194,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
             state_root_hash_cmds,
             loopback_cmds,
             metrics_cmds,
+            control_panel_cmds,
         )
     }
 }
@@ -283,6 +339,12 @@ pub enum MetricsEvent {
     Timeout,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlPanelEvent {
+    GetValidatorSet,
+    ClearMetricsEvent,
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -304,6 +366,8 @@ where
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for metrics
     MetricsEvent(MetricsEvent),
+    /// Events for the debug control panel
+    ControlPanelEvent(ControlPanelEvent),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -368,6 +432,7 @@ where
             }
             MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
             MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
+            MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
         };
 
         write!(f, "{}", s)

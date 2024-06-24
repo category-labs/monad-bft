@@ -9,6 +9,7 @@ monad-node \
     --forkpoint-config /monad/config/forkpoint.toml \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
+    --control-panel-ipc-path /monad/controlpanel.sock \
     --execution-ledger-path /monad/ledger \
     --blockdb-path /monad/blockdb \
     --triedb-path /monad/triedb \

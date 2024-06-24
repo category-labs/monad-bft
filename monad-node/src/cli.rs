@@ -43,6 +43,10 @@ pub struct Cli {
     #[arg(long)]
     pub triedb_path: PathBuf,
 
+    /// Set a custom monad control panel ipc path
+    #[arg(long)]
+    pub control_panel_ipc_path: PathBuf,
+
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,

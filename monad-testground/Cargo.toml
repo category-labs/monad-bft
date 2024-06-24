@@ -9,6 +9,7 @@ bench = false
 
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }
+monad-control-panel = { path = "../monad-control-panel" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }

@@ -26,7 +26,7 @@ use monad_consensus_types::{
     state_root_hash::StateRootHashInfo,
     txpool::TxPool,
     validation,
-    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
+    validator_data::{ParsedValidatorData, Validator, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -34,13 +34,16 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message,
-    MetricsCommand, MetricsEvent, MonadEvent, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
+    ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
+    MetricsEvent, MonadEvent, ReadCommand, ValidatorEvent, WriteCommand,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use serde::{Deserialize, Serialize};
 
@@ -796,6 +799,48 @@ where
                 MetricsEvent::Timeout => {
                     vec![Command::MetricsCommand(MetricsCommand::RecordMetrics(
                         self.metrics,
+                    ))]
+                }
+            },
+            MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
+                ControlPanelEvent::GetValidatorSet => {
+                    let round = self.consensus.get_current_round();
+                    let epoch = self.epoch_manager.get_epoch(round).unwrap();
+
+                    let validator_set = self
+                        .val_epoch_map
+                        .get_val_set(&epoch)
+                        .unwrap()
+                        .get_members();
+
+                    let cert_pubkeys = self
+                        .val_epoch_map
+                        .get_cert_pubkeys(&epoch)
+                        .unwrap()
+                        .map
+                        .clone();
+                    let validators = cert_pubkeys
+                        .iter()
+                        .map(|(node_id, cert_pub_key)| {
+                            let stake = validator_set.get(node_id).unwrap();
+                            Validator {
+                                node_id: *node_id,
+                                stake: *stake,
+                                cert_pubkey: *cert_pub_key,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                        ReadCommand::GetValidatorSet(GetValidatorSet::Response(
+                            ParsedValidatorData { epoch, validators },
+                        )),
+                    ))]
+                }
+                ControlPanelEvent::ClearMetricsEvent => {
+                    self.metrics = Default::default();
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                        WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
                     ))]
                 }
             },

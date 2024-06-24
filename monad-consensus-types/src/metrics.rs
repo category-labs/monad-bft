@@ -1,4 +1,6 @@
-#[derive(Debug, Default, Clone, Copy)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct ValidationErrors {
     pub invalid_author: u64,
     pub not_well_formed_sig: u64,
@@ -13,7 +15,7 @@ pub struct ValidationErrors {
     pub invalid_epoch: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct ConsensusEvents {
     pub local_timeout: u64,
     pub handle_proposal: u64,
@@ -47,14 +49,14 @@ pub struct ConsensusEvents {
     pub trigger_state_sync: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocktreeEvents {
     pub prune_success: u64,
     pub add_success: u64,
     pub add_dup: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocksyncEvents {
     pub blocksync_response_successful: u64,
     pub blocksync_response_failed: u64,
@@ -62,7 +64,7 @@ pub struct BlocksyncEvents {
     pub blocksync_request: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Metrics {
     pub validation_errors: ValidationErrors,
     pub consensus_events: ConsensusEvents,

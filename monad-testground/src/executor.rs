@@ -10,6 +10,7 @@ use monad_consensus_types::{
     txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
+use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -101,6 +102,7 @@ pub fn make_monad_executor<ST, SCT>(
     MockCheckpoint<Checkpoint<SCT>>,
     BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
     IpcReceiver<ST, SCT>,
+    ControlPanelIpcReceiver<ST, SCT>,
     LoopbackExecutor<MonadEvent<ST, SCT>>,
     NopMetricsExecutor<MonadEvent<ST, SCT>>,
 >
@@ -144,6 +146,8 @@ where
             )),
         },
         ipc: IpcReceiver::new(generate_uds_path().into(), 100).expect("uds bind failed"),
+        control_panel: ControlPanelIpcReceiver::new(generate_uds_path().into(), 1000)
+            .expect("usd bind failed"),
         loopback: LoopbackExecutor::default(),
         metrics: NopMetricsExecutor::default(),
     }

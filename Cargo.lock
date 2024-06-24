@@ -1802,6 +1802,22 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 
 [[package]]
 name = "crossterm"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e64e6c0fbe2c17357405f7c758c1ef960fce08bdfb2c03d88d2a18d7e09c4b67"
+dependencies = [
+ "bitflags 1.3.2",
+ "crossterm_winapi",
+ "libc",
+ "mio",
+ "parking_lot",
+ "signal-hook",
+ "signal-hook-mio",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f476fe445d41c9e991fd07515a6f463074b782242ccf4a5b7b1d1012e70824df"
@@ -2045,6 +2061,12 @@ dependencies = [
  "quote",
  "syn 2.0.39",
 ]
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 
 [[package]]
 name = "ecdsa"
@@ -2383,6 +2405,24 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
  "slab",
+]
+
+[[package]]
+name = "fuzzy-matcher"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54614a3312934d066701a80f20f15fa3b56d67ac7722b39eea5b4c9dd1d66c94"
+dependencies = [
+ "thread_local",
+]
+
+[[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
 ]
 
 [[package]]
@@ -2820,6 +2860,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0c10553d664a4d0bcff9f4215d0aac67a639cc68ef660840afe309b807bc9f5"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "inquire"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fddf93031af70e75410a2511ec04d49e758ed2f26dad3404a934e0fb45cc12a"
+dependencies = [
+ "bitflags 2.4.1",
+ "crossterm 0.25.0",
+ "dyn-clone",
+ "fuzzy-matcher",
+ "fxhash",
+ "newline-converter",
+ "once_cell",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
@@ -3367,6 +3424,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-control-panel"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "bincode",
+ "futures",
+ "inquire",
+ "monad-bls",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-secp",
+ "monad-types",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
@@ -3541,6 +3619,7 @@ dependencies = [
  "monad-types",
  "prost",
  "reth-primitives",
+ "serde",
 ]
 
 [[package]]
@@ -3718,6 +3797,7 @@ dependencies = [
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
+ "monad-control-panel",
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
@@ -3951,6 +4031,7 @@ dependencies = [
  "monad-blocktree",
  "monad-consensus-state",
  "monad-consensus-types",
+ "monad-control-panel",
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
@@ -4181,7 +4262,7 @@ dependencies = [
  "chrono",
  "clap 4.4.10",
  "criterion",
- "crossterm",
+ "crossterm 0.27.0",
  "itertools 0.10.5",
  "monad-bls",
  "monad-consensus",
@@ -4260,6 +4341,15 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
+]
+
+[[package]]
+name = "newline-converter"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b6b097ecb1cbfed438542d16e84fd7ad9b0c76c8a65b7f9039212a3d14dc7f"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -5234,7 +5324,7 @@ dependencies = [
  "bitflags 2.4.1",
  "cassowary",
  "compact_str",
- "crossterm",
+ "crossterm 0.27.0",
  "indoc 2.0.4",
  "itertools 0.12.0",
  "lru",

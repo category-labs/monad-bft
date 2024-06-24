@@ -119,6 +119,16 @@ message ProtoMetricsEvent {
   }
 }
 
+message ProtoGetValidatorSetEvent {}
+message ProtoClearMetricsEvent {}
+
+message ProtoControlPanelEvent {
+  oneof event {
+    ProtoGetValidatorSetEvent get_validator_set_event = 1;
+    ProtoClearMetricsEvent clear_metrics_event = 2;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -128,5 +138,6 @@ message ProtoMonadEvent{
     ProtoStateUpdateEvent state_root_event = 5;
     ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
     ProtoMetricsEvent metrics_event = 7;
+    ProtoControlPanelEvent control_panel_event = 8;
   }
 }
