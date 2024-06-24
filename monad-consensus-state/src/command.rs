@@ -17,7 +17,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, TimeoutVariant};
-use monad_validator::epoch_manager::EpochManager;
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -70,12 +69,11 @@ where
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         version: &str,
-        epoch_manager: &EpochManager,
         cmd: PacemakerCommand<SCT>,
     ) -> Self {
         match cmd {
-            PacemakerCommand::EnterRound(round) => {
-                ConsensusCommand::EnterRound(epoch_manager.get_epoch(round), round)
+            PacemakerCommand::EnterRound((epoch, round)) => {
+                ConsensusCommand::EnterRound(epoch, round)
             }
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast(tmo.tminfo.epoch, tmo.tminfo.round),

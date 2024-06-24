@@ -234,7 +234,7 @@ where
             high_qc: genesis_qc,
             state_root_validator,
             // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(config.delta, Round(1), None),
+            pacemaker: Pacemaker::new(config.delta, Epoch(1), Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId::new(my_pubkey),
             config,
@@ -260,18 +260,14 @@ where
     }
 
     /// handles the local timeout expiry event
-    pub fn handle_timeout_expiry(
-        &mut self,
-        epoch_manager: &EpochManager,
-        metrics: &mut Metrics,
-    ) -> Vec<PacemakerCommand<SCT>> {
+    pub fn handle_timeout_expiry(&mut self, metrics: &mut Metrics) -> Vec<PacemakerCommand<SCT>> {
         metrics.consensus_events.local_timeout += 1;
         debug!(
             "local timeout: round={:?}",
             self.pacemaker.get_current_round()
         );
         self.pacemaker
-            .handle_event(&mut self.safety, &self.high_qc, epoch_manager)
+            .handle_event(&mut self.safety, &self.high_qc)
             .into_iter()
             .collect()
     }
@@ -484,14 +480,13 @@ where
             node.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, node.metrics)
+                .advance_round_tc(last_round_tc, node.epoch_manager, node.metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         node.version,
-                        node.epoch_manager,
                         cmd,
                     )
                 });
@@ -503,7 +498,6 @@ where
             .process_remote_timeout::<VTF::ValidatorSetType>(
                 validator_set,
                 validator_mapping,
-                node.epoch_manager,
                 &mut self.safety,
                 &self.high_qc,
                 author,
@@ -515,7 +509,6 @@ where
                 &self.keypair,
                 &self.cert_keypair,
                 node.version,
-                node.epoch_manager,
                 cmd,
             )
         }));
@@ -524,14 +517,13 @@ where
             node.metrics.consensus_events.created_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(&tc, node.metrics)
+                .advance_round_tc(&tc, node.epoch_manager, node.metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         node.version,
-                        node.epoch_manager,
                         cmd,
                     )
                 });
@@ -646,6 +638,7 @@ where
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             metrics.consensus_events.process_old_qc += 1;
@@ -655,16 +648,20 @@ where
 
         self.high_qc = qc.clone();
         let mut cmds = Vec::new();
-        cmds.extend(self.try_commit(qc, epoch_manager, metrics));
+        cmds.extend(self.try_commit(qc, epoch_manager, metrics, version));
         cmds
     }
 
+    /// Try commit blocks using the QC. Committing the boundary block can
+    /// schedule the next epoch and bump pacemaker epoch. Call
+    /// `Pacemaker::advance_epoch` to keep pacemaker in sync
     #[must_use]
     fn try_commit(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
 
@@ -692,6 +689,8 @@ where
                     .remove_old_requests(blocks_to_commit.last().unwrap().get_seq_num());
 
                 for block in blocks_to_commit.iter() {
+                    // when epoch boundary block is committed, this updates
+                    // epoch manager records
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
                     self.block_policy.update_committed_block(block);
 
@@ -713,6 +712,22 @@ where
                 cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
                     unvalidated_blocks,
                 ));
+
+                // enter new pacemaker epoch if committing the boundary block
+                // bumps the current epoch
+                cmds.extend(
+                    self.pacemaker
+                        .advance_epoch(epoch_manager)
+                        .into_iter()
+                        .map(|cmd| {
+                            ConsensusCommand::from_pacemaker_command(
+                                &self.keypair,
+                                &self.cert_keypair,
+                                version,
+                                cmd,
+                            )
+                        }),
+                );
             }
         }
         cmds
@@ -731,18 +746,17 @@ where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         let mut cmds = Vec::new();
-        cmds.extend(self.process_qc(qc, epoch_manager, metrics));
+        cmds.extend(self.process_qc(qc, epoch_manager, metrics, version));
 
         cmds.extend(
             self.pacemaker
-                .advance_round_qc(qc, metrics)
+                .advance_round_qc(qc, epoch_manager, metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         version,
-                        epoch_manager,
                         cmd,
                     )
                 }),
@@ -782,7 +796,7 @@ where
         // then try propose
         let high_commit_qc = self.pending_block_tree.get_high_committable_qc();
         if let Some(qc) = high_commit_qc {
-            cmds.extend(self.try_commit(&qc, node.epoch_manager, node.metrics));
+            cmds.extend(self.try_commit(&qc, node.epoch_manager, node.metrics, node.version));
         }
 
         // if the current round is the same as block round, try to vote. else, try to propose
@@ -1153,14 +1167,13 @@ where
             metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, metrics)
+                .advance_round_tc(last_round_tc, epoch_manager, metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
                         &self.cert_keypair,
                         version,
-                        epoch_manager,
                         cmd,
                     )
                 });
@@ -1188,6 +1201,10 @@ where
 
     pub fn block_sync_requester(&self) -> &BlockSyncRequester<ST, SCT> {
         &self.block_sync_requester
+    }
+
+    pub fn get_current_epoch(&self) -> Epoch {
+        self.pacemaker.get_current_epoch()
     }
 
     pub fn get_current_round(&self) -> Round {
@@ -1793,11 +1810,9 @@ mod test {
 
         // local timeout for state in Round 1
         assert_eq!(consensus_state.pacemaker.get_current_round(), Round(1));
-        let _ = consensus_state.pacemaker.handle_event(
-            &mut consensus_state.safety,
-            &consensus_state.high_qc,
-            &env.epoch_manager,
-        );
+        let _ = consensus_state
+            .pacemaker
+            .handle_event(&mut consensus_state.safety, &consensus_state.high_qc);
 
         // check no vote commands result from receiving the proposal for round 1
 
@@ -2089,11 +2104,9 @@ mod test {
         assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
 
         // round 2 timeout
-        let pacemaker_cmds = consensus_state.pacemaker.handle_event(
-            &mut consensus_state.safety,
-            &consensus_state.high_qc,
-            &env.epoch_manager,
-        );
+        let pacemaker_cmds = consensus_state
+            .pacemaker
+            .handle_event(&mut consensus_state.safety, &consensus_state.high_qc);
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
@@ -2897,7 +2910,7 @@ mod test {
         // now timeout someone
         let cmds = node1
             .consensus_state
-            .handle_timeout_expiry(&env.epoch_manager, &mut node1.metrics);
+            .handle_timeout_expiry(&mut node1.metrics);
         let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {
@@ -4554,5 +4567,107 @@ mod test {
             .get_entry(&block_2_round_2_id)
             .expect("should be in the blocktree");
         assert!(block_2_blocktree_entry.is_coherent);
+    }
+
+    /// Asserts that pacemaker epoch is brought to sync if blocktree commits
+    /// bump the current epoch
+    ///
+    /// 1. The node receives all the blocks in epoch 1 except the boundary
+    ///    block. These blocks bring it to the first round of epoch(2) but the
+    ///    node is still on epoch(1) as it hasn't committed the boundary block.
+    /// 2. Node receives boundary block and commits it. Assert that pacemaker
+    ///    epoch is bumped to epoch(2)
+    #[test]
+    fn test_pacemaker_advance_epoch_on_blocktree_commit() {
+        let num_states = 4;
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let epoch_length = ctx[0].epoch_manager.val_set_update_interval;
+        let epoch_start_delay = ctx[0].epoch_manager.epoch_start_delay;
+
+        // enter the first round of epoch(2) via a QC. Node is unaware of the epoch change because of missing boundary block
+        // generate many proposal, skips the boundary block proposal
+        let mut proposals = Vec::new();
+        while proposals.len() < 2 * epoch_length.0 as usize {
+            let proposal = env.next_proposal_empty();
+            proposals.push(proposal);
+        }
+
+        let boundary_block_pos = proposals
+            .iter()
+            .position(|p| p.block.get_seq_num().is_epoch_end(epoch_length))
+            .expect("boundary block in vector");
+        let boundary_block = proposals.remove(boundary_block_pos);
+        let epoch_2_start = boundary_block.block.get_round() + epoch_start_delay;
+        proposals.retain(|p| p.block.get_round() <= epoch_2_start);
+
+        // populate the next validator set
+        let valset = ctx[0]
+            .val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(node, stake)| (*node, *stake))
+            .collect_vec();
+        let cert_pubkeys = ValidatorMapping::new(
+            ctx[0]
+                .val_epoch_map
+                .get_cert_pubkeys(&(Epoch(1)))
+                .unwrap()
+                .map
+                .iter()
+                .map(|(node, pubkey)| (*node, *pubkey)),
+        );
+
+        ctx[0].val_epoch_map.insert(Epoch(2), valset, cert_pubkeys);
+
+        let (ctx0, ctx) = ctx.split_first_mut().unwrap();
+        let (consensus_state, mut node_state) = ctx0.get_state();
+
+        for verified_proposal in proposals {
+            let (author, _, proposal) = verified_proposal.destructure();
+            let _ = consensus_state.handle_proposal_message(author, proposal, &mut node_state);
+        }
+
+        // the node hasn't received the boundary block, so it is still in epoch(1)
+        assert_eq!(consensus_state.get_current_epoch(), Epoch(1));
+        assert_eq!(consensus_state.get_current_round(), epoch_2_start);
+
+        // receives boundary block, commits the entire block tree, enters new epoch
+        let (author, _, proposal) = boundary_block.destructure();
+        let cmds = consensus_state.handle_proposal_message(author, proposal, &mut node_state);
+        let enter_round_cmd = cmds
+            .iter()
+            .find(|cmd| matches!(cmd, ConsensusCommand::EnterRound(_, _)));
+        assert!(enter_round_cmd.is_some());
+        if let Some(ConsensusCommand::EnterRound(epoch, round)) = enter_round_cmd {
+            assert_eq!(epoch, &Epoch(2));
+            assert_eq!(round, &epoch_2_start);
+        } else {
+            unreachable!();
+        }
+        assert_eq!(consensus_state.get_current_epoch(), Epoch(2));
+        assert_eq!(consensus_state.get_current_round(), epoch_2_start);
     }
 }
