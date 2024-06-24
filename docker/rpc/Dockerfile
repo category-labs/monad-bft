@@ -38,7 +38,7 @@ RUN apt install -y \
   liburing-dev \
   libzstd-dev
 
-FROM base as builder
+FROM base AS builder
 
 ######## BEGIN CMAKE
 RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
 
 # Runner
-FROM base as runner
+FROM base AS runner
 WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"

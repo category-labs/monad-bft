@@ -395,12 +395,21 @@ async fn main() -> std::io::Result<()> {
         .build_global()
         .expect("thread pool with 4 threads");
 
+    // blockdb is only created when monad node starts
+    // therefore we retry initialization if blockdb path is provided
+    let blockdb_env = if let Some(blockdb_path) = &args.blockdb_path {
+        Some(
+            retry(|| async { BlockDbEnv::new(blockdb_path).map_err(|e| e) })
+                .await
+                .expect("failed to create blockdb env"),
+        )
+    } else {
+        None
+    };
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
-        args.blockdb_path
-            .clone()
-            .map(|p| BlockDbEnv::new(&p))
-            .flatten(),
+        blockdb_env,
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
         args.execution_ledger_path,
     );

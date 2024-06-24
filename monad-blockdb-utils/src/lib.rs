@@ -25,7 +25,7 @@ pub struct BlockDbEnv {
 }
 
 impl BlockDbEnv {
-    pub fn new(blockdb_path: &Path) -> Option<Self> {
+    pub fn new(blockdb_path: &Path) -> Result<Self, std::io::Error> {
         // unsafe because of the flag function for lmdb options
         unsafe {
             let blockdb_env = EnvOpenOptions::new()
@@ -54,7 +54,7 @@ impl BlockDbEnv {
                         .expect("block_tag_dbi should exist")
                         .unwrap();
 
-                    Some(Self {
+                    Ok(Self {
                         blockdb_env: env,
                         block_dbi,
                         block_num_dbi,
@@ -62,7 +62,10 @@ impl BlockDbEnv {
                         block_tag_dbi,
                     })
                 }
-                Err(_) => None,
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "cannot initialize blockdb env",
+                )),
             }
         }
     }
