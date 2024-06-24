@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         debug!("received tx");
                     }
                 }
-                MempoolEvent::Clear => {}
+                MempoolEvent::ForwardedTxns { .. } | MempoolEvent::Clear => {}
             },
 
             _ => Err("Wrong MonadEvent variant")?,

@@ -235,18 +235,31 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum MempoolEvent {
+pub enum MempoolEvent<PT: PubKey> {
     /// Txns that are incoming via RPC (users)
     UserTxns(Vec<Bytes>),
+    /// Txns that are incoming via other nodes
+    ForwardedTxns {
+        sender: NodeId<PT>,
+        txns: Vec<Bytes>,
+    },
     /// Remove transactions that were not included in proposal
     Clear,
 }
 
-impl Debug for MempoolEvent {
+impl<PT: PubKey> Debug for MempoolEvent<PT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UserTxns(txns) => f
                 .debug_struct("UserTxns")
+                .field(
+                    "txns_len_bytes",
+                    &txns.iter().map(Bytes::len).sum::<usize>(),
+                )
+                .finish(),
+            Self::ForwardedTxns { sender, txns } => f
+                .debug_struct("ForwardedTxns")
+                .field("sender", &sender)
                 .field(
                     "txns_len_bytes",
                     &txns.iter().map(Bytes::len).sum::<usize>(),
@@ -286,7 +299,7 @@ where
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
-    MempoolEvent(MempoolEvent),
+    MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for metrics
@@ -337,6 +350,12 @@ where
             MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
             MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
                 format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
+            }
+            MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxns { sender, txns }) => {
+                format!(
+                    "MempoolEvent::ForwardedTxns -- from {sender} number of txns: {}",
+                    txns.len()
+                )
             }
             MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {

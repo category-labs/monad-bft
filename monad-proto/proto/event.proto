@@ -86,10 +86,16 @@ message ProtoUserTx {
 
 message ProtoClearMempool {}
 
+message ProtoForwardedTxs {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.message.ProtoForwardedTx forwarded_tx = 2;
+}
+
 message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
-    ProtoClearMempool clear = 2;
+    ProtoForwardedTxs forwarded_txs = 2;
+    ProtoClearMempool clear = 3;
   }
 }
 

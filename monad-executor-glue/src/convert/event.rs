@@ -1,5 +1,5 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{
     error::ProtoError,
     proto::event::{proto_mempool_event::Event, *},
@@ -203,11 +203,19 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
     }
 }
 
-impl From<&MempoolEvent> for ProtoMempoolEvent {
-    fn from(value: &MempoolEvent) -> Self {
+impl<PT: PubKey> From<&MempoolEvent<PT>> for ProtoMempoolEvent {
+    fn from(value: &MempoolEvent<PT>) -> Self {
         let event = match value {
             MempoolEvent::UserTxns(tx) => {
                 proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
+            }
+            MempoolEvent::ForwardedTxns { sender, txns } => {
+                proto_mempool_event::Event::ForwardedTxs(ProtoForwardedTxs {
+                    sender: Some(sender.into()),
+                    forwarded_tx: Some(monad_proto::proto::message::ProtoForwardedTx {
+                        tx: txns.clone(),
+                    }),
+                })
             }
             MempoolEvent::Clear => proto_mempool_event::Event::Clear(ProtoClearMempool {}),
         };
@@ -215,12 +223,28 @@ impl From<&MempoolEvent> for ProtoMempoolEvent {
     }
 }
 
-impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
+impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
+            Some(proto_mempool_event::Event::ForwardedTxs(forwarded)) => {
+                MempoolEvent::ForwardedTxns {
+                    sender: forwarded
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "MempoolEvent::ForwardedTxns.sender".to_owned(),
+                        ))?
+                        .try_into()?,
+                    txns: forwarded
+                        .forwarded_tx
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "MempoolEvent::ForwardedTxns.forwarded_tx".to_owned(),
+                        ))?
+                        .tx,
+                }
+            }
             Some(Event::Clear(_)) => MempoolEvent::Clear,
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),

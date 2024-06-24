@@ -26,6 +26,11 @@ where
                 VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                     proto_monad_message::OneofMessage::PeerStateRoot(msg.into())
                 }
+                VerifiedMonadMessage::ForwardedTx(msg) => {
+                    proto_monad_message::OneofMessage::ForwardedTx(ProtoForwardedTx {
+                        tx: (*msg).clone(),
+                    })
+                }
             }),
         }
     }
@@ -51,6 +56,9 @@ where
             }
             Some(proto_monad_message::OneofMessage::PeerStateRoot(msg)) => {
                 MonadMessage::PeerStateRoot(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::ForwardedTx(msg)) => {
+                MonadMessage::ForwardedTx(msg.tx)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

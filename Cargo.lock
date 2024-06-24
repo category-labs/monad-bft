@@ -3909,6 +3909,7 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "itertools 0.10.5",
  "monad-async-state-verify",
  "monad-blocktree",
  "monad-bls",

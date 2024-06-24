@@ -23,8 +23,9 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
 bytes = { workspace = true }
-tracing = { workspace = true }
+itertools = { workspace = true }
 prost = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }

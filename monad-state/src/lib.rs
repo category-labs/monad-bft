@@ -31,8 +31,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, Message, MetricsCommand,
-    MetricsEvent, MonadEvent, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message,
+    MetricsCommand, MetricsEvent, MonadEvent, ValidatorEvent,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
@@ -193,6 +193,7 @@ where
     BlockSyncRequest(Validated<RequestBlockSyncMessage>),
     BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
+    ForwardedTx(Vec<Bytes>),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -222,6 +223,9 @@ where
 
     /// Async state verification msgs
     PeerStateRoot(Unvalidated<PeerStateRootMessage<SCT>>),
+
+    /// Forwarded transactions
+    ForwardedTx(Vec<Bytes>),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -251,6 +255,7 @@ where
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
+            VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
         }
     }
 }
@@ -284,6 +289,7 @@ where
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
+            VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
         }
     }
 }
@@ -325,6 +331,12 @@ where
                 MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::PeerStateRoot {
                     sender: from,
                     unvalidated_message: msg,
+                })
+            }
+            MonadMessage::ForwardedTx(msg) => {
+                MonadEvent::MempoolEvent(MempoolEvent::ForwardedTxns {
+                    sender: from,
+                    txns: msg,
                 })
             }
         }

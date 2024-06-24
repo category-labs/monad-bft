@@ -1,52 +1,129 @@
 use std::marker::PhantomData;
 
-use monad_consensus_state::command::Checkpoint;
+use bytes::Bytes;
+use itertools::Itertools;
+use monad_consensus_state::{command::Checkpoint, ConsensusState};
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
+    payload::StateRootValidator,
     signature_collection::SignatureCollection,
     txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_executor_glue::{Command, MempoolEvent, MonadEvent};
-use monad_validator::validator_set::ValidatorSetTypeFactory;
+use monad_executor_glue::{Command, MempoolEvent, MonadEvent, RouterCommand};
+use monad_types::{NodeId, Round, RouterTarget};
+use monad_validator::{
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT> {
-    txpool: &'a mut TT,
+// TODO configurable
+const NUM_LEADERS_FORWARD: usize = 3;
 
-    _phantom: PhantomData<(ST, SCT, BPT, VT, LT, BVT, SVT, ASVT)>,
-}
-
-pub(super) struct MempoolCommand {}
-
-impl<'a, ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
-    VT: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
+    SVT: StateRootValidator,
+{
+    txpool: &'a mut TT,
+
+    consensus: &'a ConsensusState<ST, SCT, BPT, BVT, SVT>,
+    leader_election: &'a LT,
+    epoch_manager: &'a EpochManager,
+    val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+
+    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
+}
+
+pub(super) enum MempoolCommand<PT: PubKey> {
+    ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
+}
+
+impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MempoolChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
+    SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
+
+            consensus: &monad_state.consensus,
+            leader_election: &monad_state.leader_election,
+            epoch_manager: &monad_state.epoch_manager,
+            val_epoch_map: &monad_state.val_epoch_map,
+
             _phantom: PhantomData,
         }
     }
 
-    pub(super) fn update(&mut self, event: MempoolEvent) -> Vec<MempoolCommand> {
+    fn get_leader(&self, round: Round) -> NodeId<CertificateSignaturePubKey<ST>> {
+        let epoch = self.epoch_manager.get_epoch(round);
+        let Some(next_validator_set) = self.val_epoch_map.get_val_set(&epoch) else {
+            todo!("handle non-existent validatorset for next k round epoch");
+        };
+        let members = next_validator_set.get_members();
+        self.leader_election.get_leader(round, members)
+    }
+
+    pub(super) fn update(
+        &mut self,
+        event: MempoolEvent<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
         match event {
             MempoolEvent::UserTxns(txns) => {
+                let txs = txns
+                    .into_iter()
+                    .filter_map(|tx| {
+                        if let Err(err) = self.txpool.insert_tx(tx.clone()) {
+                            tracing::warn!("failed to insert rpc tx: {:?}", err);
+                            None
+                        } else {
+                            Some(tx)
+                        }
+                    })
+                    .collect();
+
+                let round = self.consensus.get_current_round();
+                let next_k_leaders = (round.0..)
+                    .map(|round| self.get_leader(Round(round)))
+                    .take(NUM_LEADERS_FORWARD)
+                    .unique()
+                    .filter(|leader| leader == &self.consensus.get_nodeid())
+                    .collect_vec();
+                vec![MempoolCommand::ForwardTxns(next_k_leaders, txs)]
+            }
+            MempoolEvent::ForwardedTxns { sender, txns } => {
                 for tx in txns {
-                    self.txpool.insert_tx(tx);
+                    if let Err(err) = self.txpool.insert_tx(tx) {
+                        tracing::warn!(
+                            "failed to insert forwarded tx from {:?}: {:?}",
+                            sender,
+                            err
+                        );
+                    }
                 }
                 vec![]
             }
@@ -58,7 +135,7 @@ where
     }
 }
 
-impl<ST, SCT> From<MempoolCommand>
+impl<ST, SCT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
     for Vec<
         Command<
             MonadEvent<ST, SCT>,
@@ -72,7 +149,23 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn from(value: MempoolCommand) -> Self {
-        Vec::new()
+    fn from(value: MempoolCommand<CertificateSignaturePubKey<ST>>) -> Self {
+        match value {
+            MempoolCommand::ForwardTxns(targets, txns) => targets
+                .into_iter()
+                .map(|target| {
+                    // TODO ideally we could batch these all as one RouterCommand(PointToPoint) so
+                    // that we can:
+                    // 1. avoid cloning txns
+                    // 2. avoid serializing multiple times
+                    // 3. avoid raptor coding multiple times
+                    // 4. use 1 sendmmsg in the router
+                    Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::PointToPoint(target),
+                        message: VerifiedMonadMessage::ForwardedTx(txns.clone()),
+                    })
+                })
+                .collect(),
+        }
     }
 }

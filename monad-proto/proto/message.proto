@@ -52,11 +52,16 @@ message ProtoPeerStateRootMessage {
   monad_proto.signing.ProtoSignature sig = 3;
 }
 
+message ProtoForwardedTx {
+  repeated bytes tx = 1;
+}
+
 message ProtoMonadMessage {
   oneof OneofMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
     ProtoRequestBlockSyncMessage block_sync_request = 2;
     ProtoBlockSyncMessage block_sync_response = 3;
     ProtoPeerStateRootMessage peer_state_root = 4;
+    ProtoForwardedTx forwarded_tx = 5;
   }
 }

@@ -60,6 +60,7 @@ where
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
             VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
+            VerifiedMonadMessage::ForwardedTx(_) => false,
         };
 
         if should_drop {
@@ -152,6 +153,10 @@ where
                 } else {
                     TwinsCapture::Spread(pid)
                 }
+            }
+            VerifiedMonadMessage::ForwardedTx(_) => {
+                // is this correct?
+                TwinsCapture::Drop
             }
         };
 

@@ -6,11 +6,27 @@ use crate::{
     signature_collection::SignatureCollection,
 };
 
+#[derive(Debug)]
+pub enum TxPoolInsertionError {
+    NotWellFormed,
+    NonceTooLow,
+    FeeTooLow,
+}
+
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
 pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
-    /// Handle transactions submitted by users via RPC
-    fn insert_tx(&mut self, tx: Bytes);
+    /// Handle transactions:
+    /// 1. submitted by users via RPC
+    /// 2. forwarded by other validators/full-nodes
+    ///
+    /// Note that right now, tx is not guaranteed to be well-formed. The IPC path will always be
+    /// well-formed, but the forwarded tx path is not.
+    ///
+    /// Because of this, for now, tx well-formedness must be checked again inside the insert_tx
+    /// implementation. Ideally, the Bytes type should be replaced with a DecodedTx type which
+    /// TxPool is generic over.
+    fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError>;
 
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
@@ -28,7 +44,7 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
 impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
     for Box<T>
 {
-    fn insert_tx(&mut self, tx: Bytes) {
+    fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError> {
         (**self).insert_tx(tx)
     }
 
@@ -67,7 +83,9 @@ impl Default for MockTxPool {
 }
 
 impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
-    fn insert_tx(&mut self, _tx: Bytes) {}
+    fn insert_tx(&mut self, _tx: Bytes) -> Result<(), TxPoolInsertionError> {
+        Ok(())
+    }
 
     fn create_proposal(
         &mut self,

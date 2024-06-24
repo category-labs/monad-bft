@@ -6,7 +6,9 @@ use std::{
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{
-    payload::FullTransactionList, signature_collection::SignatureCollection, txpool::TxPool,
+    payload::FullTransactionList,
+    signature_collection::SignatureCollection,
+    txpool::{TxPool, TxPoolInsertionError},
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
@@ -136,26 +138,32 @@ impl EthTxPool {
 }
 
 impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
-    fn insert_tx(&mut self, tx: Bytes) {
+    fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError> {
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
-        let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
+        let eth_tx = EthTransaction::decode(&mut tx.as_ref())
+            .map_err(|_e| TxPoolInsertionError::NotWellFormed)?;
         let sender = EthAddress(eth_tx.signer());
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
+        // TODO we should definitely return out early here if the nonce is invalid so that we don't
+        //      forward txs that are known to be invalid
+        // TODO once we have dynamic base fee, we should also exit out early if base fee isn't high
+        // enough
         // we are going to compute a price : gas_limit ratio so we cannot have zero in the denominator
         if eth_tx.gas_limit() == 0 {
-            return;
+            return Err(TxPoolInsertionError::NotWellFormed);
         }
 
         let ratio = (effective_tip_per_gas(&eth_tx) as f64) / (eth_tx.gas_limit() as f64);
 
         if ratio.is_nan() {
-            return;
+            return Err(TxPoolInsertionError::NotWellFormed);
         }
 
         self.pool.entry(sender).or_default().add(eth_tx, ratio);
+        Ok(())
     }
 
     fn create_proposal(
