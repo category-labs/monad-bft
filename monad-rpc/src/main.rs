@@ -18,8 +18,9 @@ use block_handlers::{
 use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
-    monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByBlockNumberAndIndex,
-    monad_eth_getTransactionByHash, monad_eth_getTransactionReceipt,
+    monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
+    monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
+    monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
 use log::{debug, info};
@@ -131,6 +132,17 @@ async fn rpc_select(
         }
         "eth_sendRawTransaction" => {
             monad_eth_sendRawTransaction(app_state.mempool_sender.clone(), params).await
+        }
+        "eth_getLogs" => {
+            let Some(blockdb_env) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(triedb_env) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            monad_eth_getLogs(blockdb_env, triedb_env, params).await
         }
         "eth_getTransactionByHash" => {
             if let Some(reader) = &app_state.blockdb_reader {
@@ -380,10 +392,9 @@ async fn main() -> std::io::Result<()> {
     let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
     tokio::spawn(async move {
         let ipc_path = args.ipc_path;
-        let mut sender =
-            retry(|| async { MempoolTxIpcSender::new(&ipc_path).await.map_err(|e| e) })
-                .await
-                .expect("failed to create ipc sender");
+        let mut sender = retry(|| async { MempoolTxIpcSender::new(&ipc_path).await })
+            .await
+            .expect("failed to create ipc sender");
 
         while let Ok(tx) = ipc_receiver.recv_async().await {
             sender.send(tx).await.expect("IPC send failed");
@@ -399,7 +410,7 @@ async fn main() -> std::io::Result<()> {
     // therefore we retry initialization if blockdb path is provided
     let blockdb_env = if let Some(blockdb_path) = &args.blockdb_path {
         Some(
-            retry(|| async { BlockDbEnv::new(blockdb_path).map_err(|e| e) })
+            retry(|| async { BlockDbEnv::new(blockdb_path) })
                 .await
                 .expect("failed to create blockdb env"),
         )

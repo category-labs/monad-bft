@@ -112,7 +112,6 @@ impl JsonRpcError {
         }
     }
 
-    #[allow(dead_code)]
     pub fn invalid_request() -> Self {
         Self {
             code: -32600,
@@ -156,6 +155,14 @@ impl JsonRpcError {
     }
 
     pub fn eth_call_error(message: String) -> Self {
+        Self {
+            code: -32000,
+            message,
+            data: None,
+        }
+    }
+
+    pub fn eth_filter_error(message: String) -> Self {
         Self {
             code: -32000,
             message,

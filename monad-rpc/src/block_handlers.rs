@@ -230,33 +230,11 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
     serialize_result(format!("0x{:x}", count))
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockReceiptsParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
-    block_tag: BlockTags,
-}
-
-#[allow(non_snake_case)]
-pub async fn monad_eth_getBlockReceipts(
-    blockdb_env: &BlockDbEnv,
+pub async fn block_receipts(
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getBlockReceipts: {params:?}");
-
-    let p: MonadEthGetBlockReceiptsParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
-        return serialize_result(None::<Vec<TransactionReceipt>>);
-    };
-    let block_num = block.block.number;
-
+    block: BlockValue,
+) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
+    let block_num: u64 = block.block.number;
     let mut block_receipts: Vec<(ReceiptDetails, u64)> = vec![];
     for txn_index in 0..block.block.body.len() {
         match triedb_env.get_receipt(txn_index as u64, block_num).await {
@@ -290,6 +268,36 @@ pub async fn monad_eth_getBlockReceipts(
         return Err(JsonRpcError::internal_error());
     }
 
+    Ok(block_receipts)
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockReceiptsParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_tag: BlockTags,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockReceipts(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockReceipts: {params:?}");
+
+    let p: MonadEthGetBlockReceiptsParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
+        return serialize_result(None::<Vec<TransactionReceipt>>);
+    };
+
+    let block_receipts = block_receipts(triedb_env, block).await?;
     if block_receipts.is_empty() {
         serialize_result(None::<Vec<TransactionReceipt>>)
     } else {

@@ -1,16 +1,22 @@
 use std::cmp::min;
 
-use alloy_primitives::aliases::{B256, U128, U256, U64};
+use alloy_primitives::{
+    aliases::{B256, U128, U256, U64},
+    Address, FixedBytes,
+};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
-use reth_rpc_types::{AccessListItem, Log, Parity, Signature, Transaction, TransactionReceipt};
+use reth_rpc_types::{
+    AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
+    block_handlers::block_receipts,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
         deserialize_unformatted_data, serialize_result, BlockTags, EthHash, Quantity,
@@ -158,6 +164,148 @@ pub fn parse_tx_receipt(
         ..Default::default()
     };
     Some(tx_receipt)
+}
+
+pub enum FilterError {
+    InvalidBlockRange,
+    RangeTooLarge,
+}
+
+impl From<FilterError> for JsonRpcError {
+    fn from(e: FilterError) -> Self {
+        match e {
+            FilterError::InvalidBlockRange => {
+                JsonRpcError::eth_filter_error("invalid block range".into())
+            }
+            FilterError::RangeTooLarge => {
+                JsonRpcError::eth_filter_error("block range too large".into())
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetLogsParams {
+    #[serde(flatten)]
+    filter: LogFilter,
+    address: Option<Address>,
+    topics: Option<Vec<FixedBytes<32>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum LogFilter {
+    Range {
+        #[serde(deserialize_with = "deserialize_block_tags")]
+        from_block: BlockTags,
+        #[serde(deserialize_with = "deserialize_block_tags")]
+        to_block: BlockTags,
+    },
+    BlockHash {
+        #[serde(deserialize_with = "deserialize_fixed_data")]
+        block_hash: EthHash,
+    },
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getLogs(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getLogs: {params:?}");
+
+    let p: MonadEthGetLogsParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let mut filter = Filter::new();
+
+    if let Some(address) = p.address {
+        filter = filter.address(address);
+    }
+
+    if let Some(topics) = p.topics {
+        for topic in topics {
+            filter = filter.event_signature(topic);
+        }
+    }
+
+    let (from_block, to_block) = match p.filter {
+        LogFilter::Range {
+            from_block,
+            to_block,
+        } => {
+            let from_block = blockdb_env
+                .get_block_by_tag(from_block.into())
+                .await
+                .ok_or(JsonRpcError::internal_error())?;
+            let to_block = blockdb_env
+                .get_block_by_tag(to_block.into())
+                .await
+                .ok_or(JsonRpcError::internal_error())?;
+            filter = filter.from_block(from_block.block.number);
+            filter = filter.to_block(to_block.block.number);
+            (from_block.block.number, to_block.block.number)
+        }
+        LogFilter::BlockHash { block_hash } => {
+            filter = filter.at_block_hash(Into::<FixedBytes<32>>::into(block_hash.0));
+            let block = blockdb_env
+                .get_block_by_hash(block_hash.into())
+                .await
+                .ok_or(JsonRpcError::internal_error())?;
+            (block.block.number, block.block.number)
+        }
+    };
+
+    if from_block > to_block {
+        return Err(FilterError::InvalidBlockRange.into());
+    }
+    if to_block - from_block > 1000 {
+        return Err(FilterError::RangeTooLarge.into());
+    }
+
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+    let address_filter = FilteredParams::address_filter(&filter.address);
+    let topics_filter = FilteredParams::topics_filter(&filter.topics);
+
+    let mut logs = Vec::new();
+    for block_num in from_block..=to_block {
+        let block = blockdb_env
+            .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_num))
+            .await
+            .ok_or(JsonRpcError::internal_error())?;
+
+        let header_logs_bloom = block.block.header.logs_bloom;
+
+        if FilteredParams::matches_address(header_logs_bloom, &address_filter)
+            || FilteredParams::matches_topics(header_logs_bloom, &topics_filter)
+        {
+            let block_receipts = block_receipts(triedb_env, block).await?;
+            let mut receipt_logs: Vec<Log> = block_receipts
+                .into_iter()
+                .flat_map(|receipt| {
+                    let logs: Vec<Log> = receipt
+                        .logs
+                        .into_iter()
+                        .filter(|log| {
+                            filtered_params.filter_address(log)
+                                || filtered_params.filter_topics(log)
+                        })
+                        .collect();
+                    logs
+                })
+                .collect();
+
+            logs.append(&mut receipt_logs);
+        }
+    }
+
+    serialize_result(logs)
 }
 
 #[derive(Deserialize, Debug)]

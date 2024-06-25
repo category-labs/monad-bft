@@ -13,7 +13,6 @@ use crate::{
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
-pub type EthStorageKey = FixedData<32>;
 
 // https://ethereum.org/developers/docs/apis/json-rpc#unformatted-data-encoding
 #[derive(Debug, PartialEq, Eq)]
@@ -93,6 +92,12 @@ where
     let buf = String::deserialize(deserializer)?;
     FixedData::from_str(&buf)
         .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
+}
+
+impl From<FixedData<32>> for monad_blockdb::BlockTableKey {
+    fn from(f: FixedData<32>) -> Self {
+        monad_blockdb::BlockTableKey(f.0.into())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
