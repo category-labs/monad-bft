@@ -27,6 +27,7 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${DEVNET_DIR}/Dockerfile
+    image: monad-node:latest
     depends_on:
       - monad_execution
     environment:
@@ -38,6 +39,7 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${RPC_DIR}/Dockerfile
+    image: monad-rpc:latest
     depends_on:
       - monad_node
     volumes:

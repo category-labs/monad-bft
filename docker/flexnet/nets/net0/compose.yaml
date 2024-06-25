@@ -15,7 +15,7 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
-    image: rpc:latest
+    image: flexnet-rpc:latest
 
   runner_python:
     build:
@@ -32,7 +32,7 @@ services:
     entrypoint: ["bash", "/monad/scripts/run.sh"]
 
   rpc0:
-    image: rpc:latest
+    image: flexnet-rpc:latest
     volumes:
       - ./node0:/monad
     expose:
