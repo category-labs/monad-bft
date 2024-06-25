@@ -14,6 +14,7 @@ net_dir=""
 image_root=""
 monad_bft_root=""
 flexnet_root=""
+mode=""
 
 
 if [ "$#" -eq 0 ]; then
@@ -43,6 +44,8 @@ while true; do
                 "") echo "$1 must have a value"; shift 1 ;;
                 *)  monad_bft_root="$2"; shift 2;;
             esac ;;
+        run) shift 1; mode="run" ;;
+        test) shift 1; mode="test" ;;
         "") break ;;
         *) echo "Error parsing $1, check arguments before it"; usage; exit 1 ;;
     esac
@@ -94,6 +97,11 @@ elif [ ! -d "$monad_bft_root" ]; then
     exit 1
 fi
 
+if [ "$mode" != "run" ] && [ "$mode" != "test" ]; then
+    echo "Unsupported mode $mode"
+    exit 1 
+fi
+
 # Create node volume directory
 net_name=$(basename $(realpath "$net_dir"))
 rand_hex=$(od -vAn -N8 -tx1 /dev/urandom | tr -d " \n" | cut -c 1-16)
@@ -139,27 +147,41 @@ for i in {0..3}; do
     mkdir -p node$i/triedb
     mkdir -p node$i/logs
     truncate -s 4GB node$i/triedb/test.db
-    docker run -v ./node$i:/monad --security-opt seccomp=${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json \
+    docker run --rm  -v ./node$i:/monad --security-opt seccomp=${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json \
         -t monad-execution:latest bash -c "monad_mpt --storage /monad/triedb/test.db --create"
     cp ${MONAD_BFT_ROOT}/docker/devnet/monad/config/genesis.json node$i/config/genesis.json
 done
 
 build_services=$(docker compose config --services | grep build)
 runner_services=$(docker compose config --services | grep runner)
-node_services=$(docker compose config --services | grep -v -E "(build|runner)")
 
 docker compose build $build_services
 docker compose build $runner_services
 
-docker compose up -d $node_services
-sleep 20
-docker compose down $node_services
+if [ "$mode" == "run" ]; then
+    node_services=$(docker compose config --services | grep -v -E "(build|runner|tester)")
 
-popd
+    docker compose up $node_services
+    exit 0
+elif [ "$mode" == "test" ]; then
+    node_services=$(docker compose config --services | grep -v -E "(build|runner)")
 
-# e2e_tester errors are redirected to the file. Assert that it's empty
-e2e_tester_err=$vol_root/e2e_tester/logs/e2e-tester.err
-if [ -s $e2e_tester_err ]; then
-    cat $e2e_tester_err
+    # test mode only needs to expose ports internally
+    sed -i 's/ports:/expose:/g' compose.yaml
+
+    docker compose up -d $node_services
+    sleep 20
+    docker compose down $node_services
+
+    popd
+
+    # e2e_tester errors are redirected to the file. Assert that it's empty
+    e2e_tester_err=$vol_root/e2e_tester/logs/e2e-tester.err
+    if [ -s $e2e_tester_err ]; then
+        cat $e2e_tester_err
+        exit 1
+    fi
+else
+    echo "Unreachable"
     exit 1
 fi

@@ -24,7 +24,7 @@ services:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
-    image: rpc:latest
+    image: flexnet-rpc:latest
 
 
   node0:
@@ -46,7 +46,7 @@ services:
     entrypoint: ["bash", "/monad/scripts/execution.sh"]
   
   rpc0:
-    image: rpc:latest
+    image: flexnet-rpc:latest
     volumes:
       - ./node0:/monad
     security_opt:
@@ -74,7 +74,7 @@ services:
     entrypoint: ["bash", "/monad/scripts/execution.sh"]
 
   rpc1:
-    image: rpc:latest
+    image: flexnet-rpc:latest
     volumes:
       - ./node1:/monad
     security_opt:
@@ -102,7 +102,7 @@ services:
     entrypoint: ["bash", "/monad/scripts/execution.sh"]
 
   rpc2:
-    image: rpc:latest
+    image: flexnet-rpc:latest
     volumes:
       - ./node2:/monad
     security_opt:
@@ -130,7 +130,7 @@ services:
     entrypoint: ["bash", "/monad/scripts/execution.sh"]
 
   rpc3:
-    image: rpc:latest
+    image: flexnet-rpc:latest
     volumes:
       - ./node3:/monad
     security_opt:
