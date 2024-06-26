@@ -3452,6 +3452,7 @@ dependencies = [
  "monad-multi-sig",
  "monad-types",
  "rand",
+ "sorted_vector_map",
  "tracing",
 ]
 
@@ -3494,6 +3495,7 @@ dependencies = [
  "monad-eth-types",
  "monad-multi-sig",
  "monad-perf-util",
+ "monad-triedb",
  "monad-types",
  "rand",
  "rand_chacha",
@@ -3738,6 +3740,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "rand_chacha",
  "serde",
+ "sorted_vector_map",
  "thiserror",
  "tokio",
  "toml 0.7.8",
@@ -4017,9 +4020,12 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
  "log",
+ "monad-eth-types",
 ]
 
 [[package]]

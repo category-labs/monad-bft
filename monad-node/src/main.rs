@@ -64,6 +64,8 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 
+use sorted_vector_map::SortedVectorMap;
+
 mod cli;
 use cli::Cli;
 
@@ -271,7 +273,7 @@ async fn run(
         },
         block_policy: EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            txn_cache: BinaryHeap::new(),
+            txn_cache: SortedVectorMap::new(),
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),

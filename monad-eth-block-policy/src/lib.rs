@@ -10,6 +10,7 @@ use monad_crypto::hasher::{Hashable, Hasher};
 use monad_eth_tx::{EthSignedTransaction, EthTxHash};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use sorted_vector_map::SortedVectorMap;
 
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions availabe to access
@@ -137,7 +138,7 @@ pub struct EthBlockPolicy {
     pub latest_nonces: BTreeMap<EthAddress, u64>,
     // pub committed_block_seq_num: Option<SeqNum>,
     // last K committed blocks
-    pub txn_cache: BinaryHeap<CachedTxns>,
+    pub txn_cache: SortedVectorMap<SeqNum, Vec<EthSignedTransaction>>, 
 }
 
 impl EthBlockPolicy {
@@ -156,8 +157,8 @@ impl EthBlockPolicy {
     }
 
     pub fn get_committed_block_seq_num(&self) -> Option<SeqNum> {
-        if let Some(cached) = self.txn_cache.peek() {
-            Some(cached.seq)
+        if let Some(seq_num) = self.txn_cache.last_key_value() {
+            Some(*seq_num.0)
         }
         else {
             None
@@ -166,16 +167,26 @@ impl EthBlockPolicy {
 
     pub fn update_txn_cache(&mut self, seq: SeqNum, txns: &Vec<EthSignedTransaction>) {
         const TXN_CACHE_SIZE:usize = 5;
-        while (self.txn_cache.len() >= TXN_CACHE_SIZE) {
-            self.txn_cache.pop();
+        if self.txn_cache.len() >= TXN_CACHE_SIZE * 2 {
+            let idx = 0;
+            let mut divider: Option<SeqNum> = None;
+            for (key, _) in &self.txn_cache {
+                if idx == TXN_CACHE_SIZE {
+                    divider = Some(*key);
+                    break;
+                }
+            }
+            if divider.is_some() {
+                self.txn_cache.split_off(&divider.unwrap());
+            }
         }
-        self.txn_cache.push(CachedTxns{seq, transactions: txns.clone()});
+        self.txn_cache.insert(seq, txns.clone());
     }
 
     pub fn count_txns_for_address(&self, eth_address: &EthAddress) -> u128 {
         let mut cnt: u128 = 0;
         for item in &self.txn_cache {
-            for txn in &item.transactions {
+            for txn in item.1 {
                 if EthAddress(txn.recover_signer().unwrap()) == *eth_address {
                     cnt = cnt + 1;
                 }

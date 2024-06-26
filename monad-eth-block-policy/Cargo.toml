@@ -13,7 +13,7 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-types = { path = "../monad-types" }
-
+sorted_vector_map = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }

@@ -213,8 +213,10 @@ impl EthTxPool {
                     // Reserve balance validation
                     if reserve_balance < CARRIAGE_COST {
                         maybe_nonce_to_remove = Some(*nonce);
-                        reserve_balance = reserve_balance - CARRIAGE_COST;
                         break;
+                    }
+                    else {
+                        reserve_balance = reserve_balance - CARRIAGE_COST;
                     }
 
                     high_nonce = Some(*nonce);
@@ -233,9 +235,9 @@ impl EthTxPool {
 
     fn compute_reserve_balance(&mut self, block_policy: &EthBlockPolicy, eth_address: &EthAddress) -> (SeqNum, ComputeReserveBalanceResult) {
         let mut reserve_balance: u128 = 0;
-        let block_id = block_policy.get_committed_block_seq_num().unwrap();
-        match self.reserve_balance_cache.get_reserve_balance(block_id, eth_address) {
-            ReserveBalanceCacheResult::Val(balance) => return (block_id, ComputeReserveBalanceResult::Val(balance)),
+        let block_id = &block_policy.get_committed_block_seq_num().unwrap();
+        match self.reserve_balance_cache.get_reserve_balance(*block_id, eth_address) {
+            ReserveBalanceCacheResult::Val(balance) => return (*block_id, ComputeReserveBalanceResult::Val(balance)),
             ReserveBalanceCacheResult::Stale => { self.reserve_balance_cache.purge(); }
             _ => ()
         }
@@ -247,13 +249,13 @@ impl EthTxPool {
             reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
         }
         else {
-            return (block_id, ComputeReserveBalanceResult::TrieDBNone);
+            return (*block_id, ComputeReserveBalanceResult::TrieDBNone);
         }
 
         let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
 
         if reserve_balance < txn_cnt * CARRIAGE_COST {
-            return (block_id, ComputeReserveBalanceResult::Spent);
+            return (*block_id, ComputeReserveBalanceResult::Spent);
         }
         else {
             reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
@@ -261,7 +263,7 @@ impl EthTxPool {
 
         self.reserve_balance_cache.update_reserve_balance_cache(&block_id, eth_address, reserve_balance);
 
-        (block_id, ComputeReserveBalanceResult::Val(reserve_balance))
+        (*block_id, ComputeReserveBalanceResult::Val(reserve_balance))
     }
 }
 

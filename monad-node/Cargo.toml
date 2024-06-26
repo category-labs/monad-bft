@@ -48,6 +48,7 @@ opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true }
+sorted_vector_map = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
