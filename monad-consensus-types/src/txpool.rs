@@ -10,7 +10,11 @@ use crate::{
 /// are potentially available for a proposal
 pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
     /// Handle transactions submitted by users via RPC
-    fn insert_tx(&mut self, tx: Bytes);
+    fn insert_tx(
+        &mut self,
+        tx: Bytes,
+        block_policy: &BPT,
+    );
 
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
@@ -28,8 +32,11 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
 impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
     for Box<T>
 {
-    fn insert_tx(&mut self, tx: Bytes) {
-        (**self).insert_tx(tx)
+    fn insert_tx(
+        &mut self,
+        tx: Bytes,
+        block_policy: &BPT) {
+        (**self).insert_tx(tx, block_policy)
     }
 
     fn create_proposal(
@@ -67,7 +74,10 @@ impl Default for MockTxPool {
 }
 
 impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
-    fn insert_tx(&mut self, _tx: Bytes) {}
+    fn insert_tx(
+        &mut self,
+        _tx: Bytes,
+        _block_policy: &PassthruBlockPolicy) {}
 
     fn create_proposal(
         &mut self,

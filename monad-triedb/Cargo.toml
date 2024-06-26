@@ -10,6 +10,9 @@ bench = false
 
 [dependencies]
 log = { workspace = true }
+monad-eth-types = { path = "../monad-eth-types" }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }

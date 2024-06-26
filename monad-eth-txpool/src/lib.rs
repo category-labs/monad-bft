@@ -1,8 +1,8 @@
 use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap},
+    cmp::min, cmp::Ordering, collections::{BTreeMap, BinaryHeap}, default, path::{Path, PathBuf}
 };
 
+use monad_types::{ SeqNum };
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{
@@ -14,7 +14,14 @@ use monad_eth_types::{EthAddress, Nonce};
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 use sorted_vector_map::SortedVectorMap;
 
+use monad_triedb::Handle as TriedbHandle;
+use tracing::{info, debug};
+
 type VirtualTimestamp = u64;
+
+const CARRIAGE_COST: u128 = 1;
+const MAX_RESERVE_BALANCE: u128 = 100;
+const BACK_BLOCKS_NUM: u64 = 5;
 
 /// Needed to have control over Ord implementation
 #[derive(Debug, Eq, PartialEq)]
@@ -83,20 +90,99 @@ impl TransactionGroup {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct ReserveBalanceCache {
+    cache: BTreeMap<EthAddress, u128>,
+    // None - the cache is purged.
+    last_block_id: Option<SeqNum>
+}
+
+
+// exists for the current block and address - return
+// does not existst for the current block and address - need to compute
+// the block is not current - purge the cache
+
+enum ReserveBalanceCacheResult {
+    Val(u128),
+    None, // No entry in the cache
+    Stale, // The committed block for which the cache computed is stale
+    Purged,
+    Mismatch // Should not happen, error
+}
+
+enum ComputeReserveBalanceResult {
+    Val(u128),
+    TrieDBNone, // No entrhy in TrieDB
+    Spent // Spent by the last K blocks carriage 
+}
+
+impl ReserveBalanceCache {
+    fn get_reserve_balance(&self, block_id: SeqNum, address: &EthAddress) -> ReserveBalanceCacheResult {
+        if let Some(last_block_id) = self.last_block_id {
+            if block_id < last_block_id {
+                return ReserveBalanceCacheResult::Mismatch;
+            }
+            else if block_id > last_block_id {
+                return ReserveBalanceCacheResult::Stale;
+            }
+            else {
+                if let Some(cached_balance) = self.cache.get(address) {
+                    return ReserveBalanceCacheResult::Val(*cached_balance);
+                }
+                else {
+                    return ReserveBalanceCacheResult::None;
+                }
+            }
+        }
+        else {
+            return ReserveBalanceCacheResult::Purged
+        }
+    }
+
+    fn purge(&mut self) {
+        self.cache.clear();
+        self.last_block_id = None;
+    }
+
+    fn update_reserve_balance_cache(&mut self, block_id: &SeqNum, address: &EthAddress, balance: u128) {
+        if self.last_block_id.is_none() {
+            self.last_block_id = Some(*block_id);
+        }
+
+        self.cache.insert(*address, balance);
+    }
+
+}
+
 type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
 
 #[derive(Clone, Default, Debug)]
 pub struct EthTxPool {
     pool: Pool,
     garbage: Vec<Pool>,
+    path: PathBuf,
+    reserve_balance_cache: ReserveBalanceCache,
 }
 
 impl EthTxPool {
+    pub fn new (
+        triedb_path: PathBuf,
+    ) -> Self {
+        Self { pool: Pool::default(),
+               garbage: Vec::default(),
+               path: triedb_path.clone(),
+               reserve_balance_cache: ReserveBalanceCache::default(),
+        }
+    }
+
     fn remove_invalid_nonces(
         &mut self,
         block_policy: &EthBlockPolicy,
         blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
     ) {
+        let seq_num = block_policy.get_committed_block_seq_num();
+        let handle = TriedbHandle::try_new(self.path.as_path()).unwrap();
+
         self.pool
             .iter_mut()
             .for_each(|(eth_address, transaction_group)| {
@@ -110,11 +196,27 @@ impl EthTxPool {
                     .transactions
                     .retain(|&nonce, _| nonce >= lowest_valid_nonce);
 
+                let mut reserve_balance: u128 = 0;
+
+                if seq_num.is_some() {
+                    let triedb_block_id = seq_num.unwrap().0 - BACK_BLOCKS_NUM;
+                    if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
+                        reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE)
+                    }
+                }
+
                 for (nonce, _) in &transaction_group.transactions {
                     if high_nonce.is_some() && *nonce != high_nonce.unwrap() + 1 {
                         maybe_nonce_to_remove = Some(*nonce);
                         break;
                     }
+                    // Reserve balance validation
+                    if reserve_balance < CARRIAGE_COST {
+                        maybe_nonce_to_remove = Some(*nonce);
+                        reserve_balance = reserve_balance - CARRIAGE_COST;
+                        break;
+                    }
+
                     high_nonce = Some(*nonce);
                 }
 
@@ -128,18 +230,57 @@ impl EthTxPool {
         self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
+
+    fn compute_reserve_balance(&mut self, block_policy: &EthBlockPolicy, eth_address: &EthAddress) -> (SeqNum, ComputeReserveBalanceResult) {
+        let mut reserve_balance: u128 = 0;
+        let block_id = block_policy.get_committed_block_seq_num().unwrap();
+        match self.reserve_balance_cache.get_reserve_balance(block_id, eth_address) {
+            ReserveBalanceCacheResult::Val(balance) => return (block_id, ComputeReserveBalanceResult::Val(balance)),
+            ReserveBalanceCacheResult::Stale => { self.reserve_balance_cache.purge(); }
+            _ => ()
+        }
+
+        let triedb_block_id = block_id.0 - BACK_BLOCKS_NUM;
+        let handle = TriedbHandle::try_new(self.path.as_path()).unwrap();
+
+        if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
+            reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
+        }
+        else {
+            return (block_id, ComputeReserveBalanceResult::TrieDBNone);
+        }
+
+        let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
+
+        if reserve_balance < txn_cnt * CARRIAGE_COST {
+            return (block_id, ComputeReserveBalanceResult::Spent);
+        }
+        else {
+            reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
+        }
+
+        self.reserve_balance_cache.update_reserve_balance_cache(&block_id, eth_address, reserve_balance);
+
+        (block_id, ComputeReserveBalanceResult::Val(reserve_balance))
+    }
 }
 
 impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
-    fn insert_tx(&mut self, tx: Bytes) {
+    fn insert_tx(&mut self, tx: Bytes, block_policy: &EthBlockPolicy) {
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
         let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
         let sender = EthAddress(eth_tx.signer());
 
-        // TODO(rene): should any transaction validation occur here before inserting into mempool
-        self.pool.entry(sender).or_default().add(eth_tx);
+        let (block_id, res) = self.compute_reserve_balance(block_policy, &sender);
+        if let ComputeReserveBalanceResult::Val(reserve_balance) = res {
+            if reserve_balance > CARRIAGE_COST {
+                // TODO(rene): should any transaction validation occur here before inserting into mempool
+                self.pool.entry(sender).or_default().add(eth_tx);
+                self.reserve_balance_cache.update_reserve_balance_cache(&block_id, &sender, reserve_balance - CARRIAGE_COST);
+            }
+        }
     }
 
     fn create_proposal(
@@ -174,6 +315,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let mut virtual_time: VirtualTimestamp = 0;
 
         let mut max_heap = BinaryHeap::<WrappedTransaction>::new();
+
 
         // queue one eligible transaction for each account (they will be the ones with the lowest nonce)
         for (account, transaction_iter) in transaction_iters.iter_mut() {

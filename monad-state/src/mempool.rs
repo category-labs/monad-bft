@@ -2,10 +2,7 @@ use std::marker::PhantomData;
 
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
-    block_validator::BlockValidator,
-    signature_collection::SignatureCollection,
-    txpool::TxPool,
+    block::{Block, BlockPolicy}, block_validator::BlockValidator, payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -17,8 +14,9 @@ use crate::{MonadState, VerifiedMonadMessage};
 
 pub(super) struct MempoolChildState<'a, ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT> {
     txpool: &'a mut TT,
+    block_policy: &'a BPT,
 
-    _phantom: PhantomData<(ST, SCT, BPT, VT, LT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, VT, LT, BVT, SVT, ASVT)>,
 }
 
 pub(super) struct MempoolCommand {}
@@ -32,12 +30,14 @@ where
     BVT: BlockValidator<SCT, BPT>,
     VT: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     TT: TxPool<SCT, BPT>,
+    SVT: StateRootValidator
 {
     pub(super) fn new(
         monad_state: &'a mut MonadState<ST, SCT, BPT, VT, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
+            block_policy: &monad_state.consensus.get_block_policy(),
             _phantom: PhantomData,
         }
     }
@@ -46,7 +46,7 @@ where
         match event {
             MempoolEvent::UserTxns(txns) => {
                 for tx in txns {
-                    self.txpool.insert_tx(tx);
+                    self.txpool.insert_tx(tx, self.block_policy);
                 }
                 vec![]
             }

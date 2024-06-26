@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BinaryHeap};
+use std::cmp::Ordering;
 
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
@@ -105,11 +106,38 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
     }
 }
 
+#[derive(Eq)]
+pub struct CachedTxns {
+    seq: SeqNum,
+    transactions: Vec<EthSignedTransaction>,
+}
+
+impl Ord for CachedTxns {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.seq.cmp(&other.seq)
+    }
+}
+
+impl PartialOrd for CachedTxns {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for CachedTxns {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+
 /// A block policy for ethereum payloads
 pub struct EthBlockPolicy {
     // Maps EthAddresses to the its nonces in the last committed block
     // TODO: All nonces exist here for now. Should be moved to a DB
     pub latest_nonces: BTreeMap<EthAddress, u64>,
+    // pub committed_block_seq_num: Option<SeqNum>,
+    // last K committed blocks
+    pub txn_cache: BinaryHeap<CachedTxns>,
 }
 
 impl EthBlockPolicy {
@@ -126,6 +154,36 @@ impl EthBlockPolicy {
 
         None
     }
+
+    pub fn get_committed_block_seq_num(&self) -> Option<SeqNum> {
+        if let Some(cached) = self.txn_cache.peek() {
+            Some(cached.seq)
+        }
+        else {
+            None
+        }
+    }
+
+    pub fn update_txn_cache(&mut self, seq: SeqNum, txns: &Vec<EthSignedTransaction>) {
+        const TXN_CACHE_SIZE:usize = 5;
+        while (self.txn_cache.len() >= TXN_CACHE_SIZE) {
+            self.txn_cache.pop();
+        }
+        self.txn_cache.push(CachedTxns{seq, transactions: txns.clone()});
+    }
+
+    pub fn count_txns_for_address(&self, eth_address: &EthAddress) -> u128 {
+        let mut cnt: u128 = 0;
+        for item in &self.txn_cache {
+            for txn in &item.transactions {
+                if EthAddress(txn.recover_signer().unwrap()) == *eth_address {
+                    cnt = cnt + 1;
+                }
+            }
+        }
+        cnt
+    }
+
 }
 
 impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
@@ -173,7 +231,10 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
                 .and_modify(|curr_nonce| *curr_nonce = nonce)
                 .or_insert(nonce);
         }
+        // self.committed_block_seq_num = Some(block.get_seq_num());
+        self.update_txn_cache(block.get_seq_num(), &block.validated_txns);
     }
+
 }
 
 pub mod utils;

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BinaryHeap},
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -263,13 +263,15 @@ async fn run(
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
-        transaction_pool: EthTxPool::default(),
+        transaction_pool: EthTxPool::new(
+            node_state.triedb_path),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
         },
         block_policy: EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
+            txn_cache: BinaryHeap::new(),
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),

@@ -1178,6 +1178,10 @@ where
         &self.keypair
     }
 
+    pub fn get_block_policy(&self) -> &BPT {
+        &self.block_policy
+    }
+
     pub fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT> {
         &self.cert_keypair
     }
