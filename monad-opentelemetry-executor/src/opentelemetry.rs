@@ -78,7 +78,7 @@ const COUNTERS: [&str; 47] = [
     "proposal_with_tc",
     "failed_verify_randao_reveal_sig",
     "commit_empty_block",
-    "committed_bytes",
+    "committed_txns",
     "state_root_update",
     "enter_new_round_qc",
     "enter_new_round_tc",
@@ -353,9 +353,9 @@ where
                 - cached_metrics.consensus_events.commit_empty_block,
         );
         self.record(
-            "committed_bytes",
-            metrics.consensus_events.committed_bytes
-                - cached_metrics.consensus_events.committed_bytes,
+            "committed_txns",
+            metrics.consensus_events.committed_txns
+                - cached_metrics.consensus_events.committed_txns,
         );
         self.record(
             "state_root_update",
