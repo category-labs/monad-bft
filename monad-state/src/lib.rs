@@ -321,8 +321,14 @@ where
     BVT: BlockValidator<SCT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    keypair: ST::KeyPairType,
+    cert_keypair: SignatureCollectionKeyPairType<SCT>,
+    nodeid: NodeId<CertificateSignaturePubKey<ST>>,
+
+    consensus_config: ConsensusConfig,
+
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<ST, SCT, BPT, BVT, SVT>,
+    consensus: ConsensusState<ST, SCT, BPT>,
     /// Handle responses to block sync requests from other nodes
     block_sync_responder: BlockSyncResponder,
 
@@ -337,13 +343,16 @@ where
     /// Async state verification
     async_state_verify: ASVT,
 
+    state_root_validator: SVT,
+    block_validator: BVT,
+    block_policy: BPT,
+    beneficiary: EthAddress,
+
     /// Metrics counters for events and errors
     metrics: Metrics,
 
     /// Versions for client and protocol validation
     version: MonadVersion,
-
-    _pd: PhantomData<ST>,
 }
 
 impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -361,7 +370,7 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BPT, BVT, SVT> {
+    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BPT> {
         &self.consensus
     }
 
@@ -373,8 +382,12 @@ where
         &self.val_epoch_map
     }
 
+    pub fn state_root_validator(&self) -> &SVT {
+        &self.state_root_validator
+    }
+
     pub fn pubkey(&self) -> SCT::NodeIdPubKey {
-        self.consensus.get_pubkey()
+        self.nodeid.pubkey()
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT, BPT> {
@@ -633,7 +646,6 @@ where
         {
             state_root_validator.add_state_root(seq_num, state_root_hash);
         }
-        state_root_validator.remove_old_roots(self.forkpoint.root_qc.get_seq_num());
 
         let epoch_manager = EpochManager::new(
             self.val_set_update_interval,
@@ -641,34 +653,38 @@ where
             &self.forkpoint.get_epoch_starts(),
         );
 
-        let consensus_process = ConsensusState::new(
-            self.block_validator,
-            self.block_policy,
-            state_root_validator,
-            self.key.pubkey(),
-            self.consensus_config,
-            self.beneficiary,
+        let consensus = ConsensusState::new(
+            &self.consensus_config,
             self.forkpoint.root_qc.clone(),
             epoch_manager
                 .get_epoch(self.forkpoint.root_qc.get_round() + Round(1))
                 .expect("forkpoint has epoch for root qc"),
-            self.key,
-            self.certkey,
         );
 
+        let nodeid = NodeId::new(self.key.pubkey());
+
         let mut monad_state = MonadState {
+            keypair: self.key,
+            cert_keypair: self.certkey,
+            nodeid,
+
+            consensus_config: self.consensus_config,
+            consensus,
+            block_sync_responder: BlockSyncResponder {},
+
+            leader_election: self.leader_election,
             epoch_manager,
             val_epoch_map,
-            leader_election: self.leader_election,
-            consensus: consensus_process,
-            block_sync_responder: BlockSyncResponder {},
             txpool: self.transaction_pool,
             async_state_verify: self.async_state_verify,
 
+            state_root_validator,
+            block_validator: self.block_validator,
+            block_policy: self.block_policy,
+            beneficiary: self.beneficiary,
+
             metrics: Metrics::default(),
             version: self.version,
-
-            _pd: PhantomData,
         };
 
         let mut init_cmds = Vec::new();
@@ -756,6 +772,15 @@ where
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
+            }
+            MonadEvent::StateRootEvent(info) => {
+                // state root hashes are produced when blocks are executed. They can
+                // arrive after the delay-gap between execution so they need to be handled
+                // asynchronously
+                self.metrics.consensus_events.state_root_update += 1;
+                self.state_root_validator
+                    .add_state_root(info.seq_num, info.state_root_hash);
+                Vec::new()
             }
 
             MonadEvent::AsyncStateVerifyEvent(async_state_verify_event) => {

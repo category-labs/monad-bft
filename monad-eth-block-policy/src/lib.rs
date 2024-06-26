@@ -110,6 +110,10 @@ pub struct EthBlockPolicy {
     // Maps EthAddresses to the its nonces in the last committed block
     // TODO: All nonces exist here for now. Should be moved to a DB
     pub latest_nonces: BTreeMap<EthAddress, u64>,
+
+    /// SeqNum of next block to be committed
+    /// Not last_commit because first block is SeqNum(0)
+    pub next_commit: SeqNum,
 }
 
 impl EthBlockPolicy {
@@ -136,6 +140,15 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
     ) -> bool {
+        assert_eq!(
+            extending_blocks
+                .iter()
+                .chain(std::iter::once(&block))
+                .next()
+                .unwrap()
+                .get_seq_num(),
+            self.next_commit
+        );
         // Get the latest nonce deltas at the parent block (block to extend)
         let mut blocktree_nonce_deltas = BTreeMap::new();
         for extending_block in extending_blocks {
@@ -166,6 +179,8 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
+        assert_eq!(block.get_seq_num(), self.next_commit);
+        self.next_commit = block.get_seq_num() + SeqNum(1);
         let acc_nonces = block.get_nonces();
         for (&address, &nonce) in acc_nonces {
             self.latest_nonces

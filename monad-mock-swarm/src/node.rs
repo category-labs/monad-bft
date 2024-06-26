@@ -339,11 +339,7 @@ impl<S: SwarmRelation> Node<S> {
             .map(|b| b.qc.clone())
             .unwrap_or(QuorumCertificate::genesis_qc());
 
-        let delay = self
-            .state
-            .consensus()
-            .get_state_root_validator()
-            .get_delay();
+        let delay = self.state.state_root_validator().get_delay();
 
         let state_root_executor = self.executor.state_root_hash_executor();
 

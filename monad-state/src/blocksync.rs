@@ -78,11 +78,11 @@ where
 
     /// BlockSyncResponder queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a ConsensusState<ST, SCT, BPT, BVT, SVT>,
+    consensus: &'a ConsensusState<ST, SCT, BPT>,
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, VTF, LT, TT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
 impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>

@@ -38,11 +38,6 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
                     })
                 }
             },
-            ConsensusEvent::StateUpdate(info) => {
-                proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
-                    info: Some(info.into()),
-                })
-            }
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -93,16 +88,6 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                         "ConsensusEvent.event".to_owned(),
                     ))?,
                 })
-            }
-            Some(proto_consensus_event::Event::StateUpdate(event)) => {
-                let info = event
-                    .info
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::StateUpdate::info".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                ConsensusEvent::StateUpdate(info)
             }
             Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
                 let sender = event

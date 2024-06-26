@@ -40,7 +40,8 @@ where
 {
     txpool: &'a mut TT,
 
-    consensus: &'a ConsensusState<ST, SCT, BPT, BVT, SVT>,
+    nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
+    consensus: &'a ConsensusState<ST, SCT, BPT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
@@ -70,6 +71,7 @@ where
         Self {
             txpool: &mut monad_state.txpool,
 
+            nodeid: &monad_state.nodeid,
             consensus: &monad_state.consensus,
             leader_election: &monad_state.leader_election,
             epoch_manager: &monad_state.epoch_manager,
@@ -114,7 +116,7 @@ where
                     .map(|round| self.get_leader(Round(round)))
                     .take(NUM_LEADERS_FORWARD)
                     .unique()
-                    .filter(|leader| leader == &self.consensus.get_nodeid())
+                    .filter(|leader| leader == self.nodeid)
                     .collect_vec();
                 vec![MempoolCommand::ForwardTxns(next_k_leaders, txs)]
             }

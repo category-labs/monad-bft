@@ -14,7 +14,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, Command, ConsensusEvent, LoopbackCommand, MonadEvent, RouterCommand,
+    AsyncStateVerifyEvent, Command, LoopbackCommand, MonadEvent, RouterCommand,
 };
 use monad_types::{NodeId, RouterTarget};
 use monad_validator::{
@@ -66,8 +66,8 @@ where
             async_state_verify: &mut monad_state.async_state_verify,
             epoch_manager: &monad_state.epoch_manager,
             val_epoch_map: &monad_state.val_epoch_map,
-            nodeid: monad_state.consensus.get_nodeid(),
-            cert_keypair: monad_state.consensus.get_cert_keypair(),
+            nodeid: monad_state.nodeid,
+            cert_keypair: &monad_state.cert_keypair,
 
             metrics: &mut monad_state.metrics,
 
@@ -170,7 +170,7 @@ where
             }
             AsyncStateVerifyCommand::StateRootUpdate(info) => {
                 vec![Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::<ST, SCT>::ConsensusEvent(ConsensusEvent::StateUpdate(info)),
+                    MonadEvent::<ST, SCT>::StateRootEvent(info),
                 ))]
             }
         }

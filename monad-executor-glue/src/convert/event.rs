@@ -64,6 +64,11 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
             MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
+            MonadEvent::StateRootEvent(info) => {
+                proto_monad_event::Event::StateRootEvent(ProtoStateUpdateEvent {
+                    info: Some(info.into()),
+                })
+            }
             MonadEvent::AsyncStateVerifyEvent(event) => {
                 proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
             }
@@ -90,6 +95,16 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::MempoolEvent(event)) => {
                 MonadEvent::MempoolEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::StateRootEvent(event)) => {
+                let info = event
+                    .info
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "StateUpdateEvent::info".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                MonadEvent::StateRootEvent(info)
             }
             Some(proto_monad_event::Event::AsyncStateVerifyEvent(event)) => {
                 MonadEvent::AsyncStateVerifyEvent(event.try_into()?)

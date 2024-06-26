@@ -440,6 +440,7 @@ impl Widget for &EventListWidget {
                 MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
                 MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
                 MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
+                MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
                 MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
                 MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
             };
@@ -557,6 +558,7 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::BlockSyncEvent(_) => "blocksyncevent",
             MonadEvent::ValidatorEvent(_) => "validatorevent",
             MonadEvent::MempoolEvent(_) => "mempoolevent",
+            MonadEvent::StateRootEvent(_) => "staterootevent",
             MonadEvent::AsyncStateVerifyEvent(_) => "asyncstateverifyevent",
             MonadEvent::MetricsEvent(_) => "metricsevent",
         };

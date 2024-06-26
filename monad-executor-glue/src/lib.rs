@@ -150,7 +150,6 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
-    StateUpdate(StateRootHashInfo),
     BlockSyncResponse {
         sender: NodeId<SCT::NodeIdPubKey>,
         unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
@@ -169,7 +168,6 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::StateUpdate(p) => p.fmt(f),
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -300,6 +298,8 @@ where
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
     MempoolEvent(MempoolEvent<CertificateSignaturePubKey<ST>>),
+    /// State Root updates
+    StateRootEvent(StateRootHashInfo),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for metrics
@@ -358,6 +358,7 @@ where
                 )
             }
             MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
+            MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
                 format!(
                     "AsyncStateVerifyEvent::LocalStateRoot -- round:{} seqnum:{} hash:{}",

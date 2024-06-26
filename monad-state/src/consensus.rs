@@ -6,7 +6,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand},
-    ConsensusState, NodeState,
+    ConsensusStateWrapper,
 };
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
@@ -32,11 +32,13 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
+    SVT: StateRootValidator,
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BPT, BVT, SVT>,
-    node_state: NodeState<'a, ST, SCT, VTF, LT, TT>,
+    consensus: ConsensusStateWrapper<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT>,
 
     _phantom: PhantomData<ASVT>,
 }
@@ -57,15 +59,26 @@ where
         monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
-            consensus: &mut monad_state.consensus,
-            node_state: NodeState {
+            consensus: ConsensusStateWrapper {
+                consensus: &mut monad_state.consensus,
+
+                metrics: &mut monad_state.metrics,
+                tx_pool: &mut monad_state.txpool,
                 epoch_manager: &mut monad_state.epoch_manager,
+                block_policy: &mut monad_state.block_policy,
+
                 val_epoch_map: &monad_state.val_epoch_map,
                 election: &monad_state.leader_election,
-                tx_pool: &mut monad_state.txpool,
-                metrics: &mut monad_state.metrics,
                 version: monad_state.version.protocol_version,
-                _phantom: PhantomData,
+
+                state_root_validator: &monad_state.state_root_validator,
+                block_validator: &monad_state.block_validator,
+                beneficiary: &monad_state.beneficiary,
+                nodeid: &monad_state.nodeid,
+                config: &monad_state.consensus_config,
+
+                keypair: &monad_state.keypair,
+                cert_keypair: &monad_state.cert_keypair,
             },
             _phantom: PhantomData,
         }
@@ -81,13 +94,13 @@ where
                 unverified_message,
             } => {
                 let verified_message = match unverified_message.verify(
-                    self.node_state.epoch_manager,
-                    self.node_state.val_epoch_map,
+                    self.consensus.epoch_manager,
+                    self.consensus.val_epoch_map,
                     &sender.pubkey(),
                 ) {
                     Ok(m) => m,
                     Err(e) => {
-                        handle_validation_error(e, self.node_state.metrics);
+                        handle_validation_error(e, self.consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -98,13 +111,13 @@ where
 
                 // Validated message according to consensus protocol spec
                 let validated_mesage = match verified_message.validate(
-                    self.node_state.epoch_manager,
-                    self.node_state.val_epoch_map,
-                    self.node_state.version,
+                    self.consensus.epoch_manager,
+                    self.consensus.val_epoch_map,
+                    self.consensus.version,
                 ) {
                     Ok(m) => m.into_inner(),
                     Err(e) => {
-                        handle_validation_error(e, self.node_state.metrics);
+                        handle_validation_error(e, self.consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -113,74 +126,48 @@ where
 
                 match validated_mesage {
                     ProtocolMessage::Proposal(msg) => {
-                        self.consensus
-                            .handle_proposal_message(author, msg, &mut self.node_state)
+                        self.consensus.handle_proposal_message(author, msg)
                     }
-                    ProtocolMessage::Vote(msg) => {
-                        self.consensus
-                            .handle_vote_message(author, msg, &mut self.node_state)
-                    }
+                    ProtocolMessage::Vote(msg) => self.consensus.handle_vote_message(author, msg),
                     ProtocolMessage::Timeout(msg) => {
-                        self.consensus
-                            .handle_timeout_message(author, msg, &mut self.node_state)
+                        self.consensus.handle_timeout_message(author, msg)
                     }
                 }
             }
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                 TimeoutVariant::Pacemaker => self
                     .consensus
-                    .handle_timeout_expiry(self.node_state.metrics)
+                    .handle_timeout_expiry()
                     .into_iter()
                     .map(|cmd| {
                         ConsensusCommand::from_pacemaker_command(
-                            self.consensus.get_keypair(),
-                            self.consensus.get_cert_keypair(),
-                            self.node_state.version,
+                            self.consensus.keypair,
+                            self.consensus.cert_keypair,
+                            self.consensus.version,
                             cmd,
                         )
                     })
                     .collect(),
-                TimeoutVariant::BlockSync(bid) => {
-                    let current_epoch = self
-                        .node_state
-                        .epoch_manager
-                        .get_epoch(self.consensus.get_current_round())
-                        .expect("current epoch exists");
-                    let val_set = self
-                        .node_state
-                        .val_epoch_map
-                        .get_val_set(&current_epoch)
-                        .expect("current validator set should be in the map");
-                    self.consensus
-                        .handle_block_sync_tmo(bid, val_set, self.node_state.metrics)
-                }
+                TimeoutVariant::BlockSync(bid) => self.consensus.handle_block_sync_tmo(bid),
             },
-
-            ConsensusEvent::StateUpdate(info) => {
-                self.node_state.metrics.consensus_events.state_root_update += 1;
-                self.consensus
-                    .handle_state_root_update(info.seq_num, info.state_root_hash);
-                Vec::new()
-            }
 
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
             } => {
                 let validated_response = match unvalidated_response
-                    .validate(self.node_state.epoch_manager, self.node_state.val_epoch_map)
+                    .validate(self.consensus.epoch_manager, self.consensus.val_epoch_map)
                 {
                     Ok(req) => req,
                     Err(e) => {
-                        handle_validation_error(e, self.node_state.metrics);
+                        handle_validation_error(e, self.consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
                     }
                 }
                 .into_inner();
-                self.consensus
-                    .handle_block_sync(sender, validated_response, &mut self.node_state)
+                self.consensus.handle_block_sync(sender, validated_response)
             }
         };
         let consensus_cmds = vec;
@@ -243,18 +230,18 @@ where
                 }));
             }
             ConsensusCommand::LedgerCommit(block) => {
+                parent_cmds.extend(block.iter().map(|block| {
+                    Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(block.clone()))
+                }));
                 parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                     block.clone(),
                 )));
                 parent_cmds.push(Command::ExecutionLedgerCommand(
                     ExecutionLedgerCommand::LedgerCommit(block),
-                ))
+                ));
             }
             ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(
                 Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
-            ),
-            ConsensusCommand::StateRootHash(full_block) => parent_cmds.push(
-                Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(full_block)),
             ),
             ConsensusCommand::ClearMempool => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(

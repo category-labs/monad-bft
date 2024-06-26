@@ -195,10 +195,6 @@ pub trait StateRootValidator {
     /// that should be used in the current Proposal (accounting for the delay gap)
     fn get_next_state_root(&self, seq_num: SeqNum) -> Option<StateRootHash>;
 
-    /// Given the current sequence number, remove old state root hashes
-    /// that won't be needed anymore (accounting for the delay gap)
-    fn remove_old_roots(&mut self, latest_seq_num: SeqNum);
-
     /// Check the validity of the state root hash in a Proposal from the sequence
     /// number and state root hash it includes
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: StateRootHash) -> StateRootResult;
@@ -214,10 +210,6 @@ impl<T: StateRootValidator + ?Sized> StateRootValidator for Box<T> {
 
     fn get_next_state_root(&self, seq_num: SeqNum) -> Option<StateRootHash> {
         (**self).get_next_state_root(seq_num)
-    }
-
-    fn remove_old_roots(&mut self, latest_seq_num: SeqNum) {
-        (**self).remove_old_roots(latest_seq_num)
     }
 
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: StateRootHash) -> StateRootResult {
@@ -278,6 +270,16 @@ impl StateRoot {
 impl StateRootValidator for StateRoot {
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: StateRootHash) {
         self.root_hashes.insert(seq_num, root_hash);
+
+        // we only need to maintain the last `delay` number of state roots
+        let max_seqnum = *self.root_hashes.last_entry().expect("at least 1").key();
+        while self
+            .root_hashes
+            .first_entry()
+            .is_some_and(|entry| *entry.key() + self.delay < max_seqnum)
+        {
+            self.root_hashes.pop_first();
+        }
     }
 
     /// Gets the state root hash that should be used in a proposal for a given
@@ -290,14 +292,6 @@ impl StateRootValidator for StateRoot {
         }
 
         self.root_hashes.get(&(seq_num - self.delay)).copied()
-    }
-
-    fn remove_old_roots(&mut self, latest_seq_num: SeqNum) {
-        if self.delay > latest_seq_num {
-            return;
-        }
-        self.root_hashes
-            .retain(|k, _| *k > (latest_seq_num - self.delay));
     }
 
     /// If the sequence number is less than the delay gap (the initial delay-gap num
@@ -354,8 +348,6 @@ impl StateRootValidator for NopStateRoot {
         StateRootResult::Success
     }
 
-    fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
-
     fn get_delay(&self) -> SeqNum {
         SeqNum(u64::MAX)
     }
@@ -374,8 +366,6 @@ impl StateRootValidator for MissingNextStateRoot {
     fn validate(&self, _seq_num: SeqNum, _block_state_root_hash: StateRootHash) -> StateRootResult {
         StateRootResult::Success
     }
-
-    fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
 
     fn get_delay(&self) -> SeqNum {
         SeqNum(u64::MAX)
@@ -399,16 +389,13 @@ mod test {
 
         for i in 1..10 {
             state_root.add_state_root(SeqNum(i), StateRootHash(Hash([i as u8; 32])));
-        }
-        for i in 1..10 {
             assert_eq!(
                 state_root.validate(SeqNum(i), StateRootHash(Hash([i as u8; 32]))),
                 StateRootResult::Success
             );
         }
 
-        state_root.remove_old_roots(SeqNum(10));
-        assert_eq!(state_root.root_hashes.len(), 0);
+        assert_eq!(state_root.root_hashes.len(), 1);
 
         assert_eq!(
             state_root.validate(SeqNum(10), StateRootHash(Hash([0x0a_u8; 32]))),

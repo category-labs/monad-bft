@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
+use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
@@ -7,7 +7,7 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_state::{
-    command::ConsensusCommand, ConsensusConfig, ConsensusState, NodeState,
+    command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
 };
 use monad_consensus_types::{
     metrics::Metrics,
@@ -169,18 +169,26 @@ where
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool<SCT, EthBlockPolicy> + Default,
-    // BPT: BlockPolicy<SCT /*ValidatedBlock = EthValidatedBlock<SCT>*/>,
 {
-    epoch_manager: EpochManager,
-    val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
-    txpool: TT,
-    election: LT,
+    consensus_state: ConsensusState<ST, SCT, EthBlockPolicy>,
+
     metrics: Metrics,
+    txpool: TT,
+    epoch_manager: EpochManager,
+
+    val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+    election: LT,
     version: &'static str,
 
-    consensus_state: ConsensusState<ST, SCT, EthBlockPolicy, EthValidator, SVT>,
+    state_root_validator: SVT,
+    block_validator: EthValidator,
+    block_policy: EthBlockPolicy,
+    beneficiary: EthAddress,
+    nodeid: NodeId<CertificateSignaturePubKey<ST>>,
+    consensus_config: ConsensusConfig,
 
-    phantom: PhantomData<ST>,
+    keypair: ST::KeyPairType,
+    cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
 
 impl<ST, SCT, VTF, SVT, LT, TT> NodeContext<ST, SCT, VTF, SVT, LT, TT>
@@ -193,24 +201,30 @@ where
     TT: TxPool<SCT, EthBlockPolicy> + Default,
     // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 {
-    fn get_state(
+    fn wrapped_state(
         &mut self,
-    ) -> (
-        &mut ConsensusState<ST, SCT, EthBlockPolicy, EthValidator, SVT>,
-        NodeState<ST, SCT, VTF, LT, TT>,
-    ) {
-        (
-            &mut self.consensus_state,
-            NodeState {
-                epoch_manager: &mut self.epoch_manager,
-                val_epoch_map: &self.val_epoch_map,
-                election: &self.election,
-                tx_pool: &mut self.txpool,
-                metrics: &mut self.metrics,
-                version: self.version,
-                _phantom: PhantomData,
-            },
-        )
+    ) -> ConsensusStateWrapper<ST, SCT, EthBlockPolicy, VTF, LT, TT, EthValidator, SVT> {
+        ConsensusStateWrapper {
+            consensus: &mut self.consensus_state,
+
+            metrics: &mut self.metrics,
+            tx_pool: &mut self.txpool,
+            epoch_manager: &mut self.epoch_manager,
+
+            val_epoch_map: &self.val_epoch_map,
+            election: &self.election,
+            version: self.version,
+
+            state_root_validator: &self.state_root_validator,
+            block_validator: &self.block_validator,
+            block_policy: &mut self.block_policy,
+            beneficiary: &self.beneficiary,
+            nodeid: &self.nodeid,
+            config: &self.consensus_config,
+
+            keypair: &self.keypair,
+            cert_keypair: &self.cert_keypair,
+        }
     }
 
     fn handle_proposal_message(
@@ -218,18 +232,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        let mut n = NodeState {
-            epoch_manager: &mut self.epoch_manager,
-            val_epoch_map: &self.val_epoch_map,
-            election: &self.election,
-            tx_pool: &mut self.txpool,
-            metrics: &mut self.metrics,
-            version: self.version,
-            _phantom: PhantomData,
-        };
-
-        self.consensus_state
-            .handle_proposal_message(author, p, &mut n)
+        self.wrapped_state().handle_proposal_message(author, p)
     }
 
     fn handle_timeout_message(
@@ -237,18 +240,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         p: TimeoutMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        let mut n = NodeState {
-            epoch_manager: &mut self.epoch_manager,
-            val_epoch_map: &self.val_epoch_map,
-            election: &self.election,
-            tx_pool: &mut self.txpool,
-            metrics: &mut self.metrics,
-            version: self.version,
-            _phantom: PhantomData,
-        };
-
-        self.consensus_state
-            .handle_timeout_message(author, p, &mut n)
+        self.wrapped_state().handle_timeout_message(author, p)
     }
 
     fn handle_vote_message(
@@ -256,17 +248,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         p: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        let mut n = NodeState {
-            epoch_manager: &mut self.epoch_manager,
-            val_epoch_map: &self.val_epoch_map,
-            election: &self.election,
-            tx_pool: &mut self.txpool,
-            metrics: &mut self.metrics,
-            version: self.version,
-            _phantom: PhantomData,
-        };
-
-        self.consensus_state.handle_vote_message(author, p, &mut n)
+        self.wrapped_state().handle_vote_message(author, p)
     }
 
     fn handle_block_sync(
@@ -274,17 +256,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         p: BlockSyncResponseMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        let mut n = NodeState {
-            epoch_manager: &mut self.epoch_manager,
-            val_epoch_map: &self.val_epoch_map,
-            election: &self.election,
-            tx_pool: &mut self.txpool,
-            metrics: &mut self.metrics,
-            version: self.version,
-            _phantom: PhantomData,
-        };
-
-        self.consensus_state.handle_block_sync(author, p, &mut n)
+        self.wrapped_state().handle_block_sync(author, p)
     }
 }
 
@@ -332,36 +304,42 @@ fn setup<
                     &mut [127; 32],
                 )
                 .unwrap();
-            let cs = ConsensusState::<ST, SCT, _, _, SVT>::new(
-                EthValidator::new(10_000, u64::MAX),
-                EthBlockPolicy {
-                    latest_nonces: BTreeMap::new(),
-                },
-                state_root(),
-                keys[i as usize].pubkey(),
-                ConsensusConfig {
-                    proposal_txn_limit: 5000,
-                    proposal_gas_limit: 8_000_000,
-                    delta: Duration::from_secs(1),
-                    max_blocksync_retries: 5,
-                    state_sync_threshold: SeqNum(100),
-                },
-                EthAddress::default(),
+            let consensus_config = ConsensusConfig {
+                proposal_txn_limit: 5000,
+                proposal_gas_limit: 8_000_000,
+                delta: Duration::from_secs(1),
+                max_blocksync_retries: 5,
+                state_sync_threshold: SeqNum(100),
+            };
+            let cs = ConsensusState::<ST, SCT, _>::new(
+                &consensus_config,
                 QuorumCertificate::genesis_qc(),
                 Epoch(1),
-                std::mem::replace(&mut dupkeys[i as usize], default_key),
-                std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
             );
 
             NodeContext {
-                epoch_manager,
-                val_epoch_map,
-                txpool: TT::default(),
-                election: election.clone(),
-                metrics: Metrics::default(),
-                version: "TEST",
                 consensus_state: cs,
-                phantom: PhantomData,
+
+                metrics: Metrics::default(),
+                txpool: TT::default(),
+                epoch_manager,
+
+                val_epoch_map,
+                election: election.clone(),
+                version: "TEST",
+
+                state_root_validator: state_root(),
+                block_validator: EthValidator::new(10_000, u64::MAX),
+                block_policy: EthBlockPolicy {
+                    latest_nonces: BTreeMap::new(),
+                    next_commit: SeqNum(0),
+                },
+                beneficiary: EthAddress::default(),
+                nodeid: NodeId::new(keys[i as usize].pubkey()),
+                consensus_config,
+
+                keypair: std::mem::replace(&mut dupkeys[i as usize], default_key),
+                cert_keypair: std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
             }
         })
         .collect();
@@ -455,21 +433,21 @@ fn init(seed_mempool: bool) -> BenchTuple {
     );
 
     // this guy is the leader
-    let (consensus_state, mut node_state) = ctx[0].get_state();
-    let leader = node_state.election.get_leader(
+    let wrapped_state = ctx[0].wrapped_state();
+    let leader = wrapped_state.election.get_leader(
         Round(1),
         env.val_epoch_map
             .get_val_set(&Epoch(1))
             .unwrap()
             .get_members(),
     );
-    assert_eq!(leader, consensus_state.get_nodeid());
+    assert_eq!(&leader, wrapped_state.nodeid);
     let (raw_txns, encoded_txns) = make_txns();
 
     if seed_mempool {
         for txn in raw_txns.iter() {
             <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy>>::insert_tx(
-                node_state.tx_pool,
+                wrapped_state.tx_pool,
                 Bytes::from(txn.envelope_encoded()),
             );
         }
@@ -561,12 +539,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched_ref(
             || init(true),
             |(_txns, env, ctx, author, proposal_message)| {
-                let (consensus_state, mut node_state) = ctx[0].get_state();
-                let cmds = consensus_state.handle_proposal_message(
-                    *author,
-                    proposal_message.clone(),
-                    &mut node_state,
-                );
+                let mut wrapped_state = ctx[0].wrapped_state();
+                let cmds = wrapped_state.handle_proposal_message(*author, proposal_message.clone());
             },
             BatchSize::SmallInput,
         );
@@ -587,20 +561,20 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     );
 
                 // this guy is the leader
-                let (consensus_state, mut node_state) = ctx[0].get_state();
-                let leader = node_state.election.get_leader(
+                let wrapped_state = ctx[0].wrapped_state();
+                let leader = wrapped_state.election.get_leader(
                     Round(1),
                     env.val_epoch_map
                         .get_val_set(&Epoch(1))
                         .unwrap()
                         .get_members(),
                 );
-                assert_eq!(leader, consensus_state.get_nodeid());
+                assert_eq!(&leader, wrapped_state.nodeid);
                 let (raw_txns, encoded_txns) = make_txns();
 
                 for txn in raw_txns.iter() {
                     <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy>>::insert_tx(
-                        node_state.tx_pool,
+                        wrapped_state.tx_pool,
                         Bytes::from(txn.envelope_encoded()),
                     );
                 }
@@ -620,14 +594,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 assert_eq!(&author, &leader);
                 let mut votes = vec![];
                 for node in ctx.iter_mut() {
-                    let (consensus_state, mut node_state) = node.get_state();
-                    let cmds = consensus_state.handle_proposal_message(
+                    let mut wrapped_state = node.wrapped_state();
+                    let cmds = wrapped_state.handle_proposal_message(
                         author,
                         proposal_message.clone(),
-                        &mut node_state,
                     );
                     votes.extend(
-                        std::iter::repeat(consensus_state.get_nodeid())
+                        std::iter::repeat(*wrapped_state.nodeid)
                             .zip(extract_vote_msgs(cmds)),
                     );
                 }
@@ -681,7 +654,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (_txns, env, mut ctx, author, proposal_message) = init(false);
                 let (n1, remaining) = ctx.split_first_mut().unwrap();
                 for (index, peer) in remaining.iter().enumerate() {
-                    let peer_id = peer.consensus_state.get_nodeid();
+                    let peer_id = peer.nodeid;
                     let cmds = n1.handle_vote_message(
                         peer_id,
                         VoteMessage::new(
@@ -705,7 +678,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |(_txns, env, ctx, author, proposal_message)| {
                 let (n1, remaining) = ctx.split_first_mut().unwrap();
                 let res = n1.handle_block_sync(
-                    remaining[0].consensus_state.get_nodeid(),
+                    remaining[0].nodeid,
                     BlockSyncResponseMessage::BlockFound(proposal_message.block.clone()),
                 );
             },

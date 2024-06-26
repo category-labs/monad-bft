@@ -132,9 +132,6 @@ pub struct BlockSyncRequester<ST, SCT: SignatureCollection> {
     /// current inflight requests
     requests: HashMap<BlockId, InFlightRequest<SCT>>,
 
-    /// this node
-    my_id: NodeId<SCT::NodeIdPubKey>,
-
     /// amount of time to wait for response to a request
     /// before giving up on that specific request
     tmo_duration: Duration,
@@ -150,14 +147,9 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(
-        my_id: NodeId<SCT::NodeIdPubKey>,
-        tmo_duration: Duration,
-        max_retry_cnt: usize,
-    ) -> Self {
+    pub fn new(tmo_duration: Duration, max_retry_cnt: usize) -> Self {
         Self {
             requests: HashMap::new(),
-            my_id,
             tmo_duration,
             max_retry_cnt,
             _phantom: PhantomData,
@@ -183,13 +175,14 @@ where
     pub fn request<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
         validator_set: &VT,
         metrics: &mut Metrics,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        self.request_helper(qc, validator_set, DEFAULT_NODE_INDEX, metrics)
+        self.request_helper(qc, self_id, validator_set, DEFAULT_NODE_INDEX, metrics)
     }
 
     // this function creates a request and creates the appropriate commands
@@ -198,6 +191,7 @@ where
     fn request_helper<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
         validator_set: &VT,
         req_cnt: usize,
         metrics: &mut Metrics,
@@ -221,6 +215,7 @@ where
         metrics.blocksync_events.blocksync_request += 1;
 
         let (req_peer, cnt) = self.choose_peer(
+            self_id,
             // FIXME stake-weighted?
             // FIXME dont build vector every time
             &validator_set
@@ -251,6 +246,7 @@ where
         &mut self,
         author: &NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
+        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
         validator_set: &VT,
         block_validator: &BV,
         metrics: &mut Metrics,
@@ -283,6 +279,7 @@ where
 
             BlockSyncResult::Failed(self.request_helper(
                 &pending_req.qc,
+                self_id,
                 validator_set,
                 pending_req.retry_cnt + 1,
                 metrics,
@@ -298,6 +295,7 @@ where
     pub fn handle_timeout<VT>(
         &mut self,
         bid: BlockId,
+        self_id: &NodeId<CertificateSignaturePubKey<ST>>,
         validator_set: &VT,
         metrics: &mut Metrics,
     ) -> Vec<ConsensusCommand<ST, SCT>>
@@ -315,6 +313,7 @@ where
         if let Some(pending_req) = self.requests.remove(&bid) {
             cmds.extend(self.request_helper(
                 &pending_req.qc,
+                self_id,
                 validator_set,
                 pending_req.retry_cnt + 1,
                 metrics,
@@ -326,13 +325,14 @@ where
     // choose a node for a request that is not self.
     fn choose_peer(
         &self,
+        self_id: &NodeId<SCT::NodeIdPubKey>,
         peers: &[NodeId<SCT::NodeIdPubKey>],
         mut cnt: usize,
     ) -> (NodeId<SCT::NodeIdPubKey>, usize) {
         debug_assert!(peers.len() > 1);
 
         let mut peer = peers[(cnt) % peers.len()];
-        while peer == self.my_id {
+        while &peer == self_id {
             cnt += 1;
             peer = peers[(cnt) % peers.len()];
         }
@@ -406,12 +406,9 @@ mod test {
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
         let keypair = get_key::<ST>(6);
+        let self_id = NodeId::new(keypair.pubkey());
         let max_retry_cnt = 1;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(
-            NodeId::new(keypair.pubkey()),
-            Duration::MAX,
-            max_retry_cnt,
-        );
+        let mut manager = BlockSyncRequester::<ST, SC>::new(Duration::MAX, max_retry_cnt);
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let mut metrics = Metrics::default();
@@ -433,7 +430,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc, &self_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -446,7 +443,7 @@ mod test {
 
         // repeated request would yield no result
         for _ in 0..1000 {
-            let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
+            let cmds = manager.request::<VT>(qc, &self_id, &valset, &mut metrics);
             assert!(cmds.is_empty());
         }
 
@@ -466,7 +463,7 @@ mod test {
             },
             SC::with_pubkeys(&[]),
         );
-        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc, &self_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -481,12 +478,9 @@ mod test {
     #[test]
     fn test_handle_request() {
         let keypair = get_key::<ST>(6);
+        let self_id = NodeId::new(keypair.pubkey());
         let max_retry_cnt = 2;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(
-            NodeId::new(keypair.pubkey()),
-            Duration::MAX,
-            max_retry_cnt,
-        );
+        let mut manager = BlockSyncRequester::<ST, SC>::new(Duration::MAX, max_retry_cnt);
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let transaction_validator = TV::default();
@@ -587,7 +581,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_1, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_1, &self_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_1, bid) = match cmds[0] {
@@ -616,7 +610,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_2, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_2, &self_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_2, bid) = match cmds[0] {
@@ -645,7 +639,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_3, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_3, &self_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_3, bid) = match cmds[0] {
@@ -672,6 +666,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
             msg_no_block_1,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -684,6 +679,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
             msg_with_block_2.clone(),
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -694,6 +690,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Failed(retry_command) = manager.handle_response(
             &peer_2,
             msg_no_block_2.clone(),
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -712,6 +709,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Success(b) = manager.handle_response(
             &peer_1,
             msg_with_block_1,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -722,6 +720,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Failed(retry_command) = manager.handle_response(
             &peer_3,
             msg_no_block_3,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -742,6 +741,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Failed(retry_command) = manager.handle_response(
             peer_2,
             msg_no_block_2,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -760,6 +760,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Success(b) = manager.handle_response(
             peer_3,
             msg_with_block_3,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -772,6 +773,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Success(b) = manager.handle_response(
             peer_2,
             msg_with_block_2,
+            &self_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -790,7 +792,7 @@ mod test {
         let mut metrics = Metrics::default();
         let my_id = members[0];
         let max_retry_cnt = 300;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX, max_retry_cnt);
+        let mut manager = BlockSyncRequester::<ST, SC>::new(Duration::MAX, max_retry_cnt);
 
         let qc = &QC::new(
             QcInfo {
@@ -809,7 +811,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc, &my_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (mut peer, bid) = match cmds[0] {
@@ -826,6 +828,7 @@ mod test {
                 let BlockSyncResult::<ST, SC, BP>::Failed(retry_command) = manager.handle_response(
                     &peer,
                     msg_failed.clone(),
+                    &my_id,
                     &valset,
                     &transaction_validator,
                     &mut metrics,
@@ -863,7 +866,7 @@ mod test {
         let mut metrics = Metrics::default();
         let max_retry_cnt = 3;
         let my_id = *valset.get_members().iter().next().unwrap().0;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX, max_retry_cnt);
+        let mut manager = BlockSyncRequester::<ST, SC>::new(Duration::MAX, max_retry_cnt);
 
         let block = {
             let payload = Payload {
@@ -917,7 +920,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc, &my_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
 
@@ -948,6 +951,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Failed(retry_command) = manager.handle_response(
             &peer,
             msg_failed,
+            &my_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -978,7 +982,7 @@ mod test {
 
         // lastly, natural timeout should trigger it too.
 
-        let retry_command = manager.handle_timeout(bid, &valset, &mut metrics);
+        let retry_command = manager.handle_timeout(bid, &my_id, &valset, &mut metrics);
 
         assert_eq!(retry_command.len(), 3);
 
@@ -1015,6 +1019,7 @@ mod test {
         let BlockSyncResult::<ST, SC, BP>::Success(b) = manager.handle_response(
             &peer,
             msg_with_block,
+            &my_id,
             &valset,
             &transaction_validator,
             &mut metrics,
@@ -1025,7 +1030,7 @@ mod test {
         assert_eq!(b, block);
 
         // this should return nothing, except the regular reset
-        let retry_command = manager.handle_timeout(bid, &valset, &mut metrics);
+        let retry_command = manager.handle_timeout(bid, &my_id, &valset, &mut metrics);
 
         assert_eq!(retry_command.len(), 1);
 
@@ -1040,12 +1045,9 @@ mod test {
     #[test]
     fn test_remove_old_requests() {
         let keypair = get_key::<ST>(7);
+        let my_id = NodeId::new(keypair.pubkey());
         let max_retry_cnt = 1;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(
-            NodeId::new(keypair.pubkey()),
-            Duration::MAX,
-            max_retry_cnt,
-        );
+        let mut manager = BlockSyncRequester::<ST, SC>::new(Duration::MAX, max_retry_cnt);
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let mut metrics = Metrics::default();
@@ -1068,7 +1070,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_1, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_1, &my_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -1096,7 +1098,7 @@ mod test {
             },
             SC::with_pubkeys(&[]),
         );
-        let cmds = manager.request::<VT>(qc_2, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_2, &my_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -1124,7 +1126,7 @@ mod test {
             },
             SC::with_pubkeys(&[]),
         );
-        let cmds = manager.request::<VT>(qc_3, &valset, &mut metrics);
+        let cmds = manager.request::<VT>(qc_3, &my_id, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {

@@ -257,6 +257,8 @@ async fn run(
         },
         block_policy: EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
+            // MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+            next_commit: SeqNum(0),
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),

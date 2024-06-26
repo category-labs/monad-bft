@@ -1,7 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
-use monad_consensus_types::metrics::Metrics;
+use monad_consensus_types::{metrics::Metrics, state_root_hash::StateRootHashInfo};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, MempoolEvent, MetricsEvent, MonadEvent,
@@ -217,6 +217,7 @@ enum GraphQLMonadEvent<'s> {
     BlockSyncEvent(GraphQLBlockSyncEvent<'s>),
     ValidatorEvent(GraphQLValidatorEvent<'s>),
     MempoolEvent(GraphQLMempoolEvent<'s>),
+    StateRootEvent(GraphQLStateRootEvent<'s>),
     AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent<'s>),
     MetricsEvent(GraphQLMetricsEvent<'s>),
 }
@@ -228,6 +229,7 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::BlockSyncEvent(event) => Self::BlockSyncEvent(GraphQLBlockSyncEvent(event)),
             MonadEvent::ValidatorEvent(event) => Self::ValidatorEvent(GraphQLValidatorEvent(event)),
             MonadEvent::MempoolEvent(event) => Self::MempoolEvent(GraphQLMempoolEvent(event)),
+            MonadEvent::StateRootEvent(event) => Self::StateRootEvent(GraphQLStateRootEvent(event)),
             MonadEvent::AsyncStateVerifyEvent(event) => {
                 Self::AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent(event))
             }
@@ -263,6 +265,14 @@ impl<'s> GraphQLValidatorEvent<'s> {
 struct GraphQLMempoolEvent<'s>(&'s MempoolEvent<CertificateSignaturePubKey<SignatureType>>);
 #[Object]
 impl<'s> GraphQLMempoolEvent<'s> {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLStateRootEvent<'s>(&'s StateRootHashInfo);
+#[Object]
+impl<'s> GraphQLStateRootEvent<'s> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

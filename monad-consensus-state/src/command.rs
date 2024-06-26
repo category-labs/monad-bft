@@ -52,8 +52,6 @@ where
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),
-    /// Fetch the state root hash for the given block
-    StateRootHash(Block<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
     /// Issue to clear mempool

@@ -62,8 +62,7 @@ message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     ProtoScheduleTimeout timeout = 2;
-    ProtoStateUpdateEvent state_update = 3;
-    ProtoBlockSyncResponseWithSender block_sync_resp = 4;
+    ProtoBlockSyncResponseWithSender block_sync_resp = 3;
   }
 }
 
@@ -126,7 +125,8 @@ message ProtoMonadEvent{
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
-    ProtoAsyncStateVerifyEvent async_state_verify_event = 5;
-    ProtoMetricsEvent metrics_event = 6;
+    ProtoStateUpdateEvent state_root_event = 5;
+    ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
+    ProtoMetricsEvent metrics_event = 7;
   }
 }
