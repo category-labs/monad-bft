@@ -116,7 +116,7 @@ where
                     .map(|round| self.get_leader(Round(round)))
                     .take(NUM_LEADERS_FORWARD)
                     .unique()
-                    .filter(|leader| leader == self.nodeid)
+                    .filter(|leader| leader != self.nodeid)
                     .collect_vec();
                 vec![MempoolCommand::ForwardTxns(next_k_leaders, txs)]
             }
