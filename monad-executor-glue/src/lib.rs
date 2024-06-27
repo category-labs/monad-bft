@@ -132,7 +132,8 @@ pub enum LoopbackCommand<E> {
 }
 
 pub enum MetricsCommand {
-    RecordMetrics(Metrics),
+    RecordConsensusMetrics(Metrics),
+    RecordExecutionMetrics(u64),
 }
 
 pub enum Command<E, OM, B, C, SCT: SignatureCollection> {

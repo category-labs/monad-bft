@@ -22,3 +22,14 @@ opentelemetry-semantic-conventions = { workspace = true }
 
 tokio = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+futures-util = { workspace = true }
+monad-bls = { path = "../monad-bls" }
+monad-secp = { path = "../monad-secp" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
+monad-updaters = { path = "../monad-updaters" }
+
+[[example]]
+name = "metricswatch"

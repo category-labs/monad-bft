@@ -42,7 +42,8 @@ pub struct OpenTelemetryExecutor<ST, SCT> {
     phantom: PhantomData<(ST, SCT)>,
 }
 
-const COUNTERS: [&str; 47] = [
+const COUNTERS: [&str; 48] = [
+    // consensus metrics
     "invalid_author",
     "not_well_formed_sig",
     "invalid_signature",
@@ -90,6 +91,8 @@ const COUNTERS: [&str; 47] = [
     "blocksync_response_failed",
     "blocksync_response_unexpected",
     "blocksync_request",
+    // execution metrics
+    "executed_block",
 ];
 
 /// The following struct along with the `impl TemporalitySelector` are only to prevent a cumulative sum of counters
@@ -173,7 +176,7 @@ where
         self.counters.get(name).unwrap().add(value, &[]);
     }
 
-    fn record_metrics(&mut self, metrics: &Metrics) {
+    fn record_consensus_metrics(&mut self, metrics: &Metrics) {
         // TODO(rene): must be a nice way to not rewrite all these fields.
         // we are recording the diff between `metrics` and `self.cached_metrics` to work around
         // the lack of a synchronous gauge counter
@@ -438,10 +441,23 @@ where
         let mut wake = false;
         for command in commands {
             match command {
-                MetricsCommand::RecordMetrics(metrics) => {
+                MetricsCommand::RecordConsensusMetrics(metrics) => {
                     wake = true;
                     let interval = self.interval;
-                    self.record_metrics(&metrics);
+                    self.record_consensus_metrics(&metrics);
+                    let future = async move {
+                        tokio::time::sleep(interval).await;
+                        Some(MetricsEvent::Timeout)
+                    };
+                    let handle = self.timers.spawn(future);
+                    if let Some(old_handle) = self.handle.replace(handle) {
+                        old_handle.abort();
+                    }
+                }
+                MetricsCommand::RecordExecutionMetrics(block_increment) => {
+                    wake = true;
+                    let interval = self.interval;
+                    self.record("executed_block", block_increment);
                     let future = async move {
                         tokio::time::sleep(interval).await;
                         Some(MetricsEvent::Timeout)

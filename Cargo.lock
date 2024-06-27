@@ -3860,11 +3860,17 @@ dependencies = [
 name = "monad-opentelemetry-executor"
 version = "0.1.0"
 dependencies = [
+ "clap 4.4.10",
  "futures",
+ "futures-util",
+ "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-secp",
+ "monad-triedb-utils",
+ "monad-updaters",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_api",

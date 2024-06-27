@@ -797,9 +797,9 @@ where
             }
             MonadEvent::MetricsEvent(metrics_event) => match metrics_event {
                 MetricsEvent::Timeout => {
-                    vec![Command::MetricsCommand(MetricsCommand::RecordMetrics(
-                        self.metrics,
-                    ))]
+                    vec![Command::MetricsCommand(
+                        MetricsCommand::RecordConsensusMetrics(self.metrics),
+                    )]
                 }
             },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
