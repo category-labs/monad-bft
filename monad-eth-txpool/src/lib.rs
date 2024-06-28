@@ -174,14 +174,13 @@ impl EthTxPool {
         }
     }
 
-    fn remove_invalid_nonces(
+    fn remove_invalid_nonces<SCT: SignatureCollection>(
         &mut self,
         block_policy: &EthBlockPolicy,
+        extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
     ) {
-        let handle = TriedbHandle::try_new(self.path.as_path()).unwrap();
-        let triedb_block_id = handle.latest_block();
-
+        let tdb_path =  self.path.as_path();
         self.pool
             .iter_mut()
             .for_each(|(eth_address, transaction_group)| {
@@ -195,10 +194,11 @@ impl EthTxPool {
                     .transactions
                     .retain(|&nonce, _| nonce >= lowest_valid_nonce);
 
-                let mut reserve_balance: u128 = 0;
-
-                if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
-                    reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE)
+                let mut reserve_balance:u128 = 0;
+                match compute_reserve_balance_for_propose::<SCT>(block_policy, &extending_blocks, eth_address, tdb_path) {
+                    ComputeReserveBalanceResult::Val(val) => { reserve_balance = val; }
+                    ComputeReserveBalanceResult::TrieDBNone => { /* reserve balance is 0 */}
+                    _ => ()
                 }
 
                 for (nonce, _) in &transaction_group.transactions {
@@ -228,8 +228,60 @@ impl EthTxPool {
         self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
+}
 
-    fn compute_reserve_balance(&mut self, block_policy: &EthBlockPolicy, eth_address: &EthAddress) -> (SeqNum, ComputeReserveBalanceResult) {
+    fn compute_reserve_balance_for_propose<SCT: SignatureCollection>(
+        block_policy: &EthBlockPolicy,
+        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+        eth_address: &EthAddress,
+        tdb_path: &Path) -> ComputeReserveBalanceResult {
+
+        let handle = TriedbHandle::try_new(tdb_path).unwrap();
+        let triedb_block_id = handle.latest_block();
+
+        let mut reserve_balance: u128 = 0;
+        // Get the balance from the latest triedb block
+        if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
+            reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
+        }
+        else {
+            return ComputeReserveBalanceResult::TrieDBNone;
+        }
+        // Apply Carriage Cost for the txns from committed blocks
+        let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
+
+        if reserve_balance < txn_cnt * CARRIAGE_COST {
+            return ComputeReserveBalanceResult::Spent;
+        }
+        else {
+            reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
+        }
+
+        // count txns in extending blocks
+        let mut pending_txn_cnt:u128 = 0;
+        for extending_block in extending_blocks {
+            for txn in &extending_block.validated_txns {
+                if EthAddress(txn.recover_signer().unwrap()) == *eth_address {
+                    pending_txn_cnt = pending_txn_cnt + 1;
+                }
+            }
+        }
+
+        if reserve_balance < pending_txn_cnt * CARRIAGE_COST {
+            return ComputeReserveBalanceResult::Spent;
+        }
+        else {
+            reserve_balance = reserve_balance - pending_txn_cnt * CARRIAGE_COST;
+        }
+
+        ComputeReserveBalanceResult::Val(reserve_balance)
+    }
+
+impl EthTxPool {
+    fn compute_reserve_balance_for_insert(
+        &mut self,
+        block_policy: &EthBlockPolicy,
+        eth_address: &EthAddress) -> (SeqNum, ComputeReserveBalanceResult) {
         let mut reserve_balance: u128 = 0;
         let block_id = &block_policy.get_committed_block_seq_num().unwrap();
         match self.reserve_balance_cache.get_reserve_balance(*block_id, eth_address) {
@@ -259,6 +311,7 @@ impl EthTxPool {
             reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
         }
 
+        // Balalnce cache  keeps track of the latest _committed_ block
         self.reserve_balance_cache.update_reserve_balance_cache(&block_id, eth_address, reserve_balance);
 
         (*block_id, ComputeReserveBalanceResult::Val(reserve_balance))
@@ -273,7 +326,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
         let sender = EthAddress(eth_tx.signer());
 
-        let (block_id, res) = self.compute_reserve_balance(block_policy, &sender);
+        let (block_id, res) = self.compute_reserve_balance_for_insert(block_policy, &sender);
         if let ComputeReserveBalanceResult::Val(reserve_balance) = res {
             if reserve_balance > CARRIAGE_COST {
                 // TODO(rene): should any transaction validation occur here before inserting into mempool
@@ -292,7 +345,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
     ) -> FullTransactionList {
         // Get the latest nonce deltas at the parent block (block to extend)
         let mut blocktree_nonce_deltas = BTreeMap::new();
-        for extending_block in extending_blocks {
+        for extending_block in &extending_blocks {
             let block_nonces = extending_block.get_nonces();
             for (&address, &nonce) in block_nonces {
                 blocktree_nonce_deltas
@@ -301,7 +354,7 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
                     .or_insert(nonce);
             }
         }
-        self.remove_invalid_nonces(block_policy, blocktree_nonce_deltas);
+        self.remove_invalid_nonces(block_policy, extending_blocks, blocktree_nonce_deltas);
 
         let mut txs = Vec::new();
         let mut total_gas = 0;
