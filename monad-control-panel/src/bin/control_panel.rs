@@ -3,19 +3,31 @@ use std::io::Error;
 use futures::{sink::SinkExt, StreamExt};
 use inquire::{Confirm, InquireError, Select};
 use monad_bls::BlsSignatureCollection;
+use monad_consensus_types::validator_data::ParsedValidatorData;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, UpdateValidatorSet,
+    WriteCommand,
 };
 use monad_secp::SecpSignature;
 use tokio::net::UnixStream;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use walkdir::WalkDir;
 
 const COMMANDS: [&str; 3] = ["validators", "update-validators", "clear-metrics"];
 
 type SignatureType = SecpSignature;
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 type Command = ControlPanelCommand<SignatureCollectionType>;
+
+macro_rules! printlnln {
+    ($($arg:tt)*) => {
+        {
+            println!($($arg)*);
+            println!()
+        }
+    };
+}
 
 fn main() -> Result<(), i32> {
     let mut args = std::env::args();
@@ -44,6 +56,7 @@ fn main() -> Result<(), i32> {
 
     loop {
         let available_commands: Vec<&'static str> = Vec::from(COMMANDS);
+        println!();
         let command = rt.block_on(async {
             Select::new("monad-consensus-cli $", available_commands)
                 .with_help_message("↑-↓ or j-k to move, enter to select, type to filter]")
@@ -58,12 +71,12 @@ fn main() -> Result<(), i32> {
                         Command::Read(ReadCommand::GetValidatorSet(GetValidatorSet::Request));
                     let bytes = bincode::serialize(&request).unwrap();
                     if let Err(e) = rt.block_on(write.send(bytes.into())) {
-                        println!("Failed to send command {:?} to server: {:?}", &request, e);
+                        printlnln!("Failed to send command {:?} to server: {:?}", &request, e);
                         continue;
                     };
 
                     let Some(Ok(response)) = rt.block_on(read.next()) else {
-                        println!("Did not receive response from server");
+                        printlnln!("Did not receive response from server");
                         continue;
                     };
 
@@ -86,19 +99,19 @@ fn main() -> Result<(), i32> {
                     };
 
                     if !confirmation {
-                        println!("Interrupted reset metrics.");
+                        printlnln!("Interrupted reset metrics.");
                         continue;
                     }
 
                     let request = Command::Write(WriteCommand::ClearMetrics(ClearMetrics::Request));
                     let bytes = bincode::serialize(&request).unwrap();
                     if let Err(e) = rt.block_on(write.send(bytes.into())) {
-                        println!("Failed to send command {:?} to server: {:?}", &request, e);
+                        printlnln!("Failed to send command {:?} to server: {:?}", &request, e);
                         continue;
                     };
 
                     let Some(Ok(response)) = rt.block_on(read.next()) else {
-                        println!("Did not receive response from server");
+                        printlnln!("Did not receive response from server");
                         continue;
                     };
 
@@ -108,13 +121,95 @@ fn main() -> Result<(), i32> {
                     .unwrap();
 
                     dbg!(response);
-                    println!("🔥 metrics reset 🔥");
+                    printlnln!("🔥 metrics reset 🔥");
                 }
-                _ => println!("Unknown command `{command}`"),
+                "update-validators" => {
+                    let current_dir = std::env::current_dir().unwrap();
+                    let entries = WalkDir::new(current_dir)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|d| d.file_name().to_string_lossy().ends_with("toml"))
+                        .map(|d| d.path().to_str().unwrap().to_owned())
+                        .collect::<Vec<_>>();
+
+                    let toml_choice = rt
+                        .block_on(async move {
+                            Select::new("select a TOML file to load validators from", entries)
+                                .with_help_message(
+                                    "↑-↓ or j-k to move, enter to select, type to filter]",
+                                )
+                                .prompt()
+                        })
+                        .unwrap();
+
+                    let Ok(toml_confirmation) = rt.block_on(async {
+                        Confirm::new(&format!(
+                            "Are you sure you want to use `{}` to update the validator set?",
+                            &toml_choice
+                        ))
+                        .with_default(false)
+                        .prompt()
+                    }) else {
+                        eprintln!("Error getting confirmation. Try again.");
+                        continue;
+                    };
+
+                    if !toml_confirmation {
+                        printlnln!("Interrupted validator update.");
+                        continue;
+                    }
+
+                    match toml::from_str::<ParsedValidatorData<SignatureCollectionType>>(
+                        &std::fs::read_to_string(&toml_choice).unwrap(),
+                    ) {
+                        Err(e) => {
+                            printlnln!(
+                                "failed to parse TOML file `{}`. error: {:?}",
+                                &toml_choice,
+                                e
+                            );
+                        }
+                        Ok(update_validator_set) => {
+                            let request = Command::Write(WriteCommand::UpdateValidatorSet(
+                                UpdateValidatorSet::Request(update_validator_set),
+                            ));
+
+                            let Ok(confirmation) = rt.block_on(async {
+                                Confirm::new(&format!(
+                                    "Are you sure you want to send the following validator set?\n{:#?}",
+                                    &request,
+                                ))
+                                    .with_default(false)
+                                    .prompt()
+                            }) else {
+                                printlnln!("Interrupted validator update.");
+                                continue;
+                            };
+
+                            if !confirmation {
+                                printlnln!("Interrupted validator update.");
+                                continue;
+                            }
+
+                            let bytes = bincode::serialize(&request).unwrap();
+                            if let Err(e) = rt.block_on(write.send(bytes.into())) {
+                                printlnln!(
+                                    "Failed to send command {:?} to server: {:?}",
+                                    &request,
+                                    e
+                                );
+                                continue;
+                            };
+
+                            printlnln!("✅validator set updated ✅");
+                        }
+                    }
+                }
+                _ => printlnln!("Unknown command `{command}`"),
             },
             Err(e) => match e {
                 InquireError::OperationInterrupted => {
-                    println!();
+                    printlnln!();
                     break;
                 }
                 _ => panic!("unhandled error {:?}", e),

@@ -29,7 +29,9 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 tokio-util = { workspace = true, features = ["codec"] }
+toml = { workspace = true }
 tracing = { workspace = true }
+walkdir = { workspace = true }
 
 monad-bls = { path = "../monad-bls" }
 monad-consensus-types = { path = "../monad-consensus-types" }
