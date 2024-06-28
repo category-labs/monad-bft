@@ -21,7 +21,6 @@ type VirtualTimestamp = u64;
 
 const CARRIAGE_COST: u128 = 1;
 const MAX_RESERVE_BALANCE: u128 = 100;
-const BACK_BLOCKS_NUM: u64 = 5;
 
 /// Needed to have control over Ord implementation
 #[derive(Debug, Eq, PartialEq)]
@@ -180,8 +179,8 @@ impl EthTxPool {
         block_policy: &EthBlockPolicy,
         blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
     ) {
-        let seq_num = block_policy.get_committed_block_seq_num();
         let handle = TriedbHandle::try_new(self.path.as_path()).unwrap();
+        let triedb_block_id = handle.latest_block();
 
         self.pool
             .iter_mut()
@@ -198,11 +197,8 @@ impl EthTxPool {
 
                 let mut reserve_balance: u128 = 0;
 
-                if seq_num.is_some() {
-                    let triedb_block_id = seq_num.unwrap().0 - BACK_BLOCKS_NUM;
-                    if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
-                        reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE)
-                    }
+                if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
+                    reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE)
                 }
 
                 for (nonce, _) in &transaction_group.transactions {
@@ -242,9 +238,10 @@ impl EthTxPool {
             _ => ()
         }
 
-        let triedb_block_id = block_id.0 - BACK_BLOCKS_NUM;
         let handle = TriedbHandle::try_new(self.path.as_path()).unwrap();
+        let triedb_block_id = handle.latest_block();
 
+        // Get the balance from the latest triedb block
         if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
             reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
         }
@@ -252,6 +249,7 @@ impl EthTxPool {
             return (*block_id, ComputeReserveBalanceResult::TrieDBNone);
         }
 
+        // Apply Carriage Cost for the txns from committed blocks
         let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
 
         if reserve_balance < txn_cnt * CARRIAGE_COST {
