@@ -238,20 +238,18 @@ pub struct ParsedValidatorData<SCT: SignatureCollection> {
     #[serde(bound = "SCT: SignatureCollection")]
     pub validators: Vec<Validator<SCT>>,
 }
-impl<SCT: SignatureCollection> From<ValidatorSetDataWithEpoch<SCT>> for ParsedValidatorData<SCT> {
-    fn from(validator_set_data: ValidatorSetDataWithEpoch<SCT>) -> Self {
+
+impl<SCT: SignatureCollection> From<Validator<SCT>> for ValidatorData<SCT> {
+    fn from(value: Validator<SCT>) -> Self {
+        let Validator {
+            node_id,
+            stake,
+            cert_pubkey,
+        } = value;
         Self {
-            epoch: validator_set_data.epoch,
-            validators: validator_set_data
-                .validators
-                .0
-                .iter()
-                .map(|v| Validator {
-                    node_id: v.node_id,
-                    stake: v.stake,
-                    cert_pubkey: v.cert_pubkey,
-                })
-                .collect::<Vec<_>>(),
+            node_id,
+            stake,
+            cert_pubkey,
         }
     }
 }
