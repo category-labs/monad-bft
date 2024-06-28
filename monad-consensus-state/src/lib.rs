@@ -647,8 +647,7 @@ where
                     if block.is_txn_list_empty() {
                         self.metrics.consensus_events.commit_empty_block += 1;
                     }
-                    self.metrics.consensus_events.committed_txns +=
-                        block.get_txn_list_len() as u64;
+                    self.metrics.consensus_events.committed_txns += block.get_txn_list_len() as u64;
                 }
 
                 let unvalidated_blocks = blocks_to_commit

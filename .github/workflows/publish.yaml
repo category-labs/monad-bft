@@ -96,43 +96,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  publish-blockwatch:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/monad-crypto/blockwatch
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/blockwatch/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
   publish-monad-execution:
     runs-on: ubuntu-24.04-32
 
@@ -204,3 +167,40 @@ jobs:
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
+
+  publish-metricswatch:
+    runs-on: ubuntu-24.04-32
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Peach10 Container registry
+        uses: docker/login-action@v3.1.0
+        with:
+          registry: peach10.devcore4.com
+          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
+          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5.5.1
+        with:
+          images: |
+            peach10.devcore4.com/monad-crypto/metricswatch
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5.3.0
+        with:
+          context: .
+          push: true
+          file: docker/metricswatch/Dockerfile
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use clap::Parser;
 use futures::FutureExt;
@@ -21,6 +20,8 @@ struct Args {
     pub otel_endpoint: String,
     #[arg(long)]
     pub record_metrics_interval_seconds: u64,
+    #[arg(long)]
+    pub node_name: String,
 }
 
 #[tokio::main]
@@ -42,7 +43,7 @@ async fn main() {
         >,
     > = Updater::boxed(OpenTelemetryExecutor::new(
         args.otel_endpoint,
-        format!("metricswatch"),
+        args.node_name,
         Duration::from_secs(args.record_metrics_interval_seconds),
         /*enable_grpc_gzip=*/ false,
     ));
