@@ -17,6 +17,7 @@ use block_handlers::{
 };
 use clap::Parser;
 use cli::Cli;
+use eth_json_types::serialize_result;
 use eth_txn_handlers::{
     monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
     monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -319,6 +320,8 @@ async fn rpc_select(
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_sign" => Err(JsonRpcError::method_not_supported()),
         "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
+        "net_version" => serialize_result("1"), // TODO: decide on a chain id
+        "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
