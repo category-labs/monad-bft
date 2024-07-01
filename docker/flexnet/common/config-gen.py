@@ -192,7 +192,7 @@ if __name__ == "__main__":
             service_name = node["service"]
             peers[volume].service = service_name
 
-    volume_list = [Path(vol) for vol in peers.keys()]
+    volume_list = [Path(vol) for vol in sorted(peers.keys())]
     if node_count != len(volume_list):
         print(f"Length of node_list {len(volume_list)} != node count {node_count}")
         sys.exit(1)
@@ -287,6 +287,8 @@ if __name__ == "__main__":
                 "stake": 1,
             }
         )
+    # hack. trim off the last validator. we will include it in the validator set via the control panel
+    validators = validators[:-1]
 
     epoch1_validators = {"epoch": 1, "round": 0, "validators": validators}
     epoch2_validators = {"epoch": 2, "validators": validators}
