@@ -1,0 +1,25 @@
+[package]
+name = "monad-stream"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+monad-blockdb = { path = "../monad-blockdb" }
+monad-blockdb-utils = {path = "../monad-blockdb-utils" }
+
+futures = { workspace = true }
+pin-project = "1.1.5"
+tokio = { workspace = true, features = ["net", "macros"] }
+notify = "6.1.1"
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+env_logger = { workspace = true }
+log = { workspace = true }
+
+[[example]]
+name = "blocks"
+

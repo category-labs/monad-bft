@@ -41,6 +41,7 @@ members = [
     "monad-rpc",
     "monad-secp",
     "monad-state",
+    "monad-stream",
     "monad-testground",
     "monad-testutil",
     "monad-tracing-counter",
@@ -51,7 +52,7 @@ members = [
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
-    "monad-wal",
+    "monad-wal"
 ]
 resolver = "2"
 

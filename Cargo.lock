@@ -4024,6 +4024,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-stream"
+version = "0.1.0"
+dependencies = [
+ "clap 4.4.10",
+ "env_logger 0.10.1",
+ "futures",
+ "log",
+ "monad-blockdb",
+ "monad-blockdb-utils",
+ "notify",
+ "pin-project",
+ "tokio",
+]
+
+[[package]]
 name = "monad-testground"
 version = "0.1.0"
 dependencies = [
