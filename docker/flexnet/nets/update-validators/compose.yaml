@@ -1,0 +1,82 @@
+services:
+  build_monad_bft:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
+    image: monad-bft-builder:latest
+
+  runner_image0:
+    build: 
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
+    image: image0:latest
+
+  build_python:
+    build:
+      context: ${FLEXNET_IMAGE_ROOT}/python
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
+    image: monad-python:latest
+
+  runner_control_panel:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/control-panel/Dockerfile
+    image: control-panel:latest
+
+  node0:
+    image: image0:latest
+    volumes:
+      - ./node0:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  controlpanel0:
+    image: control-panel:latest
+    volumes:
+      - ./node0:/monad
+    entrypoint: ["bash", "/monad/scripts/controlpanel.sh"]
+
+  node1:
+    image: image0:latest
+    volumes:
+      - ./node1:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  controlpanel1:
+    image: control-panel:latest
+    volumes:
+      - ./node1:/monad
+    entrypoint: ["bash", "/monad/scripts/controlpanel.sh"]
+
+  node2:
+    image: image0:latest
+    volumes:
+      - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  controlpanel2:
+    image: control-panel:latest
+    volumes:
+      - ./node2:/monad
+    entrypoint: ["bash", "/monad/scripts/controlpanel.sh"]
+  
+  node3:
+    image: image0:latest
+    volumes:
+      - ./node3:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  controlpanel3:
+    image: control-panel:latest
+    volumes:
+      - ./node3:/monad
+    entrypoint: ["bash", "/monad/scripts/controlpanel.sh"]
+
+networks:
+  default:
+    driver: bridge
+    
