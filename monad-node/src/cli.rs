@@ -61,6 +61,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub run_mode: Option<RunModeCommand>,
 
+    /// Set the time interval for metrics collection
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,
 }

@@ -33,6 +33,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub otel_endpoint: Option<String>,
     pub record_metrics_interval: Option<Duration>,
+    pub node_name: String,
 
     pub run_mode: RunModeCommand,
 }
@@ -44,10 +45,11 @@ impl NodeState {
         let keystore_password = cli.keystore_password.as_deref().unwrap_or("");
 
         let secp_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
+        let secp_pubkey = secp_key.pubkey();
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
             &cli.secp_identity,
-            hex::encode(secp_key.pubkey().bytes_compressed())
+            hex::encode(secp_pubkey.bytes_compressed())
         );
         // FIXME this is somewhat jank.. is there a better way?
         let gossip_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
@@ -64,6 +66,10 @@ impl NodeState {
         );
 
         let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.node_config)?)?;
+        let node_name = node_config
+            .name
+            .clone()
+            .unwrap_or(format!("monad-node-{:?}", secp_pubkey));
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(cli.forkpoint_config)?)?;
 
@@ -87,6 +93,7 @@ impl NodeState {
             record_metrics_interval: cli
                 .record_metrics_interval_seconds
                 .and_then(|s| Some(Duration::from_secs(s))),
+            node_name,
 
             run_mode,
         })

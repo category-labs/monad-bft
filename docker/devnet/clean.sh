@@ -3,6 +3,7 @@
 blockdb="./monad/blockdb"
 ledger="./monad/ledger"
 mempool_sock="./monad/mempool.sock"
+controlpanel_sock="./monad/controlpanel.sock"
 triedb="./monad/triedb"
 wal="./monad/wal"
 
@@ -21,6 +22,10 @@ fi
 
 if [ -S "$mempool_sock" ]; then
     rm "$mempool_sock"
+fi
+
+if [ -S "$controlpanel_sock" ]; then
+    rm "$controlpanel_sock"
 fi
 
 if [ -f "$wal" ]; then

@@ -97,11 +97,8 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
 
     // if provider is dropped, then traces stop getting sent silently...
     let maybe_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_provider(
-            endpoint,
-            format!("monad-node-{:?}", &node_state.secp256k1_identity.pubkey()),
-        )
-        .expect("failed to build otel monad-node")
+        build_otel_provider(endpoint, node_state.node_name.clone())
+            .expect("failed to build otel monad-node")
     });
 
     let maybe_telemetry = if let Some(provider) = &maybe_provider {
@@ -205,7 +202,7 @@ async fn run(
             node_state.otel_endpoint.expect(
                 "cannot specify record metrics interval without specifying OpenTelemetry endpoint",
             ),
-            format!("monad-node-{:?}", &node_state.secp256k1_identity.pubkey()),
+            node_state.node_name.clone(),
             record_metrics_interval,
             /*enable_grpc_gzip=*/ false,
         ))
