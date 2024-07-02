@@ -77,36 +77,6 @@ impl Hashable for ExecutionArtifacts {
     }
 }
 
-/// RLP encoded list of the 256-bit hashes of a set of Eth transactions
-#[derive(Clone, PartialEq, Eq)]
-pub struct TransactionHashList(Bytes);
-
-impl TransactionHashList {
-    pub fn empty() -> Self {
-        Self::new(vec![EMPTY_RLP_TX_LIST].into())
-    }
-
-    pub fn new(tx_hashes: Bytes) -> Self {
-        Self(tx_hashes)
-    }
-
-    pub fn bytes(&self) -> &Bytes {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for TransactionHashList {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TxnHashes").field(&self.0).finish()
-    }
-}
-
-impl AsRef<[u8]> for TransactionHashList {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
 /// RLP encoded list of a set of full RLP encoded Eth transactions
 // Do NOT derive or implement Default!
 // Empty byte array is not valid RLP

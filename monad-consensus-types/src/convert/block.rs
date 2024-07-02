@@ -9,27 +9,9 @@ use monad_proto::{
 
 use crate::{
     block::Block,
-    payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
-        TransactionHashList,
-    },
+    payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
     signature_collection::SignatureCollection,
 };
-
-impl From<&TransactionHashList> for ProtoTransactionList {
-    fn from(value: &TransactionHashList) -> Self {
-        Self {
-            data: value.bytes().clone(),
-        }
-    }
-}
-
-impl TryFrom<ProtoTransactionList> for TransactionHashList {
-    type Error = ProtoError;
-    fn try_from(value: ProtoTransactionList) -> Result<TransactionHashList, Self::Error> {
-        Ok(Self::new(value.data))
-    }
-}
 
 impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {

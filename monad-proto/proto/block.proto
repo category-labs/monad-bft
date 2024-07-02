@@ -15,10 +15,6 @@ message ProtoExecutionArtifacts {
   monad_proto.basic.ProtoGas gas_used = 6;
 }
 
-message ProtoTransactionList {
-  bytes data = 1;
-}
-
 message ProtoPayload {
   bytes txns = 1;
   ProtoExecutionArtifacts header = 2;
