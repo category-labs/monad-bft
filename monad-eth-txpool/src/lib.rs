@@ -19,7 +19,7 @@ use tracing::{info, debug};
 
 type VirtualTimestamp = u64;
 
-const CARRIAGE_COST: u128 = 1;
+const CARRIAGE_COST: u128 = 35;
 const MAX_RESERVE_BALANCE: u128 = 100;
 
 /// Needed to have control over Ord implementation
@@ -153,6 +153,90 @@ impl ReserveBalanceCache {
 
 }
 
+fn compute_reserve_balance_for_propose<SCT: SignatureCollection>(
+    block_policy: &EthBlockPolicy,
+    extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
+    eth_address: &EthAddress,
+    tdb_path: &Path) -> ComputeReserveBalanceResult {
+
+    let handle = TriedbHandle::try_new(tdb_path).unwrap();
+    let triedb_block_id = handle.latest_block();
+
+    let mut reserve_balance: u128 = 0;
+    // Get the balance from the latest triedb block
+    if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
+        reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
+        debug!("ReserveBalance propose 1: \
+                Account balance from TDB: {:?} \
+                for address: {:?} \
+                computed reserve balance: {:?}",
+                acc_balance,
+                eth_address,
+                reserve_balance);
+    }
+    else {
+        debug!("ReserveBalance propose 2: \
+                 Cant get account balance from TDB for address: {:?}", eth_address);
+        return ComputeReserveBalanceResult::TrieDBNone;
+    }
+    // Apply Carriage Cost for the txns from committed blocks
+    let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
+
+    if reserve_balance < txn_cnt * CARRIAGE_COST {
+        debug!("ReserveBalance propose 3: \
+                Not sufficient balance: {:?} \
+                committed txn cnt: {:?} \
+                for address: {:?}",
+                reserve_balance,
+                txn_cnt,
+                eth_address);
+        return ComputeReserveBalanceResult::Spent;
+    }
+    else {
+        reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
+        debug!("ReserveBalance propose 4: \
+                updated balance to: {:?} \
+                committed txn cnt: {:?} \
+                for address: {:?}",
+                reserve_balance,
+                txn_cnt,
+                eth_address);
+    }
+
+    // count txns in extending blocks
+    let mut pending_txn_cnt:u128 = 0;
+    for extending_block in extending_blocks {
+        for txn in &extending_block.validated_txns {
+            if EthAddress(txn.recover_signer().unwrap()) == *eth_address {
+                pending_txn_cnt = pending_txn_cnt + 1;
+            }
+        }
+    }
+
+    if reserve_balance < pending_txn_cnt * CARRIAGE_COST {
+        debug!("ReserveBalance propose 5: \
+                Not sufficient balance: {:?} \
+                pending txn cnt: {:?} \
+                for address: {:?}",
+                reserve_balance,
+                pending_txn_cnt,
+                eth_address);
+        return ComputeReserveBalanceResult::Spent;
+    }
+    else {
+        reserve_balance = reserve_balance - pending_txn_cnt * CARRIAGE_COST;
+        debug!("ReserveBalance propose 6: \
+                updated balance to: {:?} \
+                pending txn cnt: {:?} \
+                for address: {:?}",
+                reserve_balance,
+                pending_txn_cnt,
+                eth_address);
+    }
+
+    ComputeReserveBalanceResult::Val(reserve_balance)
+}
+
 type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
 
 #[derive(Clone, Default, Debug)]
@@ -209,10 +293,24 @@ impl EthTxPool {
                     // Reserve balance validation
                     if reserve_balance < CARRIAGE_COST {
                         maybe_nonce_to_remove = Some(*nonce);
+                        debug!("ReserveBalance propose 7: \
+                                insufficient balance: {:?} \
+                                at nonce: {:?} \
+                                for address: {:?}",
+                                reserve_balance,
+                                nonce,
+                                eth_address);
                         break;
                     }
                     else {
                         reserve_balance = reserve_balance - CARRIAGE_COST;
+                        debug!("ReserveBalance propose 8: \
+                                updated balance to: {:?} \
+                                at nonce: {:?} \
+                                for address: {:?}",
+                                reserve_balance,
+                                nonce,
+                                eth_address);
                     }
 
                     high_nonce = Some(*nonce);
@@ -230,52 +328,6 @@ impl EthTxPool {
     }
 }
 
-    fn compute_reserve_balance_for_propose<SCT: SignatureCollection>(
-        block_policy: &EthBlockPolicy,
-        extending_blocks: &Vec<&EthValidatedBlock<SCT>>,
-        eth_address: &EthAddress,
-        tdb_path: &Path) -> ComputeReserveBalanceResult {
-
-        let handle = TriedbHandle::try_new(tdb_path).unwrap();
-        let triedb_block_id = handle.latest_block();
-
-        let mut reserve_balance: u128 = 0;
-        // Get the balance from the latest triedb block
-        if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
-            reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
-        }
-        else {
-            return ComputeReserveBalanceResult::TrieDBNone;
-        }
-        // Apply Carriage Cost for the txns from committed blocks
-        let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
-
-        if reserve_balance < txn_cnt * CARRIAGE_COST {
-            return ComputeReserveBalanceResult::Spent;
-        }
-        else {
-            reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
-        }
-
-        // count txns in extending blocks
-        let mut pending_txn_cnt:u128 = 0;
-        for extending_block in extending_blocks {
-            for txn in &extending_block.validated_txns {
-                if EthAddress(txn.recover_signer().unwrap()) == *eth_address {
-                    pending_txn_cnt = pending_txn_cnt + 1;
-                }
-            }
-        }
-
-        if reserve_balance < pending_txn_cnt * CARRIAGE_COST {
-            return ComputeReserveBalanceResult::Spent;
-        }
-        else {
-            reserve_balance = reserve_balance - pending_txn_cnt * CARRIAGE_COST;
-        }
-
-        ComputeReserveBalanceResult::Val(reserve_balance)
-    }
 
 impl EthTxPool {
     fn compute_reserve_balance_for_insert(
@@ -285,8 +337,25 @@ impl EthTxPool {
         let mut reserve_balance: u128 = 0;
         let block_id = &block_policy.get_committed_block_seq_num().unwrap();
         match self.reserve_balance_cache.get_reserve_balance(*block_id, eth_address) {
-            ReserveBalanceCacheResult::Val(balance) => return (*block_id, ComputeReserveBalanceResult::Val(balance)),
-            ReserveBalanceCacheResult::Stale => { self.reserve_balance_cache.purge(); }
+            ReserveBalanceCacheResult::Val(balance) => {
+                debug!("ReserveBalance insert 1: \
+                        balance from cache: {:?} \
+                        latest block_id: {:?} \
+                        for address: {:?}",
+                        balance,
+                        block_id,
+                        eth_address);
+                return (*block_id, ComputeReserveBalanceResult::Val(balance));
+            },
+            ReserveBalanceCacheResult::Stale => { 
+                debug!("ReserveBalance insert 2: \
+                        cache is stale. \
+                        latest block_id: {:?} \
+                        for address: {:?}",
+                        block_id,
+                        eth_address);
+                self.reserve_balance_cache.purge(); 
+            }
             _ => ()
         }
 
@@ -296,8 +365,19 @@ impl EthTxPool {
         // Get the balance from the latest triedb block
         if let Some(acc_balance) = handle.get_account_balance(triedb_block_id, eth_address) {
             reserve_balance = min(acc_balance, MAX_RESERVE_BALANCE);
+            debug!("ReserveBalance insert 3: \
+                    Account balance from TDB: {:?} \
+                    latest block_id: {:?} \
+                    for address: {:?} \
+                    computed reserve balance: {:?}",
+                    acc_balance,
+                    block_id,
+                    eth_address,
+                    reserve_balance);
         }
         else {
+            debug!("ReserveBalance insert 4: \
+                    Cant get account balance from TDB for address: {:?} latest block_id {:?}", eth_address, block_id);
             return (*block_id, ComputeReserveBalanceResult::TrieDBNone);
         }
 
@@ -305,10 +385,28 @@ impl EthTxPool {
         let txn_cnt: u128 = block_policy.count_txns_for_address(eth_address);
 
         if reserve_balance < txn_cnt * CARRIAGE_COST {
+            debug!("ReserveBalance insert 5: \
+                    Not sufficient balance: {:?} \
+                    mempool txn cnt: {:?} \
+                    latest block_id: {:?} \
+                    for address: {:?}",
+                    reserve_balance,
+                    txn_cnt,
+                    block_id,
+                    eth_address);
             return (*block_id, ComputeReserveBalanceResult::Spent);
         }
         else {
             reserve_balance = reserve_balance - txn_cnt * CARRIAGE_COST;
+            debug!("ReserveBalance insert 6: \
+                    updated balance to: {:?} \
+                    mempool txn cnt: {:?} \
+                    latest block_id: {:?} \
+                    for address: {:?}",
+                    reserve_balance,
+                    txn_cnt,
+                    block_id,
+                    eth_address);
         }
 
         // Balalnce cache  keeps track of the latest _committed_ block
@@ -332,6 +430,23 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
                 // TODO(rene): should any transaction validation occur here before inserting into mempool
                 self.pool.entry(sender).or_default().add(eth_tx);
                 self.reserve_balance_cache.update_reserve_balance_cache(&block_id, &sender, reserve_balance - CARRIAGE_COST);
+                debug!("ReserveBalance insert 7: \
+                        updated reserve balance to: {:?} \
+                        block_id: {:?} \
+                        for address: {:?}",
+                        reserve_balance - CARRIAGE_COST,
+                        block_id,
+                        sender);
+            }
+            else {
+                debug!("ReserveBalance insert 7: \
+                        do not add txn to the pool. insufficient balance: {:?} \
+                        block_id: {:?} \
+                        for address: {:?}",
+                        reserve_balance,
+                        block_id,
+                        sender);
+
             }
         }
     }
