@@ -14,7 +14,7 @@ use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 use monad_eth_types::{EthAddress, Nonce};
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
-use sorted_vector_map::SortedVectorMap;
+use sorted_vector_map::{map::Entry, SortedVectorMap};
 
 type VirtualTimestamp = u64;
 
@@ -78,15 +78,48 @@ impl<'a> PartialOrd for WrappedTransaction<'a> {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TransactionGroupEntry {
+    pub transaction: EthTransaction,
+    pub ratio: f64,
+}
+
+impl Eq for TransactionGroupEntry {}
+
+impl Ord for TransactionGroupEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Unwrap safety: Okay to unwrap here so long as we guarantee price_gas_limit_ratio is not NaN
+        // when inserting into the mempool. partial_cmp is guaranteed to return Some(_) if neither
+        // operand is NaN
+        (self.ratio, self.transaction.hash())
+            .partial_cmp(&(other.ratio, other.transaction.hash()))
+            .unwrap()
+    }
+}
+
+impl PartialOrd for TransactionGroupEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct TransactionGroup {
-    transactions: SortedVectorMap<Nonce, (EthTransaction, f64)>,
+    transactions: SortedVectorMap<Nonce, TransactionGroupEntry>,
 }
 
 impl TransactionGroup {
-    fn add(&mut self, transaction: EthTransaction, ratio: f64) {
-        self.transactions
-            .insert(transaction.nonce(), (transaction, ratio));
+    fn add(&mut self, transaction_group_entry: TransactionGroupEntry) {
+        let TransactionGroupEntry { transaction, ratio } = &transaction_group_entry;
+        match self.transactions.entry(transaction.nonce()) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(transaction_group_entry);
+            }
+            Entry::Occupied(mut occupied) => {
+                let best_tx = std::cmp::max(occupied.get(), &transaction_group_entry);
+                occupied.insert(best_tx.clone());
+            }
+        }
     }
 }
 
@@ -162,7 +195,13 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
 
-        self.pool.entry(sender).or_default().add(eth_tx, ratio);
+        self.pool
+            .entry(sender)
+            .or_default()
+            .add(TransactionGroupEntry {
+                transaction: eth_tx,
+                ratio,
+            });
         Ok(())
     }
 
@@ -205,7 +244,13 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
                 None => {
                     unreachable!()
                 }
-                Some((_, (transaction, price_gas_limit_ratio))) => {
+                Some((
+                    _,
+                    TransactionGroupEntry {
+                        transaction,
+                        ratio: price_gas_limit_ratio,
+                    },
+                )) => {
                     max_heap.push(WrappedTransaction {
                         inner: transaction,
                         insertion_time: virtual_time,
@@ -236,7 +281,13 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
             // maintain the loop invariant because we just removed one element from the heap
             match transaction_iters.get_mut(&address).unwrap().next() {
                 None => {}
-                Some((_, (transaction, price_gas_limit_ratio))) => {
+                Some((
+                    _,
+                    TransactionGroupEntry {
+                        transaction,
+                        ratio: price_gas_limit_ratio,
+                    },
+                )) => {
                     max_heap.push(WrappedTransaction {
                         inner: transaction,
                         insertion_time: virtual_time,
@@ -388,8 +439,8 @@ mod test {
     #[traced_test]
     fn test_resubmit_with_better_price() {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
-        let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s1, 2, 2, 0, 10)];
-        let expected_txs = vec![make_tx(s1, 2, 2, 0, 10)];
+        let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s1, 2, 1, 0, 10)];
+        let expected_txs = vec![make_tx(s1, 2, 1, 0, 10)];
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
@@ -655,6 +706,101 @@ mod test {
         let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(expected_txs, decoded_txns);
+    }
+
+    #[test]
+    #[traced_test]
+    fn transactions_inserted_in_different_order_should_yield_same_proposal() {
+        let s1: B256 =
+            hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+            next_commit: SeqNum(0),
+        };
+        let proposal1;
+        {
+            let mut pool = EthTxPool::default();
+            let t1 = make_tx(
+                s1, // sender
+                1,  // gas_price
+                1,  // gas_limit
+                0,  // nonce
+                10, // input_length
+            );
+            let t2 = make_tx(
+                s1, // sender
+                2,  // gas_price
+                1,  // gas_limit
+                0,  // nonce
+                10, // input_len
+            );
+            Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
+            Pool::insert_tx(&mut pool, t2.envelope_encoded().into()).unwrap();
+            let encoded_txns =
+                Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
+            proposal1 = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        }
+        let proposal2;
+        {
+            let mut pool = EthTxPool::default();
+            let t1 = make_tx(
+                s1, // sender
+                2,  // gas_price
+                1,  // gas_limit
+                0,  // nonce
+                10, // input_len
+            );
+            let t2 = make_tx(
+                s1, // sender
+                1,  // gas_price
+                1,  // gas_limit
+                0,  // nonce
+                10, // input_len
+            );
+            Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
+            Pool::insert_tx(&mut pool, t2.envelope_encoded().into()).unwrap();
+            let encoded_txns =
+                Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
+            proposal2 = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        }
+
+        assert_eq!(proposal1, proposal2);
+
+        let expected_txs = vec![make_tx(s1, 2, 1, 0, 10)];
+        assert_eq!(expected_txs, proposal1);
+        assert_eq!(expected_txs, proposal2);
+    }
+
+    #[test]
+    #[traced_test]
+    fn transactions_with_same_nonce_and_price_gas_limit_ratio_should_break_tie_using_tx_hash() {
+        let s1: B256 =
+            hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
+        let eth_block_policy = EthBlockPolicy {
+            latest_nonces: BTreeMap::new(),
+            next_commit: SeqNum(0),
+        };
+        let mut pool = EthTxPool::default();
+        let t1 = make_tx(
+            s1, // sender
+            1,  // gas_price
+            1,  // gas_limit
+            0,  // nonce
+            10, // input_length
+        );
+        let t2 = make_tx(
+            s1, // sender
+            2,  // gas_price
+            2,  // gas_limit
+            0,  // nonce
+            10, // input_len
+        );
+        Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut pool, t2.envelope_encoded().into()).unwrap();
+        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
+        let proposal = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        let expected_txs = vec![make_tx(s1, 2, 2, 0, 10)];
+        assert_eq!(expected_txs, proposal);
     }
 
     #[test]
