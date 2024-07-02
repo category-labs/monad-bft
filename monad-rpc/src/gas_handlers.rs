@@ -63,11 +63,16 @@ pub async fn monad_eth_estimateGas(
 
     let block_number = match params.block {
         BlockTags::Default(_) => {
-            let TriedbResult::BlockNum(block_number) = triedb_env.get_latest_block().await else {
-                debug!("triedb did not have latest block header");
+            let TriedbResult::BlockNum(triedb_block_number) = triedb_env.get_latest_block().await
+            else {
+                debug!("triedb did not have latest block number");
                 return Err(JsonRpcError::internal_error());
             };
-            block_number
+            let Some(blockdb_block_number) = blockdb_env.get_latest_block().await else {
+                debug!("blockdb did not have latest block number");
+                return Err(JsonRpcError::internal_error());
+            };
+            std::cmp::min(triedb_block_number, blockdb_block_number.0)
         }
         BlockTags::Number(block_number) => block_number.0,
     };

@@ -48,6 +48,7 @@ pub enum BlockTagKey {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlockTagValue {
     pub block_hash: BlockTableKey,
+    pub block_number: BlockNumTableKey,
 }
 
 pub struct BlockDbBuilder {}
@@ -117,19 +118,47 @@ impl BlockDb {
     }
 
     pub fn write_block_numbers(&self, block: &Block, block_table_key: &BlockTableKey) {
+        // block number table
         let mut block_num_table_txn = self.env.write_txn().expect("block_num txn create failed");
         let block_num_table_key = BlockNumTableKey(block.number);
-        let block_num_table_value = block_table_key.clone();
+        let block_hash_value = block_table_key.clone();
         self.block_num_dbi
             .put(
                 &mut block_num_table_txn,
                 &block_num_table_key,
-                &block_num_table_value,
+                &block_hash_value,
             )
             .expect("block_num_dbi put failed");
         block_num_table_txn
             .commit()
             .expect("block_num commit failed");
+
+        // block tag table
+        let mut block_tag_table_txn = self
+            .env
+            .write_txn()
+            .expect("block_tag_table txn create failed");
+        let block_tag_value = BlockTagValue {
+            block_hash: block_hash_value,
+            block_number: block_num_table_key,
+        };
+        self.block_tag_dbi
+            .put(
+                &mut block_tag_table_txn,
+                &BlockTagKey::Latest,
+                &block_tag_value,
+            )
+            .expect("block_tag_dbi put failed");
+        self.block_tag_dbi
+            .put(
+                &mut block_tag_table_txn,
+                &BlockTagKey::Finalized,
+                &block_tag_value,
+            )
+            .expect("block_tag_dbi put failed");
+        block_tag_table_txn
+            .commit()
+            .expect("block_tag commit failed");
     }
 
     #[allow(clippy::ptr_arg)]
@@ -152,31 +181,6 @@ impl BlockDb {
             .expect("bft_ledger_table put failed");
 
         block_txn.commit().expect("block_dbi commit failed");
-
-        let mut block_tag_table_txn = self
-            .env
-            .write_txn()
-            .expect("block_tag_table txn create failed");
-        let block_tag_value = BlockTagValue {
-            block_hash: block_table_key,
-        };
-        self.block_tag_dbi
-            .put(
-                &mut block_tag_table_txn,
-                &BlockTagKey::Latest,
-                &block_tag_value,
-            )
-            .expect("block_tag_dbi put failed");
-        self.block_tag_dbi
-            .put(
-                &mut block_tag_table_txn,
-                &BlockTagKey::Finalized,
-                &block_tag_value,
-            )
-            .expect("block_tag_dbi put failed");
-        block_tag_table_txn
-            .commit()
-            .expect("block_tag commit failed");
     }
 
     pub fn write_eth_and_bft_blocks(

@@ -70,6 +70,22 @@ impl BlockDbEnv {
         }
     }
 
+    pub async fn get_latest_block(&self) -> Option<BlockNumTableKey> {
+        let env = self.blockdb_env.clone();
+        let block_tag_dbi = self.block_tag_dbi;
+        let (send, recv) = tokio::sync::oneshot::channel();
+
+        rayon::spawn(move || {
+            let db_txn = env.read_txn().expect("read txn failed");
+            let result: Option<BlockTagValue> = block_tag_dbi
+                .get(&db_txn, &BlockTagKey::Latest)
+                .expect("get operation should not fail");
+            let block_num = result.map(|r| r.block_number);
+            let _ = send.send(block_num);
+        });
+        recv.await.expect("rayon panic get_latest_block")
+    }
+
     pub async fn get_txn(&self, key: EthTxKey) -> Option<EthTxValue> {
         let env = self.blockdb_env.clone();
         let dbi = self.txn_hash_dbi;

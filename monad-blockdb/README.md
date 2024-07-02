@@ -26,7 +26,8 @@ blockNumber => {
 Maps a block tag (*latest* or *finalized*) to its associated block hash. Since Monad BFT has single slot finality, the *latest* block is the same as the *finalized* block.
 ```
 blockTag => {
-    blockHash
+    blockHash,
+    blockNumber
 }
 ```
 
