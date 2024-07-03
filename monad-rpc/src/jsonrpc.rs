@@ -101,6 +101,50 @@ pub struct JsonRpcError {
     pub data: Option<Value>,
 }
 
+pub type JsonRpcResult<T> = Result<T, JsonRpcError>;
+
+pub trait JsonRpcResultExt: Sized {
+    type Result;
+    fn invalid_params(self) -> Self::Result;
+    fn method_not_supported(self) -> Self::Result;
+    fn block_not_found(self) -> Self::Result;
+}
+
+impl<T, E> JsonRpcResultExt for Result<T, E>
+where
+    serde_json::Error: From<E>,
+{
+    type Result = JsonRpcResult<T>;
+
+    fn invalid_params(self) -> JsonRpcResult<T> {
+        self.map_err(|_| JsonRpcError::invalid_params())
+    }
+
+    fn method_not_supported(self) -> JsonRpcResult<T> {
+        self.map_err(|_| JsonRpcError::method_not_supported())
+    }
+
+    fn block_not_found(self) -> JsonRpcResult<T> {
+        self.map_err(|_| JsonRpcError::custom("block not found".into()))
+    }
+}
+
+impl<T> JsonRpcResultExt for Option<T> {
+    type Result = JsonRpcResult<T>;
+
+    fn invalid_params(self) -> JsonRpcResult<T> {
+        self.ok_or(JsonRpcError::invalid_params())
+    }
+
+    fn method_not_supported(self) -> JsonRpcResult<T> {
+        self.ok_or(JsonRpcError::method_not_supported())
+    }
+
+    fn block_not_found(self) -> JsonRpcResult<T> {
+        self.ok_or(JsonRpcError::custom("block not found".into()))
+    }
+}
+
 impl JsonRpcError {
     // reserved pre-defined errors
     //
@@ -145,6 +189,13 @@ impl JsonRpcError {
     }
 
     // application errors
+    pub fn custom(message: String) -> Self {
+        Self {
+            code: -32000,
+            message,
+            data: None,
+        }
+    }
 
     pub fn txn_decode_error() -> Self {
         Self {

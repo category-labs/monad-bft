@@ -17,6 +17,7 @@ use block_handlers::{
 };
 use clap::Parser;
 use cli::Cli;
+use debug::{monad_debug_getRawHeader, monad_debug_getRawReceipts, monad_debug_getRawTransaction};
 use eth_json_types::serialize_result;
 use eth_txn_handlers::{
     monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
@@ -32,12 +33,13 @@ use serde_json::Value;
 
 use crate::{
     call::monad_eth_call,
+    debug::monad_debug_getRawBlock,
     eth_txn_handlers::monad_eth_sendRawTransaction,
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
     },
-    jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
+    jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
     websocket::Disconnect,
 };
@@ -46,6 +48,7 @@ mod account_handlers;
 mod block_handlers;
 mod call;
 mod cli;
+mod debug;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod gas_handlers;
@@ -109,6 +112,27 @@ async fn rpc_select(
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     match method {
+        "debug_getRawBlock" => {
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debug_getRawBlock(reader, params).await
+        }
+        "debug_getRawHeader" => {
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debug_getRawHeader(reader, params).await
+        }
+        "debug_getRawReceipts" => {
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debug_getRawReceipts(reader, triedb_env, params).await
+        }
+        "debug_getRawTransaction" => {
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debug_getRawTransaction(reader, params).await
+        }
         "eth_call" => {
             let Some(reader) = &app_state.blockdb_reader else {
                 return Err(JsonRpcError::method_not_supported());
