@@ -1,0 +1,19 @@
+[package]
+name = "monad-eth-testutil"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-multi-sig = { path = "../monad-multi-sig" }
+monad-types = { path = "../monad-types" }
+
+rand = { workspace = true }
+reth-primitives = { workspace = true }

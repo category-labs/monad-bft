@@ -1,0 +1,32 @@
+[
+    {
+        "name": "us",
+        "latencies_ms": [
+            10,
+            50
+        ],
+        "nodes": [
+            {
+                "service": "node0_us",
+                "volume": "node0",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            }
+        ]
+    },
+    {
+        "name": "europe",
+        "latencies_ms": [
+            50,
+            10
+        ],
+        "nodes": [
+            {
+                "service": "node1_eu",
+                "volume": "node1",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            }
+        ]
+    }
+]

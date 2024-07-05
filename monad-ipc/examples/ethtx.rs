@@ -239,7 +239,8 @@ fn make_tx(input_len: usize) -> TransactionSigned {
 
     let hash = transaction.signature_hash();
 
-    let sender_secret_key = FixedBytes::repeat_byte(1);
+    // generate a random secret key everytime since transaction nonce is 0
+    let sender_secret_key = FixedBytes::random();
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
     TransactionSigned::from_transaction_and_signature(transaction, signature)

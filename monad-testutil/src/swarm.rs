@@ -104,8 +104,8 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
     ledger_verification(&ledgers, min_ledger_len)
 }
 
-pub fn ledger_verification<SCT: SignatureCollection, O: BlockType<SCT> + PartialEq>(
-    ledgers: &Vec<Vec<O>>,
+pub fn ledger_verification<SCT: SignatureCollection, B: BlockType<SCT> + PartialEq>(
+    ledgers: &Vec<Vec<B>>,
     min_ledger_len: usize,
 ) {
     let (max_ledger_idx, max_b) = ledgers

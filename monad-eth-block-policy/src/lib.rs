@@ -190,5 +190,3 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
         }
     }
 }
-
-pub mod utils;

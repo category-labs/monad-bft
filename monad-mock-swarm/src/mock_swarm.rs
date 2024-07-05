@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use bytes::Bytes;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::MonadEvent;
 use monad_transformer::{LinkMessage, Pipeline, ID};
@@ -168,6 +169,18 @@ where
         assert!(!self.no_duplicate_peers || node.id.is_unique());
 
         self.states.insert(node.id, node);
+    }
+
+    pub fn send_transaction(
+        &mut self,
+        node_id: ID<CertificateSignaturePubKey<S::SignatureType>>,
+        txn: Bytes,
+    ) {
+        self.states
+            .get_mut(&node_id)
+            .expect("node should exist")
+            .executor
+            .send_transaction(txn);
     }
 
     pub fn update_outbound_pipeline_for_all(&mut self, new_pipeline: S::Pipeline)

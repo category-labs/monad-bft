@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
@@ -20,8 +21,8 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
-    state_root_hash::MockableStateRootHash,
+    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockLedger,
+    loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
 };
 use priority_queue::PriorityQueue;
 
@@ -38,6 +39,7 @@ pub struct MockExecutor<S: SwarmRelation> {
     checkpoint: MockCheckpoint<Checkpoint<S::SignatureCollectionType>>,
     state_root_hash: S::StateRootHashExecutor,
     loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
+    ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType>,
     tick: Duration,
 
     timer: PriorityQueue<
@@ -87,6 +89,7 @@ enum ExecutorEventType {
     Ledger,
     Timer,
     StateRootHash,
+    Ipc,
     Loopback,
 }
 
@@ -101,6 +104,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
             ledger: Default::default(),
             execution_ledger: Default::default(),
             state_root_hash,
+            ipc: Default::default(),
             loopback: Default::default(),
 
             tick,
@@ -123,6 +127,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
         assert!(tick >= self.tick);
 
         self.router.process_inbound(tick, from, message);
+    }
+
+    pub fn send_transaction(&mut self, txn: Bytes) {
+        self.ipc.add_transaction(txn);
     }
 
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
@@ -151,6 +159,11 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 self.loopback
                     .ready()
                     .then_some((self.tick, ExecutorEventType::Loopback)),
+            )
+            .chain(
+                self.ipc
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Ipc)),
             )
             .min()
     }
@@ -321,6 +334,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
                 }
                 ExecutorEventType::Loopback => {
                     return futures::executor::block_on(self.loopback.next())
+                        .map(MockExecutorEvent::Event)
+                }
+                ExecutorEventType::Ipc => {
+                    return futures::executor::block_on(self.ipc.next())
                         .map(MockExecutorEvent::Event)
                 }
             };

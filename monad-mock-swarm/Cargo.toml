@@ -39,14 +39,21 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }
+monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-block-validator = { path = "../monad-eth-block-validator" }
+monad-eth-testutil = { path = "../monad-eth-testutil" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 
+alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 rcgen = { workspace = true }
+reth-primitives = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }

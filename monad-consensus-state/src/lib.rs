@@ -1136,9 +1136,8 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_tx::{
-        utils::make_tx, EthFullTransactionList, EthSignedTransaction, EthTransaction,
-    };
+    use monad_eth_testutil::make_tx;
+    use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
@@ -4263,7 +4262,8 @@ mod test {
         let sender_1_key = B256::random();
         // state receives block 1
         let cp = env.next_proposal(
-            // first nonce from an account should be 0. this tx list is invalid
+            // first nonce from an account should be 0. this tx list is invalid since the transaction
+            // has nonce = 1
             generate_full_tx_list(vec![make_tx(sender_1_key, 1, 1, 1, 10)]),
             ExecutionArtifacts::zero(),
         );
@@ -4280,6 +4280,75 @@ mod test {
             .get_entry(&block_1_id)
             .expect("should be in the blocktree");
         assert!(!block_1_blocktree_entry.is_coherent);
+    }
+
+    #[test]
+    fn test_incoherent_block_duplicate_nonce() {
+        let num_states = 2;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy {
+                latest_nonces: BTreeMap::new(),
+                next_commit: SeqNum(0),
+            },
+            || EthValidator::new(10000, u64::MAX),
+            EthTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        let sender_1_key = B256::random();
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![make_tx(sender_1_key, 1, 1, 0, 10)]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives incoherent block 2
+        let cp = env.next_proposal(
+            // next nonce from this account must be 1. this tx is invalid since it has nonce = 0
+            generate_full_tx_list(vec![make_tx(sender_1_key, 1, 1, 0, 1000)]),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should not vote for block 2
+        assert!(find_vote_message(&cmds).is_none());
+        // block 2 should be in the blocktree as incoherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(!block_2_blocktree_entry.is_coherent);
     }
 
     #[test]

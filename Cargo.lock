@@ -3386,6 +3386,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
+ "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-txpool",
  "monad-eth-types",
@@ -3531,7 +3532,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-tx",
  "monad-eth-types",
- "monad-multi-sig",
  "monad-types",
  "rand",
  "tracing",
@@ -3548,6 +3548,21 @@ dependencies = [
  "monad-eth-tx",
  "monad-eth-types",
  "tracing",
+]
+
+[[package]]
+name = "monad-eth-testutil"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-tx",
+ "monad-eth-types",
+ "monad-multi-sig",
+ "monad-types",
+ "rand",
+ "reth-primitives",
 ]
 
 [[package]]
@@ -3572,6 +3587,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-types",
  "monad-multi-sig",
@@ -3727,6 +3743,7 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "criterion",
  "futures",
@@ -3737,6 +3754,11 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-block-validator",
+ "monad-eth-testutil",
+ "monad-eth-tx",
+ "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -3758,6 +3780,7 @@ dependencies = [
  "rand_chacha",
  "rayon",
  "rcgen",
+ "reth-primitives",
  "tempfile",
  "test-case",
  "tracing",
@@ -4197,6 +4220,7 @@ name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "bytes",
  "futures",
  "monad-consensus-types",
  "monad-crypto",

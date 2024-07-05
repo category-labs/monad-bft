@@ -1,22 +1,50 @@
-use alloy_rlp::Decodable;
 use monad_consensus_types::{
     block::Block,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
+use monad_eth_block_policy::EthValidatedBlock;
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
+use reth_primitives::{
+    revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind, TxLegacy,
+};
 
-use crate::EthValidatedBlock;
+pub fn make_tx(
+    sender: FixedBytes<32>,
+    gas_price: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+) -> EthSignedTransaction {
+    let input = vec![0; input_len];
+    let transaction = Transaction::Legacy(TxLegacy {
+        chain_id: Some(1337),
+        nonce,
+        gas_price,
+        gas_limit,
+        to: TransactionKind::Call(Address::repeat_byte(0u8)),
+        value: 0.into(),
+        input: input.into(),
+    });
+
+    let hash = transaction.signature_hash();
+
+    let sender_secret_key = sender;
+    let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
+
+    EthSignedTransaction::from_transaction_and_signature(transaction, signature)
+}
 
 pub fn generate_random_block_with_txns(
     eth_txn_list: Vec<EthSignedTransaction>,
 ) -> EthValidatedBlock<MultiSig<NopSignature>> {
     let eth_full_tx_list = EthFullTransactionList(
         eth_txn_list
+            .clone()
             .into_iter()
             .map(|signed_txn| {
                 let sender_address = signed_txn.recover_signer().unwrap();
@@ -40,16 +68,14 @@ pub fn generate_random_block_with_txns(
         },
         &QuorumCertificate::genesis_qc(),
     );
-    let validated_txns =
-        Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.bytes().as_ref()).unwrap();
-    let nonces = validated_txns
+    let nonces = eth_txn_list
         .iter()
         .map(|t| (EthAddress(t.recover_signer().unwrap()), t.nonce()))
         .collect();
 
     EthValidatedBlock {
         block,
-        validated_txns,
+        validated_txns: eth_txn_list,
         nonces,
     }
 }

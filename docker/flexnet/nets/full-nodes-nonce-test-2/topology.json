@@ -1,0 +1,44 @@
+[
+    {
+        "name": "us",
+        "latencies_ms": [
+            10,
+            50
+        ],
+        "nodes": [
+            {
+                "service": "node0",
+                "volume": "node0",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            },
+            {
+                "service": "node1",
+                "volume": "node1",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            }
+        ]
+    },
+    {
+        "name": "europe",
+        "latencies_ms": [
+            50,
+            10
+        ],
+        "nodes": [
+            {
+                "service": "node2",
+                "volume": "node2",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            },
+            {
+                "service": "node3",
+                "volume": "node3",
+                "up_Mbps": 100,
+                "down_Mbps": 100
+            }
+        ]
+    }
+]

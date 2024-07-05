@@ -22,6 +22,7 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-eth-testutil = { path = "../monad-eth-testutil" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }

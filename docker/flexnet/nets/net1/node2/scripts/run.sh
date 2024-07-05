@@ -14,4 +14,5 @@ monad-node \
     --mempool-ipc-path /monad/mempool.sock \
     --control-panel-ipc-path /monad/controlpanel.sock \
     --execution-ledger-path /monad/ledger \
+    --triedb-path /monad/triedb \
     test-mode > /monad/logs/client.log 2>&1

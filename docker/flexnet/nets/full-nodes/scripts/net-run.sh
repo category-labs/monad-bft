@@ -172,7 +172,7 @@ elif [ "$mode" == "test" ]; then
     sed -i 's/ports:/expose:/g' compose.yaml
 
     docker compose up -d $node_services
-    sleep 20
+    sleep 30
     docker compose down $node_services
 
     popd

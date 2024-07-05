@@ -135,6 +135,13 @@ impl EthTxPool {
         self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
+
+    fn total_txns(&self) -> usize {
+        self.pool
+            .iter()
+            .map(|(_, txn_group)| txn_group.transactions.len())
+            .sum()
+    }
 }
 
 impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
@@ -283,10 +290,10 @@ mod test {
 
     use alloy_primitives::{hex, B256};
     use alloy_rlp::Decodable;
-    use monad_consensus_types::txpool::TxPool;
+    use monad_consensus_types::txpool::{TxPool, TxPoolInsertionError};
     use monad_crypto::NopSignature;
-    use monad_eth_block_policy::utils::generate_random_block_with_txns;
-    use monad_eth_tx::{utils::make_tx, EthSignedTransaction};
+    use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
+    use monad_eth_tx::EthSignedTransaction;
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_types::SeqNum;
@@ -305,7 +312,7 @@ mod test {
             latest_nonces: BTreeMap::new(),
             next_commit: SeqNum(0),
         };
-        Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
+        Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
@@ -326,7 +333,7 @@ mod test {
             latest_nonces: BTreeMap::new(),
             next_commit: SeqNum(0),
         };
-        Pool::insert_tx(&mut pool, tx.envelope_encoded().into());
+        Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
 
@@ -352,9 +359,9 @@ mod test {
             latest_nonces: BTreeMap::new(),
             next_commit: SeqNum(0),
         };
-        Pool::insert_tx(&mut pool, t1.envelope_encoded().into());
-        Pool::insert_tx(&mut pool, t2.envelope_encoded().into());
-        Pool::insert_tx(&mut pool, t3.envelope_encoded().into());
+        Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut pool, t2.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut pool, t3.envelope_encoded().into()).unwrap();
         assert_eq!(pool.pool.len(), 1);
         assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 3);
 
@@ -377,7 +384,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -396,7 +403,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns = Pool::create_proposal(&mut pool, 2, 3, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -440,7 +447,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns =
             Pool::create_proposal(&mut pool, 200, 300, &eth_block_policy, Vec::new());
@@ -480,7 +487,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns =
             Pool::create_proposal(&mut pool, 200, 300, &eth_block_policy, Vec::new());
@@ -528,7 +535,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns = Pool::create_proposal(&mut pool, 200, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -570,7 +577,7 @@ mod test {
 
         let mut pool = EthTxPool::default();
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns = Pool::create_proposal(
             &mut pool,
@@ -585,25 +592,21 @@ mod test {
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
+
     #[test]
     #[traced_test]
     fn zero_gas_limit() {
         let s1: B256 =
             hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
         let txs = vec![make_tx(s1, 1, 0, 0, 10)];
-        let expected_txs: Vec<EthSignedTransaction> = vec![];
-
         let mut pool = EthTxPool::default();
-        let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
-        };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            let r = Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            assert!(matches!(
+                r.expect_err("gas limit 0 tx"),
+                TxPoolInsertionError::NotWellFormed
+            ));
         }
-        let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
-        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
-        assert_eq!(expected_txs, decoded_txns);
     }
 
     #[test]
@@ -650,7 +653,7 @@ mod test {
             next_commit: SeqNum(0),
         };
         for tx in txs.iter() {
-            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into());
+            Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
         }
         let encoded_txns = Pool::create_proposal(&mut pool, 10, 10, &eth_block_policy, Vec::new());
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -670,7 +673,7 @@ mod test {
             next_commit: SeqNum(0),
         };
 
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -701,9 +704,9 @@ mod test {
             next_commit: SeqNum(0),
         };
 
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into());
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into()).unwrap();
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -724,6 +727,7 @@ mod test {
 
         let sender_1_key = B256::random();
         let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let mut eth_tx_pool = EthTxPool::default();
@@ -731,7 +735,8 @@ mod test {
             latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
             next_commit: SeqNum(0),
         };
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -742,7 +747,7 @@ mod test {
         );
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
-        assert_eq!(decoded_txns, vec![]);
+        assert_eq!(decoded_txns, vec![txn_nonce_one]);
     }
 
     #[test]
@@ -753,6 +758,7 @@ mod test {
         // generate two transactions, both with nonce = 0
         let txn_1_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
         let txn_2_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 1000);
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
 
         let mut eth_tx_pool = EthTxPool::default();
         // create the extending block with txn 1
@@ -763,7 +769,8 @@ mod test {
         };
 
         // insert txn 2 into the tx pool
-        Pool::insert_tx(&mut eth_tx_pool, txn_2_nonce_zero.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_2_nonce_zero.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,
@@ -774,7 +781,7 @@ mod test {
         );
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
-        assert_eq!(decoded_txns, vec![]);
+        assert_eq!(decoded_txns, vec![txn_nonce_one]);
     }
 
     #[test]
@@ -797,9 +804,9 @@ mod test {
             next_commit: SeqNum(0),
         };
 
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into());
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_two.envelope_encoded().into());
-        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into());
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_two.envelope_encoded().into()).unwrap();
+        Pool::insert_tx(&mut eth_tx_pool, txn_nonce_three.envelope_encoded().into()).unwrap();
 
         // create the extending block 1 with txn 1
         let extending_block_1 = generate_random_block_with_txns(vec![txn_nonce_one]);

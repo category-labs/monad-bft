@@ -51,5 +51,3 @@ impl EthFullTransactionList {
         self.0.iter().map(|x| x.hash()).collect()
     }
 }
-
-pub mod utils;
