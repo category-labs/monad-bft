@@ -76,10 +76,11 @@ where
                 .states
                 .values()
                 .any(|node| node.executor.ledger().get_blocks().len() > self.until_block)
-            || nodes
-                .states
-                .values()
-                .any(|node| node.state.consensus().get_current_round() > self.until_round);
+            || nodes.states.values().any(|node| {
+                node.state
+                    .consensus()
+                    .is_some_and(|consensus| consensus.get_current_round() > self.until_round)
+            });
         self.until_step -= 1;
         should_terminate
     }

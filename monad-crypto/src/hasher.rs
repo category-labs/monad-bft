@@ -14,7 +14,7 @@ pub struct Hash(
 
 impl Debug for Hash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Hash({:?})", self.0)
+        write!(f, "Hash({})", self)
     }
 }
 

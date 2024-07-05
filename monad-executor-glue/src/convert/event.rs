@@ -1,12 +1,11 @@
+use bytes::Bytes;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
-use monad_proto::{
-    error::ProtoError,
-    proto::event::{proto_mempool_event::Event, *},
-};
+use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
+    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
     ValidatorEvent,
 };
 
@@ -40,6 +39,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::TimestampUpdateEvent(ProtoTimestampUpdate {
                     update: *event,
                 })
+            }
+            MonadEvent::StateSyncEvent(event) => {
+                proto_monad_event::Event::StateSyncEvent(event.into())
             }
         };
         Self { event: Some(event) }
@@ -83,11 +85,36 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             Some(proto_monad_event::Event::TimestampUpdateEvent(event)) => {
                 MonadEvent::TimestampUpdateEvent(event.update)
             }
+            Some(proto_monad_event::Event::StateSyncEvent(event)) => {
+                MonadEvent::StateSyncEvent(event.try_into()?)
+            }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
             ))?,
         };
         Ok(event)
+    }
+}
+
+impl From<&BlockSyncSelfRequester> for i32 {
+    fn from(requester: &BlockSyncSelfRequester) -> Self {
+        match requester {
+            BlockSyncSelfRequester::Consensus => 0,
+            BlockSyncSelfRequester::StateSync => 1,
+        }
+    }
+}
+
+impl TryFrom<i32> for BlockSyncSelfRequester {
+    type Error = ProtoError;
+    fn try_from(requester: i32) -> Result<Self, Self::Error> {
+        match requester {
+            0 => Ok(BlockSyncSelfRequester::Consensus),
+            1 => Ok(BlockSyncSelfRequester::StateSync),
+            _ => Err(ProtoError::DeserializeError(
+                "unknown blocksync requester".to_owned(),
+            )),
+        }
     }
 }
 
@@ -100,11 +127,17 @@ impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEven
                     request: Some(request.into()),
                 })
             }
-            BlockSyncEvent::SelfRequest { request } => {
-                proto_block_sync_event::Event::SelfRequest(request.into())
+            BlockSyncEvent::SelfRequest { requester, request } => {
+                proto_block_sync_event::Event::SelfRequest(ProtoBlockSyncSelfRequest {
+                    requester: requester.into(),
+                    request: Some(request.into()),
+                })
             }
-            BlockSyncEvent::SelfCancelRequest { request } => {
-                proto_block_sync_event::Event::SelfCancelRequest(request.into())
+            BlockSyncEvent::SelfCancelRequest { requester, request } => {
+                proto_block_sync_event::Event::SelfCancelRequest(ProtoBlockSyncSelfRequest {
+                    requester: requester.into(),
+                    request: Some(request.into()),
+                })
             }
             BlockSyncEvent::Response { sender, response } => {
                 proto_block_sync_event::Event::Response(ProtoBlockSyncResponseWithSender {
@@ -144,14 +177,26 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
                         .try_into()?;
                     BlockSyncEvent::Request { sender, request }
                 }
-                proto_block_sync_event::Event::SelfRequest(request) => {
+                proto_block_sync_event::Event::SelfRequest(self_request) => {
                     BlockSyncEvent::SelfRequest {
-                        request: request.try_into()?,
+                        requester: self_request.requester.try_into()?,
+                        request: self_request
+                            .request
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "BlockSyncSelfRequest.request".to_owned(),
+                            ))?
+                            .try_into()?,
                     }
                 }
-                proto_block_sync_event::Event::SelfCancelRequest(request) => {
+                proto_block_sync_event::Event::SelfCancelRequest(self_request) => {
                     BlockSyncEvent::SelfCancelRequest {
-                        request: request.try_into()?,
+                        requester: self_request.requester.try_into()?,
+                        request: self_request
+                            .request
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "BlockSyncCancelRequest.request".to_owned(),
+                            ))?
+                            .try_into()?,
                     }
                 }
                 proto_block_sync_event::Event::Response(event) => {
@@ -272,7 +317,7 @@ impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
                         .tx,
                 }
             }
-            Some(Event::Clear(_)) => MempoolEvent::Clear,
+            Some(proto_mempool_event::Event::Clear(_)) => MempoolEvent::Clear,
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,
@@ -376,6 +421,215 @@ impl TryFrom<ProtoControlPanelEvent> for ControlPanelEvent {
                 }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent
+                }
+            }
+        })
+    }
+}
+
+impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequest {
+    fn from(request: &StateSyncRequest) -> Self {
+        monad_proto::proto::message::ProtoStateSyncRequest {
+            prefix: request.prefix,
+            prefix_bytes: request.prefix_bytes.into(),
+            target: request.target,
+            from: request.from,
+            until: request.until,
+            old_target: request.old_target,
+        }
+    }
+}
+
+impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncResponse {
+    fn from(response: &StateSyncResponse) -> Self {
+        monad_proto::proto::message::ProtoStateSyncResponse {
+            request: Some((&response.request).into()),
+            upserts: response
+                .response
+                .iter()
+                .map(
+                    |(code, key, value)| monad_proto::proto::message::ProtoStateSyncUpsert {
+                        code: *code,
+                        key: Bytes::copy_from_slice(key),
+                        value: Bytes::copy_from_slice(value),
+                    },
+                )
+                .collect(),
+            n: response.response_n,
+        }
+    }
+}
+
+impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateSyncNetworkMessage {
+    fn from(value: &StateSyncNetworkMessage) -> Self {
+        use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
+        match value {
+            StateSyncNetworkMessage::Request(request) => Self {
+                oneof_message: Some(OneofMessage::Request(request.into())),
+            },
+            StateSyncNetworkMessage::Response(response) => Self {
+                oneof_message: Some(OneofMessage::Response(response.into())),
+            },
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> From<&StateSyncEvent<SCT>> for ProtoStateSyncEvent {
+    fn from(value: &StateSyncEvent<SCT>) -> Self {
+        match value {
+            StateSyncEvent::Inbound(from, message) => Self {
+                event: Some(proto_state_sync_event::Event::Inbound(
+                    ProtoInboundStateMessage {
+                        sender: Some(from.into()),
+                        message: Some(message.into()),
+                    },
+                )),
+            },
+            StateSyncEvent::Outbound(to, message) => Self {
+                event: Some(proto_state_sync_event::Event::Outbound(
+                    ProtoOutboundStateMessage {
+                        recipient: Some(to.into()),
+                        message: Some(message.into()),
+                    },
+                )),
+            },
+            StateSyncEvent::DoneSync(n) => Self {
+                event: Some(proto_state_sync_event::Event::DoneSync(ProtoDoneSync {
+                    seq_num: Some(n.into()),
+                })),
+            },
+            StateSyncEvent::RequestSync { root, high_qc } => Self {
+                event: Some(proto_state_sync_event::Event::RequestSync(
+                    ProtoRequestSync {
+                        root: Some(root.into()),
+                        high_qc: Some(high_qc.into()),
+                    },
+                )),
+            },
+            StateSyncEvent::BlockSync(block) => Self {
+                event: Some(proto_state_sync_event::Event::BlockSync(block.into())),
+            },
+        }
+    }
+}
+
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRequest {
+    type Error = ProtoError;
+
+    fn try_from(
+        request: monad_proto::proto::message::ProtoStateSyncRequest,
+    ) -> Result<Self, Self::Error> {
+        Ok(StateSyncRequest {
+            prefix: request.prefix,
+            prefix_bytes: request
+                .prefix_bytes
+                .try_into()
+                .map_err(|_| ProtoError::DeserializeError("prefix_bytes too big".to_owned()))?,
+            target: request.target,
+            from: request.from,
+            until: request.until,
+            old_target: request.old_target,
+        })
+    }
+}
+
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
+    for StateSyncNetworkMessage
+{
+    type Error = ProtoError;
+
+    fn try_from(
+        value: monad_proto::proto::message::ProtoStateSyncNetworkMessage,
+    ) -> Result<Self, Self::Error> {
+        use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
+        match value.oneof_message.ok_or(ProtoError::MissingRequiredField(
+            "StateSyncNetworkMessage::oneof_message".to_owned(),
+        ))? {
+            OneofMessage::Request(request) => {
+                Ok(StateSyncNetworkMessage::Request(request.try_into()?))
+            }
+            OneofMessage::Response(response) => {
+                Ok(StateSyncNetworkMessage::Response(StateSyncResponse {
+                    request: response
+                        .request
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "StateSyncResponse::request".to_owned(),
+                        ))?
+                        .try_into()?,
+                    response: response
+                        .upserts
+                        .into_iter()
+                        .map(|upsert| (upsert.code, upsert.key.into(), upsert.value.into()))
+                        .collect(),
+                    response_n: response.n,
+                }))
+            }
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(e: ProtoStateSyncEvent) -> Result<Self, Self::Error> {
+        Ok({
+            match e.event.ok_or(ProtoError::MissingRequiredField(
+                "StateSyncEvent::event".to_owned(),
+            ))? {
+                proto_state_sync_event::Event::Inbound(inbound) => StateSyncEvent::Inbound(
+                    inbound
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "InboundStateMessage::sender".to_owned(),
+                        ))?
+                        .try_into()?,
+                    inbound
+                        .message
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "InboundStateMessage::message".to_owned(),
+                        ))?
+                        .try_into()?,
+                ),
+                proto_state_sync_event::Event::Outbound(outbound) => StateSyncEvent::Outbound(
+                    outbound
+                        .recipient
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "InboundStateMessage::recipient".to_owned(),
+                        ))?
+                        .try_into()?,
+                    outbound
+                        .message
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "OutboundStateMessage::message".to_owned(),
+                        ))?
+                        .try_into()?,
+                ),
+                proto_state_sync_event::Event::DoneSync(done_sync) => StateSyncEvent::DoneSync(
+                    done_sync
+                        .seq_num
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "DoneSync::seq_num".to_owned(),
+                        ))?
+                        .try_into()?,
+                ),
+                proto_state_sync_event::Event::RequestSync(request_sync) => {
+                    StateSyncEvent::RequestSync {
+                        root: request_sync
+                            .root
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "RequestSync::root".to_owned(),
+                            ))?
+                            .try_into()?,
+                        high_qc: request_sync
+                            .high_qc
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "RequestSync::high_qc".to_owned(),
+                            ))?
+                            .try_into()?,
+                    }
+                }
+                proto_state_sync_event::Event::BlockSync(block) => {
+                    StateSyncEvent::BlockSync(block.try_into()?)
                 }
             }
         })

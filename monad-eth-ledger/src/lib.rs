@@ -3,7 +3,6 @@ use std::{
     marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
@@ -18,11 +17,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::nonce::InMemoryState;
 use monad_eth_tx::EthTransaction;
 use monad_eth_types::EthAddress;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_state_backend::InMemoryState;
 use monad_types::{BlockId, Round};
 use monad_updaters::ledger::MockableLedger;
 
@@ -39,7 +38,7 @@ where
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
-    state: Arc<Mutex<InMemoryState>>,
+    state: InMemoryState,
 
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
@@ -50,7 +49,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(state: Arc<Mutex<InMemoryState>>) -> Self {
+    pub fn new(state: InMemoryState) -> Self {
         MockEthLedger {
             blocks: Default::default(),
             block_ids: Default::default(),
@@ -89,7 +88,7 @@ where
                                     // this is because nonces are always increasing per account
                                     .collect();
                             let mut state = self.state.lock().unwrap();
-                            state.update_committed_nonces(block.get_seq_num(), new_account_nonces);
+                            state.ledger_commit(block.get_seq_num(), new_account_nonces);
                         }
 
                         match self.blocks.entry(block.get_round()) {

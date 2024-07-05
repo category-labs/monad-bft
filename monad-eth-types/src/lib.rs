@@ -1,6 +1,6 @@
+use ::serde::{Deserialize, Serialize};
 use alloy_primitives::{Address, FixedBytes, B256};
 
-#[cfg(feature = "serde")]
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
@@ -10,7 +10,9 @@ pub type Balance = u128;
 
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,
+)]
 pub struct EthAddress(pub Address);
 
 impl EthAddress {

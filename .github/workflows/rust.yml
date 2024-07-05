@@ -14,7 +14,18 @@ jobs:
     runs-on: ubuntu-24.04-32
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Generate a token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private-key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          repositories: "monad,monad-bft,evmone,thread-safe-lru"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install nightly-2024-07-21 --profile minimal --component rustfmt
       - name: Format
         run: cargo +nightly-2024-07-21 fmt --all --check

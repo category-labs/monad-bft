@@ -11,11 +11,13 @@ use monad_mock_swarm::{
     swarm_relation::NoSerSwarm, terminator::UntilTerminator,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::NopStateBackend;
+use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
 fn two_nodes_virtual() -> u128 {
@@ -26,7 +28,7 @@ fn two_nodes_virtual() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -49,14 +51,24 @@ fn two_nodes_virtual() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],

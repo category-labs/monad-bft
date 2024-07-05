@@ -1,7 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
 
-use monad_eth_types::{EthAccount, EthAddress};
-use monad_types::SeqNum;
+use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
+use monad_types::{SeqNum, GENESIS_SEQ_NUM};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq)]
 pub enum StateBackendError {
@@ -50,20 +54,124 @@ pub trait StateBackend {
     fn raw_read_latest_block(&self) -> SeqNum;
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct NopStateBackend;
+pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
 
-impl StateBackend for NopStateBackend {
-    fn raw_read_account(&self, _block: SeqNum, _address: &EthAddress) -> Option<EthAccount> {
-        None
+#[derive(Debug, Clone)]
+pub struct InMemoryStateInner {
+    states: BTreeMap<SeqNum, InMemoryBlockState>,
+    commits: BTreeSet<SeqNum>,
+    /// InMemoryState doesn't have access to an execution engine. It returns
+    /// `max_reserve_balance` as the balance every time so txn reserve balance
+    /// will pass if the sum doesn't exceed the max reserve
+    max_reserve_balance: Balance,
+    execution_delay: SeqNum,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InMemoryBlockState {
+    block: SeqNum,
+    nonces: BTreeMap<EthAddress, Nonce>,
+}
+
+impl InMemoryBlockState {
+    pub fn genesis(nonces: BTreeMap<EthAddress, Nonce>) -> Self {
+        Self {
+            block: GENESIS_SEQ_NUM,
+            nonces,
+        }
+    }
+}
+
+impl InMemoryStateInner {
+    pub fn genesis(max_reserve_balance: Balance, execution_delay: SeqNum) -> InMemoryState {
+        Arc::new(Mutex::new(Self {
+            states: std::iter::once((
+                GENESIS_SEQ_NUM,
+                InMemoryBlockState::genesis(Default::default()),
+            ))
+            .collect(),
+            commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
+            max_reserve_balance,
+            execution_delay,
+        }))
+    }
+    pub fn new(
+        max_reserve_balance: Balance,
+        execution_delay: SeqNum,
+        init_state: InMemoryBlockState,
+    ) -> InMemoryState {
+        Arc::new(Mutex::new(Self {
+            states: std::iter::once((init_state.block, init_state)).collect(),
+            commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
+            max_reserve_balance,
+            execution_delay,
+        }))
+    }
+
+    // new_account_nonces is the changeset of nonces from a given block
+    // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
+    // this is because N+1 is the next valid nonce for A
+    pub fn ledger_commit(
+        &mut self,
+        seq_num: SeqNum,
+        new_account_nonces: BTreeMap<EthAddress, Nonce>,
+    ) {
+        assert!(seq_num <= self.raw_read_latest_block() + SeqNum(1));
+        self.commits.insert(seq_num);
+
+        if (seq_num.0.saturating_sub(self.execution_delay.0)..seq_num.0)
+            .all(|block| self.commits.contains(&SeqNum(block)))
+        {
+            // we have `delay` number of blocks, so we can execute
+            let mut last_state_nonces = self
+                .states
+                .last_entry()
+                .map_or(Default::default(), |entry| entry.get().nonces.clone());
+            for (address, account_nonce) in new_account_nonces {
+                last_state_nonces.insert(address, account_nonce);
+            }
+            let last_state = InMemoryBlockState {
+                block: seq_num,
+                nonces: last_state_nonces,
+            };
+            assert_eq!(seq_num, last_state.block);
+            self.states.insert(seq_num, last_state);
+        }
+    }
+
+    pub fn block_state(&self, block: &SeqNum) -> Option<&InMemoryBlockState> {
+        self.states.get(block)
+    }
+
+    pub fn reset_state(&mut self, state: InMemoryBlockState) {
+        self.states = std::iter::once((state.block, state)).collect();
+    }
+}
+
+impl StateBackend for InMemoryStateInner {
+    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
+        let nonce = self.states.get(&block)?.nonces.get(address)?;
+        Some(EthAccount {
+            nonce: *nonce,
+            balance: self.max_reserve_balance,
+            code_hash: None,
+        })
     }
 
     fn raw_read_earliest_block(&self) -> SeqNum {
-        SeqNum::MIN
+        self.states
+            .first_key_value()
+            .map(|(block, _)| block)
+            .copied()
+            .unwrap_or(GENESIS_SEQ_NUM)
     }
 
     fn raw_read_latest_block(&self) -> SeqNum {
-        SeqNum::MAX
+        self.states
+            .last_key_value()
+            .map(|(block, _)| block)
+            .copied()
+            .unwrap_or(GENESIS_SEQ_NUM)
     }
 }
 

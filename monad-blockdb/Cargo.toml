@@ -15,3 +15,4 @@ monad-types = { path = "../monad-types" }
 heed = { workspace = true }
 reth-primitives = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }

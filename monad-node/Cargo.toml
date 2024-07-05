@@ -25,7 +25,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
-monad-eth-types = { path = "../monad-eth-types", features = ["serde"] }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
@@ -35,8 +35,9 @@ monad-quic = { path = "../monad-quic" }
 monad-ledger = { path = "../monad-ledger" }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
+monad-statesync = { path = "../monad-statesync" }
 monad-types = { path = "../monad-types" }
-monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
+monad-updaters = { path = "../monad-updaters", features = ["monad-triedb", "tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 monad-state-backend = { path = "../monad-state-backend" }

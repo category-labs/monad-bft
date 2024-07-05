@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
     payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool,
@@ -20,7 +19,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::{MonadState, VerifiedMonadMessage};
+use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
@@ -45,7 +44,7 @@ where
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusState<SCT, BPT, SBT>,
+    consensus: &'a ConsensusMode<SCT, BPT, SBT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
@@ -105,6 +104,11 @@ where
         &mut self,
         event: MempoolEvent<CertificateSignaturePubKey<ST>>,
     ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
+        let ConsensusMode::Live(consensus) = self.consensus else {
+            tracing::trace!("ignoring MempoolEvent, not live yet");
+            self.txpool.clear();
+            return vec![];
+        };
         match event {
             MempoolEvent::UserTxns(txns) => {
                 let num_txns = txns.len() as u64;
@@ -116,7 +120,7 @@ where
                 self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
                 self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
 
-                let round = self.consensus.get_current_round();
+                let round = consensus.get_current_round();
                 let next_k_leaders = (round.0..)
                     .map(|round| self.get_leader(Round(round)))
                     .take(NUM_LEADERS_FORWARD)

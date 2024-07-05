@@ -4,9 +4,8 @@ import time
 
 def main():
     net_config = Flexnet('./nets/4nodes-consensus-rpc.json')
-    net_config.set_test_mode(True)
     byzantine_node = net_config.topology.find_node_by_name('node1')
-    byzantine_node.set_byzantine()
+    # TODO pass byzantine_node a different genesis.json/forkpoint.toml so it doesn't produce blocks?
 
     with net_config.start_topology(mock_drivers=True) as net:
         beneficiary = byzantine_node.get_beneficiary()

@@ -18,11 +18,13 @@ use monad_mock_swarm::{
     verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::NopStateBackend;
+use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -78,7 +80,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
         || {
             StateRoot::new(
                 // avoid state_root trigger in rand latency setting
@@ -103,13 +105,23 @@ fn nodes_with_random_latency(latency_seed: u64) {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(3000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(3000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],

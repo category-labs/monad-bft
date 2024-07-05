@@ -63,7 +63,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
                         break 'poll_triedb;
                     }
                     let result = handle.get_state_root(seq_num.0);
-                    debug!("srh = {:?}", result);
+                    debug!(?seq_num, ?result, "polled state_root_hash");
                     if let Some(state_root) = result {
                         let state_root = state_root
                             .try_into()

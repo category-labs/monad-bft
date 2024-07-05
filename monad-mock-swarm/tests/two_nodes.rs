@@ -26,14 +26,16 @@ use monad_mock_swarm::{
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_state_backend::NopStateBackend;
+use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_tracing_counter::counter::{counter_get, CounterLayer, MetricFilter};
 use monad_transformer::{
     BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
@@ -48,7 +50,7 @@ fn two_nodes_noser() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -71,13 +73,23 @@ fn two_nodes_noser() {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),
@@ -117,7 +129,7 @@ fn two_nodes_quic_latency() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -141,6 +153,7 @@ fn two_nodes_quic_latency() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let me = NodeId::new(state_builder.key.pubkey());
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::<QuicSwarm>::new(
                     ID::new(me),
@@ -160,8 +173,17 @@ fn two_nodes_quic_latency() {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),
@@ -239,7 +261,7 @@ fn two_nodes_quic_bw() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -263,6 +285,7 @@ fn two_nodes_quic_bw() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let me = NodeId::new(state_builder.key.pubkey());
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 NodeBuilder::new(
                     ID::new(me),
@@ -282,8 +305,17 @@ fn two_nodes_quic_bw() {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             20,

@@ -269,7 +269,10 @@ impl StateRoot {
 
 impl StateRootValidator for StateRoot {
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: StateRootHash) {
-        self.root_hashes.insert(seq_num, root_hash);
+        let maybe_removed = self.root_hashes.insert(seq_num, root_hash);
+        if let Some(removed) = maybe_removed {
+            assert_eq!(removed, root_hash)
+        }
 
         // we only need to maintain the last `delay` number of state roots
         let max_seqnum = *self.root_hashes.last_entry().expect("at least 1").key();
@@ -349,7 +352,8 @@ impl StateRootValidator for NopStateRoot {
     }
 
     fn get_delay(&self) -> SeqNum {
-        SeqNum(u64::MAX)
+        // TODO we should tie this to the InMemoryStateBackend
+        SeqNum(u32::MAX.into())
     }
 }
 
@@ -368,7 +372,7 @@ impl StateRootValidator for MissingNextStateRoot {
     }
 
     fn get_delay(&self) -> SeqNum {
-        SeqNum(u64::MAX)
+        SeqNum(4)
     }
 }
 

@@ -31,6 +31,9 @@ where
                         tx: (*msg).clone(),
                     })
                 }
+                VerifiedMonadMessage::StateSyncMessage(msg) => {
+                    proto_monad_message::OneofMessage::StateSyncMessage(msg.into())
+                }
             }),
         }
     }
@@ -59,6 +62,9 @@ where
             }
             Some(proto_monad_message::OneofMessage::ForwardedTx(msg)) => {
                 MonadMessage::ForwardedTx(msg.tx)
+            }
+            Some(proto_monad_message::OneofMessage::StateSyncMessage(msg)) => {
+                MonadMessage::StateSyncMessage(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

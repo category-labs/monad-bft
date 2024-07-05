@@ -9,6 +9,7 @@ use monad_consensus_types::{
     checkpoint::RootInfo,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_tracing_counter::inc_count;
@@ -492,12 +493,39 @@ where
         self.root.info.seq_num
     }
 
+    /// Note that this returns None if the block_id is root!
+    /// Use get_block_state_root instead?
     pub fn get_block(&self, block_id: &BlockId) -> Option<&BPT::ValidatedBlock> {
         self.tree.get(block_id).map(|block| &block.validated_block)
     }
 
+    pub fn get_block_state_root(&self, block_id: &BlockId) -> Option<StateRootHash> {
+        if &self.root.info.block_id == block_id {
+            return Some(self.root.info.state_root);
+        }
+        self.tree
+            .get(block_id)
+            .map(|block| block.validated_block.get_state_root())
+    }
+
     pub fn get_entry(&self, block_id: &BlockId) -> Option<&BlockTreeEntry<SCT, BPT, SBT>> {
         self.tree.get(block_id)
+    }
+
+    /// Notably does NOT need to be a chain to root
+    /// chain is returned in order of lowest round to highest
+    pub fn get_parent_block_chain(&self, block_id: &BlockId) -> Vec<&BPT::ValidatedBlock> {
+        let Some(base_block) = self.tree.get(block_id) else {
+            return Default::default();
+        };
+
+        let mut chain = vec![&base_block.validated_block];
+        while let Some(parent) = self.tree.get(&chain.last().unwrap().get_parent_id()) {
+            chain.push(&parent.validated_block);
+        }
+        chain.reverse();
+
+        chain
     }
 }
 
@@ -517,15 +545,15 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
-    use monad_state_backend::NopStateBackend;
+    use monad_state_backend::{InMemoryState, InMemoryStateInner};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round};
+    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;
 
     type SignatureType = NopSignature;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
     type BlockTreeType =
         BlockTree<MockSignatures<SignatureType>, BlockPolicyType, StateBackendType>;
@@ -686,7 +714,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -806,7 +834,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
 
@@ -913,7 +941,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -982,7 +1010,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
         assert!(blocktree
@@ -1036,7 +1064,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1122,7 +1150,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1209,7 +1237,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1282,7 +1310,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1365,7 +1393,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1463,7 +1491,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1553,7 +1581,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1658,7 +1686,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &mut block_policy, &state_backend)
@@ -1751,7 +1779,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(b2.clone(), &mut block_policy, &state_backend)
@@ -1879,7 +1907,7 @@ mod test {
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
-        let state_backend = NopStateBackend;
+        let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
 
         // insertion order: insert all blocks except b3, then b3

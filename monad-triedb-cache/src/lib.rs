@@ -79,7 +79,7 @@ where
             .cloned()
             .collect();
 
-        if cache.len() > self.execution_delay.0.saturating_mul(2) as usize {
+        if cache.len() > self.execution_delay.0 as usize * 2 {
             let (evicted, _) = cache.pop_first().expect("nonempty");
             if evicted == block {
                 let (latest, _) = cache.last_key_value().expect("nonempty");

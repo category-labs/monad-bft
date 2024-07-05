@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 
-use monad_state_backend::{NopStateBackend, StateBackend};
+use monad_state_backend::{InMemoryState, StateBackend};
 
 use crate::{
     block::{Block, BlockPolicy, PassthruBlockPolicy},
@@ -47,7 +47,7 @@ where
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<SCT> BlockValidator<SCT, PassthruBlockPolicy, NopStateBackend> for MockValidator
+impl<SCT> BlockValidator<SCT, PassthruBlockPolicy, InMemoryState> for MockValidator
 where
     SCT: SignatureCollection,
 {
@@ -56,7 +56,7 @@ where
         block: Block<SCT>,
         _author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<
-        <PassthruBlockPolicy as BlockPolicy<SCT, NopStateBackend>>::ValidatedBlock,
+        <PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,
     > {
         Ok(block)

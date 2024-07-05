@@ -93,6 +93,7 @@ impl std::fmt::Debug for Epoch {
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Deserialize)]
 pub struct SeqNum(
+    // FIXME get rid of this, we won't have u64::MAX
     /// Some serde libraries e.g. toml represent numbers as i64 so they don't
     /// support serializing u64::MAX, which is used as the genesis qc sequence
     /// number. Converting to string first gets around this limitation

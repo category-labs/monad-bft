@@ -161,10 +161,10 @@ int triedb_finalize(bytes value)
 
 uint64_t triedb_earliest_block(triedb *db)
 {
-    std::optional<uint64_t> earliest_block_id = db->db_.get_earliest_block_id();
+    uint64_t earliest_block_id = db->db_.get_earliest_block_id();
 
-    if (earliest_block_id.has_value()) {
-        return earliest_block_id.value();
+    if (earliest_block_id != monad::mpt::INVALID_BLOCK_ID) {
+        return earliest_block_id;
     }
     else {
         // no block has been produced
@@ -175,10 +175,10 @@ uint64_t triedb_earliest_block(triedb *db)
 
 uint64_t triedb_latest_block(triedb *db)
 {
-    std::optional<uint64_t> latest_block_id = db->db_.get_latest_block_id();
+    uint64_t latest_block_id = db->db_.get_latest_block_id();
 
-    if (latest_block_id.has_value()) {
-        return latest_block_id.value();
+    if (latest_block_id != monad::mpt::INVALID_BLOCK_ID) {
+        return latest_block_id;
     }
     else {
         // no block has been produced

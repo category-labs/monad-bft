@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::mode::RunModeCommand;
-
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
 pub struct Cli {
@@ -22,6 +20,10 @@ pub struct Cli {
     /// Set the forkpoint config path
     #[arg(long)]
     pub forkpoint_config: PathBuf,
+
+    /// Set the genesis config path
+    #[arg(long)]
+    pub genesis_path: PathBuf,
 
     /// Set the path where the write-ahead log will be stored
     #[arg(long)]
@@ -47,6 +49,10 @@ pub struct Cli {
     #[arg(long)]
     pub control_panel_ipc_path: PathBuf,
 
+    /// Set a custom monad statesync ipc path
+    #[arg(long)]
+    pub statesync_ipc_path: PathBuf,
+
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,
@@ -55,11 +61,6 @@ pub struct Cli {
     /// Default to empty string
     #[arg(long)]
     pub keystore_password: Option<String>,
-
-    /// Default to run in prod mode
-    /// Passing "testmode" enables test only arguments
-    #[command(subcommand)]
-    pub run_mode: Option<RunModeCommand>,
 
     /// Set the time interval for metrics collection
     #[arg(long, requires = "otel_endpoint")]

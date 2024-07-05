@@ -13,7 +13,6 @@ use crate::{
     cli::Cli,
     config::{ForkpointConfig, NodeConfig},
     error::NodeSetupError,
-    mode::RunModeCommand,
 };
 
 pub struct NodeState {
@@ -25,18 +24,18 @@ pub struct NodeState {
     pub bls12_381_identity: BlsKeyPair,
 
     pub forkpoint_path: PathBuf,
+    pub genesis_path: PathBuf,
     pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
     pub control_panel_ipc_path: PathBuf,
+    pub statesync_ipc_path: PathBuf,
     pub blockdb_path: PathBuf,
     pub triedb_path: PathBuf,
     pub otel_endpoint: Option<String>,
     pub record_metrics_interval: Option<Duration>,
     pub node_name: String,
     pub network_name: String,
-
-    pub run_mode: RunModeCommand,
 }
 
 impl NodeState {
@@ -94,8 +93,6 @@ impl NodeState {
                 .as_millis()
         ));
 
-        let run_mode = cli.run_mode.unwrap_or_default();
-
         Ok(Self {
             node_config,
             forkpoint_config,
@@ -105,20 +102,20 @@ impl NodeState {
             bls12_381_identity: bls_key,
 
             forkpoint_path: cli.forkpoint_config,
+            genesis_path: cli.genesis_path,
             wal_path,
             execution_ledger_path: cli.execution_ledger_path,
             blockdb_path: cli.blockdb_path,
             triedb_path: cli.triedb_path,
             mempool_ipc_path: cli.mempool_ipc_path,
             control_panel_ipc_path: cli.control_panel_ipc_path,
+            statesync_ipc_path: cli.statesync_ipc_path,
             otel_endpoint: cli.otel_endpoint,
             record_metrics_interval: cli
                 .record_metrics_interval_seconds
                 .and_then(|s| Some(Duration::from_secs(s))),
             node_name,
             network_name,
-
-            run_mode,
         })
     }
 }

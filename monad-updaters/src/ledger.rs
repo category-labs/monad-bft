@@ -17,6 +17,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_state_backend::InMemoryState;
 use monad_types::{BlockId, Round};
 
 pub trait MockableLedger:
@@ -51,20 +52,24 @@ where
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
+    state_backend: InMemoryState,
+
     waker: Option<Waker>,
     _phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT> Default for MockLedger<ST, SCT>
+impl<ST, SCT> MockLedger<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn default() -> Self {
+    pub fn new(state_backend: InMemoryState) -> Self {
         Self {
             blocks: Default::default(),
             block_ids: Default::default(),
             events: Default::default(),
+
+            state_backend,
 
             waker: Default::default(),
             _phantom: Default::default(),
@@ -84,6 +89,14 @@ where
             match cmd {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
+                        if !block.is_empty_block() {
+                            // mock ledger isn't used with real txs
+                            self.state_backend
+                                .lock()
+                                .unwrap()
+                                .ledger_commit(block.get_seq_num(), BTreeMap::default());
+                        }
+
                         match self.blocks.entry(block.get_round()) {
                             std::collections::btree_map::Entry::Vacant(entry) => {
                                 let block_id = block.get_id();

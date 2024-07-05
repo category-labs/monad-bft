@@ -3,9 +3,7 @@ use std::marker::PhantomData;
 use monad_consensus::messages::{
     consensus_message::ProtocolMessage, message::RequestBlockSyncMessage,
 };
-use monad_consensus_state::{
-    command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
-};
+use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
@@ -19,8 +17,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand, TimestampCommand,
+    BlockSyncEvent, BlockSyncSelfRequester, CheckpointCommand, Command, ConsensusEvent,
+    LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum, TimeoutVariant};
@@ -30,7 +29,8 @@ use monad_validator::{
 };
 
 use crate::{
-    handle_validation_error, BlockTimestamp, MonadState, MonadVersion, VerifiedMonadMessage,
+    handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
+    VerifiedMonadMessage,
 };
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -45,7 +45,7 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
 {
-    consensus: &'a mut ConsensusState<SCT, BPT, SBT>,
+    consensus: &'a mut ConsensusMode<SCT, BPT, SBT>,
 
     metrics: &'a mut Metrics,
     txpool: &'a mut TT,
@@ -116,8 +116,13 @@ where
         &mut self,
         event: ConsensusEvent<ST, SCT>,
     ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        let ConsensusMode::Live(mode) = self.consensus else {
+            tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
+            return vec![];
+        };
+
         let mut consensus = ConsensusStateWrapper {
-            consensus: self.consensus,
+            consensus: mode,
 
             metrics: self.metrics,
             tx_pool: self.txpool,
@@ -184,18 +189,7 @@ where
                     ProtocolMessage::Timeout(msg) => consensus.handle_timeout_message(author, msg),
                 }
             }
-            ConsensusEvent::Timeout => consensus
-                .handle_timeout_expiry()
-                .into_iter()
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        consensus.keypair,
-                        consensus.cert_keypair,
-                        consensus.version,
-                        cmd,
-                    )
-                })
-                .collect(),
+            ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
             ConsensusEvent::BlockSync(block) => consensus.handle_block_sync(block),
         };
         let consensus_cmds = vec;
@@ -250,6 +244,7 @@ where
             ConsensusCommand::RequestSync { block_id } => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
+                        requester: BlockSyncSelfRequester::Consensus,
                         request: RequestBlockSyncMessage { block_id },
                     }),
                 )));
@@ -257,9 +252,18 @@ where
             ConsensusCommand::CancelSync { block_id } => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
+                        requester: BlockSyncSelfRequester::Consensus,
                         request: RequestBlockSyncMessage { block_id },
                     }),
                 )));
+            }
+            ConsensusCommand::RequestStateSync { root, high_qc } => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
+                )));
+            }
+            ConsensusCommand::StartExecution => {
+                parent_cmds.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
             }
             ConsensusCommand::LedgerCommit(blocks) => {
                 let last_block = blocks.iter().last().expect("LedgerCommit no blocks");

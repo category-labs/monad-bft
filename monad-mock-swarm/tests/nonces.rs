@@ -3,8 +3,7 @@ mod common;
 #[cfg(test)]
 mod test {
     use std::{
-        collections::{BTreeSet, HashSet},
-        sync::{Arc, Mutex},
+        collections::{BTreeMap, BTreeSet, HashSet},
         time::Duration,
     };
 
@@ -16,7 +15,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
+    use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
@@ -34,13 +33,17 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
+    use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
     use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-    use monad_updaters::{ledger::MockableLedger, state_root_hash::MockStateRootHashNop};
+    use monad_updaters::{
+        ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
+        statesync::MockStateSyncExecutor,
+    };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -52,7 +55,7 @@ mod test {
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
-        type StateBackendType = Arc<Mutex<InMemoryState>>;
+        type StateBackendType = InMemoryState;
         type BlockPolicyType = EthBlockPolicy;
 
         type TransportMessage =
@@ -83,6 +86,8 @@ mod test {
 
         type StateRootHashExecutor =
             MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+        type StateSyncExecutor =
+            MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -93,10 +98,8 @@ mod test {
     ) -> Nodes<EthSwarm> {
         let execution_delay = SeqNum(4);
 
-        let existing_nonces = existing_accounts
-            .into_iter()
-            .map(|acc| (acc, 0))
-            .collect_vec();
+        let existing_nonces: BTreeMap<_, _> =
+            existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,
@@ -106,11 +109,11 @@ mod test {
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
             || {
-                Arc::new(Mutex::new(InMemoryState::new(
-                    existing_nonces.clone(),
+                InMemoryStateInner::new(
                     Balance::MAX,
-                    0,
-                )))
+                    execution_delay,
+                    InMemoryBlockState::genesis(existing_nonces.clone()),
+                )
             },
             || StateRoot::new(execution_delay),
             PeerAsyncStateVerify::new,
@@ -131,13 +134,22 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let validators = state_builder.forkpoint.validator_sets[0].clone();
-                    let state_backend = Arc::clone(&state_builder.state_backend);
+                    let state_backend = state_builder.state_backend.clone();
                     NodeBuilder::<EthSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                        MockEthLedger::new(state_backend),
+                        MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                        MockEthLedger::new(state_backend.clone()),
+                        MockStateSyncExecutor::new(
+                            state_backend,
+                            validators
+                                .validators
+                                .0
+                                .into_iter()
+                                .map(|v| v.node_id)
+                                .collect(),
+                        ),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],
@@ -203,6 +215,12 @@ mod test {
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
 
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
         let mut expected_txns = Vec::new();
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -219,12 +237,12 @@ mod test {
         }
 
         while swarm
-            .step_until(&mut UntilTerminator::new().until_block(4))
+            .step_until(&mut UntilTerminator::new().until_block(5))
             .is_some()
         {}
 
         let mut verifier = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(4, CONSENSUS_DELTA),
+            happy_path_tick_by_block(5, CONSENSUS_DELTA),
             CONSENSUS_DELTA,
         );
         verifier.metrics_happy_path(&node_ids, &swarm);
@@ -248,8 +266,13 @@ mod test {
         let node_1_id = node_ids[0];
         let node_2_id = node_ids[1];
 
-        let mut expected_txns = Vec::new();
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
 
+        let mut expected_txns = Vec::new();
         // Send 10 transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -260,7 +283,7 @@ mod test {
         }
 
         while swarm
-            .step_until(&mut UntilTerminator::new().until_block(4))
+            .step_until(&mut UntilTerminator::new().until_block(5))
             .is_some()
         {}
 
@@ -316,8 +339,13 @@ mod test {
         let node_1_id = node_ids[0];
         let node_2_id = node_ids[1];
 
-        let mut expected_txns = Vec::new();
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
 
+        let mut expected_txns = Vec::new();
         // Send transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
             let eth_txn_sender_1 = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -404,6 +432,12 @@ mod test {
         let node_1_id = *node_1_id;
         let other_nodes = other_nodes.to_owned().to_vec();
 
+        // step until nodes are ready to receive txs (post statesync)
+        while swarm
+            .step_until(&mut UntilTerminator::new().until_block(1))
+            .is_some()
+        {}
+
         // blackout node 1 and let other nodes continue
         println!("blackout node: {}", node_1_id);
 
@@ -416,7 +450,6 @@ mod test {
         swarm.update_outbound_pipeline_for_all(blackout_pipeline);
 
         let mut expected_txns = Vec::new();
-
         // Send transactions with nonces 0..10 to node 2 so that nodes 2, 3 and 4 can make progress
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);

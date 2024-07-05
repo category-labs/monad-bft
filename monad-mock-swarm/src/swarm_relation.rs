@@ -13,15 +13,16 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand};
+use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
-use monad_state_backend::{NopStateBackend, StateBackend};
+use monad_state_backend::{InMemoryState, StateBackend};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
+    statesync::{MockStateSyncExecutor, MockableStateSync},
 };
 use monad_validator::{
     leader_election::LeaderElection,
@@ -114,6 +115,12 @@ where
         > + Send
         + Sync
         + Unpin;
+    type StateSyncExecutor: MockableStateSync<
+            SignatureType = Self::SignatureType,
+            SignatureCollectionType = Self::SignatureCollectionType,
+        > + Send
+        + Sync
+        + Unpin;
 }
 
 pub struct DebugSwarmRelation;
@@ -121,7 +128,7 @@ impl SwarmRelation for DebugSwarmRelation {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
 
     type TransportMessage = Bytes;
 
@@ -187,6 +194,14 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
+    type StateSyncExecutor = Box<
+        dyn MockableStateSync<
+                SignatureType = Self::SignatureType,
+                SignatureCollectionType = Self::SignatureCollectionType,
+                Command = StateSyncCommand<CertificateSignaturePubKey<Self::SignatureType>>,
+            > + Send
+            + Sync,
+    >;
 }
 
 // default swarm relation impl
@@ -195,7 +210,7 @@ impl SwarmRelation for NoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -225,6 +240,8 @@ impl SwarmRelation for NoSerSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct BytesSwarm;
@@ -232,7 +249,7 @@ impl SwarmRelation for BytesSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
 
     type TransportMessage = Bytes;
 
@@ -261,6 +278,8 @@ impl SwarmRelation for BytesSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -268,7 +287,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -296,4 +315,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }

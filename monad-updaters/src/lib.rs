@@ -9,6 +9,7 @@ pub mod ledger;
 pub mod loopback;
 pub mod parent;
 pub mod state_root_hash;
+pub mod statesync;
 pub mod timestamp;
 
 #[cfg(all(feature = "tokio", feature = "monad-triedb"))]

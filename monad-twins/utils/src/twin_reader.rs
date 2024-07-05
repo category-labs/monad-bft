@@ -28,7 +28,7 @@ use monad_crypto::{
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
-use monad_state_backend::StateBackend;
+use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
 use monad_types::{NodeId, Round, SeqNum};
@@ -39,7 +39,7 @@ use monad_validator::{
 use serde::Deserialize;
 
 // following paramters don't matter too much for twins thus kept as constant
-pub const TWINS_STATE_ROOT_DELAY: u64 = u64::MAX;
+pub const TWINS_STATE_ROOT_DELAY: u64 = u32::MAX as u64;
 const TWINS_DEFAULT_IDENTIFIER: usize = 1;
 const TWINS_DUP_IDENTIFIER: usize = TWINS_DEFAULT_IDENTIFIER + 1;
 
@@ -269,13 +269,12 @@ where
 
 pub fn read_twins_test<S>(path: &str) -> TwinsTestCase<S>
 where
-    S: SwarmRelation<StateRootValidator = StateRoot>,
+    S: SwarmRelation<StateRootValidator = StateRoot, StateBackendType = InMemoryState>,
     S::ValidatorSetTypeFactory: Default + Clone,
     S::LeaderElection: Default + Clone,
     S::TxPool: Default,
     S::BlockValidator: Default + Clone,
     S::BlockPolicyType: Default + Clone,
-    S::StateBackendType: Default + Clone,
     S::AsyncStateRootVerify: Default + Clone,
 {
     let raw_str = fs::read_to_string(path).expect("unable to read file in twins testing");
@@ -357,7 +356,10 @@ where
             transaction_pool: S::TxPool::default(),
             block_validator: S::BlockValidator::default(),
             block_policy: S::BlockPolicyType::default(),
-            state_backend: S::StateBackendType::default(),
+            state_backend: InMemoryStateInner::genesis(
+                u128::MAX,
+                monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
+            ),
             state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             async_state_verify: S::AsyncStateRootVerify::default(),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),

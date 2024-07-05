@@ -18,6 +18,8 @@ class RunScriptGenerator:
         --secp-identity /monad/config/id-secp \\
         --bls-identity /monad/config/id-bls \\
         --node-config /monad/config/node.toml \\
+        --genesis-path /monad/config/genesis.json \\
+        --statesync-ipc-path /monad/statesync.sock \\
         --forkpoint-config /monad/config/forkpoint.toml \\
         --wal-path /monad/wal \\
         --blockdb-path /monad/blockdb \\

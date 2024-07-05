@@ -12,15 +12,11 @@ use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_blockdb::BlockDbBuilder;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{
-    metrics::Metrics,
-    payload::{NopStateRoot, StateRoot, StateRootValidator},
-    state_root_hash::StateRootHash,
-};
+use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
-    hasher::{Hash, Hasher, HasherType},
+    hasher::{Hasher, HasherType},
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
@@ -36,12 +32,14 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_statesync::StateSync;
 use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::StateBackendCache;
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
-    state_root_hash::MockStateRootHashNop, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    triedb_state_root_hash::StateRootHashTriedbPoll,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -52,10 +50,6 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;
-use rand_chacha::{
-    rand_core::{RngCore, SeedableRng},
-    ChaChaRng,
-};
 use tokio::signal;
 use tracing::{event, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -70,7 +64,6 @@ use cli::Cli;
 
 mod config;
 use config::{SignatureCollectionType, SignatureType};
-mod mode;
 
 mod error;
 use error::NodeSetupError;
@@ -201,13 +194,26 @@ async fn run(
 
     let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
-    let val_set_update_interval = SeqNum(2000);
+    let val_set_update_interval = SeqNum(100_000); // TODO configurable
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
-    let state_sync_bound: usize = 100;
+    let state_sync_bound: usize = 300; // TODO configurable
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
     _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
+    _ = std::fs::remove_file(node_state.statesync_ipc_path.as_path());
+
+    // FIXME this is super jank... we should always just pass the 1 file in monad-node
+    let mut statesync_triedb_path = node_state.triedb_path.clone();
+    if let Ok(files) = std::fs::read_dir(&statesync_triedb_path) {
+        let mut files: Vec<_> = files.collect();
+        assert_eq!(files.len(), 1, "nothing in triedb path");
+        statesync_triedb_path = files
+            .pop()
+            .unwrap()
+            .expect("failed to read triedb path")
+            .path();
+    }
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -219,7 +225,8 @@ async fn run(
             },
         ),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
-        state_root_hash: MockStateRootHashNop::new(
+        state_root_hash: StateRootHashTriedbPoll::new(
+            &node_state.triedb_path,
             validators.validators.clone(),
             val_set_update_interval,
         ),
@@ -234,6 +241,24 @@ async fn run(
         control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
             .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
+        state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
+            vec![statesync_triedb_path.to_string_lossy().to_string()],
+            node_state.genesis_path.to_string_lossy().to_string(),
+            validators
+                .validators
+                .0
+                .iter()
+                .map(|validator| validator.node_id)
+                .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
+                .collect(),
+            3,                      // max num concurrent requests TODO configurable
+            Duration::from_secs(5), // statesync request timeout TODO configurable
+            node_state
+                .statesync_ipc_path
+                .to_str()
+                .expect("invalid file name")
+                .to_owned(),
+        ),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(
@@ -251,7 +276,7 @@ async fn run(
     assert!(wal_events.is_empty(), "wal must be cleared after restart");
 
     let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
-    let mut builder = MonadStateBuilder {
+    let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
@@ -275,7 +300,9 @@ async fn run(
                 .expect("triedb should exist in path"),
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),
-        state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
+        state_root_validator: StateRoot::new(SeqNum(
+            node_state.node_config.consensus.execution_delay,
+        )),
         async_state_verify: PeerAsyncStateVerify::default(),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
@@ -291,29 +318,6 @@ async fn run(
             timestamp_latency_estimate_ms: 20,
         },
     };
-
-    // parse test mode commands
-    match node_state.run_mode {
-        mode::RunModeCommand::ProdMode => {}
-        mode::RunModeCommand::TestMode {
-            byzantine_execution,
-        } => {
-            if byzantine_execution {
-                executor
-                    .state_root_hash
-                    .inject_byzantine_srh(|seq_num: &SeqNum| {
-                        let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-                        let mut hash = [0_u8; 32];
-                        let mut discard = [0_u8; 32];
-                        gen.fill_bytes(&mut discard);
-                        gen.fill_bytes(&mut hash);
-                        StateRootHash(Hash(hash))
-                    });
-            }
-            // use real StateRootValidator
-            builder.state_root_validator = Box::new(StateRoot::new(SeqNum(4)));
-        }
-    }
 
     let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);

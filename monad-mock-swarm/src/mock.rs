@@ -23,7 +23,7 @@ use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
     loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
-    timestamp::TimestampAdjuster,
+    statesync::MockableStateSync, timestamp::TimestampAdjuster,
 };
 use priority_queue::PriorityQueue;
 
@@ -35,6 +35,7 @@ pub struct MockExecutor<S: SwarmRelation> {
     state_root_hash: S::StateRootHashExecutor,
     loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType>,
+    statesync: S::StateSyncExecutor,
     tick: Duration,
 
     timer: PriorityQueue<
@@ -153,12 +154,14 @@ enum ExecutorEventType {
     Ipc,
     Loopback,
     Timestamp,
+    StateSync,
 }
 
 impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
         state_root_hash: S::StateRootHashExecutor,
+        statesync: S::StateSyncExecutor,
         ledger: S::Ledger,
         timestamp_config: TimestamperConfig,
         tick: Duration,
@@ -169,6 +172,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
             state_root_hash,
             ipc: Default::default(),
             loopback: Default::default(),
+            statesync,
 
             tick,
 
@@ -238,6 +242,11 @@ impl<S: SwarmRelation> MockExecutor<S> {
                     .ready()
                     .then_some((self.tick, ExecutorEventType::Ipc)),
             )
+            .chain(
+                self.statesync
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::StateSync)),
+            )
             .min()
     }
 
@@ -263,6 +272,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             loopback_cmds,
             control_panel_cmds,
             timestamp_cmds,
+            statesync_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -293,6 +303,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
+        self.statesync.exec(statesync_cmds);
 
         for command in router_cmds {
             match command {
@@ -374,6 +385,9 @@ impl<S: SwarmRelation> MockExecutor<S> {
                     MockExecutorEvent::Event(MonadEvent::TimestampUpdateEvent(
                         event.as_millis().try_into().unwrap(),
                     ))
+                }
+                ExecutorEventType::StateSync => {
+                    return self.statesync.pop().map(MockExecutorEvent::Event)
                 }
             };
 

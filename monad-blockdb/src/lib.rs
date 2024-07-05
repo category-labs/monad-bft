@@ -101,26 +101,31 @@ impl BlockDbBuilder {
             panic!("blockdb dir failed to open: {e}");
         };
 
-        let blockdb_env = EnvOpenOptions::new()
-            .map_size(BLOCK_DB_MAP_SIZE)
-            .max_dbs(BLOCK_DB_NUM_DBS)
-            .open(blockdb_path)
-            .expect("db failed");
+        let blockdb_env = unsafe {
+            EnvOpenOptions::new()
+                .map_size(BLOCK_DB_MAP_SIZE)
+                .max_dbs(BLOCK_DB_NUM_DBS)
+                .open(blockdb_path)
+                .expect("db failed")
+        };
 
-        let block_dbi: BlockTableType =
-            blockdb_env.create_database(Some(BLOCK_TABLE_NAME)).unwrap();
+        let mut write_txn = blockdb_env.write_txn().expect("create_table txn fail");
+        let block_dbi: BlockTableType = blockdb_env
+            .create_database(&mut write_txn, Some(BLOCK_TABLE_NAME))
+            .unwrap();
         let block_num_dbi: BlockNumTableType = blockdb_env
-            .create_database(Some(BLOCK_NUM_TABLE_NAME))
+            .create_database(&mut write_txn, Some(BLOCK_NUM_TABLE_NAME))
             .unwrap();
         let txn_hash_dbi: TxnHashTableType = blockdb_env
-            .create_database(Some(TXN_HASH_TABLE_NAME))
+            .create_database(&mut write_txn, Some(TXN_HASH_TABLE_NAME))
             .unwrap();
         let block_tag_dbi: BlockTagTableType = blockdb_env
-            .create_database(Some(BLOCK_TAG_TABLE_NAME))
+            .create_database(&mut write_txn, Some(BLOCK_TAG_TABLE_NAME))
             .unwrap();
         let bft_ledger_dbi: BftLedgerTableType = blockdb_env
-            .create_database(Some(BFT_LEDGER_TABLE_NAME))
+            .create_database(&mut write_txn, Some(BFT_LEDGER_TABLE_NAME))
             .unwrap();
+        write_txn.commit().expect("commiting table creation failed");
 
         let block_db = BlockDb {
             env: blockdb_env,
@@ -268,9 +273,18 @@ impl BlockDb {
     }
 
     pub fn read_bft_block(&self, bft_block_id: monad_types::BlockId) -> Option<Vec<u8>> {
-        let block_txn = self.env.read_txn().expect("block txn create failed");
-        self.bft_ledger_dbi
+        let block_txn = match self.env.write_txn() {
+            Ok(txn) => txn,
+            Err(err) => {
+                tracing::warn!(?err, "read_bft_block read_txn failed");
+                return None;
+            }
+        };
+        let result = self
+            .bft_ledger_dbi
             .get(&block_txn, &bft_block_id)
-            .expect("bft_ledger_table put failed")
+            .expect("bft_ledger_table get failed");
+        block_txn.commit().expect("block_dbi commit failed");
+        result
     }
 }

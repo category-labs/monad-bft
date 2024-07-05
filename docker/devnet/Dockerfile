@@ -74,7 +74,11 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node && \
     mv target/release/monad-node node && \
-    cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
+    cp `ls -lt $(find target/release | grep -e "libmonad_statesync.so") | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libtriedb_driver.so") | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libevmone.so") | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libquill.so") | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libkeccak.so") | awk '{print $9}'` .
 
 # Runner
 FROM base AS runner
@@ -83,6 +87,7 @@ WORKDIR /usr/src/monad-bft
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
+COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
 ENV RUST_LOG=info
 CMD monad-node \
@@ -90,6 +95,8 @@ CMD monad-node \
     --bls-identity /monad/config/id-bls \
     --node-config /monad/config/node.toml \
     --forkpoint-config /monad/config/forkpoint.genesis.toml \
+    --genesis-path /monad/config/genesis.json \
+    --statesync-ipc-path /monad/statesync.sock \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
     --control-panel-ipc-path /monad/controlpanel.sock \

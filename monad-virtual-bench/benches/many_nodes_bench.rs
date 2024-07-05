@@ -23,13 +23,15 @@ use monad_multi_sig::MultiSig;
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_router_scheduler::RouterSchedulerBuilder;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::NopStateBackend;
+use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{
     BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -43,7 +45,7 @@ struct NopSwarm;
 impl SwarmRelation for NopSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -70,6 +72,8 @@ impl SwarmRelation for NopSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 struct BlsSwarm;
@@ -77,7 +81,7 @@ struct BlsSwarm;
 impl SwarmRelation for BlsSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -104,6 +108,8 @@ impl SwarmRelation for BlsSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {
@@ -115,10 +121,10 @@ fn many_nodes_nop_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(u32::MAX.into())),
         || {
             StateRoot::new(
-                SeqNum(u64::MAX), // state_root_delay
+                SeqNum(u32::MAX.into()), // state_root_delay
             )
         },
         PeerAsyncStateVerify::new,
@@ -138,6 +144,7 @@ fn many_nodes_nop_timeout() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::<NopSwarm>::new(
@@ -158,8 +165,17 @@ fn many_nodes_nop_timeout() -> u128 {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,
@@ -193,10 +209,10 @@ fn many_nodes_bls_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || NopStateBackend,
+        || InMemoryStateInner::genesis(u128::MAX, SeqNum(u32::MAX.into())),
         || {
             StateRoot::new(
-                SeqNum(u64::MAX), // state_root_delay
+                SeqNum(u32::MAX.into()), // state_root_delay
             )
         },
         PeerAsyncStateVerify::new,
@@ -216,6 +232,7 @@ fn many_nodes_bls_timeout() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
+                let state_backend = state_builder.state_backend.clone();
                 let validators = state_builder.forkpoint.validator_sets[0].clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::<BlsSwarm>::new(
@@ -236,8 +253,17 @@ fn many_nodes_bls_timeout() -> u128 {
                         1000,
                     )
                     .build(),
-                    MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                    MockLedger::default(),
+                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
+                    MockLedger::new(state_backend.clone()),
+                    MockStateSyncExecutor::new(
+                        state_backend,
+                        validators
+                            .validators
+                            .0
+                            .into_iter()
+                            .map(|v| v.node_id)
+                            .collect(),
+                    ),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,

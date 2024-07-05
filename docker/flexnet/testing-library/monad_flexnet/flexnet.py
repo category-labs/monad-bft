@@ -46,7 +46,8 @@ class Flexnet:
         # Create output directory
         shutil.copytree(self.topology_path.parent, self.root_dir)
 
-        triedb_driver = "triedb_driver_mock" if mock_drivers else "triedb_driver"
+        # mock-triedb not supported in monad-node for now
+        triedb_driver = "triedb_driver"
         ethcall_driver = "mock_eth_call" if mock_drivers else "monad_shared"
         # Build the containers that will be needed
         docker.build(
@@ -175,9 +176,6 @@ class Flexnet:
             wait_and_stop()
         else:
             threading.Thread(target=wait_and_stop).start()
-
-    def set_test_mode(self, is_test_mode: bool = True):
-        self.topology.for_all_nodes(lambda n: n.set_test_mode(is_test_mode))
 
     def stop(self):
         self.topology.stop_all_nodes()

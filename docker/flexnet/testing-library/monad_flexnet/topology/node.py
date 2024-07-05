@@ -28,16 +28,12 @@ class Node:
         'monad --db /monad/triedb/test.db '
         '--genesis_file /monad/config/genesis.json '
         '--block_db /monad/ledger '
+        '--statesync_path /monad/statesync.sock '
         '--log_level DEBUG '
         '> /monad/logs/execution.log 2>&1'
     ]
 
     def _run_cmd(self):
-        extra = ''
-        if self.test_mode:
-            extra += ' test-mode '
-        if self.is_byzantine:
-            extra += ' --byzantine-execution '
         return [
             'bash', '-c',
             '/monad/scripts/tc.sh; '
@@ -49,12 +45,14 @@ class Node:
             '--bls-identity /monad/config/id-bls '
             '--node-config /monad/config/node.toml '
             '--forkpoint-config /monad/config/forkpoint.toml '
+            '--genesis-path /monad/config/genesis.json '
+            '--statesync-ipc-path /monad/statesync.sock '
             '--wal-path /monad/wal '
             '--mempool-ipc-path /monad/mempool.sock '
             '--control-panel-ipc-path /monad/controlpanel.sock '
             '--execution-ledger-path /monad/ledger '
             '--blockdb-path /monad/blockdb '
-            f'--triedb-path /monad/triedb {extra} '
+            '--triedb-path /monad/triedb '
             '> /monad/logs/client.log 2>&1'
         ]
 
@@ -68,17 +66,8 @@ class Node:
         self.execution_container = None
         self.node_container = None
         self.rpc_container = None
-        self.is_byzantine = False
         self.node_root = None
-        self.test_mode = False
         self.stake = stake
-
-    def set_byzantine(self, is_byzantine: bool = True):
-        self.test_mode = True
-        self.is_byzantine = is_byzantine
-
-    def set_test_mode(self, is_test_mode: bool = True):
-        self.test_mode = is_test_mode
 
     def start(self, root_dir: str | os.PathLike, network_name: str, run_id: str):
         self.node_root = pathlib.Path(f'{root_dir}/{self.name}')
@@ -165,8 +154,6 @@ class Node:
             f.truncate(4 * 1024 * 1024 * 1024)
 
     def get_beneficiary(self):
-        if not self.is_byzantine:
-            return None
         with open(self.node_root / 'config' / 'node.toml', 'rb') as f:
             data = tomllib.load(f)
             beneficiary = bytearray.fromhex(data['beneficiary'][2:])

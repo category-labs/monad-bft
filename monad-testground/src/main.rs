@@ -22,6 +22,7 @@ use monad_gossip::{
 use monad_multi_sig::MultiSig;
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_secp::SecpSignature;
+use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -367,8 +368,9 @@ async fn run<ST, SCT>(
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let mut executor = make_monad_executor(config.executor_config);
-    let (mut state, init_commands) = make_monad_state(config.state_config);
+    let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
+    let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
+    let mut executor = make_monad_executor(state_backend, config.executor_config);
 
     executor.exec(init_commands);
 

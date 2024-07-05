@@ -56,6 +56,34 @@ message ProtoForwardedTx {
   repeated bytes tx = 1;
 }
 
+message ProtoStateSyncRequest {
+  uint64 prefix = 1;
+  uint32 prefix_bytes = 2;
+  uint64 target = 3;
+  uint64 from = 4;
+  uint64 until = 5;
+  uint64 old_target = 6;
+}
+
+message ProtoStateSyncUpsert {
+  bool code = 1;
+  bytes key = 2;
+  bytes value = 3;
+}
+
+message ProtoStateSyncResponse {
+  ProtoStateSyncRequest request = 1;
+  repeated ProtoStateSyncUpsert upserts = 2;
+  uint64 n = 3;
+}
+
+message ProtoStateSyncNetworkMessage {
+  oneof OneofMessage {
+    ProtoStateSyncRequest request = 1;
+    ProtoStateSyncResponse response = 2;
+  }
+}
+
 message ProtoMonadMessage {
   oneof OneofMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
@@ -63,5 +91,6 @@ message ProtoMonadMessage {
     ProtoBlockSyncMessage block_sync_response = 3;
     ProtoPeerStateRootMessage peer_state_root = 4;
     ProtoForwardedTx forwarded_tx = 5;
+    ProtoStateSyncNetworkMessage state_sync_message = 6;
   }
 }

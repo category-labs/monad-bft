@@ -5,7 +5,7 @@ use monad_consensus_types::{metrics::Metrics, state_root_hash::StateRootHashInfo
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent,
-    MonadEvent, ValidatorEvent,
+    MonadEvent, StateSyncEvent, ValidatorEvent,
 };
 use monad_mock_swarm::{
     node::Node,
@@ -221,6 +221,7 @@ enum GraphQLMonadEvent<'s> {
     AsyncStateVerifyEvent(GraphQLAsyncStateVerifyEvent<'s>),
     ControlPanelEvent(GraphQLControlPanelEvent<'s>),
     TimestampEvent(GraphQLTimestampEvent),
+    StateSyncEvent(GraphQLStateSyncEvent<'s>),
 }
 
 impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
@@ -240,6 +241,7 @@ impl<'s> From<&'s MonadEventType> for GraphQLMonadEvent<'s> {
             MonadEvent::TimestampUpdateEvent(event) => {
                 Self::TimestampEvent(GraphQLTimestampEvent(*event))
             }
+            MonadEvent::StateSyncEvent(event) => Self::StateSyncEvent(GraphQLStateSyncEvent(event)),
         }
     }
 }
@@ -305,6 +307,14 @@ struct GraphQLTimestampEvent(u64);
 
 #[Object]
 impl GraphQLTimestampEvent {
+    async fn debug(&self) -> String {
+        format!("{:?}", self.0)
+    }
+}
+
+struct GraphQLStateSyncEvent<'s>(&'s StateSyncEvent<SignatureCollectionType>);
+#[Object]
+impl<'s> GraphQLStateSyncEvent<'s> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

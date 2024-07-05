@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     fs::{self, File},
     io::{ErrorKind, Write},
     marker::PhantomData,
@@ -26,7 +27,7 @@ use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_proto::proto::block::ProtoBlock;
-use monad_types::SeqNum;
+use monad_types::{BlockId, Round, SeqNum};
 use prost::Message;
 use reth_primitives::{Block as EthBlock, BlockBody, Header};
 use tracing::{info, trace};
@@ -50,6 +51,10 @@ where
 
     metrics: ExecutorMetrics,
     last_commit: Option<SeqNum>,
+
+    block_cache_size: usize,
+    block_cache: HashMap<BlockId, MonadBlock<SCT>>,
+    block_cache_index: BTreeMap<Round, BlockId>,
 
     fetches_tx: tokio::sync::mpsc::UnboundedSender<BlockSyncResponseMessage<SCT>>,
     fetches: tokio::sync::mpsc::UnboundedReceiver<BlockSyncResponseMessage<SCT>>,
@@ -81,6 +86,10 @@ where
             metrics: Default::default(),
             last_commit: Default::default(),
 
+            block_cache_size: 100, // TODO configurable
+            block_cache: Default::default(),
+            block_cache_index: Default::default(),
+
             fetches_tx,
             fetches,
 
@@ -90,6 +99,16 @@ where
 
     pub fn last_commit(&self) -> Option<SeqNum> {
         self.last_commit
+    }
+
+    fn update_cache(&mut self, block: MonadBlock<SCT>) {
+        let block = self.block_cache.entry(block.get_id()).or_insert(block);
+        self.block_cache_index
+            .insert(block.get_round(), block.get_id());
+        if self.block_cache_index.len() > self.block_cache_size {
+            let (_block_num, block_id) = self.block_cache_index.pop_first().expect("nonempty");
+            self.block_cache.remove(&block_id);
+        }
     }
 
     fn write_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
@@ -139,6 +158,7 @@ where
                             if b.is_empty_block() {
                                 (b.get_seq_num(), None, b)
                             } else {
+                                self.update_cache(b.clone());
                                 (b.get_seq_num(), Some(self.create_eth_block(&b)), b)
                             }
                         })
@@ -194,25 +214,32 @@ where
                 }
                 LedgerCommand::LedgerFetch(block_id) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector
-                    let env = self.blockdb.clone();
-                    let fetches_tx = self.fetches_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let maybe_bft_block_bytes = env.read_bft_block(block_id);
-                        let response = match maybe_bft_block_bytes {
-                            Some(bft_block_serialized) => {
-                                let pblock = ProtoBlock::decode(bft_block_serialized.as_slice())
-                                    .expect("local bft block is not valid block");
-                                let block = pblock
-                                    .try_into()
-                                    .expect("pbblock from blockdb is invalid block");
-                                BlockSyncResponseMessage::BlockFound(block)
-                            }
-                            None => BlockSyncResponseMessage::NotAvailable(block_id),
-                        };
-                        fetches_tx
-                            .send(response)
+                    if let Some(cached_block) = self.block_cache.get(&block_id) {
+                        self.fetches_tx
+                            .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
                             .expect("failed to write to fetches_tx");
-                    });
+                    } else {
+                        let env = self.blockdb.clone();
+                        let fetches_tx = self.fetches_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let maybe_bft_block_bytes = env.read_bft_block(block_id);
+                            let response = match maybe_bft_block_bytes {
+                                Some(bft_block_serialized) => {
+                                    let pblock =
+                                        ProtoBlock::decode(bft_block_serialized.as_slice())
+                                            .expect("local bft block is not valid block");
+                                    let block = pblock
+                                        .try_into()
+                                        .expect("pbblock from blockdb is invalid block");
+                                    BlockSyncResponseMessage::BlockFound(block)
+                                }
+                                None => BlockSyncResponseMessage::NotAvailable(block_id),
+                            };
+                            fetches_tx
+                                .send(response)
+                                .expect("failed to write to fetches_tx");
+                        });
+                    }
                 }
             }
         }
@@ -233,6 +260,9 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.fetches.poll_recv(cx).map(|response| {
             let response = response.expect("fetches_tx never dropped");
+            if let BlockSyncResponseMessage::BlockFound(block) = &response {
+                self.update_cache(block.clone())
+            }
             Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
                 response,
             }))

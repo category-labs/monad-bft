@@ -52,6 +52,16 @@ message ProtoBlockSyncResponseWithSender {
   monad_proto.message.ProtoBlockSyncMessage response = 2;
 }
 
+enum ProtoBlockSyncSelfRequester {
+  CONSENSUS = 0;
+  STATE_SYNC = 1;
+}
+
+message ProtoBlockSyncSelfRequest {
+  ProtoBlockSyncSelfRequester requester = 1;
+  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
+}
+
 message ProtoTimestampUpdate {
    uint64 update = 1;
 }
@@ -67,8 +77,8 @@ message ProtoConsensusEvent {
 message ProtoBlockSyncEvent {
   oneof event {
     ProtoBlockSyncRequestWithSender request = 1;
-    monad_proto.message.ProtoRequestBlockSyncMessage self_request = 2;
-    monad_proto.message.ProtoRequestBlockSyncMessage self_cancel_request = 3;
+    ProtoBlockSyncSelfRequest self_request = 2;
+    ProtoBlockSyncSelfRequest self_cancel_request = 3;
     ProtoBlockSyncResponseWithSender response = 4;
     monad_proto.message.ProtoBlockSyncMessage self_response = 5;
     monad_proto.message.ProtoRequestBlockSyncMessage timeout = 6;
@@ -125,6 +135,43 @@ message ProtoControlPanelEvent {
   }
 }
 
+message ProtoInboundStateMessage {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.message.ProtoStateSyncNetworkMessage message = 2;
+}
+
+message ProtoOutboundStateMessage {
+  monad_proto.basic.ProtoNodeId recipient = 1;
+  monad_proto.message.ProtoStateSyncNetworkMessage message = 2;
+}
+
+message ProtoDoneSync {
+  monad_proto.basic.ProtoSeqNum seq_num = 1;
+}
+
+message ProtoRootInfo {
+  monad_proto.basic.ProtoRound round = 1;
+  monad_proto.basic.ProtoSeqNum seq_num = 2;
+  monad_proto.basic.ProtoEpoch epoch = 3;
+  monad_proto.basic.ProtoBlockId block_id = 4;
+  monad_proto.state_root_hash.ProtoStateRootHash state_root = 5;
+}
+
+message ProtoRequestSync {
+  ProtoRootInfo root = 1;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 2;
+}
+
+message ProtoStateSyncEvent {
+  oneof event {
+    ProtoInboundStateMessage inbound = 1;
+    ProtoOutboundStateMessage outbound = 2;
+    ProtoDoneSync done_sync = 3;
+    ProtoRequestSync request_sync = 4;
+    monad_proto.block.ProtoBlock block_sync = 5;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -135,5 +182,6 @@ message ProtoMonadEvent{
     ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
+    ProtoStateSyncEvent state_sync_event = 9;
   }
 }

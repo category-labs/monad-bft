@@ -13,9 +13,9 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
-    checkpoint::Checkpoint,
+    checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
-    quorum_certificate::TimestampAdjustment,
+    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
     validator_data::{ParsedValidatorData, ValidatorSetData},
@@ -145,6 +145,12 @@ pub enum TimestampCommand {
     AdjustDelta(TimestampAdjustment),
 }
 
+pub enum StateSyncCommand<PT: PubKey> {
+    RequestSync(StateRootHashInfo),
+    Message((NodeId<PT>, StateSyncNetworkMessage)),
+    StartExecution,
+}
+
 pub enum Command<E, OM, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
@@ -155,6 +161,7 @@ pub enum Command<E, OM, SCT: SignatureCollection> {
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
+    StateSyncCommand(StateSyncCommand<SCT::NodeIdPubKey>),
 }
 
 impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
@@ -169,6 +176,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
+        Vec<StateSyncCommand<SCT::NodeIdPubKey>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -178,6 +186,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         let mut loopback_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
+        let mut state_sync_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -189,6 +198,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
+                Command::StateSyncCommand(cmd) => state_sync_cmds.push(cmd),
             }
         }
         (
@@ -200,6 +210,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
             loopback_cmds,
             control_panel_cmds,
             timestamp_cmds,
+            state_sync_cmds,
         )
     }
 }
@@ -235,6 +246,14 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockSyncSelfRequester {
+    /// Consensus requested this blocksync request
+    Consensus,
+    /// Statesync requested this blocksync request
+    StateSync,
+}
+
 /// BlockSync related events
 #[derive(Clone, PartialEq, Eq)]
 pub enum BlockSyncEvent<SCT: SignatureCollection> {
@@ -247,9 +266,15 @@ pub enum BlockSyncEvent<SCT: SignatureCollection> {
     Timeout(RequestBlockSyncMessage),
     /// self requesting for a missing block
     /// this request must be retried if necessary
-    SelfRequest { request: RequestBlockSyncMessage },
+    SelfRequest {
+        requester: BlockSyncSelfRequester,
+        request: RequestBlockSyncMessage,
+    },
     /// cancel request for block
-    SelfCancelRequest { request: RequestBlockSyncMessage },
+    SelfCancelRequest {
+        requester: BlockSyncSelfRequester,
+        request: RequestBlockSyncMessage,
+    },
     /// A peer (not self) sending us a block
     Response {
         sender: NodeId<SCT::NodeIdPubKey>,
@@ -269,12 +294,14 @@ impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
                 .field("sender", &sender)
                 .field("request", &request)
                 .finish(),
-            Self::SelfRequest { request } => f
+            Self::SelfRequest { requester, request } => f
                 .debug_struct("BlockSyncSelfRequest")
+                .field("requester", &requester)
                 .field("request", &request)
                 .finish(),
-            Self::SelfCancelRequest { request } => f
+            Self::SelfCancelRequest { requester, request } => f
                 .debug_struct("BlockSyncSelfCancelRequest")
+                .field("requester", &requester)
                 .field("request", &request)
                 .finish(),
             Self::Response { sender, response } => f
@@ -344,6 +371,47 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
     LocalStateRoot(StateRootHashInfo),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StateSyncRequest {
+    pub prefix: u64,
+    pub prefix_bytes: u8,
+    pub target: u64,
+    pub from: u64,
+    pub until: u64,
+    pub old_target: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSyncResponse {
+    pub request: StateSyncRequest,
+    // consensus state must validate that this sender is "trusted"
+    pub response: Vec<(bool, Vec<u8>, Vec<u8>)>,
+    pub response_n: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateSyncNetworkMessage {
+    Request(StateSyncRequest),
+    Response(StateSyncResponse),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateSyncEvent<SCT: SignatureCollection> {
+    Inbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
+    Outbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
+
+    /// Execution done syncing
+    DoneSync(SeqNum),
+
+    // Statesync-requested block
+    BlockSync(Block<SCT>),
+
+    /// Consensus request sync
+    RequestSync {
+        root: RootInfo,
+        high_qc: QuorumCertificate<SCT>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent {
     GetValidatorSet,
@@ -373,6 +441,8 @@ where
     ControlPanelEvent(ControlPanelEvent),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u64),
+    /// Events to state sync
+    StateSyncEvent(StateSyncEvent<SCT>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -438,6 +508,7 @@ where
             MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
+            MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
         };
 
         write!(f, "{}", s)

@@ -10,9 +10,11 @@ use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_multi_sig::MultiSig;
 use monad_quic::QuicRouterScheduler;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::NopStateBackend;
+use monad_state_backend::InMemoryState;
 use monad_transformer::BytesTransformerPipeline;
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -23,7 +25,7 @@ pub struct QuicSwarm;
 impl SwarmRelation for QuicSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
-    type StateBackendType = NopStateBackend;
+    type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -50,4 +52,6 @@ impl SwarmRelation for QuicSwarm {
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateSyncExecutor =
+        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
 }

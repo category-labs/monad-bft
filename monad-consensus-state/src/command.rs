@@ -11,8 +11,8 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
-    checkpoint::Checkpoint,
-    quorum_certificate::TimestampAdjustment,
+    checkpoint::{Checkpoint, RootInfo},
+    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_crypto::certificate_signature::{
@@ -52,6 +52,17 @@ where
     CancelSync {
         block_id: BlockId,
     },
+    /// Too far behind, request StateSync with:
+    /// 1. New blocktree root
+    /// 2. New high_qc
+    ///
+    /// TODO we can include blocktree cache if we want
+    RequestStateSync {
+        root: RootInfo,
+        high_qc: QuorumCertificate<SCT>,
+    },
+    /// Can only be called *once*
+    StartExecution,
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),

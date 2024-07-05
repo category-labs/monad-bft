@@ -7,7 +7,6 @@ edition = "2021"
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { version = "0.1.0", path = "../monad-consensus-types" }
 monad-crypto = { version = "0.1.0", path = "../monad-crypto" }
-monad-eth-block-policy = { version = "0.1.0", path = "../monad-eth-block-policy" }
 monad-state-backend = { version = "0.1.0", path = "../monad-state-backend" }
 monad-eth-tx = { version = "0.1.0", path = "../monad-eth-tx" }
 monad-eth-types = { version = "0.1.0", path = "../monad-eth-types" }

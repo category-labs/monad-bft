@@ -3,11 +3,12 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
+use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
+use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -66,7 +67,11 @@ fn create_pool_and_transactions() -> BenchController {
     let acc = txns
         .iter()
         .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
-    let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+    let state_backend = InMemoryStateInner::new(
+        Balance::MAX,
+        SeqNum(4),
+        InMemoryBlockState::genesis(acc.collect()),
+    );
 
     let proposal_gas_limit: u64 = txns
         .iter()

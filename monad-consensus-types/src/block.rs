@@ -2,7 +2,7 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_state_backend::{NopStateBackend, StateBackend, StateBackendError};
+use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -273,6 +273,10 @@ where
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
+
+    // TODO delete this function, pass recently committed blocks to check_coherency instead
+    // This way, BlockPolicy doesn't need to be mutated
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
 }
 
 impl<SCT, SBT, T> BlockPolicy<SCT, SBT> for Box<T>
@@ -295,13 +299,17 @@ where
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
         (**self).update_committed_block(block)
     }
+
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
+        (**self).reset(last_delay_committed_blocks)
+    }
 }
 
 /// A block policy which does not validate the inner contents of the block
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
 
-impl<SCT> BlockPolicy<SCT, NopStateBackend> for PassthruBlockPolicy
+impl<SCT> BlockPolicy<SCT, InMemoryState> for PassthruBlockPolicy
 where
     SCT: SignatureCollection,
 {
@@ -311,10 +319,11 @@ where
         &self,
         _: &Self::ValidatedBlock,
         _: Vec<&Self::ValidatedBlock>,
-        _: &NopStateBackend,
+        _: &InMemoryState,
     ) -> Result<(), BlockPolicyError> {
         Ok(())
     }
 
     fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
+    fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
 }

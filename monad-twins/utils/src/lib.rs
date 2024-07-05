@@ -15,9 +15,12 @@ use monad_mock_swarm::{
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
-use monad_types::NodeId;
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_types::{NodeId, SeqNum};
+use monad_updaters::{
+    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use twin_reader::TWINS_STATE_ROOT_DELAY;
@@ -31,6 +34,7 @@ where
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
+        StateBackendType = InMemoryState,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,
@@ -39,8 +43,9 @@ where
         >,
         StateRootValidator = StateRoot,
         StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
+        StateSyncExecutor = MockStateSyncExecutor<ST, SCT>,
+        Ledger = MockLedger<ST, SCT>,
     >,
-    S::Ledger: Default,
 {
     let TwinsTestCase {
         description: _,
@@ -78,6 +83,7 @@ where
                 Duration::from_millis(delta),
             )),
         ];
+        let state_backend = state_builder.state_backend.clone();
         let validators = state_builder.forkpoint.validator_sets[0].clone();
         swarm.add_state(NodeBuilder::<S>::new(
             id,
@@ -89,10 +95,19 @@ where
             )
             .build(),
             MockStateRootHashNop::new(
-                validators.validators,
-                monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
+                validators.validators.clone(),
+                SeqNum(TWINS_STATE_ROOT_DELAY), // ?? val_set_interval?
             ),
-            S::Ledger::default(),
+            MockLedger::new(state_backend.clone()),
+            MockStateSyncExecutor::new(
+                state_backend,
+                validators
+                    .validators
+                    .0
+                    .into_iter()
+                    .map(|v| v.node_id)
+                    .collect(),
+            ),
             outbound_pipeline,
             vec![],
             TimestamperConfig::default(),

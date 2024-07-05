@@ -44,6 +44,7 @@ members = [
     "monad-secp",
     "monad-state",
     "monad-state-backend",
+    "monad-statesync",
     "monad-testground",
     "monad-testutil",
     "monad-tracing-counter",
@@ -108,7 +109,7 @@ futures = "0.3"
 futures-util = "0.3"
 getrandom = "0.2"
 hdwallet = "0.4.1"
-heed = "0.11.0"
+heed = "0.20"
 hex = "0.4"
 hex-literal = "0.4"
 inventory = "0.3"

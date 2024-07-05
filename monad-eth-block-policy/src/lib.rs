@@ -15,8 +15,6 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::trace;
 
-pub mod nonce;
-
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
     fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce>;
@@ -248,7 +246,6 @@ impl CommittedTxnBuffer {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
-        // FIXME: overflow if self.size == usize::MAX
         if self.txns.len() >= self.size * 2 {
             let (&first_block_num, _) = self.txns.first_key_value().expect("txns non-empty");
             let divider = first_block_num + SeqNum(self.size as u64);
@@ -408,6 +405,15 @@ impl EthBlockPolicy {
     where
         SCT: SignatureCollection,
     {
+        // TODO this is error-prone, easy to forget
+        // TODO write tests that fail if this doesn't exist
+        let extending_blocks = extending_blocks.map(|extending_blocks| {
+            extending_blocks
+                .iter()
+                .filter(|block| !block.is_empty_block())
+                .collect_vec()
+        });
+
         trace!(block = consensus_block_seq_num.0, "compute_reserve_balance");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
@@ -461,7 +467,7 @@ impl EthBlockPolicy {
 
                 // Apply Carriage Cost for txns in extending blocks
                 let mut carriage_cost_pending: Balance = 0;
-                if let Some(blocks) = extending_blocks {
+                if let Some(blocks) = &extending_blocks {
                     if let Some(first_block) = blocks.first() {
                         assert_eq!(
                             first_block.get_seq_num(),
@@ -605,9 +611,27 @@ where
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
+        if block.is_empty_block() {
+            // TODO this is error-prone, easy to forget
+            // TODO write tests that fail if this doesn't exist
+            return;
+        }
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
         self.committed_cache.update_committed_block(block);
+    }
+
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
+        self.committed_cache = CommittedTxnBuffer::new(self.committed_cache.size);
+        // TODO this is error-prone, easy to forget
+        // TODO write tests that fail if this doesn't exist
+        let blocks = last_delay_committed_blocks
+            .into_iter()
+            .filter(|block| !block.is_empty_block());
+        for block in blocks {
+            self.last_commit = block.get_seq_num();
+            self.committed_cache.update_committed_block(block);
+        }
     }
 }
 

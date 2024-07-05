@@ -19,7 +19,7 @@ pub struct NopPubKey([u8; 32]);
 
 impl Debug for NopPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NopPubKey({:?})", self.0)
+        write!(f, "NopPubKey({})", self)
     }
 }
 

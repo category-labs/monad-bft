@@ -17,6 +17,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-triedb = { path = "../monad-triedb", optional = true }
 monad-types = { path = "../monad-types" }
 
@@ -26,6 +27,7 @@ futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+serde_json = { workspace = true }
 sorted-vec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [

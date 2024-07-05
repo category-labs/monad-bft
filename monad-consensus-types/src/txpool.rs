@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use monad_state_backend::{NopStateBackend, StateBackend, StateBackendError};
+use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::SeqNum;
 
 use crate::{
@@ -115,7 +115,7 @@ impl Default for MockTxPool {
     }
 }
 
-impl<SCT> TxPool<SCT, PassthruBlockPolicy, NopStateBackend> for MockTxPool
+impl<SCT> TxPool<SCT, PassthruBlockPolicy, InMemoryState> for MockTxPool
 where
     SCT: SignatureCollection,
 {
@@ -123,7 +123,7 @@ where
         &mut self,
         _tx: Vec<Bytes>,
         _block_policy: &PassthruBlockPolicy,
-        _state_backend: &NopStateBackend,
+        _state_backend: &InMemoryState,
     ) -> Vec<Bytes> {
         vec![]
     }
@@ -135,9 +135,9 @@ where
         _gas_limit: u64,
         _block_policy: &PassthruBlockPolicy,
         _pending_blocks: Vec<
-            &<PassthruBlockPolicy as BlockPolicy<SCT, NopStateBackend>>::ValidatedBlock,
+            &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
         >,
-        _state_backend: &NopStateBackend,
+        _state_backend: &InMemoryState,
     ) -> Result<FullTransactionList, StateBackendError> {
         if tx_limit == 0 {
             Ok(FullTransactionList::empty())

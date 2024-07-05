@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use heed::{flags::Flags, Env, EnvOpenOptions};
+use heed::{Env, EnvFlags, EnvOpenOptions};
 use monad_blockdb::{
     BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockTagKey,
     BlockTagTableType, BlockTagValue, BlockValue, EthTxKey, EthTxValue, TxnHashTableType,
@@ -31,28 +31,30 @@ impl BlockDbEnv {
             let blockdb_env = EnvOpenOptions::new()
                 .map_size(BLOCK_DB_MAP_SIZE)
                 .max_dbs(BLOCK_DB_NUM_DBS)
-                .flag(Flags::MdbNoTls) // disable TLS because tokio tasks can move threads
-                .flag(Flags::MdbRdOnly) // we should never have to write to the blockdb from rpc
+                .flags(EnvFlags::NO_TLS) // disable TLS because tokio tasks can move threads
+                .flags(EnvFlags::READ_ONLY) // we should never have to write to the blockdb from rpc
                 .open(blockdb_path);
 
             match blockdb_env {
                 Ok(env) => {
+                    let read_tx = env.read_txn().expect("open db tx failed");
                     let block_dbi: BlockTableType = env
-                        .open_database(Some(BLOCK_TABLE_NAME))
+                        .open_database(&read_tx, Some(BLOCK_TABLE_NAME))
                         .expect("block_dbi should exist")
                         .unwrap();
                     let block_num_dbi: BlockNumTableType = env
-                        .open_database(Some(BLOCK_NUM_TABLE_NAME))
+                        .open_database(&read_tx, Some(BLOCK_NUM_TABLE_NAME))
                         .expect("block_num_dbi should exist")
                         .unwrap();
                     let txn_hash_dbi: TxnHashTableType = env
-                        .open_database(Some(TXN_HASH_TABLE_NAME))
+                        .open_database(&read_tx, Some(TXN_HASH_TABLE_NAME))
                         .expect("txn_hash_dbi should exist")
                         .unwrap();
                     let block_tag_dbi: BlockTagTableType = env
-                        .open_database(Some(BLOCK_TAG_TABLE_NAME))
+                        .open_database(&read_tx, Some(BLOCK_TAG_TABLE_NAME))
                         .expect("block_tag_dbi should exist")
                         .unwrap();
+                    read_tx.commit().expect("commit open db tx failed");
 
                     Ok(Self {
                         blockdb_env: env,
@@ -81,6 +83,7 @@ impl BlockDbEnv {
                 .get(&db_txn, &BlockTagKey::Latest)
                 .expect("get operation should not fail");
             let block_num = result.map(|r| r.block_number);
+            let _ = db_txn.commit();
             let _ = send.send(block_num);
         });
         recv.await.expect("rayon panic get_latest_block")
@@ -134,6 +137,7 @@ impl BlockDbEnv {
                     let result: Option<BlockTableKey> = block_num_dbi
                         .get(&db_txn, &BlockNumTableKey(q))
                         .expect("get operation should not fail");
+                    let _ = db_txn.commit();
                     result
                 }
                 BlockTags::Default(t) => {
@@ -141,6 +145,7 @@ impl BlockDbEnv {
                     let result: Option<BlockTagValue> = block_tag_dbi
                         .get(&db_txn, &t)
                         .expect("get operation should not fail");
+                    let _ = db_txn.commit();
                     result.map(|r| r.block_hash)
                 }
             };

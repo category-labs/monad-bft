@@ -81,8 +81,12 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry     \
 RUN --mount=type=cache,target=/usr/src/monad-bft/target     \
     find target/release/ -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
     find target/release/examples -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
-    cp `ls -lt $(find target/release | grep lib${ETH_CALL_TARGET}.so) | head -1 | awk '{print $9}'` /output/lib && \
-    cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` /output/lib
+    cp `ls -lt $(find target/release | grep -e "libmonad_statesync.so") | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep -e "libtriedb_driver.so") | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep -e "libevmone.so") | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep -e "libquill.so") | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep -e "libkeccak.so") | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep lib${ETH_CALL_TARGET}.so) | head -1 | awk '{print $9}'` /output/lib
 
 FROM ubuntu:24.04 AS exporter
 WORKDIR /output

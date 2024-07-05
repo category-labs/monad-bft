@@ -17,14 +17,14 @@ use monad_consensus::{
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::BlockPolicy,
+    block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::StateRootValidator,
     quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
+    state_root_hash::{StateRootHash, StateRootHashInfo},
     txpool::TxPool,
     validation,
     validator_data::{ParsedValidatorData, Validator, ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -35,12 +35,13 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MonadEvent,
-    ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
+    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetValidatorSet, LedgerCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -387,6 +388,50 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     }
 }
 
+enum ConsensusMode<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
+{
+    Sync {
+        root: RootInfo,
+        high_qc: QuorumCertificate<SCT>,
+
+        // chain of blocks starting with root (highest to lowest seq_num)
+        root_parent_chain: Vec<BPT::ValidatedBlock>,
+        done_db_sync: bool,
+    },
+    Live(ConsensusState<SCT, BPT, SBT>),
+}
+
+impl<SCT, BPT, SBT> ConsensusMode<SCT, BPT, SBT>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT>,
+    SBT: StateBackend,
+{
+    fn start_sync(root: RootInfo, high_qc: QuorumCertificate<SCT>) -> Self {
+        Self::Sync {
+            root,
+            high_qc,
+            root_parent_chain: Default::default(),
+            done_db_sync: false,
+        }
+    }
+
+    fn current_epoch(&self) -> Epoch {
+        match self {
+            ConsensusMode::Sync { high_qc, .. } => {
+                // TODO do we need to check the boundary condition if high_qc is on the epoch
+                // boundary? Probably doesn't matter that much
+                high_qc.get_epoch()
+            }
+            ConsensusMode::Live(consensus) => consensus.get_current_epoch(),
+        }
+    }
+}
+
 pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
@@ -403,7 +448,7 @@ where
     consensus_config: ConsensusConfig,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<SCT, BPT, SBT>,
+    consensus: ConsensusMode<SCT, BPT, SBT>,
     /// Handles blocksync servicing
     block_sync: BlockSync<ST>,
 
@@ -432,6 +477,9 @@ where
     version: MonadVersion,
 }
 
+// execution needs NumBlockHash blocks before tip to execute tip
+const NUM_BLOCK_HASH: SeqNum = SeqNum(256);
+
 impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
     MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
@@ -448,8 +496,11 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<SCT, BPT, SBT> {
-        &self.consensus
+    pub fn consensus(&self) -> Option<&ConsensusState<SCT, BPT, SBT>> {
+        match &self.consensus {
+            ConsensusMode::Sync { .. } => None,
+            ConsensusMode::Live(consensus) => Some(consensus),
+        }
     }
 
     pub fn epoch_manager(&self) -> &EpochManager {
@@ -468,8 +519,11 @@ where
         self.nodeid.pubkey()
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT> {
-        self.consensus.blocktree()
+    pub fn blocktree(&self) -> Option<&BlockTree<SCT, BPT, SBT>> {
+        match &self.consensus {
+            ConsensusMode::Sync { .. } => None,
+            ConsensusMode::Live(consensus) => Some(consensus.blocktree()),
+        }
     }
 
     pub fn metrics(&self) -> &Metrics {
@@ -488,6 +542,7 @@ where
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
+    StateSyncMessage(StateSyncNetworkMessage),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -520,6 +575,9 @@ where
 
     /// Forwarded transactions
     ForwardedTx(Vec<Bytes>),
+
+    /// State Sync msgs
+    StateSyncMessage(StateSyncNetworkMessage),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -546,6 +604,7 @@ where
                 MonadMessage::PeerStateRoot(msg.into())
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
+            VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
         }
     }
 }
@@ -576,6 +635,7 @@ where
                 MonadMessage::PeerStateRoot(msg.into())
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
+            VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
         }
     }
 }
@@ -624,6 +684,9 @@ where
                     sender: from,
                     txns: msg,
                 })
+            }
+            MonadMessage::StateSyncMessage(msg) => {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
             }
         }
     }
@@ -706,18 +769,7 @@ where
             &self.forkpoint.get_epoch_starts(),
         );
 
-        let consensus = ConsensusState::new(
-            &self.consensus_config,
-            self.forkpoint.root.clone(),
-            self.forkpoint.high_qc.clone(),
-            epoch_manager
-                .get_epoch(self.forkpoint.high_qc.get_round() + Round(1))
-                .expect("forkpoint has epoch for high_qc"),
-        );
-
         let nodeid = NodeId::new(self.key.pubkey());
-        let delay = self.state_root_validator.get_delay();
-
         let delta: u64 = self
             .consensus_config
             .delta
@@ -728,14 +780,16 @@ where
             5 * delta,
             self.consensus_config.timestamp_latency_estimate_ms,
         );
-
         let mut monad_state = MonadState {
             keypair: self.key,
             cert_keypair: self.certkey,
             nodeid,
 
             consensus_config: self.consensus_config,
-            consensus,
+            consensus: ConsensusMode::start_sync(
+                self.forkpoint.root.clone(),
+                self.forkpoint.high_qc.clone(),
+            ),
             block_sync: BlockSync::default(),
 
             leader_election: self.leader_election,
@@ -759,7 +813,7 @@ where
 
         let Forkpoint(Checkpoint {
             root,
-            high_qc: _,
+            high_qc,
             validator_sets,
         }) = self.forkpoint;
 
@@ -769,16 +823,10 @@ where
             )));
         }
 
-        let root_seq_num = root.seq_num;
-
-        // if root is N, we need to request the roots from (N-delay, N]
-        let state_root_queue_range =
-            ((root_seq_num + SeqNum(1)).0.saturating_sub(delay.0)..=root_seq_num.0).map(SeqNum);
-        init_cmds.extend(state_root_queue_range.map(|committed_seq_num| {
-            Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
-        }));
-
-        init_cmds.extend(monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
+        tracing::info!(?root, ?high_qc, "starting up, syncing");
+        init_cmds.extend(monad_state.update(MonadEvent::StateSyncEvent(
+            StateSyncEvent::RequestSync { root, high_qc },
+        )));
 
         (monad_state, init_cmds)
     }
@@ -855,7 +903,11 @@ where
             }
 
             MonadEvent::AsyncStateVerifyEvent(async_state_verify_event) => {
-                let current_round_estimate = self.consensus.get_current_round();
+                let ConsensusMode::Live(consensus) = &mut self.consensus else {
+                    tracing::debug!("ignoring AsyncStateVerifyEvent, not live yet");
+                    return vec![];
+                };
+                let current_round_estimate = consensus.get_current_round();
                 let async_state_verify_cmds = AsyncStateVerifyChildState::new(self)
                     .update(async_state_verify_event, current_round_estimate);
 
@@ -864,10 +916,145 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
+            MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
+                StateSyncEvent::Inbound(sender, message) => {
+                    // TODO we need to add some sort of throttling to who we service... right now
+                    // we'll service indiscriminately
+                    vec![Command::StateSyncCommand(StateSyncCommand::Message((
+                        sender, message,
+                    )))]
+                }
+                StateSyncEvent::Outbound(to, message) => {
+                    vec![Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::PointToPoint(to),
+                        message: VerifiedMonadMessage::StateSyncMessage(message),
+                    })]
+                }
+                StateSyncEvent::RequestSync { root, high_qc } => {
+                    let mut commands = Vec::new();
+
+                    let delay = self.state_root_validator.get_delay();
+                    let root_seq_num = root.seq_num;
+                    let state_root_seq_num = root_seq_num.max(delay) - delay;
+                    let root_block_id = root.block_id;
+
+                    let latest_block = self.state_backend.raw_read_latest_block();
+                    assert!(
+                        latest_block <= root_seq_num,
+                        "{latest_block:?} <= {root_seq_num:?}"
+                    );
+
+                    // we do a <= check instead of < because latest_block currently returns 0 even
+                    // if triedb is uninitialized
+                    if latest_block <= state_root_seq_num {
+                        let state_root_hash_info = StateRootHashInfo {
+                            seq_num: state_root_seq_num,
+                            state_root_hash: root.state_root,
+                        };
+
+                        // TODO we can seed this from the RequestSync to save on blocksyncs
+                        self.consensus = ConsensusMode::start_sync(root, high_qc);
+                        commands.push(Command::StateSyncCommand(StateSyncCommand::RequestSync(
+                            state_root_hash_info,
+                        )));
+                    } else {
+                        assert!(self.state_backend.raw_read_earliest_block() <= state_root_seq_num);
+                        // TODO assert state root matches?
+                        commands.extend(self.update(MonadEvent::StateSyncEvent(
+                            StateSyncEvent::DoneSync(state_root_seq_num),
+                        )));
+                    }
+
+                    // committed-block-sync
+                    if root_seq_num > GENESIS_SEQ_NUM {
+                        commands.extend(self.update(MonadEvent::BlockSyncEvent(
+                            BlockSyncEvent::SelfRequest {
+                                requester: BlockSyncSelfRequester::StateSync,
+                                request: RequestBlockSyncMessage {
+                                    block_id: root_block_id,
+                                },
+                            },
+                        )));
+                    }
+
+                    commands
+                }
+                StateSyncEvent::DoneSync(n) => {
+                    let ConsensusMode::Sync {
+                        root, done_db_sync, ..
+                    } = &mut self.consensus
+                    else {
+                        unreachable!("DoneSync invoked while ConsensusState is live")
+                    };
+                    assert!(!*done_db_sync);
+                    assert!(self.state_backend.raw_read_earliest_block() <= n);
+                    assert!(self.state_backend.raw_read_latest_block() >= n);
+
+                    let root_seq_num = root.seq_num;
+                    let delay = self.state_root_validator.get_delay();
+                    assert_eq!(n, root_seq_num.max(delay) - delay);
+
+                    tracing::info!(?n, "done db statesync");
+                    *done_db_sync = true;
+
+                    self.maybe_start_consensus()
+                }
+                StateSyncEvent::BlockSync(block) => {
+                    let ConsensusMode::Sync {
+                        root,
+                        root_parent_chain,
+                        ..
+                    } = &mut self.consensus
+                    else {
+                        return Vec::new();
+                    };
+                    let mut commands = Vec::new();
+                    let root_seq_num = root.seq_num;
+                    if root_parent_chain
+                        .last()
+                        .map(|block| block.get_parent_id())
+                        .unwrap_or(root.block_id)
+                        == block.get_id()
+                    {
+                        // FIXME forkpoint validator doesn't assert that these epochs exist
+                        let author_pubkey = self
+                            .val_epoch_map
+                            .get_cert_pubkeys(&block.get_epoch())
+                            .expect("statesync sync'd block epoch should exist in mapping")
+                            .map
+                            .get(&block.author)
+                            .expect("committed block author should exist in epoch mapping");
+                        let block = self
+                            .block_validator
+                            .validate(block, author_pubkey)
+                            .expect("majority committed invalid block");
+                        let block_seq_num = block.get_seq_num();
+                        let block_is_empty = block.is_empty_block();
+                        let block_parent_id = block.get_parent_id();
+                        root_parent_chain.push(block);
+                        let delay = self.state_root_validator.get_delay();
+                        if block_parent_id != GENESIS_BLOCK_ID
+                            && (block_is_empty ||// if block is empty, keep requesting until we hit non-empty
+                            block_seq_num
+                                > root_seq_num.max(delay + NUM_BLOCK_HASH) - delay - NUM_BLOCK_HASH)
+                        {
+                            commands.extend(self.update(MonadEvent::BlockSyncEvent(
+                                BlockSyncEvent::SelfRequest {
+                                    requester: BlockSyncSelfRequester::StateSync,
+                                    request: RequestBlockSyncMessage {
+                                        block_id: block_parent_id,
+                                    },
+                                },
+                            )));
+                        }
+                        commands.extend(self.maybe_start_consensus());
+                    }
+                    commands
+                }
+            },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetValidatorSet => {
-                    let round = self.consensus.get_current_round();
-                    let epoch = self.epoch_manager.get_epoch(round).unwrap();
+                    let epoch = self.consensus.current_epoch();
 
                     let validator_set = self
                         .val_epoch_map
@@ -911,6 +1098,107 @@ where
                 vec![]
             }
         }
+    }
+
+    fn maybe_start_consensus(
+        &mut self,
+    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>> {
+        let ConsensusMode::Sync {
+            root,
+            high_qc,
+            root_parent_chain,
+            done_db_sync,
+        } = &mut self.consensus
+        else {
+            unreachable!("maybe_start_consensus invoked while ConsensusState is live")
+        };
+
+        let root_seq_num = root.seq_num;
+        let delay = self.state_root_validator.get_delay();
+
+        // check:
+        // 1. done_db_sync
+        // 2. earliest_block is early enough to start consensus (at least NUM_BLOCK_HASH committed)
+        let (earliest_block, earliest_parent_is_genesis, earliest_block_exists_and_is_not_empty) =
+            root_parent_chain.last().map_or(
+                if root.block_id == GENESIS_BLOCK_ID {
+                    (GENESIS_SEQ_NUM, true, false)
+                } else {
+                    (SeqNum::MAX, false, false)
+                },
+                |block| {
+                    (
+                        block.get_seq_num(),
+                        block.get_parent_id() == GENESIS_BLOCK_ID,
+                        !block.is_empty_block(),
+                    )
+                },
+            );
+        let done_blocksync = earliest_parent_is_genesis
+            || (earliest_block_exists_and_is_not_empty
+                && earliest_block
+                    <= root_seq_num.max(delay + NUM_BLOCK_HASH) - delay - NUM_BLOCK_HASH);
+        if !*done_db_sync || !done_blocksync {
+            tracing::info!(
+                ?done_db_sync,
+                ?earliest_block,
+                ?root_seq_num,
+                "still syncing..."
+            );
+            return Vec::new();
+        }
+
+        let mut commands = Vec::new();
+
+        // assert that blocks are coherent
+        let root_parent_chain = std::mem::take(root_parent_chain);
+        let mut parent_block_id = root.block_id;
+        for block in &root_parent_chain {
+            assert_eq!(parent_block_id, block.get_id());
+            parent_block_id = block.get_parent_id();
+        }
+        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().rev().collect();
+        // reset block_policy
+        self.block_policy.reset(blocks_to_commit.iter().collect());
+        // commit blocks
+        commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+            blocks_to_commit
+                .into_iter()
+                .map(|block| block.get_unvalidated_block())
+                .collect(),
+        )));
+
+        // if root is N, we need to request the roots from (N-delay, N]
+        let first_root_to_request = (root_seq_num + SeqNum(1)).max(delay) - delay;
+        let state_root_queue_range = (first_root_to_request.0..=root_seq_num.0).map(SeqNum);
+        commands.extend(state_root_queue_range.map(|committed_seq_num| {
+            Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
+        }));
+        commands.push(Command::StateRootHashCommand(
+            // upon committing block N, we no longer need state_root_N-delay
+            // therefore, we cancel below state_root_N-delay+1
+            //
+            // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
+            // exactly `delay` number of roots
+            StateRootHashCommand::CancelBelow(first_root_to_request),
+        ));
+
+        // Invariants:
+        // let N == root_qc_seq_num
+        // n in DoneSync(n) == N - delay
+        // (N-2*delay, N] have been committed
+        // (N-delay-256, N-delay] block hashes are available to execution
+        // (N-delay, N] roots have been requested
+        let consensus = ConsensusState::new(
+            &self.epoch_manager,
+            &self.consensus_config,
+            root.clone(),
+            high_qc.clone(),
+        );
+        tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
+        self.consensus = ConsensusMode::Live(consensus);
+        commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
+        commands
     }
 }
 
