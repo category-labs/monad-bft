@@ -152,7 +152,7 @@ elif [ "$mode" == "test" ]; then
     sed -i 's/ports:/expose:/g' compose.yaml
 
     docker compose build $build_services &&
-    docker compose up --detach $node_services
+    docker compose up --detach --build $node_services
     sleep 10
     docker compose down $node_services
 
