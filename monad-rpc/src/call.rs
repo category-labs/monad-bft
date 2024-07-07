@@ -60,6 +60,7 @@ impl CallRequest {
                         if max_fee_per_gas < base_fee {
                             return Err(JsonRpcError::eth_call_error(
                                 "max fee less than base".to_string(),
+                                None,
                             ));
                         }
 
@@ -68,6 +69,7 @@ impl CallRequest {
                         {
                             return Err(JsonRpcError::eth_call_error(
                                 "priority fee greater than max".to_string(),
+                                None,
                             ));
                         }
 
@@ -76,13 +78,15 @@ impl CallRequest {
                             base_fee
                                 .checked_add(max_priority_fee_per_gas.unwrap_or_default())
                                 .ok_or_else(|| {
-                                    JsonRpcError::eth_call_error("tip too high".to_string())
+                                    JsonRpcError::eth_call_error("tip too high".to_string(), None)
                                 })?,
                         )
                     }
                     None => base_fee
                         .checked_add(max_priority_fee_per_gas.unwrap_or_default())
-                        .ok_or_else(|| JsonRpcError::eth_call_error("tip too high".to_string()))?,
+                        .ok_or_else(|| {
+                            JsonRpcError::eth_call_error("tip too high".to_string(), None)
+                        })?,
                 };
 
                 self.gas_price_details = GasPriceDetails::Eip1559 {
@@ -227,6 +231,7 @@ pub async fn sender_gas_allowance(
             .ok_or_else(|| {
                 JsonRpcError::eth_call_error(
                     "insufficient funds for gas * price + value".to_string(),
+                    None,
                 )
             })?
             .checked_div(gas_price)
@@ -323,8 +328,8 @@ pub async fn monad_eth_call(
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
             Ok(json!(hex::encode(&output_data)))
         }
-        monad_cxx::CallResult::Failure(error_message) => {
-            Err(JsonRpcError::eth_call_error(error_message))
+        monad_cxx::CallResult::Failure(error) => {
+            Err(JsonRpcError::eth_call_error(error.message, error.data))
         }
     }
 }

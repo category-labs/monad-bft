@@ -23,13 +23,18 @@ pub const EVMC_SUCCESS: i32 = 0;
 
 pub enum CallResult {
     Success(SuccessCallResult),
-    Failure(String),
+    Failure(FailureCallResult),
 }
 
 pub struct SuccessCallResult {
     pub gas_used: u64,
     pub gas_refund: u64,
     pub output_data: Vec<u8>,
+}
+
+pub struct FailureCallResult {
+    pub message: String,
+    pub data: Option<String>,
 }
 
 pub fn eth_call(
@@ -91,8 +96,54 @@ pub fn eth_call(
             gas_refund,
             output_data,
         }),
-        _ => CallResult::Failure(message),
+        _ => {
+            // if transaction fails, decode whether it's due to an invalid transaction
+            // or due to a smart contract reversion
+            if !message.is_empty() {
+                // invalid transaction
+                CallResult::Failure(FailureCallResult {
+                    message,
+                    data: None,
+                })
+            } else {
+                // smart contract reversion
+                let message = String::from("execution reverted");
+                let error_message = decode_revert_message(&output_data);
+                CallResult::Failure(FailureCallResult {
+                    message: message + &error_message,
+                    data: Some(format!("0x{}", hex::encode(&output_data))),
+                })
+            }
+        }
     }
+}
+
+pub fn decode_revert_message(output_data: &[u8]) -> String {
+    // https://docs.soliditylang.org/en/latest/control-structures.html#revert
+    // https://github.com/ethereum/execution-apis/blob/main/tests/eth_call/call-revert-abi-error.io
+    // if there is an error message to be decoded, output_data will be the following form:
+    // 4 bytes function signature
+    // 32 bytes data offset
+    // 32 bytes error message length (let's call it x)
+    // x bytes error message (padded to multiple of 32 bytes)
+    let message_start_index = 68_usize;
+    if output_data.len() > message_start_index {
+        // we only return the first 256 bytes of the error message
+        let message_length = output_data[message_start_index - 1] as usize;
+        let message_end_index = message_start_index + message_length;
+        if output_data.len() >= message_end_index {
+            // extract the message bytes
+            let message_bytes = &output_data[message_start_index..message_end_index];
+
+            // attempt to decode the message bytes as UTF-8
+            let message = match String::from_utf8(message_bytes.to_vec()) {
+                Ok(message) => String::from(": ") + &message,
+                Err(_) => String::new(),
+            };
+            return message;
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]
@@ -261,8 +312,8 @@ mod test {
         );
 
         match result {
-            CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg);
+            CallResult::Failure(res) => {
+                panic!("Call failed: {}", res.message);
             }
             CallResult::Success(res) => {
                 assert_eq!(

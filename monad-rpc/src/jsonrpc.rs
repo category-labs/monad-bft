@@ -154,11 +154,11 @@ impl JsonRpcError {
         }
     }
 
-    pub fn eth_call_error(message: String) -> Self {
+    pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
             code: -32000,
             message,
-            data: None,
+            data: data.map(Value::String),
         }
     }
 

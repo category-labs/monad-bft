@@ -119,8 +119,8 @@ pub async fn monad_eth_estimateGas(
             gas_refund,
             ..
         }) => (gas_used, gas_refund),
-        monad_cxx::CallResult::Failure(error_message) => {
-            return Err(JsonRpcError::eth_call_error(error_message))
+        monad_cxx::CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
         }
     };
 
