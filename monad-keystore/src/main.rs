@@ -73,22 +73,7 @@ fn main() {
             );
 
             // generate public key
-            match key_type.as_str() {
-                "bls" => {
-                    let bls_keypair = BlsKeyPair::from_bytes(private_key.to_vec());
-                    let pubkey = bls_keypair.unwrap().pubkey();
-                    println!("BLS public key: {:?}", pubkey);
-                }
-                "secp" => {
-                    let secp_keypair = KeyPair::from_bytes(&mut private_key.to_vec());
-                    let pubkey = secp_keypair.unwrap().pubkey();
-                    println!("Secp public key: {:?}", pubkey);
-                }
-                _ => {
-                    println!("Unsupported key type, try again.");
-                    return;
-                }
-            }
+            print_public_key(private_key, &key_type);
 
             // generate keystore json file
             let result =
@@ -99,9 +84,54 @@ fn main() {
                 println!("Keystore file generation failed, try again.");
             }
         }
-        // TODO: add functionality such as recovering key from keystore
+        "recover" => {
+            println!("Recovering private and public key from keystore file...");
+            let password: String = if args.password.is_some() {
+                args.password.unwrap()
+            } else {
+                Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Provide a password to encrypt generated key.")
+                    .allow_empty(true)
+                    .interact_text()
+                    .unwrap()
+            };
+
+            // recover private key
+            let result = Keystore::load_key(&keystore_path, &password);
+            let private_key = match result {
+                Ok(private_key) => private_key,
+                Err(_) => {
+                    println!("Unable to recover private key, make sure keystore format is correct");
+                    return;
+                }
+            };
+            println!(
+                "Keep your private key securely {:?}",
+                hex::encode(&private_key)
+            );
+
+            print_public_key(&private_key, &key_type);
+        }
         _ => {
             println!("Unknown mode.");
+        }
+    }
+}
+
+pub fn print_public_key(private_key: &[u8], key_type: &str) {
+    match key_type {
+        "bls" => {
+            let bls_keypair = BlsKeyPair::from_bytes(private_key.to_vec());
+            let pubkey = bls_keypair.unwrap().pubkey();
+            println!("BLS public key: {:?}", pubkey);
+        }
+        "secp" => {
+            let secp_keypair = KeyPair::from_bytes(&mut private_key.to_vec());
+            let pubkey = secp_keypair.unwrap().pubkey();
+            println!("Secp public key: {:?}", pubkey);
+        }
+        _ => {
+            println!("Unsupported key type, try again.")
         }
     }
 }

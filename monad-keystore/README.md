@@ -5,7 +5,7 @@ The keystore CLI tool can be used to generate keystore json files for the BLS ke
 ### Getting Started
 
 ```sh
-cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_to_output_file>
+cargo run --release -- --mode [create|recover] --key-type [bls|secp] --keystore-path <path_to_output_file>
 ```
 
 ### Disclaimer
