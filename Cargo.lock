@@ -3415,6 +3415,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "bincode",
+ "clap 4.4.10",
  "futures",
  "inquire",
  "monad-bls",
@@ -3425,6 +3426,7 @@ dependencies = [
  "monad-secp",
  "monad-types",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "toml 0.7.8",
