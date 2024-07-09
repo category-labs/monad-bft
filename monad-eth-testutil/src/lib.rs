@@ -68,14 +68,18 @@ pub fn generate_random_block_with_txns(
         },
         &QuorumCertificate::genesis_qc(),
     );
-    let nonces = eth_txn_list
+    let validated_txns: Vec<_> = eth_txn_list
+        .into_iter()
+        .map(|eth_txn| eth_txn.into_ecrecovered().unwrap())
+        .collect();
+    let nonces = validated_txns
         .iter()
-        .map(|t| (EthAddress(t.recover_signer().unwrap()), t.nonce()))
+        .map(|t| (EthAddress(t.signer()), t.nonce()))
         .collect();
 
     EthValidatedBlock {
         block,
-        validated_txns: eth_txn_list,
+        validated_txns,
         nonces,
     }
 }

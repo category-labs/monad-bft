@@ -8,7 +8,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_tx::EthSignedTransaction;
+use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use tracing::warn;
 
@@ -46,25 +46,30 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
 
         // recover the account nonces in this block
         let mut nonces = BTreeMap::new();
-        for eth_txn in eth_txns.iter() {
+        let mut validated_txns = Vec::new();
+        for eth_txn in eth_txns {
             // recovering the signer verifies that this is a valid signature
-            let eth_address = EthAddress(eth_txn.recover_signer()?);
+            let validated_txn = eth_txn.into_ecrecovered()?;
 
-            nonces.insert(eth_address, eth_txn.nonce());
+            nonces.insert(EthAddress(validated_txn.signer()), validated_txn.nonce());
+
+            validated_txns.push(validated_txn);
         }
 
-        if eth_txns.len() > self.tx_limit {
+        if validated_txns.len() > self.tx_limit {
             return None;
         }
 
-        let total_gas = eth_txns.iter().fold(0, |acc, tx| acc + tx.gas_limit());
+        let total_gas = validated_txns
+            .iter()
+            .fold(0, |acc, tx: &EthTransaction| acc + tx.gas_limit());
         if total_gas > self.block_gas_limit {
             return None;
         }
 
         Some(EthValidatedBlock {
             block,
-            validated_txns: eth_txns,
+            validated_txns,
             nonces,
         })
     }

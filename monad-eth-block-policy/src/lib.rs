@@ -6,7 +6,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{EthSignedTransaction, EthTxHash};
+use monad_eth_tx::{EthTransaction, EthTxHash};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
@@ -15,7 +15,7 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 #[derive(Debug, Clone)]
 pub struct EthValidatedBlock<SCT: SignatureCollection> {
     pub block: Block<SCT>,
-    pub validated_txns: Vec<EthSignedTransaction>,
+    pub validated_txns: Vec<EthTransaction>,
     pub nonces: BTreeMap<EthAddress, Nonce>,
 }
 
@@ -162,7 +162,7 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
         }
 
         for txn in block.validated_txns.iter() {
-            let eth_address = EthAddress(txn.recover_signer().expect("validated txn"));
+            let eth_address = EthAddress(txn.signer());
             let txn_nonce = txn.nonce();
 
             let expected_nonce = self
