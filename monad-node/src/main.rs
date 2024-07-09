@@ -191,7 +191,7 @@ async fn run(
 
     let validators = node_state.forkpoint_config.forkpoint.validator_sets[0].clone();
 
-    let val_set_update_interval = SeqNum(2000);
+    let val_set_update_interval = SeqNum(100);
 
     let metrics_executor: BoxUpdater<
         'static,
