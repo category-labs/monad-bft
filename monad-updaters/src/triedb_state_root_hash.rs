@@ -15,7 +15,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::Executor;
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_executor_glue::{MonadEvent, StateRootHashCommand, UpdateSource};
 use monad_triedb::Handle as TriedbHandle;
 use monad_types::{Epoch, SeqNum};
 use tracing::{debug, error, warn};
@@ -110,6 +110,7 @@ where
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
                     next_val_data.validator_data,
                     next_val_data.epoch,
+                    UpdateSource::TrieDB,
                 )),
             )));
         }

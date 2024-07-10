@@ -2,12 +2,12 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{
     error::ProtoError,
-    proto::event::{proto_mempool_event::Event, *},
+    proto::event::{proto_mempool_event::Event, proto_update_source::Source, *},
 };
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, FetchedBlock, MempoolEvent,
-    MetricsEvent, MonadEvent, ValidatorEvent,
+    MetricsEvent, MonadEvent, UpdateSource, ValidatorEvent,
 };
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
@@ -180,18 +180,57 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
         Ok(event)
     }
 }
+impl From<&UpdateSource> for ProtoUpdateSource {
+    fn from(value: &UpdateSource) -> Self {
+        match value {
+            UpdateSource::MockStateRootHashNop => ProtoUpdateSource {
+                source: Some(Source::MockStateRootHashNopSource(
+                    ProtoMockStateRootHashNopSource {},
+                )),
+            },
+            UpdateSource::ControlPanel => ProtoUpdateSource {
+                source: Some(Source::ControlPanelSource(ProtoControlPanelSource {})),
+            },
+            UpdateSource::TrieDB => ProtoUpdateSource {
+                source: Some(Source::TrieDbSource(ProtoTrieDbSource {})),
+            },
+            UpdateSource::Initialization => ProtoUpdateSource {
+                source: Some(Source::InitializationSource(ProtoInitializationSource {})),
+            },
+        }
+    }
+}
 
 impl<SCT: SignatureCollection> From<&ValidatorEvent<SCT>> for ProtoValidatorEvent {
     fn from(value: &ValidatorEvent<SCT>) -> Self {
         let event = match value {
-            ValidatorEvent::UpdateValidators((validator_set_data, epoch)) => {
+            ValidatorEvent::UpdateValidators((validator_set_data, epoch, update_source)) => {
                 proto_validator_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
                     validator_set_data: Some(validator_set_data.into()),
                     epoch: Some(epoch.into()),
+                    source: Some(update_source.into()),
                 })
             }
         };
         Self { event: Some(event) }
+    }
+}
+
+impl TryFrom<ProtoUpdateSource> for UpdateSource {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoUpdateSource) -> Result<Self, Self::Error> {
+        match value.source {
+            None => Err(ProtoError::MissingRequiredField(
+                "ProtoUpdateSource.source".to_owned(),
+            )),
+            Some(source) => match source {
+                Source::MockStateRootHashNopSource(_) => Ok(UpdateSource::MockStateRootHashNop),
+                Source::ControlPanelSource(_) => Ok(UpdateSource::ControlPanel),
+                Source::TrieDbSource(_) => Ok(UpdateSource::TrieDB),
+                Source::InitializationSource(_) => Ok(UpdateSource::Initialization),
+            },
+        }
     }
 }
 
@@ -213,7 +252,13 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
                         "ValidatorEvent::update_validators::epoch".to_owned(),
                     ))?
                     .try_into()?;
-                ValidatorEvent::UpdateValidators((vs, e))
+                let source = event
+                    .source
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ValidatorEvent::update_validators::source".to_owned(),
+                    ))?
+                    .try_into()?;
+                ValidatorEvent::UpdateValidators((vs, e, source))
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ValidatorEvent.event".to_owned(),

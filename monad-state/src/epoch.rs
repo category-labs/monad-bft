@@ -60,7 +60,7 @@ where
         event: ValidatorEvent<SCT>,
     ) -> Vec<EpochCommand<SCT::NodeIdPubKey>> {
         match event {
-            ValidatorEvent::UpdateValidators((validator_data, epoch)) => {
+            ValidatorEvent::UpdateValidators((validator_data, epoch, source)) => {
                 self.val_epoch_map.insert(
                     epoch,
                     validator_data.get_stakes(),

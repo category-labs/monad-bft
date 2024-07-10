@@ -39,9 +39,24 @@ message ProtoFetchedBlock {
   optional monad_proto.block.ProtoBlock unverified_block = 3;
 }
 
+message ProtoMockStateRootHashNopSource {}
+message ProtoControlPanelSource {}
+message ProtoTrieDbSource {}
+message ProtoInitializationSource {}
+
+message ProtoUpdateSource {
+  oneof source {
+    ProtoMockStateRootHashNopSource mock_state_root_hash_nop_source = 1;
+    ProtoControlPanelSource control_panel_source = 2;
+    ProtoTrieDbSource trie_db_source = 3;
+    ProtoInitializationSource initialization_source = 4;
+  }
+}
+
 message ProtoUpdateValidatorsEvent {
   monad_proto.validator_data.ProtoValidatorSetData validator_set_data = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
+  ProtoUpdateSource source = 3;
 }
 
 message ProtoStateUpdateEvent {

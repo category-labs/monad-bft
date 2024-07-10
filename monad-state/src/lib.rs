@@ -36,7 +36,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
-    MetricsEvent, MonadEvent, ReadCommand, ValidatorEvent, WriteCommand,
+    MetricsEvent, MonadEvent, ReadCommand, UpdateSource, ValidatorEvent, WriteCommand,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
@@ -693,7 +693,11 @@ where
 
         for validator_set in self.forkpoint.validator_sets.into_iter() {
             init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
-                ValidatorEvent::UpdateValidators((validator_set.validators, validator_set.epoch)),
+                ValidatorEvent::UpdateValidators((
+                    validator_set.validators,
+                    validator_set.epoch,
+                    UpdateSource::Initialization,
+                )),
             )));
         }
 

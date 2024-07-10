@@ -15,7 +15,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MonadEvent, ReadCommand,
-    UpdateValidatorSet, ValidatorEvent, WriteCommand,
+    UpdateSource, UpdateValidatorSet, ValidatorEvent, WriteCommand,
 };
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
@@ -156,6 +156,7 @@ where
                                     ValidatorEvent::<SCT>::UpdateValidators((
                                         ValidatorSetData(validators),
                                         epoch,
+                                        UpdateSource::ControlPanel,
                                     )),
                                 );
                                 let Ok(_) = event_channel.send(event.clone()).await else {

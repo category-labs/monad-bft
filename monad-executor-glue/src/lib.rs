@@ -284,8 +284,16 @@ impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateSource {
+    MockStateRootHashNop,
+    ControlPanel,
+    TrieDB,
+    Initialization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
-    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
+    UpdateValidators((ValidatorSetData<SCT>, Epoch, UpdateSource)),
 }
 
 #[derive(Clone, PartialEq, Eq)]
