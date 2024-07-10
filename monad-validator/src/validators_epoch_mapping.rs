@@ -5,6 +5,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_types::{Epoch, NodeId, Stake};
+use tracing::debug;
 
 use crate::validator_set::{ValidatorSetType, ValidatorSetTypeFactory};
 
@@ -69,6 +70,7 @@ where
             SignatureCollectionKeyPairType<SCT>,
         >,
     ) {
+        debug!(epoch = %epoch.0, num_validators = %val_stakes.len(), "ValidatorsEpochMapping::insert");
         // On consensus restart, the same validator set might be inserted a
         // second time when we commit the same boundary block again. Assert that
         // value is the same if entry exists

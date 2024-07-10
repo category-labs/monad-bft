@@ -796,7 +796,10 @@ where
                     .get_epoch(next_round)
                     .expect("higher epoch always exists");
                 let Some(next_validator_set) = self.val_epoch_map.get_val_set(&next_epoch) else {
-                    todo!("handle non-existent validatorset for next round epoch");
+                    panic!(
+                        "handle non-existent validatorset for next round epoch {}",
+                        next_epoch.0
+                    );
                 };
                 (next_round, next_validator_set.get_members())
             };
