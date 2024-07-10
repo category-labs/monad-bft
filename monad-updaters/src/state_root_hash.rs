@@ -185,10 +185,10 @@ where
                             locked_epoch,
                             block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(2)
                         );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
+                        // self.next_val_data = Some(ValidatorSetUpdate {
+                        //     epoch: locked_epoch,
+                        //     validator_data: self.genesis_validator_data.clone(),
+                        // });
                     }
 
                     wake = true;
