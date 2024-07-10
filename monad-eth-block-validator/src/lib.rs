@@ -44,17 +44,20 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
             return None;
         };
 
+        // recovering the signers verifies that these are valid signatures
+        let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())?;
+
         // recover the account nonces in this block
         let mut nonces = BTreeMap::new();
-        let mut validated_txns = Vec::new();
-        for eth_txn in eth_txns {
-            // recovering the signer verifies that this is a valid signature
-            let validated_txn = eth_txn.into_ecrecovered()?;
 
-            nonces.insert(EthAddress(validated_txn.signer()), validated_txn.nonce());
-
-            validated_txns.push(validated_txn);
-        }
+        let validated_txns: Vec<EthTransaction> = eth_txns
+            .into_iter()
+            .zip(signers)
+            .map(|(eth_txn, signer)| {
+                nonces.insert(EthAddress(signer), eth_txn.nonce());
+                eth_txn.with_signer(signer)
+            })
+            .collect();
 
         if validated_txns.len() > self.tx_limit {
             return None;
@@ -62,7 +65,7 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
 
         let total_gas = validated_txns
             .iter()
-            .fold(0, |acc, tx: &EthTransaction| acc + tx.gas_limit());
+            .fold(0, |acc, tx| acc + tx.gas_limit());
         if total_gas > self.block_gas_limit {
             return None;
         }
