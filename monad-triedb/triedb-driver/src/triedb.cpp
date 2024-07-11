@@ -1,5 +1,6 @@
 #include <cassert>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -42,7 +43,12 @@ int triedb_open(char const *dbdirpath, triedb **db)
         }
     }
 
-    *db = new triedb{std::move(paths)};
+    try {
+        *db = new triedb{std::move(paths)};
+    } catch (const std::exception &e) {
+        std::cerr << e.what();
+        return -3;
+    }
     return 0;
 }
 
