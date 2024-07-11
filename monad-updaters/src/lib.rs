@@ -9,7 +9,6 @@ pub mod ledger;
 pub mod loopback;
 pub mod parent;
 pub mod state_root_hash;
-pub mod validator_set;
 
 #[cfg(all(feature = "tokio", feature = "monad-triedb"))]
 pub mod triedb_state_root_hash;
