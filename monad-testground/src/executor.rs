@@ -7,6 +7,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
     txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
@@ -212,7 +213,7 @@ where
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
-        forkpoint: Forkpoint::genesis(config.validators),
+        forkpoint: Forkpoint::genesis(config.validators, StateRootHash::default()),
         consensus_config: config.consensus_config,
         _pd: PhantomData,
     }

@@ -31,7 +31,7 @@ use monad_testutil::{
     signing::{create_certificate_keys, create_keys},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -332,7 +332,7 @@ fn setup<
                 block_validator: EthValidator::new(10_000, u64::MAX),
                 block_policy: EthBlockPolicy {
                     latest_nonces: BTreeMap::new(),
-                    next_commit: SeqNum(0),
+                    last_commit: GENESIS_SEQ_NUM,
                 },
                 beneficiary: EthAddress::default(),
                 nodeid: NodeId::new(keys[i as usize].pubkey()),

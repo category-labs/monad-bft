@@ -14,7 +14,7 @@ use monad_crypto::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;
 
-pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(u64::MAX);
+pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 
 /// Consensus round
 #[repr(transparent)]
@@ -126,7 +126,11 @@ impl Add for SeqNum {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        SeqNum(self.0.overflowing_add(other.0).0)
+        SeqNum(
+            self.0
+                .checked_add(other.0)
+                .unwrap_or_else(|| panic!("{:?} + {:?}", self, other)),
+        )
     }
 }
 
@@ -134,13 +138,17 @@ impl Sub for SeqNum {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        SeqNum(self.0.overflowing_sub(rhs.0).0)
+        SeqNum(
+            self.0
+                .checked_sub(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} - {:?}", self, rhs)),
+        )
     }
 }
 
 impl AddAssign for SeqNum {
     fn add_assign(&mut self, other: Self) {
-        self.0 += other.0
+        *self = *self + other;
     }
 }
 
@@ -388,7 +396,6 @@ mod test {
 
     use super::*;
 
-    #[test_case(SeqNum(0), Epoch(1), SeqNum(100); "sn_0_epoch_1")]
     #[test_case(SeqNum(1), Epoch(1), SeqNum(100); "sn_1_epoch_1")]
     #[test_case(SeqNum(100), Epoch(1), SeqNum(100); "sn_100_epoch_1")]
     #[test_case(SeqNum(101), Epoch(2), SeqNum(100); "sn_101_epoch_2")]

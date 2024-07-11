@@ -81,7 +81,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
             StateRoot::new(
                 // avoid state_root trigger in rand latency setting
                 // TODO-1, cover cases with low state_root_delay once state_sync is done
-                SeqNum(u64::MAX), // state_root_delay
+                SeqNum(10_000_000), // state_root_delay
             )
         },
         PeerAsyncStateVerify::new,

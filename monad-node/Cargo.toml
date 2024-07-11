@@ -13,9 +13,6 @@ bench = false
 [lib]
 bench = false
 
-[[example]]
-name = "genesis_config_upgrade"
-
 [dependencies]
 monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-control-panel = { path = "../monad-control-panel" }

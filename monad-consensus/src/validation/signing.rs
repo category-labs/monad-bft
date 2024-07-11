@@ -753,7 +753,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake, GENESIS_SEQ_NUM};
     use monad_validator::{
         epoch_manager::EpochManager,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
@@ -1213,7 +1213,7 @@ mod test {
             &Payload {
                 txns: FullTransactionList::empty(),
                 header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
+                seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
             },

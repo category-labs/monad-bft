@@ -55,7 +55,7 @@ where
             dir_path,
             blockdb,
             // FIXME: deal with genesis and execution delay gap later
-            last_committed_block_hash: FixedBytes([0_u8; 32]),
+            last_committed_block_hash: monad_blockdb::genesis_block().hash_slow(),
             header_param,
             phantom: PhantomData,
         }

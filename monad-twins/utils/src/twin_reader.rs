@@ -15,6 +15,7 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     payload::{StateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     txpool::TxPool,
     validator_data::ValidatorSetData,
 };
@@ -350,7 +351,7 @@ where
             block_policy: S::BlockPolicyType::default(),
             state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
             async_state_verify: S::AsyncStateRootVerify::default(),
-            forkpoint: Forkpoint::genesis(validator_data.clone()),
+            forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
             key,
             certkey,

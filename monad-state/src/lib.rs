@@ -23,7 +23,7 @@ use monad_consensus_types::{
     payload::StateRootValidator,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHashInfo,
+    state_root_hash::{StateRootHash, StateRootHashInfo},
     txpool::TxPool,
     validation,
     validator_data::{ParsedValidatorData, Validator, ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -38,7 +38,7 @@ use monad_executor_glue::{
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
     MetricsEvent, MonadEvent, ReadCommand, ValidatorEvent, WriteCommand,
 };
-use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
+use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -156,10 +156,13 @@ pub struct Forkpoint<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> Forkpoint<SCT> {
-    pub fn genesis(validator_set: ValidatorSetData<SCT>) -> Self {
+    pub fn genesis(validator_set: ValidatorSetData<SCT>, state_root_hash: StateRootHash) -> Self {
         Self {
             root_qc: QuorumCertificate::genesis_qc(),
-            state_roots: Vec::new(),
+            state_roots: vec![StateRootHashInfo {
+                seq_num: GENESIS_SEQ_NUM,
+                state_root_hash,
+            }],
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(1),

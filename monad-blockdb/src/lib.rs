@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use heed::{types::SerdeBincode, Database, Env, EnvOpenOptions};
-use reth_primitives::{Block, BlockHash, TxHash};
+use reth_primitives::{Block, BlockHash, BlockNumber, Header, TxHash};
 use serde::{Deserialize, Serialize};
 
 pub const BLOCK_DB_MAP_SIZE: usize = 512 * 1000 * 1024 * 1024;
@@ -51,6 +51,36 @@ pub struct BlockTagValue {
     pub block_number: BlockNumTableKey,
 }
 
+pub fn genesis_block() -> Block {
+    Block {
+        header: Header {
+            parent_hash: Default::default(),
+            ommers_hash: Default::default(),
+            beneficiary: Default::default(),
+            state_root: Default::default(),
+            transactions_root: Default::default(),
+            receipts_root: Default::default(),
+            withdrawals_root: Default::default(),
+            logs_bloom: Default::default(),
+            difficulty: Default::default(),
+            number: Default::default(),
+            gas_limit: Default::default(),
+            gas_used: Default::default(),
+            timestamp: Default::default(),
+            mix_hash: Default::default(),
+            nonce: Default::default(),
+            base_fee_per_gas: Default::default(),
+            blob_gas_used: Default::default(),
+            excess_blob_gas: Default::default(),
+            parent_beacon_block_root: Default::default(),
+            extra_data: Default::default(),
+        },
+        body: Default::default(),
+        ommers: Default::default(),
+        withdrawals: Default::default(),
+    }
+}
+
 pub struct BlockDbBuilder {}
 impl BlockDbBuilder {
     pub fn create(blockdb_path: &Path) -> BlockDb {
@@ -79,14 +109,18 @@ impl BlockDbBuilder {
             .create_database(Some(BFT_LEDGER_TABLE_NAME))
             .unwrap();
 
-        BlockDb {
+        let block_db = BlockDb {
             env: blockdb_env,
             block_dbi,
             block_num_dbi,
             txn_hash_dbi,
             block_tag_dbi,
             bft_ledger_dbi,
-        }
+        };
+
+        block_db.write_genesis_block(genesis_block());
+
+        block_db
     }
 }
 
@@ -117,10 +151,10 @@ impl BlockDb {
         txn_hash_table_txn.commit().expect("txn_hash commit failed");
     }
 
-    pub fn write_block_numbers(&self, block: &Block, block_table_key: &BlockTableKey) {
+    pub fn write_block_numbers(&self, block_number: BlockNumber, block_table_key: &BlockTableKey) {
         // block number table
         let mut block_num_table_txn = self.env.write_txn().expect("block_num txn create failed");
-        let block_num_table_key = BlockNumTableKey(block.number);
+        let block_num_table_key = BlockNumTableKey(block_number);
         let block_hash_value = block_table_key.clone();
         self.block_num_dbi
             .put(
@@ -161,28 +195,21 @@ impl BlockDb {
             .expect("block_tag commit failed");
     }
 
-    #[allow(clippy::ptr_arg)]
-    pub fn write_full_block(
-        &self,
-        block: Block,
-        block_table_key: &BlockTableKey,
-        bft_table_key: [u8; 32],
-        bft_table_value: &Vec<u8>,
-    ) {
-        // eth block and corresponding bft block should be atomically committed
+    pub fn write_genesis_block(&self, block: Block) {
+        let block_hash = BlockTableKey(block.header.hash_slow());
+
+        self.write_txn_hashes(&block, &block_hash);
+        self.write_block_numbers(block.number, &block_hash);
+
         let mut block_txn = self.env.write_txn().expect("block txn create failed");
-        let block_table_key = block_table_key.clone();
         let block_table_value = BlockValue { block };
         self.block_dbi
-            .put(&mut block_txn, &block_table_key, &block_table_value)
+            .put(&mut block_txn, &block_hash, &block_table_value)
             .expect("block_dbi put failed");
-        self.bft_ledger_dbi
-            .put(&mut block_txn, &bft_table_key, bft_table_value)
-            .expect("bft_ledger_table put failed");
-
         block_txn.commit().expect("block_dbi commit failed");
     }
 
+    #[allow(clippy::ptr_arg)]
     pub fn write_eth_and_bft_blocks(
         &self,
         block: Block,
@@ -192,7 +219,17 @@ impl BlockDb {
         let block_hash = BlockTableKey(block.header.hash_slow());
 
         self.write_txn_hashes(&block, &block_hash);
-        self.write_block_numbers(&block, &block_hash);
-        self.write_full_block(block, &block_hash, bft_block_id, serialized_bft_block);
+        self.write_block_numbers(block.number, &block_hash);
+
+        // eth block and corresponding bft block should be atomically committed
+        let mut block_txn = self.env.write_txn().expect("block txn create failed");
+        let block_table_value = BlockValue { block };
+        self.block_dbi
+            .put(&mut block_txn, &block_hash, &block_table_value)
+            .expect("block_dbi put failed");
+        self.bft_ledger_dbi
+            .put(&mut block_txn, &bft_block_id, serialized_bft_block)
+            .expect("bft_ledger_table put failed");
+        block_txn.commit().expect("block_dbi commit failed");
     }
 }

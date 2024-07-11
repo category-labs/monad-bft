@@ -204,7 +204,7 @@ fn many_nodes_quic_bw() {
         || PassthruBlockPolicy,
         || {
             StateRoot::new(
-                SeqNum(u64::MAX), // state_root_delay
+                SeqNum(10_000_000), // state_root_delay
             )
         },
         PeerAsyncStateVerify::new,

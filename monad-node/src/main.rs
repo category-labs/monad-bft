@@ -36,7 +36,7 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
-use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
+use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
     nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
@@ -258,7 +258,7 @@ async fn run(
         block_policy: EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
             // MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),

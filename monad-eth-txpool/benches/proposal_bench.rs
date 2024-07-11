@@ -9,7 +9,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPool;
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
-use monad_types::SeqNum;
+use monad_types::GENESIS_SEQ_NUM;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use reth_primitives::{
@@ -53,7 +53,7 @@ fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
     let eth_block_policy = EthBlockPolicy {
         latest_nonces: BTreeMap::new(),
-        next_commit: SeqNum(0),
+        last_commit: GENESIS_SEQ_NUM,
     };
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);

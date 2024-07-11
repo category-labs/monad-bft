@@ -50,7 +50,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,
@@ -168,7 +168,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,
@@ -248,7 +248,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,
@@ -378,7 +378,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,

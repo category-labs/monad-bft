@@ -36,7 +36,7 @@ mod test {
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
-    use monad_types::{NodeId, Round, SeqNum};
+    use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::state_root_hash::MockStateRootHashNop;
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
@@ -92,7 +92,7 @@ mod test {
             || EthValidator::new(10_000, 1_000_000),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || {
                 StateRoot::new(

@@ -228,8 +228,6 @@ impl StateRoot {
     /// `delay` is the expected delay gap between the current Proposal's state root and the delay
     /// to check against
     pub fn new(delay: SeqNum) -> Self {
-        // creates StateRoot with an initial root hash entry for the genesis block which
-        // hash sequence number 0
         Self {
             root_hashes: BTreeMap::default(),
             delay,

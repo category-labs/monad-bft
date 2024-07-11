@@ -1146,7 +1146,9 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
+    use monad_types::{
+        BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant, GENESIS_SEQ_NUM,
+    };
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
@@ -1573,10 +1575,10 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)))
     }
 
-    // genesis_qc start with "-1" sequence number and Round(0)
-    // hence round == seqnum + 1 if no round times out
+    // genesis_qc start with "0" sequence number and Round(0)
+    // hence round == seqnum if no round times out
     fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
-        Round(seq_num.0 + 1)
+        Round(seq_num.0)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
@@ -1614,7 +1616,7 @@ mod test {
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
-            seq_num: SeqNum(0),
+            seq_num: GENESIS_SEQ_NUM + SeqNum(1),
         };
         let v = Vote {
             vote_info: vi,
@@ -4145,8 +4147,10 @@ mod test {
             assert!(find_commit_cmd(&cmds).is_some());
             if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
                 assert_eq!(commit.len(), 2);
-                assert_eq!(commit[0].get_seq_num(), SeqNum(0)); // Commit block 1
-                assert_eq!(commit[1].get_seq_num(), SeqNum(1)); // Commit block 2
+                // Commit block 1
+                assert_eq!(commit[0].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(1));
+                // Commit block 2
+                assert_eq!(commit[1].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(2));
             }
         } else {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
@@ -4156,8 +4160,10 @@ mod test {
             assert!(find_commit_cmd(&cmds).is_some());
             if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
                 assert_eq!(commit.len(), 2);
-                assert_eq!(commit[0].get_seq_num(), SeqNum(0)); // Commit block 1
-                assert_eq!(commit[1].get_seq_num(), SeqNum(1)); // Commit block 2
+                // Commit block 1
+                assert_eq!(commit[0].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(1));
+                // Commit block 2
+                assert_eq!(commit[1].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(2));
             }
         }
 
@@ -4198,7 +4204,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
@@ -4249,7 +4255,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
@@ -4300,7 +4306,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
@@ -4378,7 +4384,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
@@ -4479,7 +4485,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
@@ -4585,7 +4591,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),

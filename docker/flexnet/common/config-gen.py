@@ -271,7 +271,7 @@ if __name__ == "__main__":
                 "round": 0,
                 "parent_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "parent_round": 0,
-                "seq_num": "18446744073709551615",
+                "seq_num": "0",
             },
             "ledger_commit_info": "NoCommit",
         }
@@ -291,8 +291,10 @@ if __name__ == "__main__":
     epoch1_validators = {"epoch": 1, "round": 0, "validators": validators}
     epoch2_validators = {"epoch": 2, "validators": validators}
 
+    state_root = {"state_root_hash": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4", "seq_num": "0"}
+
     genesis_toml = {
-        "state_roots": [],
+        "state_roots": [state_root],
         "root_qc": root_qc,
         "validator_sets": [epoch1_validators, epoch2_validators],
     }

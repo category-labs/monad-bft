@@ -102,7 +102,6 @@ mod test {
         let mut epoch_start_rounds = Vec::new();
 
         for node in nodes {
-            println!("node id {}", node.id);
             let update_block = node
                 .executor
                 .ledger()
@@ -139,6 +138,17 @@ mod test {
         epoch_start_rounds[0]
     }
 
+    fn verify_nodes_not_schedule_epoch(
+        nodes: Vec<&Node<impl SwarmRelation>>,
+        expected_epoch: Epoch,
+    ) {
+        assert!(!nodes.is_empty());
+        for node in nodes {
+            let epoch_manager = node.state.epoch_manager();
+            assert!(!epoch_manager.epoch_starts.keys().contains(&expected_epoch));
+        }
+    }
+
     #[test]
     fn schedule_and_advance_epoch() {
         let val_set_update_interval = SeqNum(1000);
@@ -153,7 +163,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,
@@ -192,17 +202,20 @@ mod test {
         let mut nodes = swarm_config.build();
 
         let update_block_num = val_set_update_interval;
-
+        // terminates when any node produced more than `until_block` blocks. we
+        // want the longest ledger to be shorter than update_block_num
         let mut term_before_update_block =
-            UntilTerminator::new().until_block((update_block_num.0) as usize);
+            UntilTerminator::new().until_block((update_block_num.0) as usize - 2);
         while nodes.step_until(&mut term_before_update_block).is_some() {}
         // all nodes must still be in this epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
+        // no one has committed the boundary block
+        verify_nodes_not_schedule_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        // block number start from 0, until block counts ledger length
-        // account for the difference with +1
+        // terminates when one node commits more than `update_block_num` blocks.
+        // It ensures every node has committed `update_block_num` blocks
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
+            UntilTerminator::new().until_block(update_block_num.0 as usize);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
@@ -244,7 +257,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,
@@ -288,14 +301,15 @@ mod test {
         let update_block_num = val_set_update_interval;
 
         let mut term_before_update_block =
-            UntilTerminator::new().until_block((update_block_num.0 - 1) as usize);
+            UntilTerminator::new().until_block((update_block_num.0 - 2) as usize);
         while nodes.step_until(&mut term_before_update_block).is_some() {}
         // verify all nodes are in epoch 1
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
+        verify_nodes_not_schedule_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
         let node_ids = nodes.states().keys().copied().collect_vec();
         let mut verifier_before_blackout = MockSwarmVerifier::default().tick_range(
-            happy_path_tick_by_block(update_block_num.0 as usize - 1, delta),
+            happy_path_tick_by_block(update_block_num.0 as usize - 2, delta),
             delta,
         );
         verifier_before_blackout.metrics_happy_path(&node_ids, &nodes);
@@ -314,7 +328,7 @@ mod test {
         nodes.update_outbound_pipeline_for_all(blackout_pipeline);
 
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize + 2);
+            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         let nodes_vec = nodes.states().values().collect_vec();
@@ -402,7 +416,7 @@ mod test {
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
-                    SeqNum(u64::MAX), // state_root_delay
+                    SeqNum(10_000_000), // state_root_delay
                 )
             },
             PeerAsyncStateVerify::new,

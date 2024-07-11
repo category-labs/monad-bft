@@ -296,7 +296,7 @@ mod test {
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
-    use monad_types::SeqNum;
+    use monad_types::GENESIS_SEQ_NUM;
     use tracing_test::traced_test;
 
     use crate::{EthBlockPolicy, EthTxPool};
@@ -310,7 +310,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
         assert_eq!(pool.pool.len(), 1);
@@ -331,7 +331,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
         assert_eq!(pool.pool.len(), 1);
@@ -357,7 +357,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
         Pool::insert_tx(&mut pool, t2.envelope_encoded().into()).unwrap();
@@ -381,7 +381,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -400,7 +400,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -444,7 +444,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -484,7 +484,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -532,7 +532,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -585,7 +585,7 @@ mod test {
             10,
             &EthBlockPolicy {
                 latest_nonces: BTreeMap::new(),
-                next_commit: SeqNum(0),
+                last_commit: GENESIS_SEQ_NUM,
             },
             Default::default(),
         );
@@ -650,7 +650,7 @@ mod test {
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
             Pool::insert_tx(&mut pool, tx.clone().envelope_encoded().into()).unwrap();
@@ -670,7 +670,7 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
 
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
@@ -701,7 +701,7 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
 
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
@@ -733,7 +733,7 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
@@ -765,7 +765,7 @@ mod test {
         let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: BTreeMap::new(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
 
         // insert txn 2 into the tx pool
@@ -801,7 +801,7 @@ mod test {
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
         let eth_block_policy = EthBlockPolicy {
             latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
-            next_commit: SeqNum(0),
+            last_commit: GENESIS_SEQ_NUM,
         };
 
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_one.envelope_encoded().into()).unwrap();
