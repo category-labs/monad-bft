@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
@@ -70,7 +71,7 @@ pub(crate) struct ValidatorSetUpdate<SCT: SignatureCollection> {
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
 pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
-    state_root_update: Option<StateRootHashInfo>,
+    state_root_update: VecDeque<StateRootHashInfo>,
 
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
@@ -96,7 +97,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
         val_set_update_interval: SeqNum,
     ) -> Self {
         Self {
-            state_root_update: None,
+            state_root_update: Default::default(),
             genesis_validator_data,
             next_val_data: None,
             val_set_update_interval,
@@ -122,7 +123,7 @@ where
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
-        self.state_root_update.is_some() || self.next_val_data.is_some()
+        !self.state_root_update.is_empty() || self.next_val_data.is_some()
     }
 
     fn get_validator_set_data(&self, _epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
@@ -167,7 +168,8 @@ where
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
                     debug!("commit block {:?}", block.payload.seq_num);
-                    self.state_root_update = Some(self.compute_state_root_hash(&block));
+                    self.state_root_update
+                        .push_back(self.compute_state_root_hash(&block));
 
                     if block
                         .get_seq_num()
@@ -212,7 +214,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.take() {
+        let event = if let Some(info) = this.state_root_update.pop_front() {
             Poll::Ready(Some(MonadEvent::AsyncStateVerifyEvent(
                 monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
             )))
@@ -243,7 +245,7 @@ where
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
 pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
-    state_root_update: Option<StateRootHashInfo>,
+    state_root_update: VecDeque<StateRootHashInfo>,
 
     // validator set updates
     epoch: Epoch,
@@ -278,7 +280,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
         }
 
         Self {
-            state_root_update: None,
+            state_root_update: Default::default(),
             epoch: Epoch(1),
             genesis_val_data: genesis_validator_data,
             val_data_1: ValidatorSetData(val_data_1),
@@ -300,7 +302,7 @@ where
     type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
-        self.state_root_update.is_some() || self.next_val_data.is_some()
+        !self.state_root_update.is_empty() || self.next_val_data.is_some()
     }
 
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection> {
@@ -358,7 +360,8 @@ where
         for command in commands {
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
-                    self.state_root_update = Some(self.compute_state_root_hash(&block));
+                    self.state_root_update
+                        .push_back(self.compute_state_root_hash(&block));
 
                     if block
                         .get_seq_num()
@@ -410,7 +413,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some(info) = this.state_root_update.take() {
+        let event = if let Some(info) = this.state_root_update.pop_front() {
             Poll::Ready(Some(MonadEvent::StateRootEvent(info)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
