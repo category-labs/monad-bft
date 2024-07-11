@@ -39,7 +39,7 @@ where
     CE: Executor<Command = CheckpointCommand<C>>,
     LE: Executor<Command = LedgerCommand<SCT::NodeIdPubKey, B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<SCT>>,
-    SE: Executor<Command = StateRootHashCommand<B>>,
+    SE: Executor<Command = StateRootHashCommand<B, SCT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     ME: Executor<Command = MetricsCommand>,

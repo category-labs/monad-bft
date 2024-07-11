@@ -126,6 +126,7 @@ message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
     ProtoClearMetricsEvent clear_metrics_event = 2;
+    ProtoUpdateValidatorsEvent update_validators_event = 3;
   }
 }
 

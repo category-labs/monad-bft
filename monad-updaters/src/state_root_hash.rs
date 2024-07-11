@@ -22,8 +22,9 @@ use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use tracing::{debug, error};
 
 pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand<Block<Self::SignatureCollection>>>
-    + Stream<Item = Self::Event>
+    Executor<
+        Command = StateRootHashCommand<Block<Self::SignatureCollection>, Self::SignatureCollection>,
+    > + Stream<Item = Self::Event>
     + Unpin
 {
     type Event;
@@ -75,6 +76,7 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
 
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
+    last_val_data: Option<ValidatorSetUpdate<SCT>>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
     calc_state_root: fn(SeqNum) -> StateRootHash,
@@ -96,9 +98,11 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
         genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     ) -> Self {
+        let validator_data = genesis_validator_data.clone();
         Self {
             state_root_update: Default::default(),
             genesis_validator_data,
+            last_val_data: None,
             next_val_data: None,
             val_set_update_interval,
             calc_state_root: Self::state_root_honest,
@@ -151,12 +155,13 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand<Block<SCT>, SCT>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::UpdateValidators(..) => true,
         });
         self.exec(commands)
     }
@@ -185,12 +190,55 @@ where
                             locked_epoch,
                             block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(2)
                         );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
+
+                        match &self.last_val_data {
+                            None => {
+                                debug!(
+                                locked_epoch = %locked_epoch.0,
+                                num_validators = %self.genesis_validator_data.0.len(),
+                                "last validator update not initialized, re-using genessis validator set");
+                                self.next_val_data = Some(ValidatorSetUpdate {
+                                    epoch: locked_epoch,
+                                    validator_data: self.genesis_validator_data.clone(),
+                                });
+                            }
+                            Some(ValidatorSetUpdate {
+                                epoch,
+                                validator_data,
+                            }) => {
+                                if epoch == &locked_epoch {
+                                    debug!(
+                                    locked_epoch = %locked_epoch.0,
+                                    last_val_data_epoch = %epoch.0,
+                                    num_validators = %validator_data.0.len(),
+                                    "last validator update epoch matched locked epoch");
+                                    self.next_val_data = Some(ValidatorSetUpdate {
+                                        epoch: locked_epoch,
+                                        validator_data: validator_data.clone(),
+                                    });
+                                } else {
+                                    debug!(
+                                        epoch = %epoch.0,
+                                        locked_epoch = %locked_epoch.0,
+                                        num_validators = %validator_data.0.len(),
+                                    "last validator update initialized but did not match locked epoch, re-using validator set from last_val_data anyways");
+                                    self.next_val_data = Some(ValidatorSetUpdate {
+                                        epoch: locked_epoch,
+                                        validator_data: validator_data.clone(),
+                                    });
+                                }
+                            }
+                        }
                     }
 
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators((validator_data, epoch)) => {
+                    debug!(num_validators = ?validator_data.0.len(), epoch = %epoch.0, "UpdateValidators");
+                    self.last_val_data = Some(ValidatorSetUpdate {
+                        epoch,
+                        validator_data,
+                    });
                     wake = true;
                 }
             }
@@ -344,12 +392,13 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand<Block<SCT>, SCT>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::UpdateValidators(..) => true,
         });
         self.exec(commands)
     }
@@ -390,6 +439,9 @@ where
                         };
                     }
 
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }

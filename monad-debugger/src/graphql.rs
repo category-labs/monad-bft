@@ -299,7 +299,7 @@ impl<'s> GraphQLMetricsEvent<'s> {
     }
 }
 
-struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent);
+struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureCollectionType>);
 
 #[Object]
 impl<'s> GraphQLControlPanelEvent<'s> {

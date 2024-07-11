@@ -36,7 +36,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
-    MetricsEvent, MonadEvent, ReadCommand, ValidatorEvent, WriteCommand,
+    MetricsEvent, MonadEvent, ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant, GENESIS_SEQ_NUM};
 use monad_validator::{
@@ -845,6 +845,11 @@ where
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
                         WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
                     ))]
+                }
+                ControlPanelEvent::UpdateValidators((validators, epoch)) => {
+                    vec![Command::StateRootHashCommand(
+                        StateRootHashCommand::UpdateValidators((validators, epoch)),
+                    )]
                 }
             },
         }

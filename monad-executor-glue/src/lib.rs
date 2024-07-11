@@ -76,8 +76,12 @@ pub enum CheckpointCommand<C> {
     Save(C),
 }
 
-pub enum StateRootHashCommand<B> {
+pub enum StateRootHashCommand<B, SCT>
+where
+    SCT: SignatureCollection,
+{
     LedgerCommit(B),
+    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -142,7 +146,7 @@ pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     LedgerCommand(LedgerCommand<SCT::NodeIdPubKey, B, E>),
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
-    StateRootHashCommand(StateRootHashCommand<B>),
+    StateRootHashCommand(StateRootHashCommand<B, SCT>),
     LoopbackCommand(LoopbackCommand<E>),
     MetricsCommand(MetricsCommand),
     ControlPanelCommand(ControlPanelCommand<SCT>),
@@ -157,7 +161,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<LedgerCommand<SCT::NodeIdPubKey, B, E>>,
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
-        Vec<StateRootHashCommand<B>>,
+        Vec<StateRootHashCommand<B, SCT>>,
         Vec<LoopbackCommand<E>>,
         Vec<MetricsCommand>,
         Vec<ControlPanelCommand<SCT>>,
@@ -340,9 +344,13 @@ pub enum MetricsEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControlPanelEvent {
+pub enum ControlPanelEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
     GetValidatorSet,
     ClearMetricsEvent,
+    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -367,7 +375,7 @@ where
     /// Events for metrics
     MetricsEvent(MetricsEvent),
     /// Events for the debug control panel
-    ControlPanelEvent(ControlPanelEvent),
+    ControlPanelEvent(ControlPanelEvent<SCT>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>

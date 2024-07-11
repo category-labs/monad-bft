@@ -129,12 +129,13 @@ impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
 where
     SCT: SignatureCollection,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand<Block<SCT>, SCT>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::UpdateValidators(..) => true,
         });
         self.exec(commands)
     }
@@ -161,6 +162,9 @@ where
                         });
                     }
                     self.seq_num_send.send(seq_num); //FIXME
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }

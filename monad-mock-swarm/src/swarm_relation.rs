@@ -159,7 +159,10 @@ impl SwarmRelation for DebugSwarmRelation {
         dyn MockableStateRootHash<
                 Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
                 SignatureCollection = Self::SignatureCollectionType,
-                Command = StateRootHashCommand<Block<Self::SignatureCollectionType>>,
+                Command = StateRootHashCommand<
+                    Block<Self::SignatureCollectionType>,
+                    Self::SignatureCollectionType,
+                >,
                 Item = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
             > + Send
             + Sync,
