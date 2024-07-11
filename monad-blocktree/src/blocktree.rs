@@ -226,16 +226,13 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         self.tree.insert(new_block_id, new_block_entry);
 
         // Retrieve the parent block's coherency and children blocks
-        let (is_parent_coherent, children_blocks_to_update) = if parent_id == self.root.block_id {
-            (true, Some(&mut self.root.children_blocks))
+        let children_blocks_to_update = if parent_id == self.root.block_id {
+            Some(&mut self.root.children_blocks)
         } else if let Some(parent_entry) = self.tree.get_mut(&parent_id) {
-            (
-                parent_entry.is_coherent,
-                Some(&mut parent_entry.children_blocks),
-            )
+            Some(&mut parent_entry.children_blocks)
         } else {
             // Parent missing, should be requested. Skip coherency check
-            (false, None)
+            None
         };
 
         // Push the new block to the children blocks in the parent
@@ -243,9 +240,18 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
             children_blocks_to_update.push(new_block_id);
         }
 
-        // Update coherency if parent is coherent
-        if is_parent_coherent {
-            self.update_coherency(new_block_id, block_policy);
+        if let Some(path_to_root) = self.get_blocks_on_path_from_root(&new_block_id) {
+            let incoherent_parent_or_self = path_to_root
+                .iter()
+                .find(|block| {
+                    !self
+                        .tree
+                        .get(&block.get_id())
+                        .expect("block doesn't exist")
+                        .is_coherent
+                })
+                .expect("new_block is not coherent (yet)");
+            self.update_coherency(incoherent_parent_or_self.get_id(), block_policy);
         }
 
         inc_count!(blocktree.add.success);
@@ -1276,6 +1282,97 @@ mod test {
         assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());
 
         assert_eq!(blocktree.size(), 3);
+    }
+
+    #[test]
+    fn test_parent_update_coherency() {
+        // Initial blocktree
+        //  g
+        //  |
+        //  b1 (coherent = false)
+        //  |
+        //  ...
+        //
+        // blocktree is updated with b2
+
+        let payload = Payload {
+            txns: FullTransactionList::empty(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        };
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
+
+        let v1 = VoteInfo {
+            id: g.get_id(),
+            epoch: Epoch(1),
+            round: Round(1),
+            parent_id: g.get_parent_id(),
+            parent_round: Round(0),
+            seq_num: SeqNum(0),
+        };
+
+        let b1 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
+                    },
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let v2 = VoteInfo {
+            id: b1.get_id(),
+            epoch: Epoch(1),
+            round: Round(2),
+            parent_id: b1.get_parent_id(),
+            parent_round: Round(1),
+            seq_num: SeqNum(0),
+        };
+
+        let b2 = Block::new(
+            node_id(),
+            Epoch(1),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
+                    },
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+        let block_policy = PassthruBlockPolicy;
+        assert!(blocktree.add(g.clone(), &block_policy).is_ok());
+        assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
+
+        let b1_entry = blocktree.tree.get_mut(&b1.get_id()).unwrap();
+        assert!(b1_entry.is_coherent);
+        // set b1 to be incoherent
+        b1_entry.is_coherent = false;
+        assert!(!b1_entry.is_coherent);
+
+        // when b2 is added, b1 coherency should be updated
+        assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
+
+        // all blocks must be coherent
+        assert!(blocktree.is_coherent(&g.get_id()));
+        assert!(blocktree.is_coherent(&b1.get_id()));
+        assert!(blocktree.is_coherent(&b2.get_id()));
     }
 
     #[test]
