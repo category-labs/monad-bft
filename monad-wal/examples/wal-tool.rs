@@ -480,6 +480,7 @@ impl Widget for &EventListWidget {
 #[derive(Debug, Serialize, Default)]
 struct EventStat {
     block_time: BTreeMap<u64, DateTime<Utc>>,
+    leader: BTreeMap<u64, String>,
 }
 
 struct StatExtractor {
@@ -510,6 +511,7 @@ impl StatExtractor {
                         ProtocolMessage::Proposal(p) => {
                             let r = p.block.get_round();
                             stat.block_time.insert(r.0, event.timestamp);
+                            stat.leader.insert(r.0, p.block.author.to_string());
                         }
                         _ => continue,
                     }
@@ -535,7 +537,8 @@ fn main() -> Result<()> {
             app_result
         }
         ModeCommand::Stat { output } => {
-            let stat = StatExtractor::new(args.wal_path, args.start, args.end).extract();
+            let stat = StatExtractor::new(args.wal_path, args.start, args.end);
+            let stat = stat.extract();
             let file = fs::File::create(output).unwrap();
             let writer = BufWriter::new(file);
             serde_json::to_writer(writer, &stat).unwrap();
