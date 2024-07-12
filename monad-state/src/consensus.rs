@@ -6,26 +6,31 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand},
-    ConsensusStateWrapper,
+    ConsensusConfig, ConsensusState, ConsensusStateWrapper,
 };
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
     block_validator::BlockValidator,
+    metrics::Metrics,
     payload::StateRootValidator,
-    signature_collection::SignatureCollection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
     LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{RouterTarget, SeqNum, TimeoutVariant};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetTypeFactory};
+use monad_types::{NodeId, RouterTarget, SeqNum, TimeoutVariant};
+use monad_validator::{
+    epoch_manager::EpochManager, leader_election::LeaderElection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
-use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
+use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
@@ -38,7 +43,25 @@ where
     BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
 {
-    consensus: ConsensusStateWrapper<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT>,
+    consensus: &'a mut ConsensusState<ST, SCT, BPT>,
+
+    metrics: &'a mut Metrics,
+    txpool: &'a mut TT,
+    epoch_manager: &'a mut EpochManager,
+    block_policy: &'a mut BPT,
+
+    val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    leader_election: &'a LT,
+    version: &'a MonadVersion,
+
+    state_root_validator: &'a SVT,
+    block_validator: &'a BVT,
+    beneficiary: &'a EthAddress,
+    nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
+    consensus_config: &'a ConsensusConfig,
+
+    keypair: &'a ST::KeyPairType,
+    cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
 
     _phantom: PhantomData<ASVT>,
 }
@@ -59,27 +82,25 @@ where
         monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
-            consensus: ConsensusStateWrapper {
-                consensus: &mut monad_state.consensus,
+            consensus: &mut monad_state.consensus,
 
-                metrics: &mut monad_state.metrics,
-                tx_pool: &mut monad_state.txpool,
-                epoch_manager: &mut monad_state.epoch_manager,
-                block_policy: &mut monad_state.block_policy,
+            metrics: &mut monad_state.metrics,
+            txpool: &mut monad_state.txpool,
+            epoch_manager: &mut monad_state.epoch_manager,
+            block_policy: &mut monad_state.block_policy,
 
-                val_epoch_map: &monad_state.val_epoch_map,
-                election: &monad_state.leader_election,
-                version: monad_state.version.protocol_version,
+            val_epoch_map: &monad_state.val_epoch_map,
+            leader_election: &monad_state.leader_election,
+            version: &monad_state.version,
 
-                state_root_validator: &monad_state.state_root_validator,
-                block_validator: &monad_state.block_validator,
-                beneficiary: &monad_state.beneficiary,
-                nodeid: &monad_state.nodeid,
-                config: &monad_state.consensus_config,
+            state_root_validator: &monad_state.state_root_validator,
+            block_validator: &monad_state.block_validator,
+            beneficiary: &monad_state.beneficiary,
+            nodeid: &monad_state.nodeid,
+            consensus_config: &monad_state.consensus_config,
 
-                keypair: &monad_state.keypair,
-                cert_keypair: &monad_state.cert_keypair,
-            },
+            keypair: &monad_state.keypair,
+            cert_keypair: &monad_state.cert_keypair,
             _phantom: PhantomData,
         }
     }
@@ -88,19 +109,41 @@ where
         &mut self,
         event: ConsensusEvent<ST, SCT>,
     ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        let mut consensus = ConsensusStateWrapper {
+            consensus: self.consensus,
+
+            metrics: self.metrics,
+            tx_pool: self.txpool,
+            epoch_manager: self.epoch_manager,
+            block_policy: self.block_policy,
+
+            val_epoch_map: self.val_epoch_map,
+            election: self.leader_election,
+            version: self.version.protocol_version,
+
+            state_root_validator: self.state_root_validator,
+            block_validator: self.block_validator,
+            beneficiary: self.beneficiary,
+            nodeid: self.nodeid,
+            config: self.consensus_config,
+
+            keypair: self.keypair,
+            cert_keypair: self.cert_keypair,
+        };
+
         let vec = match event {
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
             } => {
                 let verified_message = match unverified_message.verify(
-                    self.consensus.epoch_manager,
-                    self.consensus.val_epoch_map,
+                    consensus.epoch_manager,
+                    consensus.val_epoch_map,
                     &sender.pubkey(),
                 ) {
                     Ok(m) => m,
                     Err(e) => {
-                        handle_validation_error(e, self.consensus.metrics);
+                        handle_validation_error(e, consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -111,13 +154,13 @@ where
 
                 // Validated message according to consensus protocol spec
                 let validated_mesage = match verified_message.validate(
-                    self.consensus.epoch_manager,
-                    self.consensus.val_epoch_map,
-                    self.consensus.version,
+                    consensus.epoch_manager,
+                    consensus.val_epoch_map,
+                    consensus.version,
                 ) {
                     Ok(m) => m.into_inner(),
                     Err(e) => {
-                        handle_validation_error(e, self.consensus.metrics);
+                        handle_validation_error(e, consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -126,29 +169,26 @@ where
 
                 match validated_mesage {
                     ProtocolMessage::Proposal(msg) => {
-                        self.consensus.handle_proposal_message(author, msg)
+                        consensus.handle_proposal_message(author, msg)
                     }
-                    ProtocolMessage::Vote(msg) => self.consensus.handle_vote_message(author, msg),
-                    ProtocolMessage::Timeout(msg) => {
-                        self.consensus.handle_timeout_message(author, msg)
-                    }
+                    ProtocolMessage::Vote(msg) => consensus.handle_vote_message(author, msg),
+                    ProtocolMessage::Timeout(msg) => consensus.handle_timeout_message(author, msg),
                 }
             }
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
-                TimeoutVariant::Pacemaker => self
-                    .consensus
+                TimeoutVariant::Pacemaker => consensus
                     .handle_timeout_expiry()
                     .into_iter()
                     .map(|cmd| {
                         ConsensusCommand::from_pacemaker_command(
-                            self.consensus.keypair,
-                            self.consensus.cert_keypair,
-                            self.consensus.version,
+                            consensus.keypair,
+                            consensus.cert_keypair,
+                            consensus.version,
                             cmd,
                         )
                     })
                     .collect(),
-                TimeoutVariant::BlockSync(bid) => self.consensus.handle_block_sync_tmo(bid),
+                TimeoutVariant::BlockSync(bid) => consensus.handle_block_sync_tmo(bid),
             },
 
             ConsensusEvent::BlockSyncResponse {
@@ -156,25 +196,25 @@ where
                 unvalidated_response,
             } => {
                 let validated_response = match unvalidated_response
-                    .validate(self.consensus.epoch_manager, self.consensus.val_epoch_map)
+                    .validate(consensus.epoch_manager, consensus.val_epoch_map)
                 {
                     Ok(req) => req,
                     Err(e) => {
-                        handle_validation_error(e, self.consensus.metrics);
+                        handle_validation_error(e, consensus.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
                     }
                 }
                 .into_inner();
-                self.consensus.handle_block_sync(sender, validated_response)
+                consensus.handle_block_sync(sender, validated_response)
             }
         };
         let consensus_cmds = vec;
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
-                state_root_delay: self.consensus.state_root_validator.get_delay(),
+                state_root_delay: consensus.state_root_validator.get_delay(),
                 command: cmd,
             })
             .collect::<Vec<_>>()
