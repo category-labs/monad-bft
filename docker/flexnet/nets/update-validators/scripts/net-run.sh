@@ -130,7 +130,7 @@ docker compose build $build_services
 docker compose build $runner_services
 
 docker compose up --detach $node_services
-sleep $((60 * 5))
+sleep $((60 * 3))
 docker compose down $node_services
 
 # dump wal stats
