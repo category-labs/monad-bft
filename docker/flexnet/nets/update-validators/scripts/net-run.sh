@@ -123,14 +123,20 @@ pushd $vol_root
 
 build_services=$(docker compose config --services | grep build)
 runner_services=$(docker compose config --services | grep runner)
-node_services=$(docker compose config --services | grep -v -E "(build|runner)")
+node_services=$(docker compose config --services | grep -v -E "(build|runner|post)")
+post_services=$(docker compose config --services | grep post)
 
 docker compose build $build_services
 docker compose build $runner_services
 
 docker compose up --detach $node_services
-sleep 120
+sleep $((60 * 5))
 docker compose down $node_services
+
+# dump wal stats
+docker compose up $post_services
+
+find . -name "wal.json" -exec python3 ./scripts/leader-stats.py {} \;
 
 # return to starting dir
 popd
