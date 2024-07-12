@@ -294,7 +294,7 @@ if __name__ == "__main__":
     state_root = {"state_root_hash": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4", "seq_num": "0"}
 
     genesis_toml = {
-        "state_roots": [state_root],
+        "state_root": state_root,
         "root_qc": root_qc,
         "validator_sets": [epoch1_validators, epoch2_validators],
     }

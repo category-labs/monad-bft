@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData};
 
 use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
@@ -36,7 +36,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
-    MetricsEvent, MonadEvent, ReadCommand, ValidatorEvent, WriteCommand,
+    MetricsEvent, MonadEvent, ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant, GENESIS_SEQ_NUM};
 use monad_validator::{
@@ -123,8 +123,8 @@ impl MonadVersion {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForkpointValidationError {
-    /// Too few state roots to validate the next proposals
-    InsufficientStateRoots,
+    /// State root is for the wrong round
+    StateRootSeqNumMismatch,
     /// Missing validator sets to validate consensus messages
     MissingValidatorSet,
     /// Validator set is not populated with the right fields
@@ -146,7 +146,7 @@ pub struct Forkpoint<SCT: SignatureCollection> {
         deserialize = "SCT: SignatureCollection",
     ))]
     pub root_qc: QuorumCertificate<SCT>,
-    pub state_roots: Vec<StateRootHashInfo>,
+    pub state_root: StateRootHashInfo,
 
     #[serde(bound(
         serialize = "SCT: SignatureCollection",
@@ -159,10 +159,10 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     pub fn genesis(validator_set: ValidatorSetData<SCT>, state_root_hash: StateRootHash) -> Self {
         Self {
             root_qc: QuorumCertificate::genesis_qc(),
-            state_roots: vec![StateRootHashInfo {
+            state_root: StateRootHashInfo {
                 seq_num: GENESIS_SEQ_NUM,
                 state_root_hash,
-            }],
+            },
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(1),
@@ -244,21 +244,10 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
         &self,
         state_root_delay: SeqNum,
     ) -> Result<(), ForkpointValidationError> {
-        if self.root_qc != QuorumCertificate::genesis_qc() {
-            let state_root_low =
-                (self.root_qc.get_seq_num() + SeqNum(1)).max(state_root_delay) - state_root_delay;
-            let state_root_high = self.root_qc.get_seq_num() + SeqNum(2);
-            let mut expected_state_roots = (state_root_low.0..state_root_high.0)
-                .map(SeqNum)
-                .collect::<HashSet<SeqNum>>();
-
-            for state_root in self.state_roots.iter() {
-                expected_state_roots.remove(&state_root.seq_num);
-            }
-
-            if !expected_state_roots.is_empty() {
-                return Err(ForkpointValidationError::InsufficientStateRoots);
-            }
+        if self.state_root.seq_num
+            != self.root_qc.get_seq_num().max(state_root_delay) - state_root_delay
+        {
+            return Err(ForkpointValidationError::StateRootSeqNumMismatch);
         }
         Ok(())
     }
@@ -641,17 +630,6 @@ where
 
         let val_epoch_map = ValidatorsEpochMapping::new(self.validator_set_factory);
 
-        let mut state_root_validator = self.state_root_validator;
-        // initialize state_root_validator with forkpoint.state_roots and remove
-        // any outdated roots
-        for StateRootHashInfo {
-            state_root_hash,
-            seq_num,
-        } in self.forkpoint.state_roots.iter().cloned()
-        {
-            state_root_validator.add_state_root(seq_num, state_root_hash);
-        }
-
         let epoch_manager = EpochManager::new(
             self.val_set_update_interval,
             self.epoch_start_delay,
@@ -669,6 +647,7 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
+        let delay = self.state_root_validator.get_delay();
 
         let mut monad_state = MonadState {
             keypair: self.key,
@@ -685,7 +664,7 @@ where
             txpool: self.transaction_pool,
             async_state_verify: self.async_state_verify,
 
-            state_root_validator,
+            state_root_validator: self.state_root_validator,
             block_validator: self.block_validator,
             block_policy: self.block_policy,
             beneficiary: self.beneficiary,
@@ -696,11 +675,28 @@ where
 
         let mut init_cmds = Vec::new();
 
-        for validator_set in self.forkpoint.validator_sets.into_iter() {
+        let Forkpoint {
+            root_qc,
+            state_root,
+            validator_sets,
+        } = self.forkpoint;
+
+        for validator_set in validator_sets.into_iter() {
             init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
                 ValidatorEvent::UpdateValidators((validator_set.validators, validator_set.epoch)),
             )));
         }
+
+        let root_seq_num = root_qc.get_seq_num();
+        assert_eq!(state_root.seq_num, root_seq_num.max(delay) - delay);
+
+        // if root_qc is N, we need to request the roots from (N-delay, N]
+        let state_root_queue_range = ((state_root.seq_num + SeqNum(1)).0.saturating_sub(delay.0)
+            ..=root_seq_num.0)
+            .map(SeqNum);
+        init_cmds.extend(state_root_queue_range.map(|committed_seq_num| {
+            Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
+        }));
 
         init_cmds.extend(
             monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
@@ -918,14 +914,12 @@ mod test {
 
         let qc = QuorumCertificate::new(qc_info, sigcol);
 
-        let mut state_roots = Vec::new();
-
-        for i in qc.get_seq_num().0 + 1 - STATE_ROOT_DELAY.0..=qc.get_seq_num().0 + 1 {
-            state_roots.push(StateRootHashInfo {
-                state_root_hash: StateRootHash(Hash([i as u8; 32])),
-                seq_num: SeqNum(i),
-            });
-        }
+        let state_root = StateRootHashInfo {
+            state_root_hash: StateRootHash(Hash(
+                [(qc.get_seq_num() - STATE_ROOT_DELAY).0 as u8; 32],
+            )),
+            seq_num: qc.get_seq_num() - STATE_ROOT_DELAY,
+        };
 
         let mut validators = Vec::new();
 
@@ -937,7 +931,7 @@ mod test {
 
         let forkpoint: Forkpoint<BlsSignatureCollection<monad_secp::PubKey>> = Forkpoint {
             root_qc: qc,
-            state_roots,
+            state_root,
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(3),
@@ -979,43 +973,25 @@ mod test {
     }
 
     #[test]
-    fn test_forkpoint_validate_1() {
+    fn test_forkpoint_validate_seq_num() {
         let mut forkpoint = get_forkpoint();
-        forkpoint.state_roots.remove(0);
-
         assert_eq!(
             forkpoint.validate(
                 STATE_ROOT_DELAY,
                 &ValidatorSetFactory::default(),
                 EPOCH_LENGTH
             ),
-            Err(ForkpointValidationError::InsufficientStateRoots)
+            Ok(())
         );
 
-        let mut forkpoint = get_forkpoint();
-        forkpoint
-            .state_roots
-            .remove(forkpoint.state_roots.len() - 1);
-
+        forkpoint.state_root.seq_num += SeqNum(1);
         assert_eq!(
             forkpoint.validate(
                 STATE_ROOT_DELAY,
                 &ValidatorSetFactory::default(),
                 EPOCH_LENGTH
             ),
-            Err(ForkpointValidationError::InsufficientStateRoots)
-        );
-
-        let mut forkpoint = get_forkpoint();
-        forkpoint.state_roots.remove(5);
-
-        assert_eq!(
-            forkpoint.validate(
-                STATE_ROOT_DELAY,
-                &ValidatorSetFactory::default(),
-                EPOCH_LENGTH
-            ),
-            Err(ForkpointValidationError::InsufficientStateRoots)
+            Err(ForkpointValidationError::StateRootSeqNumMismatch)
         );
     }
 

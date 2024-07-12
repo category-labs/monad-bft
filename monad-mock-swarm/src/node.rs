@@ -7,7 +7,6 @@ use std::{
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_consensus_types::{
-    block::BlockType,
     payload::StateRootValidator,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -21,7 +20,7 @@ use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_types::{Epoch, SeqNum};
+use monad_types::Epoch;
 use monad_updaters::state_root_hash::MockableStateRootHash;
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
@@ -343,16 +342,8 @@ impl<S: SwarmRelation> Node<S> {
         let delay = self.state.state_root_validator().get_delay();
 
         let state_root_executor = self.executor.state_root_hash_executor();
-
-        let blocks = self.executor.ledger().get_blocks();
-        let mut state_roots = Vec::new();
-
-        for i in ((root_qc.get_seq_num().0 - delay.0 + 1)..=(root_qc.get_seq_num().0 + 1)).rev() {
-            let b = &blocks[i as usize];
-            assert_eq!(b.payload.seq_num, SeqNum(i));
-            let state_root = state_root_executor.compute_state_root_hash(&b.get_seq_num());
-            state_roots.push(state_root);
-        }
+        let state_root = state_root_executor
+            .compute_state_root_hash(&(root_qc.get_seq_num().max(delay) - delay));
 
         let epoch_manager = self.state.epoch_manager();
         let val_epoch_mapping = self.state.validators_epoch_mapping();
@@ -385,7 +376,7 @@ impl<S: SwarmRelation> Node<S> {
 
         Forkpoint {
             root_qc,
-            state_roots,
+            state_root,
             validator_sets,
         }
     }
