@@ -8,7 +8,6 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::{Block, BlockType},
     signature_collection::SignatureCollection,
     state_root_hash::{StateRootHash, StateRootHashInfo},
     validator_data::ValidatorSetData,
@@ -22,19 +21,14 @@ use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use tracing::{debug, error};
 
 pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand<Block<Self::SignatureCollection>>>
-    + Stream<Item = Self::Event>
-    + Unpin
+    Executor<Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
 {
     type Event;
     type SignatureCollection: SignatureCollection;
 
     fn ready(&self) -> bool;
     fn get_validator_set_data(&self, epoch: Epoch) -> ValidatorSetData<Self::SignatureCollection>;
-    fn compute_state_root_hash(
-        &self,
-        block: &Block<Self::SignatureCollection>,
-    ) -> StateRootHashInfo;
+    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo;
 }
 
 impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
@@ -49,11 +43,8 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
         (**self).get_validator_set_data(epoch)
     }
 
-    fn compute_state_root_hash(
-        &self,
-        block: &Block<Self::SignatureCollection>,
-    ) -> StateRootHashInfo {
-        (**self).compute_state_root_hash(block)
+    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
+        (**self).compute_state_root_hash(seq_num)
     }
 }
 
@@ -77,7 +68,7 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
     genesis_validator_data: ValidatorSetData<SCT>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
-    calc_state_root: fn(SeqNum) -> StateRootHash,
+    calc_state_root: fn(&SeqNum) -> StateRootHash,
 
     waker: Option<Waker>,
     phantom: PhantomData<ST>,
@@ -85,7 +76,7 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
 
 impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
     /// Defines how an honest mock execution calculates state root hash
-    fn state_root_honest(seq_num: SeqNum) -> StateRootHash {
+    fn state_root_honest(seq_num: &SeqNum) -> StateRootHash {
         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
         let mut hash = StateRootHash(Hash([0; 32]));
         gen.fill_bytes(&mut hash.0 .0);
@@ -109,7 +100,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
     }
 
     /// Change how state root hash is calculated
-    pub fn inject_byzantine_srh(&mut self, calc_srh: fn(SeqNum) -> StateRootHash) {
+    pub fn inject_byzantine_srh(&mut self, calc_srh: fn(&SeqNum) -> StateRootHash) {
         self.calc_state_root = calc_srh;
     }
 }
@@ -130,10 +121,9 @@ where
         self.genesis_validator_data.clone()
     }
 
-    fn compute_state_root_hash(&self, block: &Block<SCT>) -> StateRootHashInfo {
+    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
         // hash is pseudorandom seeded by the block's seq num to ensure
         // that it is deterministic between nodes
-        let seq_num = block.get_seq_num();
         let state_root_hash = (self.calc_state_root)(seq_num);
         debug!(
             "block number {:?} state root hash {:?}",
@@ -141,7 +131,7 @@ where
         );
         StateRootHashInfo {
             state_root_hash,
-            seq_num,
+            seq_num: *seq_num,
         }
     }
 }
@@ -151,13 +141,13 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::Request(..) => true,
         });
         self.exec(commands)
     }
@@ -176,24 +166,19 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::LedgerCommit(block) => {
-                    debug!("commit block {:?}", block.payload.seq_num);
+                StateRootHashCommand::Request(seq_num) => {
+                    debug!("commit block {:?}", seq_num);
                     self.state_root_update
-                        .push_back(self.compute_state_root_hash(&block));
+                        .push_back(self.compute_state_root_hash(&seq_num));
 
-                    if block
-                        .get_seq_num()
-                        .is_epoch_end(self.val_set_update_interval)
-                    {
+                    if seq_num.is_epoch_end(self.val_set_update_interval) {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");
                         }
-                        let locked_epoch = block
-                            .get_seq_num()
-                            .get_locked_epoch(self.val_set_update_interval);
+                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
                         assert_eq!(
                             locked_epoch,
-                            block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(2)
+                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
                         );
                         self.next_val_data = Some(ValidatorSetUpdate {
                             epoch: locked_epoch,
@@ -336,15 +321,14 @@ where
         }
     }
 
-    fn compute_state_root_hash(&self, block: &Block<SCT>) -> StateRootHashInfo {
-        let seq_num = block.get_seq_num();
+    fn compute_state_root_hash(&self, seq_num: &SeqNum) -> StateRootHashInfo {
         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
         let mut hash = StateRootHash(Hash([0; 32]));
         gen.fill_bytes(&mut hash.0 .0);
 
         StateRootHashInfo {
             state_root_hash: hash,
-            seq_num,
+            seq_num: *seq_num,
         }
     }
 }
@@ -354,13 +338,13 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::Request(..) => true,
         });
         self.exec(commands)
     }
@@ -379,23 +363,18 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::LedgerCommit(block) => {
+                StateRootHashCommand::Request(seq_num) => {
                     self.state_root_update
-                        .push_back(self.compute_state_root_hash(&block));
+                        .push_back(self.compute_state_root_hash(&seq_num));
 
-                    if block
-                        .get_seq_num()
-                        .is_epoch_end(self.val_set_update_interval)
-                    {
+                    if seq_num.is_epoch_end(self.val_set_update_interval) {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");
                         }
-                        let locked_epoch = block
-                            .get_seq_num()
-                            .get_locked_epoch(self.val_set_update_interval);
+                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
                         assert_eq!(
                             locked_epoch,
-                            block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(2)
+                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
                         );
                         self.next_val_data = if locked_epoch.0 % 2 == 0 {
                             Some(ValidatorSetUpdate {

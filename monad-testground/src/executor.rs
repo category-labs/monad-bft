@@ -101,7 +101,7 @@ pub fn make_monad_executor<ST, SCT>(
     MockLedger<SCT, CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<Checkpoint<SCT>>,
-    BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
+    BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,
     IpcReceiver<ST, SCT>,
     ControlPanelIpcReceiver<ST, SCT>,
     LoopbackExecutor<MonadEvent<ST, SCT>>,

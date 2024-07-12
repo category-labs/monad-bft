@@ -3,7 +3,7 @@ use monad_async_state_verify::{
     AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, PassthruBlockPolicy},
+    block::{BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
@@ -159,7 +159,7 @@ impl SwarmRelation for DebugSwarmRelation {
         dyn MockableStateRootHash<
                 Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
                 SignatureCollection = Self::SignatureCollectionType,
-                Command = StateRootHashCommand<Block<Self::SignatureCollectionType>>,
+                Command = StateRootHashCommand,
                 Item = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
             > + Send
             + Sync,

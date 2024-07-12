@@ -287,7 +287,7 @@ async fn run(
             if byzantine_execution {
                 executor
                     .state_root_hash
-                    .inject_byzantine_srh(|seq_num: SeqNum| {
+                    .inject_byzantine_srh(|seq_num: &SeqNum| {
                         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
                         let mut hash = [0_u8; 32];
                         let mut discard = [0_u8; 32];

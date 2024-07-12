@@ -76,8 +76,8 @@ pub enum CheckpointCommand<C> {
     Save(C),
 }
 
-pub enum StateRootHashCommand<B> {
-    LedgerCommit(B),
+pub enum StateRootHashCommand {
+    Request(SeqNum),
     CancelBelow(SeqNum),
 }
 
@@ -143,7 +143,7 @@ pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     LedgerCommand(LedgerCommand<SCT::NodeIdPubKey, B, E>),
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
-    StateRootHashCommand(StateRootHashCommand<B>),
+    StateRootHashCommand(StateRootHashCommand),
     LoopbackCommand(LoopbackCommand<E>),
     MetricsCommand(MetricsCommand),
     ControlPanelCommand(ControlPanelCommand<SCT>),
@@ -158,7 +158,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<LedgerCommand<SCT::NodeIdPubKey, B, E>>,
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
-        Vec<StateRootHashCommand<B>>,
+        Vec<StateRootHashCommand>,
         Vec<LoopbackCommand<E>>,
         Vec<MetricsCommand>,
         Vec<ControlPanelCommand<SCT>>,

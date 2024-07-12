@@ -7,6 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_consensus_types::{
+    block::BlockType,
     payload::StateRootValidator,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -349,7 +350,7 @@ impl<S: SwarmRelation> Node<S> {
         for i in ((root_qc.get_seq_num().0 - delay.0 + 1)..=(root_qc.get_seq_num().0 + 1)).rev() {
             let b = &blocks[i as usize];
             assert_eq!(b.payload.seq_num, SeqNum(i));
-            let state_root = state_root_executor.compute_state_root_hash(b);
+            let state_root = state_root_executor.compute_state_root_hash(&b.get_seq_num());
             state_roots.push(state_root);
         }
 

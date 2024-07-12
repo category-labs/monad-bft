@@ -9,7 +9,6 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::{Block, BlockType},
     signature_collection::SignatureCollection,
     state_root_hash::{StateRootHash, StateRootHashInfo},
     validator_data::ValidatorSetData,
@@ -136,13 +135,13 @@ impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
 where
     SCT: SignatureCollection,
 {
-    type Command = StateRootHashCommand<Block<SCT>>;
+    type Command = StateRootHashCommand;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
             StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::LedgerCommit(..) => true,
+            StateRootHashCommand::Request(..) => true,
         });
         self.exec(commands)
     }
@@ -155,8 +154,7 @@ where
                 StateRootHashCommand::CancelBelow(seq_num) => {
                     *self.cancel_below.lock().unwrap() = seq_num;
                 }
-                StateRootHashCommand::LedgerCommit(block) => {
-                    let seq_num = block.get_seq_num();
+                StateRootHashCommand::Request(seq_num) => {
                     if seq_num.is_epoch_end(self.val_set_update_interval) {
                         if self.next_val_data.is_some() {
                             error!("Validator set data is not consumed");

@@ -278,8 +278,10 @@ where
             }
             ConsensusCommand::LedgerCommit(blocks) => {
                 let last_block = blocks.iter().last().expect("LedgerCommit no blocks");
-                parent_cmds.extend(blocks.iter().cloned().map(|block| {
-                    Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(block))
+                parent_cmds.extend(blocks.iter().map(|block| {
+                    Command::StateRootHashCommand(StateRootHashCommand::Request(
+                        block.get_seq_num(),
+                    ))
                 }));
                 parent_cmds.push(Command::StateRootHashCommand(
                     // upon committing block N, we no longer need state_root_N-delay
