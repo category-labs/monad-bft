@@ -9,7 +9,7 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
+    block::{Block, BlockPolicy, BlockType},
     block_validator::BlockValidator,
     payload::StateRootValidator,
     signature_collection::SignatureCollection,
@@ -22,7 +22,7 @@ use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
     LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{RouterTarget, TimeoutVariant};
+use monad_types::{RouterTarget, SeqNum, TimeoutVariant};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetTypeFactory};
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
@@ -173,15 +173,22 @@ where
         let consensus_cmds = vec;
         consensus_cmds
             .into_iter()
-            .map(WrappedConsensusCommand)
+            .map(|cmd| WrappedConsensusCommand {
+                state_root_delay: self.consensus.state_root_validator.get_delay(),
+                command: cmd,
+            })
             .collect::<Vec<_>>()
     }
 }
 
-pub(super) struct WrappedConsensusCommand<ST, SCT>(ConsensusCommand<ST, SCT>)
+pub(super) struct WrappedConsensusCommand<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>;
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    state_root_delay: SeqNum,
+    command: ConsensusCommand<ST, SCT>,
+}
 
 impl<ST, SCT> From<WrappedConsensusCommand<ST, SCT>>
     for Vec<
@@ -197,10 +204,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn from(cmd: WrappedConsensusCommand<ST, SCT>) -> Self {
+    fn from(wrapped: WrappedConsensusCommand<ST, SCT>) -> Self {
         let mut parent_cmds: Vec<Command<_, _, _, _, _>> = Vec::new();
 
-        match cmd.0 {
+        match wrapped.command {
             ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
                 RouterCommand::UpdateCurrentRound(epoch, round),
             )),
@@ -229,15 +236,27 @@ where
                     )),
                 }));
             }
-            ConsensusCommand::LedgerCommit(block) => {
-                parent_cmds.extend(block.iter().map(|block| {
-                    Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(block.clone()))
+            ConsensusCommand::LedgerCommit(blocks) => {
+                let last_block = blocks.iter().last().expect("LedgerCommit no blocks");
+                parent_cmds.extend(blocks.iter().cloned().map(|block| {
+                    Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(block))
                 }));
+                parent_cmds.push(Command::StateRootHashCommand(
+                    // upon committing block N, we no longer need state_root_N-delay
+                    // therefore, we cancel below state_root_N-delay+1
+                    //
+                    // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
+                    // exactly `delay` number of roots
+                    StateRootHashCommand::CancelBelow(
+                        (last_block.get_seq_num() + SeqNum(1)).max(wrapped.state_root_delay)
+                            - wrapped.state_root_delay,
+                    ),
+                ));
                 parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                    block.clone(),
+                    blocks.clone(),
                 )));
                 parent_cmds.push(Command::ExecutionLedgerCommand(
-                    ExecutionLedgerCommand::LedgerCommit(block),
+                    ExecutionLedgerCommand::LedgerCommit(blocks),
                 ));
             }
             ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(

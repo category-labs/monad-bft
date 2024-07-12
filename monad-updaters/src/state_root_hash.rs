@@ -156,6 +156,7 @@ where
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
+            StateRootHashCommand::CancelBelow(..) => true,
             StateRootHashCommand::LedgerCommit(..) => true,
         });
         self.exec(commands)
@@ -166,6 +167,15 @@ where
 
         for command in commands {
             match command {
+                StateRootHashCommand::CancelBelow(cancel_below) => {
+                    while self
+                        .state_root_update
+                        .front()
+                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                    {
+                        self.state_root_update.pop_front().unwrap();
+                    }
+                }
                 StateRootHashCommand::LedgerCommit(block) => {
                     debug!("commit block {:?}", block.payload.seq_num);
                     self.state_root_update
@@ -349,6 +359,7 @@ where
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
+            StateRootHashCommand::CancelBelow(..) => true,
             StateRootHashCommand::LedgerCommit(..) => true,
         });
         self.exec(commands)
@@ -359,6 +370,15 @@ where
 
         for command in commands {
             match command {
+                StateRootHashCommand::CancelBelow(cancel_below) => {
+                    while self
+                        .state_root_update
+                        .front()
+                        .is_some_and(|state_root| state_root.seq_num < cancel_below)
+                    {
+                        self.state_root_update.pop_front().unwrap();
+                    }
+                }
                 StateRootHashCommand::LedgerCommit(block) => {
                     self.state_root_update
                         .push_back(self.compute_state_root_hash(&block));

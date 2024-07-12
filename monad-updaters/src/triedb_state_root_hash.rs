@@ -3,6 +3,7 @@ use std::{
     ops::DerefMut,
     path::Path,
     pin::Pin,
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
@@ -24,8 +25,9 @@ use crate::state_root_hash::ValidatorSetUpdate;
 
 /// Updater that gets state root hash updates by polling triedb
 pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
-    triedb_recv: tokio::sync::mpsc::Receiver<StateRootHashInfo>,
+    triedb_recv: tokio::sync::mpsc::UnboundedReceiver<StateRootHashInfo>,
     seq_num_send: std::sync::mpsc::Sender<SeqNum>,
+    cancel_below: Arc<Mutex<SeqNum>>,
 
     // TODO: where will we get this validator set updates
     // validator set updates
@@ -43,10 +45,11 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
         genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     ) -> Self {
-        // TODO: the channel size should be the delay gap
-        let (triedb_send, triedb_recv) = tokio::sync::mpsc::channel(10);
+        let (triedb_send, triedb_recv) = tokio::sync::mpsc::unbounded_channel();
 
         let (seq_num_send, seq_num_recv) = std::sync::mpsc::channel();
+        let cancel_below = Arc::new(Mutex::new(SeqNum(0)));
+        let cancel_below_clone = cancel_below.clone();
 
         let path = triedb_path.to_path_buf();
         rayon::spawn(move || {
@@ -56,6 +59,9 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
             loop {
                 let seq_num: SeqNum = seq_num_recv.recv().unwrap(); //FIXME
                 'poll_triedb: loop {
+                    if seq_num < *cancel_below_clone.lock().unwrap() {
+                        break 'poll_triedb;
+                    }
                     let result = handle.get_state_root(seq_num.0);
                     debug!("srh = {:?}", result);
                     if let Some(state_root) = result {
@@ -67,7 +73,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
                             seq_num,
                         };
 
-                        triedb_send.blocking_send(s).unwrap();
+                        triedb_send.send(s).unwrap();
                         break 'poll_triedb;
                     } else {
                         warn!("no state root for blocknum {:?}", seq_num);
@@ -79,6 +85,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
 
         Self {
             triedb_recv,
+            cancel_below,
             seq_num_send,
             genesis_validator_data,
             next_val_data: None,
@@ -134,6 +141,7 @@ where
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
             // we match on all commands to be explicit
+            StateRootHashCommand::CancelBelow(..) => true,
             StateRootHashCommand::LedgerCommit(..) => true,
         });
         self.exec(commands)
@@ -144,6 +152,9 @@ where
 
         for command in commands {
             match command {
+                StateRootHashCommand::CancelBelow(seq_num) => {
+                    *self.cancel_below.lock().unwrap() = seq_num;
+                }
                 StateRootHashCommand::LedgerCommit(block) => {
                     let seq_num = block.get_seq_num();
                     if seq_num.is_epoch_end(self.val_set_update_interval) {
@@ -160,7 +171,9 @@ where
                             validator_data: self.genesis_validator_data.clone(),
                         });
                     }
-                    self.seq_num_send.send(seq_num); //FIXME
+                    self.seq_num_send
+                        .send(seq_num)
+                        .expect("seq_num receiver should never be dropped");
                     wake = true;
                 }
             }

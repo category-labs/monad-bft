@@ -26,7 +26,7 @@ rand_chacha = { workspace = true }
 rayon = { workspace = true }
 alloy-rlp = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "time", "sync"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync"], optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

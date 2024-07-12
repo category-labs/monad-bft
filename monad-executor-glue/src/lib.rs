@@ -21,7 +21,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, Stake, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -78,6 +78,7 @@ pub enum CheckpointCommand<C> {
 
 pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
+    CancelBelow(SeqNum),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
