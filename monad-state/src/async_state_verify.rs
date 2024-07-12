@@ -21,6 +21,8 @@ use monad_validator::{
     epoch_manager::EpochManager, validator_set::ValidatorSetTypeFactory,
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use tracing::debug;
+use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
@@ -111,6 +113,7 @@ where
                     .val_epoch_map
                     .get_cert_pubkeys(&epoch)
                     .expect("validator mapping present");
+                debug!(epoch = %epoch.0, validator_set = ?valset.get_members(), validator_map = ?valmap.map, "handle_peer_state_root");
 
                 self.async_state_verify
                     .handle_peer_state_root(peer, info, sig, valset, valmap)

@@ -21,6 +21,7 @@ hex = { workspace = true }
 prost = { workspace = true }
 serde_cbor = { workspace = true }
 zeroize = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }

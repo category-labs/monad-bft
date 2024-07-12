@@ -3312,6 +3312,7 @@ dependencies = [
  "rand",
  "serde_cbor",
  "test-case",
+ "tracing",
  "zeroize",
 ]
 

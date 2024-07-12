@@ -139,10 +139,6 @@ where
         // that it is deterministic between nodes
         let seq_num = block.get_seq_num();
         let state_root_hash = (self.calc_state_root)(seq_num);
-        debug!(
-            "block number {:?} state root hash {:?}",
-            seq_num.0, state_root_hash
-        );
         StateRootHashInfo {
             state_root_hash,
             seq_num,
@@ -172,7 +168,6 @@ where
         for command in commands {
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
-                    debug!("commit block {:?}", block.payload.seq_num);
                     self.state_root_update
                         .push_back(self.compute_state_root_hash(&block));
 

@@ -16,7 +16,7 @@ use monad_crypto::{
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     AsyncStateVerifyCommand, AsyncStateVerifyProcess, AsyncStateVerifyUpdateConfig,
@@ -106,9 +106,11 @@ where
 }
 
 fn handle_invalid_signature_collection_creation<SCT: SignatureCollection>(
+    prefix: &'static str,
     err: SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>,
     pending_roots: &mut BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>,
 ) -> Vec<AsyncStateVerifyCommand<SCT>> {
+    error!(err = ?err, prefix = %prefix, "handle_invalid_signature_collection_creation");
     match err {
         SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs) => {
             // remove the invalid signatures from pending votes
@@ -122,11 +124,11 @@ fn handle_invalid_signature_collection_creation<SCT: SignatureCollection>(
             vec![]
         }
 
-        SignatureCollectionError::NodeIdNotInMapping(_)
-        | SignatureCollectionError::ConflictingSignatures(_)
-        | SignatureCollectionError::InvalidSignaturesVerify
-        | SignatureCollectionError::DeserializeError(_) => {
-            unreachable!("InvalidSignaturesCreate is only expected error from creating SC");
+        e => {
+            unreachable!(
+                "InvalidSignaturesCreate is only expected error from creating SC {:?}",
+                e
+            );
         }
     }
 }
@@ -256,6 +258,7 @@ where
                             }
 
                             Err(err) => cmds.extend(handle_invalid_signature_collection_creation(
+                                "1",
                                 err,
                                 pending_roots,
                             )),
@@ -297,6 +300,7 @@ where
                     }
 
                     Err(err) => cmds.extend(handle_invalid_signature_collection_creation(
+                        "2",
                         err,
                         pending_roots,
                     )),
