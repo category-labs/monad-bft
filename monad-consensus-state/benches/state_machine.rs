@@ -311,8 +311,9 @@ fn setup<
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
             };
-            let cs = ConsensusState::<ST, SCT, _>::new(
+            let cs = ConsensusState::new(
                 &consensus_config,
+                QuorumCertificate::genesis_qc(),
                 QuorumCertificate::genesis_qc(),
                 Epoch(1),
             );

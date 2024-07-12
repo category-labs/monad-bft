@@ -661,6 +661,8 @@ where
         let consensus = ConsensusState::new(
             &self.consensus_config,
             self.forkpoint.root_qc.clone(),
+            // TODO change this to high_qc once forkpoint includes it
+            self.forkpoint.root_qc.clone(),
             epoch_manager
                 .get_epoch(self.forkpoint.root_qc.get_round() + Round(1))
                 .expect("forkpoint has epoch for root qc"),

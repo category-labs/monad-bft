@@ -202,17 +202,18 @@ where
     pub fn new(
         config: &ConsensusConfig,
         root_qc: QuorumCertificate<SCT>,
+        high_qc: QuorumCertificate<SCT>,
         consensus_epoch: Epoch,
     ) -> Self {
-        let qc_round = root_qc.get_round();
-        // processing root qc brings consensus to qc_round + 1
-        let consensus_round = qc_round + Round(1);
+        let high_qc_round = high_qc.get_round();
+        assert!(high_qc_round >= root_qc.get_round());
+        let consensus_round = high_qc_round + Round(1);
         ConsensusState {
-            pending_block_tree: BlockTree::new(root_qc.clone()),
+            pending_block_tree: BlockTree::new(root_qc),
             vote_state: VoteState::new(consensus_round),
-            high_qc: root_qc,
+            high_qc,
             pacemaker: Pacemaker::new(config.delta, consensus_epoch, consensus_round, None),
-            safety: Safety::new(qc_round, qc_round),
+            safety: Safety::new(high_qc_round, high_qc_round),
 
             // timeout has to be proportional to delta, too slow/fast is bad
             // assuming 2 * delta is the duration which it takes for perfect message transmission
@@ -1419,8 +1420,9 @@ mod test {
                     max_blocksync_retries: 5,
                     state_sync_threshold: SeqNum(100),
                 };
-                let cs = ConsensusState::<ST, SCT, BPT>::new(
+                let cs = ConsensusState::new(
                     &consensus_config,
+                    QuorumCertificate::genesis_qc(),
                     QuorumCertificate::genesis_qc(),
                     Epoch(1),
                 );
