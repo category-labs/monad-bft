@@ -23,8 +23,6 @@ use monad_types::SeqNum;
 use prost::Message;
 use reth_primitives::{Block, BlockBody, Header};
 
-type BlockHash = FixedBytes<32>;
-
 /// Protocol parameters that go into Eth block header
 pub struct EthHeaderParam {
     pub gas_limit: u64,
@@ -36,7 +34,6 @@ pub struct EthHeaderParam {
 pub struct MonadBlockFileLedger<SCT> {
     dir_path: PathBuf,
     blockdb: BlockDb,
-    last_committed_block_hash: BlockHash,
     header_param: EthHeaderParam,
     phantom: PhantomData<SCT>,
 }
@@ -54,8 +51,6 @@ where
         Self {
             dir_path,
             blockdb,
-            // FIXME: deal with genesis and execution delay gap later
-            last_committed_block_hash: monad_blockdb::genesis_block().hash_slow(),
             header_param,
             phantom: PhantomData,
         }
@@ -71,22 +66,16 @@ where
         Ok(())
     }
 
-    fn create_eth_block(&mut self, block: &MonadBlock<SCT>) -> Block {
+    fn create_eth_block(&self, block: &MonadBlock<SCT>) -> Block {
         // use the full transactions to create the eth block body
         let block_body = generate_block_body(&block.payload.txns);
 
         // the payload inside the monad block will be used to generate the eth header
-        let header = generate_header(
-            self.last_committed_block_hash,
-            &self.header_param,
-            block,
-            &block_body,
-        );
+        let header = generate_header(&self.header_param, block, &block_body);
 
         let mut header_bytes = Vec::default();
         header.encode(&mut header_bytes);
 
-        self.last_committed_block_hash = header.hash_slow();
         block_body.create_block(header)
     }
 }
@@ -127,7 +116,7 @@ where
                             let pblock: ProtoBlock = bft_block.into();
                             let data = pblock.encode_to_vec();
 
-                            env.write_eth_and_bft_blocks(eth_block, bft_id.0 .0, &data);
+                            env.write_eth_and_bft_blocks(eth_block, bft_id, &data);
                         }
                     });
 
@@ -165,7 +154,6 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 // TODO-2: Review integration with execution team
 /// Use data from the MonadBlock to generate an Ethereum Header
 fn generate_header<SCT: SignatureCollection>(
-    parent_hash: BlockHash,
     header_param: &EthHeaderParam,
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
@@ -184,7 +172,7 @@ fn generate_header<SCT: SignatureCollection>(
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0.clone());
 
     Header {
-        parent_hash, //TODO: Consider the execution delay gap FixedBytes(*parent_hash.deref()),
+        parent_hash: monad_block.get_parent_id().0 .0.into(),
         ommers_hash: block_body.calculate_ommers_root(),
         beneficiary: monad_block.payload.beneficiary.0,
         state_root: FixedBytes(*state_root.deref()),

@@ -9,6 +9,9 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-types = { path = "../monad-types" }
+
 heed = { workspace = true }
 reth-primitives = { workspace = true }
 serde = { workspace = true }

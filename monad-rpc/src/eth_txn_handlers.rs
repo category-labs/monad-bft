@@ -5,10 +5,10 @@ use alloy_primitives::{
     Address, FixedBytes,
 };
 use log::{debug, trace};
-use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
+use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
-use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
+use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
 };
@@ -80,7 +80,7 @@ pub fn parse_tx_content(
         chain_id: tx.chain_id().map(U64::from),
         access_list,
         transaction_type: Some(U64::from(tx.tx_type() as u8)),
-        block_hash: Some(value.block.hash_slow()),
+        block_hash: Some(value.block_id()),
         block_number: Some(U256::from(value.block.number)),
         transaction_index: Some(U256::from(tx_index)),
 
@@ -112,7 +112,7 @@ pub fn parse_tx_receipt(
             tx.max_fee_per_gas() - base_fee_per_gas,
             tx.max_priority_fee_per_gas().unwrap_or_default(),
         );
-    let block_hash = Some(block.block.hash_slow());
+    let block_hash = Some(block.block_id());
     let block_number = Some(U256::from(block_num));
     let logs = receipt
         .logs
@@ -479,7 +479,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
         }
     };
 
-    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
+    let key = p.block_hash.into();
     let Some(block) = blockdb_env.get_block_by_hash(key).await else {
         return serialize_result(None::<Transaction>);
     };

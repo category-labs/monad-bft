@@ -7,9 +7,10 @@ use std::{
     str::FromStr,
 };
 
+pub use monad_crypto::hasher::Hash;
 use monad_crypto::{
     certificate_signature::PubKey,
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hashable, Hasher},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;

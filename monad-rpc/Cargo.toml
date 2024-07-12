@@ -16,6 +16,7 @@ monad-blockdb-utils = { path = "../monad-blockdb-utils" }
 monad-cxx = { path = "../monad-cxx" }
 monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
+monad-types = { path = "../monad-types" }
 
 actix = { workspace = true }
 actix-codec = { workspace = true }

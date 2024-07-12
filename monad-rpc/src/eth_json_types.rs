@@ -96,7 +96,7 @@ where
 
 impl From<FixedData<32>> for monad_blockdb::BlockTableKey {
     fn from(f: FixedData<32>) -> Self {
-        monad_blockdb::BlockTableKey(f.0.into())
+        monad_blockdb::BlockTableKey(monad_types::BlockId(monad_types::Hash(f.0)))
     }
 }
 

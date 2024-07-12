@@ -3279,6 +3279,8 @@ name = "monad-blockdb"
 version = "0.1.0"
 dependencies = [
  "heed",
+ "monad-consensus-types",
+ "monad-types",
  "reth-primitives",
  "serde",
 ]
@@ -3985,6 +3987,7 @@ dependencies = [
  "monad-cxx",
  "monad-triedb",
  "monad-triedb-utils",
+ "monad-types",
  "notify",
  "pin-project",
  "rayon",

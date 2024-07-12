@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use heed::{types::SerdeBincode, Database, Env, EnvOpenOptions};
+use monad_consensus_types::quorum_certificate::GENESIS_BLOCK_ID;
 use reth_primitives::{Block, BlockHash, BlockNumber, Header, TxHash};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ pub type BlockTableType = Database<SerdeBincode<BlockTableKey>, SerdeBincode<Blo
 pub type BlockNumTableType = Database<SerdeBincode<BlockNumTableKey>, SerdeBincode<BlockTableKey>>;
 pub type TxnHashTableType = Database<SerdeBincode<EthTxKey>, SerdeBincode<EthTxValue>>;
 pub type BlockTagTableType = Database<SerdeBincode<BlockTagKey>, SerdeBincode<BlockTagValue>>;
-pub type BftLedgerTableType = Database<SerdeBincode<[u8; 32]>, SerdeBincode<Vec<u8>>>;
+pub type BftLedgerTableType = Database<SerdeBincode<monad_types::BlockId>, SerdeBincode<Vec<u8>>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EthTxKey(pub TxHash);
@@ -32,11 +33,23 @@ pub struct EthTxValue {
 pub struct BlockNumTableKey(pub u64);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BlockTableKey(pub BlockHash);
+pub struct BlockTableKey(
+    // note that this BlockId isn't actually the hash of the eth block
+    // it's the hash of the BFT block, hence the monad_types::BlockId type
+    pub monad_types::BlockId,
+);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlockValue {
+    // this can be deleted once BlockId is hash of eth block
+    key: BlockTableKey,
     pub block: Block,
+}
+
+impl BlockValue {
+    pub fn block_id(&self) -> BlockHash {
+        self.key.0 .0 .0.into()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,7 +131,7 @@ impl BlockDbBuilder {
             bft_ledger_dbi,
         };
 
-        block_db.write_genesis_block(genesis_block());
+        block_db.write_genesis_block(genesis_block(), GENESIS_BLOCK_ID);
 
         block_db
     }
@@ -195,16 +208,19 @@ impl BlockDb {
             .expect("block_tag commit failed");
     }
 
-    pub fn write_genesis_block(&self, block: Block) {
-        let block_hash = BlockTableKey(block.header.hash_slow());
+    pub fn write_genesis_block(&self, block: Block, bft_block_id: monad_types::BlockId) {
+        let block_table_key = BlockTableKey(bft_block_id);
 
-        self.write_txn_hashes(&block, &block_hash);
-        self.write_block_numbers(block.number, &block_hash);
+        self.write_txn_hashes(&block, &block_table_key);
+        self.write_block_numbers(block.number, &block_table_key);
 
         let mut block_txn = self.env.write_txn().expect("block txn create failed");
-        let block_table_value = BlockValue { block };
+        let block_table_value = BlockValue {
+            key: block_table_key.clone(),
+            block,
+        };
         self.block_dbi
-            .put(&mut block_txn, &block_hash, &block_table_value)
+            .put(&mut block_txn, &block_table_key, &block_table_value)
             .expect("block_dbi put failed");
         block_txn.commit().expect("block_dbi commit failed");
     }
@@ -213,19 +229,22 @@ impl BlockDb {
     pub fn write_eth_and_bft_blocks(
         &self,
         block: Block,
-        bft_block_id: [u8; 32],
+        bft_block_id: monad_types::BlockId,
         serialized_bft_block: &Vec<u8>,
     ) {
-        let block_hash = BlockTableKey(block.header.hash_slow());
+        let block_table_key = BlockTableKey(bft_block_id);
 
-        self.write_txn_hashes(&block, &block_hash);
-        self.write_block_numbers(block.number, &block_hash);
+        self.write_txn_hashes(&block, &block_table_key);
+        self.write_block_numbers(block.number, &block_table_key);
 
         // eth block and corresponding bft block should be atomically committed
         let mut block_txn = self.env.write_txn().expect("block txn create failed");
-        let block_table_value = BlockValue { block };
+        let block_table_value = BlockValue {
+            key: block_table_key.clone(),
+            block,
+        };
         self.block_dbi
-            .put(&mut block_txn, &block_hash, &block_table_value)
+            .put(&mut block_txn, &block_table_key, &block_table_value)
             .expect("block_dbi put failed");
         self.bft_ledger_dbi
             .put(&mut block_txn, &bft_block_id, serialized_bft_block)

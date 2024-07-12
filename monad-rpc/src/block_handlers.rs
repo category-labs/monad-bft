@@ -1,9 +1,8 @@
 use alloy_primitives::aliases::{U256, U64};
 use log::{debug, trace};
-use monad_blockdb::{BlockTableKey, BlockValue};
+use monad_blockdb::BlockValue;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
-use reth_primitives::BlockHash;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +19,7 @@ use crate::{
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
     // parse block header
     let header = Header {
-        hash: Some(value.block.hash_slow()),
+        hash: Some(value.block_id()),
         parent_hash: value.block.header.parent_hash,
         uncles_hash: value.block.header.ommers_hash,
         miner: value.block.header.beneficiary,
@@ -132,7 +131,7 @@ pub async fn monad_eth_getBlockByHash(
         }
     };
 
-    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
+    let key = p.block_hash.into();
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
         return serialize_result(None::<Block>);
     };
@@ -192,7 +191,7 @@ pub async fn monad_eth_getBlockTransactionCountByHash(
         }
     };
 
-    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
+    let key = p.block_hash.into();
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
         return serialize_result(format!("0x{:x}", 0));
     };

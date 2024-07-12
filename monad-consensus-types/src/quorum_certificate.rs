@@ -10,7 +10,7 @@ use crate::{
     voting::*,
 };
 
-pub const GENESIS_QC_HASH: Hash = Hash([0xAA; 32]);
+pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0xAA; 32]));
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,10 +121,10 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     // This will be the initial high qc for all nodes
     pub fn genesis_qc() -> Self {
         let vote_info = VoteInfo {
-            id: BlockId(GENESIS_QC_HASH),
+            id: GENESIS_BLOCK_ID,
             epoch: Epoch(1),
             round: Round(0),
-            parent_id: BlockId(GENESIS_QC_HASH),
+            parent_id: GENESIS_BLOCK_ID,
             parent_round: Round(0),
             seq_num: GENESIS_SEQ_NUM,
         };
