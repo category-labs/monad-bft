@@ -46,6 +46,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::blocksync::BlockSyncResponder;
 
@@ -60,6 +61,7 @@ const CLIENT_MAJOR_VERSION: u16 = 0;
 const CLIENT_MINOR_VERSION: u16 = 1;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
+    error!(error = ?e, "handle_validation_error");
     match e {
         validation::Error::InvalidAuthor => {
             metrics.validation_errors.invalid_author += 1;

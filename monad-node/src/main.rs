@@ -142,13 +142,22 @@ async fn run(
         .len()
         > 1
     {
+        let validators = node_state.forkpoint_config.forkpoint.validator_sets[0]
+            .validators
+            .0
+            .iter()
+            .map(|peer| NodeId::new(peer.node_id.pubkey()))
+            .collect::<Vec<_>>();
+        let bootstrap_peers = node_state
+            .node_config
+            .bootstrap
+            .peers
+            .iter()
+            .map(|p| NodeId::new(p.secp256k1_pubkey))
+            .collect::<Vec<_>>();
+
         SeederConfig::<Raptor<SignatureType>> {
-            all_peers: node_state.forkpoint_config.forkpoint.validator_sets[0]
-                .validators
-                .0
-                .iter()
-                .map(|peer| NodeId::new(peer.node_id.pubkey()))
-                .collect(),
+            all_peers: bootstrap_peers,
             key: {
                 // TODO make this less jank
                 //
