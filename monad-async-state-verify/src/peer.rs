@@ -240,7 +240,9 @@ where
         // add to pending votes
         let info_hash = HasherType::hash_object(&info);
         let pending_roots = block_state.pending_roots.entry(info_hash).or_default();
-        pending_roots.insert(peer, sig);
+        if validators.get_members().contains_key(&peer) {
+            pending_roots.insert(peer, sig);
+        }
 
         match self.consensus_update_config {
             AsyncStateVerifyUpdateConfig::Local => {}
