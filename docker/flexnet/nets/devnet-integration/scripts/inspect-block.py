@@ -18,7 +18,7 @@ if __name__ == "__main__":
 
     # list all transactions
     ledger_txns = []
-    for block_file in Path("node/ledger").iterdir():
+    for block_file in Path("/monad/node/ledger").iterdir():
 
         with open(block_file, "rb") as f:
             data = f.read()

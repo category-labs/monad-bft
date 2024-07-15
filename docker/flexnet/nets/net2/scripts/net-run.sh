@@ -97,24 +97,24 @@ fi
 # Create node volume directory
 net_name=$(basename $(realpath "$net_dir"))
 rand_hex=$(od -vAn -N8 -tx1 /dev/urandom | tr -d " \n" | cut -c 1-16)
-vol_root="$output_dir/$net_name-$(date +%Y%m%d_%H%M%S)-$rand_hex"
-mkdir $vol_root
-echo "Root of node volumes created at: $vol_root"
+export VOL_ROOT="$output_dir/$net_name-$(date +%Y%m%d_%H%M%S)-$rand_hex"
+mkdir $VOL_ROOT
+echo "Root of node volumes created at: $VOL_ROOT"
 
-cp -r $net_dir/* $vol_root
+cp -r $net_dir/* $VOL_ROOT
 
 # Generate scripts and configs for nodes
-vol_path_in_flexnet="/monad/$(realpath -s --relative-to=$flexnet_root $vol_root)"
-topology_json_path="/monad/$(realpath -s --relative-to=$flexnet_root $vol_root)/topology.json"
-docker build $image_root/dev -t monad-python-dev
+vol_path_in_flexnet="/monad/$(realpath -s --relative-to=$flexnet_root $VOL_ROOT)"
+topology_json_path="/monad/$(realpath -s --relative-to=$flexnet_root $VOL_ROOT)/topology.json"
+docker build $image_root/../ -f $image_root/dev/Dockerfile -t monad-python-dev
 # Config
 docker run --rm -v $flexnet_root:/monad monad-python-dev:latest bash -c "cd $vol_path_in_flexnet && python3 /monad/common/config-gen.py -c 7 -s ''"
 # tc.sh
-docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/tc-gen.py $topology_json_path
+python -c 'from monad_flexnet.generators import TrafficControlScriptGenerator; from monad_flexnet.topology import Topology; import os; topo = Topology.from_json(os.environ["VOL_ROOT"] + "/topology.json"); TrafficControlScriptGenerator.generate_scripts(topo, os.environ["VOL_ROOT"])'
 # ethtx.sh
-docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/ethtx-gen.py $topology_json_path --tps 1000 --num-tx 1000000
+python -c 'from monad_flexnet.generators import EthTxScriptGenerator; from monad_flexnet.topology import Topology; import os; topo = Topology.from_json(os.environ["VOL_ROOT"] + "/topology.json"); EthTxScriptGenerator.generate_scripts(topo, os.environ["VOL_ROOT"], tps=1000, num_tx=1000000)'
 # run.sh
-docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/run-gen.py $topology_json_path
+python -c 'from monad_flexnet.generators import RunScriptGenerator; from monad_flexnet.topology import Topology; import os; topo = Topology.from_json(os.environ["VOL_ROOT"] + "/topology.json"); RunScriptGenerator.generate_scripts(topo, os.environ["VOL_ROOT"])'
 
 # Set environment variables
 export FLEXNET_IMAGE_ROOT=$(realpath "$image_root")
@@ -122,7 +122,7 @@ export MONAD_BFT_ROOT=$(realpath "$monad_bft_root")
 export HOST_GID=$(id -g)
 export HOST_UID=$(id -u)
 
-pushd $vol_root
+pushd $VOL_ROOT
 
 build_services=$(docker compose config --services | grep build)
 runner_services=$(docker compose config --services | grep runner)
@@ -140,12 +140,12 @@ popd
 
 set +e
 # verify ledger
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 2000 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python-dev bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 2000 ))"
 ledger_status=$?
 
 # IDEALLY: count transactions in the ledger: 450 (ethtx actual tps) * 600 (s) * 7 (nodes)
 # FIXME: ethtx generates only 10,000 unique transactions per node. total unique transactions = 10,000 (unique txns per node) * 7 (nodes)
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 10000 * 7 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python-dev bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 10000 * 7 ))"
 txn_count_status=$?
 
 if [[ $ledger_status -ne 0 || $txn_count_status -ne 0 ]]; then

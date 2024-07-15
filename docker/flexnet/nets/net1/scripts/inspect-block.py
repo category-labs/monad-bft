@@ -30,7 +30,7 @@ if __name__ == "__main__":
     # list all transactions
     ledger_txns = []
     byzantine_blocks = []
-    for block_file in Path("node0/ledger").iterdir():
+    for block_file in Path("/monad/node0/ledger").iterdir():
         with open(block_file, "rb") as f:
             data = f.read()
 

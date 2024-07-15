@@ -5,6 +5,8 @@ import sys
 import filecmp
 import json
 
+from monad_flexnet.topology import Topology
+
 """
 Diff the ledgers
 Args: 
@@ -61,20 +63,12 @@ if __name__ == "__main__":
     ledger_dir = args.ledger
     ledger_min_length = args.blocks
 
-    # parse the volume paths
-    topology_path = Path(os.getcwd()) / "topology.json"
-    if not topology_path.exists():
-        print(f"topology file {topology_path} doesn't exist in cwd")
-        sys.exit(1)
-
-    with open(topology_path, "r") as f:
-        topology_json = json.load(f)
+    topology = Topology.from_json(Path(os.getcwd()) / 'topology.json')
 
     volume_paths = []
-    for region in topology_json:
-        for node in region["nodes"]:
-            volume = node["volume"]
-            volume_paths.append(Path(os.getcwd()) / volume)
+    for region in topology.regions.values():
+        for node in region.nodes:
+            volume_paths.append(Path(os.getcwd()) / node.name)
 
     ledger_paths = [vol_path / ledger_dir for vol_path in volume_paths]
 

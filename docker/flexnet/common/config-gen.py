@@ -21,6 +21,8 @@ from Crypto.Protocol.KDF import scrypt
 from Crypto.Hash import SHA256 as SHA256
 from Crypto.Cipher import AES as AES
 
+from monad_flexnet.topology import Topology
+
 blst_bindings_path = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "blst/bindings/python"
 )
@@ -170,6 +172,7 @@ if __name__ == "__main__":
         help="Seed for key generation",
         required=False,
     )
+    parser.add_argument('-i', '--id', help="run ID to append to node names", required=False)
 
     args = parser.parse_args()
     node_count = args.count
@@ -178,18 +181,12 @@ if __name__ == "__main__":
     else:
         seed = None
 
-    topology_path = Path(os.getcwd()) / "topology.json"
-    if not topology_path.exists():
-        print(f"topology file {topology_path} doesn't exist in cwd")
-        sys.exit(1)
+    topology = Topology.from_json(Path(os.getcwd()) / 'topology.json')
 
-    with open(topology_path, "r") as f:
-        topology_json = json.load(f)
-
-    for region in topology_json:
-        for node in region["nodes"]:
-            volume = node["volume"]
-            service_name = node["service"]
+    for _, region in topology.regions.items():
+        for node in region.nodes:
+            volume = node.name
+            service_name = node.name
             peers[volume].service = service_name
 
     volume_list = [Path(vol) for vol in peers.keys()]
@@ -225,9 +222,10 @@ if __name__ == "__main__":
         for volume, peer in peers.items():
             if volume == this_volume:
                 continue
+            id_append = f'-{args.id}' if args.id is not None else ''
             local_peers.append(
                 {
-                    "address": peer.service + ":" + str(BIND_ADDRESS_PORT),
+                    "address": peer.service + id_append + ":" + str(BIND_ADDRESS_PORT),
                     "mempool_address": peer.service + ":" + str(8889),
                     "secp256k1_pubkey": peer.secp_pubkey,
                 }

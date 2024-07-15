@@ -158,7 +158,7 @@ elif [ "$mode" == "test" ]; then
 
     popd # $vol_root
     # inspect consensus block ledger, verify transactions submitted are in the block
-    docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json"
+    docker run --rm -v ./$vol_root:/monad monad-python-dev bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json"
 
     # e2e_tester errors are redirected to the file. Assert that it's empty
     e2e_tester_err=$vol_root/e2e_tester/logs/e2e-tester.err

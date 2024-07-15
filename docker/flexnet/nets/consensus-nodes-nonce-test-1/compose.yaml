@@ -23,7 +23,7 @@ services:
       dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
     image: monad-python:latest
 
-  node0_us:
+  node0:
     image: image0:latest
     volumes:
       - ./node0:/monad
@@ -46,7 +46,7 @@ services:
       - ./data:/data
     entrypoint: ["bash", "/monad/scripts/run.sh"]
 
-  node1_eu:
+  node1:
     image: image0:latest
     volumes:
       - ./node1:/monad

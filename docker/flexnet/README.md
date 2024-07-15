@@ -1,5 +1,13 @@
-### Usage
-To spin up `net0`, from `flexnet`, run
+### Library Installation
+
+To install the Python library required for testing, from `flexnet`, run
+```sh
+pip install ./testing-library
 ```
-nets/net0/scripts/net-run.sh --output-dir logs --net-dir nets/net0/ --flexnet-root . --monad-bft-root ../..
+
+### Usage
+
+To spin up `net0`, from `flexnet`, run
+```sh
+python nets/net0/scripts/net-run.py
 ```

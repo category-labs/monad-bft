@@ -28,7 +28,7 @@ if __name__ == "__main__":
         if txn["expected"]:
             expected_txns.append(txn["hash"])
 
-    ledger_paths = ["node0/ledger", "node1/ledger"]
+    ledger_paths = ["/monad/node0/ledger", "/monad/node1/ledger"]
 
     exitcode = 0
     for node_i, ledger_path in enumerate(ledger_paths):
