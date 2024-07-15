@@ -1,4 +1,4 @@
-epoch = 3
+epoch = 20
 
 [[validators]]
 node_id = "0x037743e7be2ed992769ac12d122b93cf80c1a5ff0a5dcdfe26bdd347c372520964"
