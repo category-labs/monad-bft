@@ -11,7 +11,7 @@ value: rlp([nonce, balance, code_hash])
 **Storage**
 ```
 key:  <block number: 6 bytes><state nibble (0): 1 nibble><keccak256(address): 32 bytes><keccak256(key): 32 bytes>
-value: zeroless_view(value)
+value: rlp(zeroless_view(storage_data)) | rlp(zeroless_view(storage_slot))
 ```
 
 **Code**

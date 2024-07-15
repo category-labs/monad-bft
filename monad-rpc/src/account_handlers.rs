@@ -1,13 +1,13 @@
 use alloy_primitives::aliases::{B160, U256};
 use log::{debug, trace};
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
+use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
-        FixedData,
     },
     hex,
     jsonrpc::JsonRpcError,
@@ -110,11 +110,7 @@ pub async fn monad_eth_getStorageAt(
     };
 
     match triedb_env
-        .get_storage_at(
-            p.account.0,
-            Into::<FixedData<32>>::into(p.position).0,
-            p.block_number.into(),
-        )
+        .get_storage_at(p.account.0, B256::from(p.position).0, p.block_number.into())
         .await
     {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),

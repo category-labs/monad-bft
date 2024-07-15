@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use alloy_primitives::keccak256;
+use alloy_primitives::{keccak256, U256};
 use alloy_rlp::{Decodable, Encodable};
 use log::debug;
 use monad_blockdb::BlockTagKey;
@@ -155,17 +155,23 @@ impl TriedbEnv {
                     return;
                 };
 
-                if result.len() > 32 {
-                    debug!("storage value is max 32 bytes");
-                    let _ = send.send(TriedbResult::EncodingError);
-                    return;
-                }
-                let mut storage_value = [0_u8; 32];
-                for (byte, storage) in result.into_iter().rev().zip(storage_value.iter_mut().rev())
-                {
-                    *storage = byte;
-                }
-                let _ = send.send(TriedbResult::Storage(storage_value));
+                let _ = match U256::decode(&mut result.as_slice()) {
+                    Ok(res) => {
+                        let mut storage_value = [0_u8; 32];
+                        for (byte, storage) in res
+                            .to_be_bytes_vec()
+                            .into_iter()
+                            .zip(storage_value.iter_mut())
+                        {
+                            *storage = byte;
+                        }
+                        send.send(TriedbResult::Storage(storage_value))
+                    }
+                    Err(e) => {
+                        debug!("rlp storage decode failed: {:?}", e);
+                        send.send(TriedbResult::EncodingError)
+                    }
+                };
             });
         });
         recv.await.expect("rayon panic get_storage_at")

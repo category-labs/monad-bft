@@ -11,4 +11,4 @@ monad-blockdb = { path = "../monad-blockdb" }
 
 heed = { workspace = true }
 rayon = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true , features = ["sync"] }
