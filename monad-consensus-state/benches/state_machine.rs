@@ -332,7 +332,7 @@ fn setup<
                 state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX),
                 block_policy: EthBlockPolicy {
-                    latest_nonces: BTreeMap::new(),
+                    account_nonces: BTreeMap::new(),
                     last_commit: GENESIS_SEQ_NUM,
                 },
                 beneficiary: EthAddress::default(),

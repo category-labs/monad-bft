@@ -91,7 +91,7 @@ mod test {
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || {

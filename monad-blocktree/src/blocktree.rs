@@ -277,6 +277,8 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
             // Remove the block itself
             extending_blocks.pop();
 
+            // extending blocks are always coherent, because we only call
+            // update_coherency on the first incoherent block in the chain
             if block_policy.check_coherency(block, extending_blocks) {
                 self.tree.entry(next_block).and_modify(|entry| {
                     entry.is_coherent = true;

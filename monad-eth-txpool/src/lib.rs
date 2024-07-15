@@ -10,7 +10,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{AccountNonceRetrievable, EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 use monad_eth_types::{EthAddress, Nonce};
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
@@ -88,17 +88,31 @@ impl TransactionGroup {
         self.transactions
             .insert(transaction.nonce(), (transaction, ratio));
     }
+
+    fn find_nonce_gap(&self, mut next_nonce: Nonce) -> Option<Nonce> {
+        for (nonce, _) in self.transactions.iter() {
+            if *nonce != next_nonce {
+                return Some(*nonce);
+            }
+            next_nonce += 1;
+        }
+
+        None
+    }
 }
 
 type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
 
 #[derive(Clone, Default, Debug)]
 pub struct EthTxPool {
+    /// pool is transient, garbage collected after creating a proposal
     pool: Pool,
     garbage: Vec<Pool>,
 }
 
 impl EthTxPool {
+    /// Removes nonces that cannot extend the current block tree branch, as the
+    /// txpool is transient and garbage collected after proposal creation
     fn remove_invalid_nonces(
         &mut self,
         block_policy: &EthBlockPolicy,
@@ -107,31 +121,22 @@ impl EthTxPool {
         self.pool
             .iter_mut()
             .for_each(|(eth_address, transaction_group)| {
-                let mut high_nonce =
-                    block_policy.get_latest_nonce(eth_address, &blocktree_nonce_deltas);
-                let mut maybe_nonce_to_remove = None;
+                let lowest_valid_nonce =
+                    block_policy.get_account_nonce(eth_address, &blocktree_nonce_deltas);
 
                 // Remove transactions with nonces lower than the lowest valid nonce
-                let lowest_valid_nonce = high_nonce.map(|nonce| nonce + 1).unwrap_or(0);
                 transaction_group
                     .transactions
                     .retain(|&nonce, _| nonce >= lowest_valid_nonce);
 
-                for (nonce, _) in &transaction_group.transactions {
-                    if high_nonce.is_some() && *nonce != high_nonce.unwrap() + 1 {
-                        maybe_nonce_to_remove = Some(*nonce);
-                        break;
-                    }
-                    high_nonce = Some(*nonce);
-                }
+                let maybe_nonce_gap = transaction_group.find_nonce_gap(lowest_valid_nonce);
 
-                match maybe_nonce_to_remove {
-                    None => {}
-                    Some(nonce_to_remove) => {
-                        let _ = transaction_group.transactions.split_off(&nonce_to_remove);
-                    }
+                if let Some(gap) = maybe_nonce_gap {
+                    // TODO: garbage collect
+                    let _ = transaction_group.transactions.split_off(&gap);
                 }
             });
+        // TODO: garbage collect
         self.pool
             .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
     }
@@ -180,18 +185,9 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
     ) -> FullTransactionList {
-        // Get the latest nonce deltas at the parent block (block to extend)
-        let mut blocktree_nonce_deltas = BTreeMap::new();
-        for extending_block in extending_blocks {
-            let block_nonces = extending_block.get_nonces();
-            for (&address, &nonce) in block_nonces {
-                blocktree_nonce_deltas
-                    .entry(address)
-                    .and_modify(|curr_nonce| *curr_nonce = nonce)
-                    .or_insert(nonce);
-            }
-        }
-        self.remove_invalid_nonces(block_policy, blocktree_nonce_deltas);
+        // Get the latest nonce from txns in the extending blocks
+        let extending_account_nonces = extending_blocks.get_account_nonces();
+        self.remove_invalid_nonces(block_policy, extending_account_nonces);
 
         let mut txs = Vec::new();
         let mut total_gas = 0;
@@ -309,7 +305,7 @@ mod test {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
@@ -330,7 +326,7 @@ mod test {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 6400, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, tx.envelope_encoded().into()).unwrap();
@@ -356,7 +352,7 @@ mod test {
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut pool, t1.envelope_encoded().into()).unwrap();
@@ -372,15 +368,14 @@ mod test {
     }
 
     #[test]
-    #[traced_test]
     fn test_basic_price_priority() {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
         let s2 = B256::repeat_byte(0xBu8); // 0xf288ECAF15790EfcAc528946963A6Db8c3f8211d
-        let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s2, 2, 2, 3, 10)];
-        let expected_txs = vec![make_tx(s2, 2, 2, 3, 10), make_tx(s1, 1, 1, 0, 10)];
+        let txs = vec![make_tx(s1, 1, 1, 0, 10), make_tx(s2, 2, 2, 0, 10)];
+        let expected_txs = vec![make_tx(s2, 2, 2, 0, 10), make_tx(s1, 1, 1, 0, 10)];
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -399,7 +394,7 @@ mod test {
         let expected_txs = vec![make_tx(s1, 2, 2, 0, 10)];
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -443,7 +438,7 @@ mod test {
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -483,7 +478,7 @@ mod test {
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -531,7 +526,7 @@ mod test {
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -584,7 +579,7 @@ mod test {
             10,
             10,
             &EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             Default::default(),
@@ -649,7 +644,7 @@ mod test {
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
         for tx in txs.iter() {
@@ -669,7 +664,7 @@ mod test {
 
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
 
@@ -700,7 +695,7 @@ mod test {
 
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
 
@@ -732,7 +727,7 @@ mod test {
 
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
+            account_nonces: vec![(sender_1_address, 1)].into_iter().collect(),
             last_commit: GENESIS_SEQ_NUM,
         };
         Pool::insert_tx(&mut eth_tx_pool, txn_nonce_zero.envelope_encoded().into()).unwrap();
@@ -764,7 +759,7 @@ mod test {
         // create the extending block with txn 1
         let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
         };
 
@@ -800,7 +795,7 @@ mod test {
         let mut eth_tx_pool = EthTxPool::default();
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
         let eth_block_policy = EthBlockPolicy {
-            latest_nonces: vec![(sender_1_address, 0)].into_iter().collect(),
+            account_nonces: vec![(sender_1_address, 1)].into_iter().collect(),
             last_commit: GENESIS_SEQ_NUM,
         };
 

@@ -10,6 +10,10 @@ use monad_eth_tx::{EthTransaction, EthTxHash};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
+pub trait AccountNonceRetrievable {
+    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce>;
+}
+
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
 /// verified transactions availabe to access
 #[derive(Debug, Clone)]
@@ -105,29 +109,61 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
     }
 }
 
+impl<SCT: SignatureCollection> AccountNonceRetrievable for EthValidatedBlock<SCT> {
+    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
+        let mut account_nonces = BTreeMap::new();
+        let block_nonces = self.get_nonces();
+        for (&address, &txn_nonce) in block_nonces {
+            // account_nonce is the number of txns the account has sent. It's
+            // one higher than the last txn nonce
+            let acc_nonce = txn_nonce + 1;
+            account_nonces.insert(address, acc_nonce);
+        }
+        account_nonces
+    }
+}
+
+impl<SCT: SignatureCollection> AccountNonceRetrievable for Vec<&EthValidatedBlock<SCT>> {
+    fn get_account_nonces(&self) -> BTreeMap<EthAddress, Nonce> {
+        let mut account_nonces = BTreeMap::new();
+        for block in self.iter() {
+            let block_account_nonces = block.get_account_nonces();
+            for (address, account_nonce) in block_account_nonces {
+                account_nonces.insert(address, account_nonce);
+            }
+        }
+        account_nonces
+    }
+}
+
 /// A block policy for ethereum payloads
 pub struct EthBlockPolicy {
     // Maps EthAddresses to the its nonces in the last committed block
     // TODO: All nonces exist here for now. Should be moved to a DB
-    pub latest_nonces: BTreeMap<EthAddress, u64>,
+    pub account_nonces: BTreeMap<EthAddress, Nonce>,
 
     /// SeqNum of last committed block
     pub last_commit: SeqNum,
 }
 
 impl EthBlockPolicy {
-    pub fn get_latest_nonce(
+    pub fn get_account_nonce(
         &self,
         eth_address: &EthAddress,
-        nonce_deltas: &BTreeMap<EthAddress, Nonce>,
-    ) -> Option<Nonce> {
-        if let Some(&blocktree_nonce) = nonce_deltas.get(eth_address) {
-            return Some(blocktree_nonce);
-        } else if let Some(&committed_nonce) = self.latest_nonces.get(eth_address) {
-            return Some(committed_nonce);
+        pending_block_nonces: &BTreeMap<EthAddress, Nonce>,
+    ) -> Nonce {
+        // Layers of access
+        // 1. pending_block_nonces: coherent blocks in the blocks tree
+        // 2. (TODO) LRU cache of triedb nonces, updated when blocks are committed
+        // 3. (TODO) triedb query
+        if let Some(&coherent_block_nonce) = pending_block_nonces.get(eth_address) {
+            coherent_block_nonce
+        } else if let Some(&committed_nonce) = self.account_nonces.get(eth_address) {
+            committed_nonce
+        } else {
+            return 0;
+            todo!("triedb read: nonce in triedb is always next nonce");
         }
-
-        None
     }
 }
 
@@ -148,30 +184,18 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
                 .get_seq_num(),
             self.last_commit + SeqNum(1)
         );
-        // Get the latest nonce deltas at the parent block (block to extend)
-        let mut blocktree_nonce_deltas = BTreeMap::new();
-        for extending_block in extending_blocks {
-            let block_nonces = extending_block.get_nonces();
-            for (&address, &nonce) in block_nonces {
-                blocktree_nonce_deltas
-                    .entry(address)
-                    .and_modify(|curr_nonce| *curr_nonce = nonce)
-                    .or_insert(nonce);
-            }
-        }
+        // Get the account nonce from coherent blocks to extend
+        let mut pending_account_nonces = extending_blocks.get_account_nonces();
 
         for txn in block.validated_txns.iter() {
             let eth_address = EthAddress(txn.signer());
             let txn_nonce = txn.nonce();
 
-            let expected_nonce = self
-                .get_latest_nonce(&eth_address, &blocktree_nonce_deltas)
-                .map(|curr_nonce| curr_nonce + 1)
-                .unwrap_or(0);
+            let expected_nonce = self.get_account_nonce(&eth_address, &pending_account_nonces);
             if txn_nonce != expected_nonce {
                 return false;
             }
-            blocktree_nonce_deltas.insert(eth_address, txn_nonce);
+            pending_account_nonces.insert(eth_address, txn_nonce + 1);
         }
 
         true
@@ -180,12 +204,9 @@ impl<SCT: SignatureCollection> BlockPolicy<SCT> for EthBlockPolicy {
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
-        let acc_nonces = block.get_nonces();
-        for (&address, &nonce) in acc_nonces {
-            self.latest_nonces
-                .entry(address)
-                .and_modify(|curr_nonce| *curr_nonce = nonce)
-                .or_insert(nonce);
+        let committed_block_account_nonces = block.get_account_nonces();
+        for (address, account_nonce) in committed_block_account_nonces {
+            self.account_nonces.insert(address, account_nonce);
         }
     }
 }

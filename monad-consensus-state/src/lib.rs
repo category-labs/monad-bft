@@ -4205,7 +4205,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
@@ -4256,7 +4256,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
@@ -4307,7 +4307,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
@@ -4385,7 +4385,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
@@ -4458,9 +4458,9 @@ mod test {
         // block policy should be updated with latest account nonces from block 1
         assert!(n1
             .block_policy
-            .latest_nonces
+            .account_nonces
             .get(&sender_1_address)
-            .is_some_and(|nonce| *nonce == 0));
+            .is_some_and(|nonce| *nonce == 1));
     }
 
     #[test]
@@ -4486,7 +4486,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),
@@ -4592,7 +4592,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy {
-                latest_nonces: BTreeMap::new(),
+                account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
             },
             || EthValidator::new(10000, u64::MAX),

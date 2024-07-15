@@ -52,7 +52,7 @@ type SignatureCollectionType = MultiSig<NopSignature>;
 fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
     let eth_block_policy = EthBlockPolicy {
-        latest_nonces: BTreeMap::new(),
+        account_nonces: BTreeMap::new(),
         last_commit: GENESIS_SEQ_NUM,
     };
 

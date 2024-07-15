@@ -50,14 +50,20 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
         // recover the account nonces in this block
         let mut nonces = BTreeMap::new();
 
-        let validated_txns: Vec<EthTransaction> = eth_txns
-            .into_iter()
-            .zip(signers)
-            .map(|(eth_txn, signer)| {
-                nonces.insert(EthAddress(signer), eth_txn.nonce());
-                eth_txn.with_signer(signer)
-            })
-            .collect();
+        let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
+
+        for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
+            let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
+            // txn iteration is following the same order as they are in the
+            // block. A block is invalid if we see a smaller or equal nonce
+            // after the first
+            if let Some(old_nonce) = maybe_old_nonce {
+                if old_nonce >= eth_txn.nonce() {
+                    return None;
+                }
+            }
+            validated_txns.push(eth_txn.with_signer(signer));
+        }
 
         if validated_txns.len() > self.tx_limit {
             return None;
@@ -73,7 +79,7 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
         Some(EthValidatedBlock {
             block,
             validated_txns,
-            nonces,
+            nonces, // (address -> highest txn nonce) in the block
         })
     }
 

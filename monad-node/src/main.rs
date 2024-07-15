@@ -256,7 +256,7 @@ async fn run(
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
         },
         block_policy: EthBlockPolicy {
-            latest_nonces: BTreeMap::new(),
+            account_nonces: BTreeMap::new(),
             // MonadStateBuilder is responsible for updating this to forkpoint root if necessary
             last_commit: GENESIS_SEQ_NUM,
         },
