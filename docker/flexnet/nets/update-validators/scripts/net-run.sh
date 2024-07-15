@@ -126,6 +126,9 @@ runner_services=$(docker compose config --services | grep runner)
 node_services=$(docker compose config --services | grep -v -E "(build|runner|post)")
 post_services=$(docker compose config --services | grep post)
 
+# this has to get built first 🤷🏻‍
+docker compose build build_monad_bft
+
 docker compose build $build_services
 docker compose build $runner_services
 
