@@ -6,6 +6,7 @@ mempool_sock="./monad/mempool.sock"
 controlpanel_sock="./monad/controlpanel.sock"
 triedb="./monad/triedb"
 wal="./monad/wal"
+forkpoint="./monad/config/forkpoint.toml"
 
 # Check if directories/files from previous run exist, delete them if they exist
 if [ -d "$blockdb" ]; then
@@ -30,4 +31,8 @@ fi
 
 if [ -f "$wal" ]; then
     rm "$wal"
+fi
+
+if [ -f "$forkpoint" ]; then
+    rm "$forkpoint"
 fi

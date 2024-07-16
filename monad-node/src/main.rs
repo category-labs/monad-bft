@@ -41,7 +41,7 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_triedb_cache::ReserveBalanceCache;
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
+    checkpoint::FileCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
     parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
@@ -141,14 +141,14 @@ async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
 ) -> Result<(), ()> {
-    let gossip = if node_state.forkpoint_config.forkpoint.validator_sets[0]
+    let gossip = if node_state.forkpoint_config.validator_sets[0]
         .validators
         .0
         .len()
         > 1
     {
         SeederConfig::<Raptor<SignatureType>> {
-            all_peers: node_state.forkpoint_config.forkpoint.validator_sets[0]
+            all_peers: node_state.forkpoint_config.validator_sets[0]
                 .validators
                 .0
                 .iter()
@@ -171,7 +171,7 @@ async fn run(
         .boxed()
     } else {
         MockGossipConfig {
-            all_peers: node_state.forkpoint_config.forkpoint.validator_sets[0]
+            all_peers: node_state.forkpoint_config.validator_sets[0]
                 .validators
                 .0
                 .iter()
@@ -196,7 +196,7 @@ async fn run(
     )
     .await;
 
-    let validators = node_state.forkpoint_config.forkpoint.validator_sets[0].clone();
+    let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
     let val_set_update_interval = SeqNum(2000);
 
@@ -216,7 +216,7 @@ async fn run(
                 gas_limit: node_state.node_config.consensus.block_gas_limit,
             },
         ),
-        checkpoint: MockCheckpoint::default(),
+        checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: MockStateRootHashNop::new(
             validators.validators.clone(),
             val_set_update_interval,
@@ -239,6 +239,7 @@ async fn run(
     };
     assert!(wal_events.is_empty(), "wal must be cleared after restart");
 
+    let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
     let mut builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
@@ -268,7 +269,7 @@ async fn run(
         val_set_update_interval,
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
-        forkpoint: node_state.forkpoint_config.forkpoint,
+        forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
@@ -319,8 +320,7 @@ async fn run(
         .as_ref()
         .map(|provider| build_otel_context(provider, network_name_hash));
 
-    let mut last_ledger_len = executor.ledger().get_num_commits();
-    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.0);
 
     if let Some((cx, _expiry)) = &otel_context {
         ledger_span.set_parent(cx.clone());
@@ -398,11 +398,12 @@ async fn run(
                     executor.exec(commands);
                 }
 
-                let ledger_len = executor.ledger().get_num_commits();
+                let ledger_tip = executor.ledger.last_commit().unwrap_or(last_ledger_tip);
 
-                if ledger_len > last_ledger_len {
-                    last_ledger_len = ledger_len;
-                    ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+
+                if ledger_tip > last_ledger_tip {
+                    last_ledger_tip = ledger_tip;
+                    ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.0);
 
                     if let Some((cx, expiry)) = &mut otel_context {
                         if *expiry < SystemTime::now() {

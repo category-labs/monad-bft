@@ -24,6 +24,7 @@ pub struct NodeState {
     pub gossip_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
 
+    pub forkpoint_path: PathBuf,
     pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
@@ -75,7 +76,7 @@ impl NodeState {
             .clone()
             .unwrap_or("monad-coordinator".to_owned());
         let forkpoint_config: ForkpointConfig =
-            toml::from_str(&std::fs::read_to_string(cli.forkpoint_config)?)?;
+            toml::from_str(&std::fs::read_to_string(&cli.forkpoint_config)?)?;
 
         let run_mode = cli.run_mode.unwrap_or_default();
 
@@ -87,6 +88,7 @@ impl NodeState {
             gossip_identity: gossip_key,
             bls12_381_identity: bls_key,
 
+            forkpoint_path: cli.forkpoint_config,
             wal_path: cli.wal_path,
             execution_ledger_path: cli.execution_ledger_path,
             blockdb_path: cli.blockdb_path,

@@ -12,7 +12,6 @@ bench = false
 
 [dependencies]
 monad-async-state-verify = { path = "../monad-async-state-verify" }
-monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }

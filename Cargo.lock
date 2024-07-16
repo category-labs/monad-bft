@@ -3428,7 +3428,6 @@ dependencies = [
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
- "serde",
  "tracing",
 ]
 
@@ -3892,7 +3891,6 @@ dependencies = [
  "futures",
  "itertools 0.10.5",
  "monad-async-state-verify",
- "monad-blocktree",
  "monad-bls",
  "monad-consensus",
  "monad-consensus-state",
@@ -4171,7 +4169,6 @@ dependencies = [
  "prost 0.11.9",
  "rand",
  "rand_chacha",
- "serde",
  "test-case",
  "toml 0.7.8",
  "tracing",
@@ -4390,6 +4387,7 @@ dependencies = [
  "test-case",
  "thiserror",
  "tokio",
+ "toml 0.7.8",
  "tracing",
 ]
 

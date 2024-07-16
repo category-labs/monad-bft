@@ -29,22 +29,22 @@ pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, E, OM, B, C, SCT: SignatureCollection> Executor
+impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, E, OM, B, SCT: SignatureCollection> Executor
     for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
 
-    CE: Executor<Command = CheckpointCommand<C>>,
+    CE: Executor<Command = CheckpointCommand<SCT>>,
     LE: Executor<Command = LedgerCommand<SCT::NodeIdPubKey, B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
 {
-    type Command = Command<E, OM, B, C, SCT>;
+    type Command = Command<E, OM, B, SCT>;
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, B, C, SCT>>) {
+    fn exec(&mut self, commands: Vec<Command<E, OM, B, SCT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,

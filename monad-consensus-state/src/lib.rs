@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monad_blocktree::blocktree::{BlockTree, RootInfo};
+use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -13,6 +13,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
     block_validator::BlockValidator,
+    checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::{
         ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, StateRootResult,
@@ -23,6 +24,7 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
     timeout::TimeoutCertificate,
     txpool::TxPool,
+    validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -220,7 +222,17 @@ where
             vote_state: VoteState::new(consensus_round),
             high_qc,
             pacemaker: Pacemaker::new(config.delta, consensus_epoch, consensus_round, None),
-            safety: Safety::new(high_qc_round, high_qc_round),
+            safety: Safety::new(
+                // ConsensusState is timed out synchronously on MonadState init, which always sets
+                // highest_vote_round to consensus_round
+                //
+                // this gives us the guarantee that we will never vote on consensus_round
+                //
+                // we set this to high_qc_round here just because our consensus state machine unit
+                // tests don't assume that Round(1) gets timed out
+                high_qc_round, // highest_vote_round
+                high_qc_round, // highest_qc_round
+            ),
 
             // timeout has to be proportional to delta, too slow/fast is bad
             // assuming 2 * delta is the duration which it takes for perfect message transmission
@@ -232,6 +244,9 @@ where
             ),
 
             // initial value here doesn't matter; it just must increase monotonically
+            // this is because we never propose on restart - we always time out
+            //
+            // on our first proposal, we will set this to the appropriate value
             last_proposed_round: Round(0),
         }
     }
@@ -617,7 +632,61 @@ where
         self.consensus.high_qc = qc.clone();
         let mut cmds = Vec::new();
         cmds.extend(self.try_commit(qc));
+        // any time high_qc is updated, we generate a new checkpoint
+        cmds.push(ConsensusCommand::CheckpointSave(self.checkpoint()));
         cmds
+    }
+
+    #[must_use]
+    fn checkpoint(&self) -> Checkpoint<SCT> {
+        let val_set_data = |epoch: Epoch| {
+            let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
+            let validator_set = self.val_epoch_map.get_val_set(&epoch)?.get_members();
+
+            let cert_pubkeys = self
+                .val_epoch_map
+                .get_cert_pubkeys(&epoch)
+                .unwrap()
+                .map
+                .clone();
+            let validators = cert_pubkeys
+                .iter()
+                .map(|(node_id, cert_pub_key)| {
+                    let stake = validator_set
+                        .get(node_id)
+                        .expect("no validator_set for node_id");
+                    ValidatorData {
+                        node_id: *node_id,
+                        stake: *stake,
+                        cert_pubkey: *cert_pub_key,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Some(ValidatorSetDataWithEpoch {
+                epoch,
+                round,
+                validators: ValidatorSetData(validators),
+            })
+        };
+
+        let base_epoch = self.consensus.pending_block_tree.root().epoch;
+        Checkpoint {
+            root: self.consensus.pending_block_tree.root().clone(),
+            high_qc: self.consensus.high_qc.clone(),
+            validator_sets: vec![
+                val_set_data(base_epoch)
+                    .expect("checkpoint: no validator set populated for base_epoch"),
+                val_set_data(base_epoch + Epoch(1))
+                    .expect("checkpoint: no validator set populated for base_epoch + 1"),
+            ]
+            .into_iter()
+            .chain(
+                // third val_set might not be ready
+                val_set_data(base_epoch + Epoch(2)),
+            )
+            .collect(),
+        }
     }
 
     /// Try commit blocks using the QC. Committing the boundary block can
@@ -1030,11 +1099,6 @@ where
 
                 self.metrics.consensus_events.trigger_state_sync += 1;
 
-                // Remove older blocks from the blocktree
-                self.consensus
-                    .pending_block_tree
-                    .remove_old_blocks(qc.get_seq_num() - self.config.state_sync_threshold);
-
                 vec![]
             } else {
                 let current_epoch = self
@@ -1138,7 +1202,6 @@ mod test {
     use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
     use itertools::Itertools;
-    use monad_blocktree::blocktree::RootInfo;
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
@@ -1150,6 +1213,7 @@ mod test {
     use monad_consensus_types::{
         block::{Block, BlockPolicy, BlockType, PassthruBlockPolicy},
         block_validator::{BlockValidator, MockValidator},
+        checkpoint::RootInfo,
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
@@ -1168,7 +1232,7 @@ mod test {
             CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
         },
         hasher::Hash,
-        NopPubKey, NopSignature,
+        NopSignature,
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
@@ -1450,6 +1514,11 @@ mod test {
                     val_stakes.clone(),
                     ValidatorMapping::new(val_cert_pubkeys.clone()),
                 );
+                val_epoch_map.insert(
+                    Epoch(2),
+                    val_stakes.clone(),
+                    ValidatorMapping::new(val_cert_pubkeys.clone()),
+                );
                 let epoch_manager =
                     EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
@@ -1473,6 +1542,7 @@ mod test {
                     RootInfo {
                         round: genesis_qc.get_round(),
                         seq_num: genesis_qc.get_seq_num(),
+                        epoch: genesis_qc.get_epoch(),
                         block_id: genesis_qc.get_block_id(),
                         state_root: StateRootHash(Hash([0xb; 32])),
                     },
@@ -1508,6 +1578,11 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory);
         val_epoch_map.insert(
             Epoch(1),
+            val_stakes.clone(),
+            ValidatorMapping::new(val_cert_pubkeys.clone()),
+        );
+        val_epoch_map.insert(
+            Epoch(2),
             val_stakes,
             ValidatorMapping::new(val_cert_pubkeys),
         );
@@ -2349,18 +2424,19 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 4);
-        assert!(matches!(cmds[0], ConsensusCommand::EnterRound(_, _)));
+        assert_eq!(cmds.len(), 5);
+        assert!(matches!(cmds[0], ConsensusCommand::CheckpointSave(_)));
+        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[1],
+            cmds[2],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::Pacemaker
             }
         ));
-        assert!(matches!(cmds[2], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
         assert!(matches!(
-            cmds[3],
+            cmds[4],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::BlockSync(_)
@@ -2439,11 +2515,12 @@ mod test {
             wrapped_state.metrics.consensus_events.rx_missing_state_root,
             1
         );
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert!(matches!(cmds[0], ConsensusCommand::LedgerCommit(_)));
-        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
+        assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave(_)));
+        assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[2],
+            cmds[3],
             ConsensusCommand::Schedule {
                 duration: _,
                 on_timeout: TimeoutVariant::Pacemaker
@@ -3199,32 +3276,6 @@ mod test {
             MockTxPool::default(),
             || NopStateRoot,
         );
-        let val_stakes: Vec<(NodeId<NopPubKey>, Stake)> = env
-            .val_epoch_map
-            .get_val_set(&Epoch(1))
-            .unwrap()
-            .get_members()
-            .iter()
-            .map(|(p, s)| (*p, *s))
-            .collect();
-        let val_cert_pubkeys = env
-            .val_epoch_map
-            .get_cert_pubkeys(&Epoch(1))
-            .unwrap()
-            .map
-            .clone();
-        env.val_epoch_map.insert(
-            Epoch(2),
-            val_stakes.clone(),
-            ValidatorMapping::new(val_cert_pubkeys.clone()),
-        );
-        for node in ctx.iter_mut() {
-            node.val_epoch_map.insert(
-                Epoch(2),
-                val_stakes.clone(),
-                ValidatorMapping::new(val_cert_pubkeys.clone()),
-            );
-        }
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
@@ -3332,32 +3383,6 @@ mod test {
             MockTxPool::default(),
             || NopStateRoot,
         );
-        let val_stakes: Vec<(NodeId<NopPubKey>, Stake)> = env
-            .val_epoch_map
-            .get_val_set(&Epoch(1))
-            .unwrap()
-            .get_members()
-            .iter()
-            .map(|(p, s)| (*p, *s))
-            .collect();
-        let val_cert_pubkeys = env
-            .val_epoch_map
-            .get_cert_pubkeys(&Epoch(1))
-            .unwrap()
-            .map
-            .clone();
-        env.val_epoch_map.insert(
-            Epoch(2),
-            val_stakes.clone(),
-            ValidatorMapping::new(val_cert_pubkeys.clone()),
-        );
-        for node in ctx.iter_mut() {
-            node.val_epoch_map.insert(
-                Epoch(2),
-                val_stakes.clone(),
-                ValidatorMapping::new(val_cert_pubkeys.clone()),
-            );
-        }
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
@@ -3456,32 +3481,6 @@ mod test {
             MockTxPool::default(),
             || NopStateRoot,
         );
-        let val_stakes: Vec<(NodeId<NopPubKey>, Stake)> = env
-            .val_epoch_map
-            .get_val_set(&Epoch(1))
-            .unwrap()
-            .get_members()
-            .iter()
-            .map(|(p, s)| (*p, *s))
-            .collect();
-        let val_cert_pubkeys = env
-            .val_epoch_map
-            .get_cert_pubkeys(&Epoch(1))
-            .unwrap()
-            .map
-            .clone();
-        env.val_epoch_map.insert(
-            Epoch(2),
-            val_stakes.clone(),
-            ValidatorMapping::new(val_cert_pubkeys.clone()),
-        );
-        for node in ctx.iter_mut() {
-            node.val_epoch_map.insert(
-                Epoch(2),
-                val_stakes.clone(),
-                ValidatorMapping::new(val_cert_pubkeys.clone()),
-            );
-        }
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
@@ -3747,32 +3746,6 @@ mod test {
             MockTxPool::default(),
             || NopStateRoot,
         );
-        let val_stakes: Vec<(NodeId<NopPubKey>, Stake)> = env
-            .val_epoch_map
-            .get_val_set(&Epoch(1))
-            .unwrap()
-            .get_members()
-            .iter()
-            .map(|(p, s)| (*p, *s))
-            .collect();
-        let val_cert_pubkeys = env
-            .val_epoch_map
-            .get_cert_pubkeys(&Epoch(1))
-            .unwrap()
-            .map
-            .clone();
-        env.val_epoch_map.insert(
-            Epoch(2),
-            val_stakes.clone(),
-            ValidatorMapping::new(val_cert_pubkeys.clone()),
-        );
-        for node in ctx.iter_mut() {
-            node.val_epoch_map.insert(
-                Epoch(2),
-                val_stakes.clone(),
-                ValidatorMapping::new(val_cert_pubkeys.clone()),
-            );
-        }
         let mut blocks = vec![];
 
         // Sequence number of the block which updates the validator set
@@ -3822,6 +3795,33 @@ mod test {
         env.epoch_manager
             .schedule_epoch_start(update_block, update_block_round);
 
+        let val_stakes: Vec<(NodeId<_>, Stake)> = env
+            .val_epoch_map
+            .get_val_set(&Epoch(2))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = env
+            .val_epoch_map
+            .get_cert_pubkeys(&Epoch(2))
+            .unwrap()
+            .map
+            .clone();
+        env.val_epoch_map.insert(
+            Epoch(3),
+            val_stakes.clone(),
+            ValidatorMapping::new(val_cert_pubkeys.clone()),
+        );
+        for node in ctx.iter_mut() {
+            node.val_epoch_map.insert(
+                Epoch(3),
+                val_stakes.clone(),
+                ValidatorMapping::new(val_cert_pubkeys.clone()),
+            );
+        }
+
         // skip block on round expected_epoch_start_round
         let _unused_proposal = env.next_proposal_empty();
         // generate proposal for expected_epoch_start_round + 1
@@ -3866,6 +3866,34 @@ mod test {
             || NopStateRoot,
         );
 
+        let val_stakes: Vec<(NodeId<_>, Stake)> = env
+            .val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = env
+            .val_epoch_map
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap()
+            .map
+            .clone();
+        env.val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        env.val_epoch_map.insert(
+            Epoch(1),
+            val_stakes.clone(),
+            ValidatorMapping::new(val_cert_pubkeys.clone()),
+        );
+        for node in ctx.iter_mut() {
+            node.val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+            node.val_epoch_map.insert(
+                Epoch(1),
+                val_stakes.clone(),
+                ValidatorMapping::new(val_cert_pubkeys.clone()),
+            );
+        }
         // generate a random key as a validator in epoch 2
         let epoch_2_leader = NodeId::new(get_key::<SignatureType>(100).pubkey());
         env.val_epoch_map.insert(

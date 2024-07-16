@@ -11,6 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
+    checkpoint::Checkpoint,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_crypto::certificate_signature::{
@@ -101,10 +102,4 @@ where
         //TODO-3 VoteStateCommand used for evidence collection
         todo!()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checkpoint<SCT: SignatureCollection> {
-    block: Block<SCT>,
-    epoch: Epoch,
 }

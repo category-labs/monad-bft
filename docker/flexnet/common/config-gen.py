@@ -295,6 +295,7 @@ if __name__ == "__main__":
     root = {
         "round": 0,
         "seq_num": "0",
+        "epoch": 1,
         "block_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "state_root": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4",
     }

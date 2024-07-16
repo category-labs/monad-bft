@@ -13,6 +13,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
+    checkpoint::Checkpoint,
     metrics::Metrics,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
@@ -72,8 +73,8 @@ pub enum ExecutionLedgerCommand<SCT: SignatureCollection> {
     LedgerCommit(Vec<Block<SCT>>),
 }
 
-pub enum CheckpointCommand<C> {
-    Save(C),
+pub enum CheckpointCommand<SCT: SignatureCollection> {
+    Save(Checkpoint<SCT>),
 }
 
 pub enum StateRootHashCommand {
@@ -132,19 +133,19 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
+pub enum Command<E, OM, B, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
 
     LedgerCommand(LedgerCommand<SCT::NodeIdPubKey, B, E>),
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
-    CheckpointCommand(CheckpointCommand<C>),
+    CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand),
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
 }
 
-impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
+impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
@@ -152,7 +153,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<SCT::NodeIdPubKey, B, E>>,
         Vec<ExecutionLedgerCommand<SCT>>,
-        Vec<CheckpointCommand<C>>,
+        Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand>,
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,

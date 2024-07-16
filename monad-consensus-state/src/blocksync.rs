@@ -340,6 +340,10 @@ where
 
         let mut peer = peers[(cnt) % peers.len()];
         while &peer == self_id {
+            assert!(
+                peers.len() != 1,
+                "self is only node in validator set, can't blocksync"
+            );
             cnt += 1;
             peer = peers[(cnt) % peers.len()];
         }

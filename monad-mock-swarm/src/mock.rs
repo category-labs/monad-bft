@@ -10,8 +10,9 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use monad_consensus_state::command::Checkpoint;
-use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    block::Block, checkpoint::Checkpoint, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -36,7 +37,7 @@ pub struct MockExecutor<S: SwarmRelation> {
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     >,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
-    checkpoint: MockCheckpoint<Checkpoint<S::SignatureCollectionType>>,
+    checkpoint: MockCheckpoint<S::SignatureCollectionType>,
     state_root_hash: S::StateRootHashExecutor,
     loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType>,
@@ -114,6 +115,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
         }
     }
 
+    pub fn checkpoint(&self) -> Option<Checkpoint<S::SignatureCollectionType>> {
+        self.checkpoint.checkpoint.clone()
+    }
+
     pub fn tick(&self) -> Duration {
         self.tick
     }
@@ -178,7 +183,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
         VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>,
         Block<S::SignatureCollectionType>,
-        Checkpoint<S::SignatureCollectionType>,
         S::SignatureCollectionType,
     >;
 

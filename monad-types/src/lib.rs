@@ -189,6 +189,9 @@ impl SeqNum {
     /// The first epoch starts with SeqNum 0 and end with 100. Every epoch
     /// afterwards starts at SeqNum (X * interval) + 1 and end with (X *
     /// interval + interval)
+    ///
+    /// This tells us what the boundary block of the epoch is. Note that this only indicates when
+    /// the next epoch's round is scheduled.
     pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
         *self % val_set_update_interval == SeqNum(0) && *self != SeqNum(0)
     }

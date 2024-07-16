@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use monad_async_state_verify::PeerAsyncStateVerify;
-use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
+use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{Block, PassthruBlockPolicy},
     block_validator::MockValidator,
@@ -101,7 +101,7 @@ pub fn make_monad_executor<ST, SCT>(
     TokioTimer<MonadEvent<ST, SCT>>,
     MockLedger<SCT, CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
-    MockCheckpoint<Checkpoint<SCT>>,
+    MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,
     IpcReceiver<ST, SCT>,
     ControlPanelIpcReceiver<ST, SCT>,
@@ -185,15 +185,7 @@ pub fn make_monad_state<ST, SCT>(
     config: StateConfig<ST, SCT>,
 ) -> (
     MonadStateType<ST, SCT>,
-    Vec<
-        Command<
-            MonadEvent<ST, SCT>,
-            VerifiedMonadMessage<ST, SCT>,
-            Block<SCT>,
-            Checkpoint<SCT>,
-            SCT,
-        >,
-    >,
+    Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>,
 )
 where
     ST: CertificateSignatureRecoverable,

@@ -25,7 +25,6 @@ monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 bytes = { workspace = true }
 itertools = { workspace = true }
-serde = { workspace = true, features = ["serde_derive"] }
 prost = { workspace = true }
 tracing = { workspace = true }
 

@@ -42,6 +42,7 @@ impl UntilTerminator {
         self
     }
 
+    // TODO change this to SeqNum
     pub fn until_block(mut self, b_cnt: usize) -> Self {
         self.until_block = b_cnt;
         self

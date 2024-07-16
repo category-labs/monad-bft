@@ -27,6 +27,7 @@ rayon = { workspace = true }
 alloy-rlp = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"], optional = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -1,10 +1,10 @@
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
+use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthAddress};
 use monad_secp::{PubKey, SecpSignature};
-use monad_state::Forkpoint;
 use monad_types::Stake;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 mod bootstrap;
 pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
@@ -42,12 +42,7 @@ pub struct GenesisConfig {
     pub validators: Vec<ValidatorConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ForkpointConfig {
-    #[serde(flatten)]
-    pub forkpoint: Forkpoint<SignatureCollectionType>,
-}
+pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

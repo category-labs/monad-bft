@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use monad_blocktree::blocktree::RootInfo;
 use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     validation::signing::Verified,
@@ -11,6 +10,7 @@ use monad_consensus_state::{
     command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
 };
 use monad_consensus_types::{
+    checkpoint::RootInfo,
     metrics::Metrics,
     payload::{Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -311,6 +311,11 @@ fn setup<
                 val_stakes.clone(),
                 ValidatorMapping::new(val_cert_pubkeys.clone()),
             );
+            val_epoch_map.insert(
+                Epoch(2),
+                val_stakes.clone(),
+                ValidatorMapping::new(val_cert_pubkeys.clone()),
+            );
             let epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
 
             let default_key =
@@ -333,6 +338,7 @@ fn setup<
                 RootInfo {
                     round: genesis_qc.get_round(),
                     seq_num: genesis_qc.get_seq_num(),
+                    epoch: genesis_qc.get_epoch(),
                     block_id: genesis_qc.get_block_id(),
                     state_root: StateRootHash(Hash([0xb; 32])),
                 },

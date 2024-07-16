@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
@@ -79,15 +78,7 @@ where
 }
 
 impl<ST, SCT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<
-        Command<
-            MonadEvent<ST, SCT>,
-            VerifiedMonadMessage<ST, SCT>,
-            Block<SCT>,
-            Checkpoint<SCT>,
-            SCT,
-        >,
-    >
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

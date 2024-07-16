@@ -11,7 +11,7 @@ use monad_consensus_types::{block::BlockType, signature_collection::SignatureCol
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::LedgerCommand;
-use monad_types::{BlockId, NodeId};
+use monad_types::{BlockId, NodeId, SeqNum};
 use tracing::warn;
 
 /// A ledger for commited Monad Blocks
@@ -123,7 +123,7 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> MockLedger<SCT,
 pub struct BoundedLedger<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> {
     recent_blocks: VecDeque<O>,
     max_blocks: usize,
-    num_commits: usize,
+    last_commit: Option<SeqNum>,
     ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -135,7 +135,7 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> BoundedLedger<S
         Self {
             recent_blocks: VecDeque::new(),
             max_blocks,
-            num_commits: 0,
+            last_commit: None,
             ledger_fetches: HashMap::default(),
             waker: None,
             metrics: Default::default(),
@@ -153,8 +153,8 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
-                    self.num_commits += blocks.len();
                     for block in blocks {
+                        self.last_commit = Some(block.get_seq_num());
                         if self.recent_blocks.len() >= self.max_blocks {
                             self.recent_blocks.pop_back();
                         }
@@ -214,8 +214,8 @@ where
 }
 
 impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> BoundedLedger<SCT, PT, O, E> {
-    pub fn get_num_commits(&self) -> usize {
-        self.num_commits
+    pub fn last_commit(&self) -> Option<SeqNum> {
+        self.last_commit
     }
 }
 

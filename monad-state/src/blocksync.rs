@@ -4,7 +4,7 @@ use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     validation::signing::Validated,
 };
-use monad_consensus_state::{command::Checkpoint, ConsensusState};
+use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
@@ -148,15 +148,7 @@ where
 }
 
 impl<ST, SCT> From<BlockSyncCommand<SCT>>
-    for Vec<
-        Command<
-            MonadEvent<ST, SCT>,
-            VerifiedMonadMessage<ST, SCT>,
-            Block<SCT>,
-            Checkpoint<SCT>,
-            SCT,
-        >,
-    >
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

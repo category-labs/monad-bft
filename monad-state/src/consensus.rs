@@ -5,8 +5,7 @@ use monad_consensus::{
     validation::signing::Validated,
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand},
-    ConsensusConfig, ConsensusState, ConsensusStateWrapper,
+    command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
 };
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
@@ -237,21 +236,13 @@ where
 }
 
 impl<ST, SCT> From<WrappedConsensusCommand<ST, SCT>>
-    for Vec<
-        Command<
-            MonadEvent<ST, SCT>,
-            VerifiedMonadMessage<ST, SCT>,
-            Block<SCT>,
-            Checkpoint<SCT>,
-            SCT,
-        >,
-    >
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT>) -> Self {
-        let mut parent_cmds: Vec<Command<_, _, _, _, _>> = Vec::new();
+        let mut parent_cmds: Vec<Command<_, _, _, _>> = Vec::new();
 
         match wrapped.command {
             ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(

@@ -218,13 +218,14 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
 
         // Restart node from forkpoint and join network
         let forkpoint = failed_node.get_forkpoint();
-        assert!(forkpoint
-            .validate(
+        assert_eq!(
+            forkpoint.validate(
                 state_root_delay,
                 &ValidatorSetFactory::default(),
                 epoch_length
-            )
-            .is_ok());
+            ),
+            Ok(())
+        );
         let network_current_epoch = swarm
             .states()
             .iter()
@@ -244,7 +245,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             .map(|t| t.1)
             .expect("current epoch must be scheduled");
         let validators = forkpoint.validator_sets[0].clone();
-        restart_builder.forkpoint = forkpoint;
+        restart_builder.forkpoint = forkpoint.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
             restart_builder,
@@ -296,7 +297,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
             .map(|b| b.payload.seq_num >= SeqNum(terminate_block as u64 - 2))
-            .map_or(false, |v| v);
+            .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
             || (state_sync_triggered && close_to_threshold)
@@ -304,8 +305,27 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
 
         assert!(
             test_result,
-            "block_before_failure {:?} recovery_time {:?} epoch_length {:?}",
-            blocks_before_failure, recovery_time, epoch_length
+            "\
+block_before_failure={:?},
+recovery_time={:?},
+epoch_length={:?},
+restarted_node_caught_up={:?},
+state_sync_triggered={:?},
+close_to_threshold={:?},
+invalid_epoch_error={:?},
+epoch_cross_over={:?},
+forkpoint={:?},
+restarted_node_metrics={:#?}",
+            blocks_before_failure,
+            recovery_time,
+            epoch_length,
+            restarted_node_caught_up,
+            state_sync_triggered,
+            close_to_threshold,
+            invalid_epoch_error,
+            epoch_cross_over,
+            forkpoint,
+            restarted_node.state.metrics()
         );
     }
 }
@@ -503,13 +523,14 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
 
             let mut builder = state_configs_dup.swap_remove(builder_pos);
             let forkpoint = node.get_forkpoint();
-            assert!(forkpoint
-                .validate(
+            assert_eq!(
+                forkpoint.validate(
                     state_root_delay,
                     &ValidatorSetFactory::default(),
                     epoch_length
-                )
-                .is_ok());
+                ),
+                Ok(())
+            );
 
             let validators = forkpoint.validator_sets[0].clone();
             builder.forkpoint = forkpoint;
@@ -550,10 +571,8 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
                     .ledger()
                     .get_blocks()
                     .last()
-                    .expect("committed blocks")
-                    .payload
-                    .seq_num
-                    .0
+                    .map(|block| block.payload.seq_num.0)
+                    .unwrap_or_default()
             })
             .min()
             .expect("network non-empty");
@@ -566,24 +585,33 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
                     .ledger()
                     .get_blocks()
                     .last()
-                    .expect("committed blocks")
-                    .payload
-                    .seq_num
-                    .0
+                    .map(|block| block.payload.seq_num.0)
+                    .unwrap_or_default()
             })
             .max()
             .expect("network non-empty");
 
         // Assert the network is making progress
-        let network_progress_after_recovery = max_ledger_len == terminate_block as u64;
+        // TODO change this to max_ledger_len == terminate_block once until_block is by seq_num
+        let network_progress_after_recovery = max_ledger_len >= terminate_block as u64;
 
         let network_in_sync = min_ledger_len + 2 >= max_ledger_len;
 
         assert!(
             network_progress_after_recovery && network_in_sync,
-            "forkpoint restart config before {:?} epoch_length {:?}",
+            "\
+blocks_before_failure={:?},
+epoch_length={:?},
+network_progress_after_recovery={},
+network_in_sync={},
+max_ledger_len={},
+terminate_block={}",
             blocks_before_failure,
-            epoch_length
+            epoch_length,
+            network_progress_after_recovery,
+            network_in_sync,
+            max_ledger_len,
+            terminate_block,
         );
     }
 }

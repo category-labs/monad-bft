@@ -6,14 +6,13 @@ use std::{
 
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
+    checkpoint::RootInfo,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
 };
 use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Round, SeqNum};
-use serde::{Deserialize, Serialize};
+use monad_types::{BlockId, SeqNum};
 use tracing::trace;
 
 type Result<T> = StdResult<T, BlockTreeError>;
@@ -36,14 +35,6 @@ impl std::error::Error for BlockTreeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         None
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootInfo {
-    pub round: Round,
-    pub seq_num: SeqNum,
-    pub block_id: BlockId,
-    pub state_root: StateRootHash,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -155,6 +146,10 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
         }
     }
 
+    pub fn root(&self) -> &RootInfo {
+        &self.root.info
+    }
+
     /// Prune the block tree and returns the blocks to commit along that branch
     /// in increasing round. After a successful prune, `new_root` is the root of
     /// the block tree. All blocks pruned are deallocated
@@ -219,6 +214,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
             info: RootInfo {
                 round: new_root_entry.validated_block.get_round(),
                 seq_num: new_root_entry.validated_block.get_seq_num(),
+                epoch: new_root_entry.validated_block.get_epoch(),
                 block_id: new_root_entry.validated_block.get_id(),
                 state_root: new_root_entry.validated_block.get_state_root(),
             },
@@ -438,12 +434,6 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
         None
     }
 
-    /// Remove all blocks which are older than the given sequence number
-    pub fn remove_old_blocks(&mut self, seq_num: SeqNum) {
-        self.tree
-            .retain(|_, b| b.validated_block.get_seq_num() >= seq_num);
-    }
-
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &BP::ValidatedBlock) -> bool {
@@ -646,6 +636,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -766,6 +757,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -874,6 +866,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -946,6 +939,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1000,6 +994,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1082,6 +1077,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1164,6 +1160,7 @@ mod test {
             BlockPolicyType,
         >::new(RootInfo {
             round: genesis_qc.get_round(),
+            epoch: genesis_qc.get_epoch(),
             seq_num: genesis_qc.get_seq_num(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
@@ -1234,6 +1231,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1313,6 +1311,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1407,6 +1406,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1493,6 +1493,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1594,6 +1595,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1682,6 +1684,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });
@@ -1798,6 +1801,7 @@ mod test {
         >::new(RootInfo {
             round: genesis_qc.get_round(),
             seq_num: genesis_qc.get_seq_num(),
+            epoch: genesis_qc.get_epoch(),
             block_id: genesis_qc.get_block_id(),
             state_root: Default::default(),
         });

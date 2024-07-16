@@ -1,9 +1,10 @@
 /target
+/docker/flexnet/.venv
 /docker/flexnet/logs
 /docker/devnet/monad/blockdb
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal
 /docker/devnet/monad/triedb
-/docker/flexnet/.venv
+/docker/devnet/monad/config/forkpoint.toml
 
 test-keys
