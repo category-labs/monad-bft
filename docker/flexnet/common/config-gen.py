@@ -253,15 +253,15 @@ if __name__ == "__main__":
         pass
 
     # global: create genesis.toml
-    # root_qc in genesis forkpoint is the genesis qc. It's hard coded in monad-bft
-    root_qc = {}
-    root_qc["signatures"] = (
+    # high_qc in genesis forkpoint is the genesis qc. It's hard coded in monad-bft
+    high_qc = {}
+    high_qc["signatures"] = (
         "0x0a3ca4656f72646572736269747665633a3a6f726465723a3a4c7362306468656164a2657769647468184065696e6465780064626974730064646174618012c001400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     )
-    root_qc["signature_hash"] = (
+    high_qc["signature_hash"] = (
         "0x0fb1346d3fd54a316e2b16d74be47c4d285c15e1d406fc9c1e2126448c51397a"
     )
-    root_qc["info"] = {
+    high_qc["info"] = {
         "vote": {
             "vote_info": {
                 "id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -289,11 +289,16 @@ if __name__ == "__main__":
     epoch1_validators = {"epoch": 1, "round": 0, "validators": validators}
     epoch2_validators = {"epoch": 2, "validators": validators}
 
-    state_root = {"state_root_hash": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4", "seq_num": "0"}
+    root = {
+        "round": 0,
+        "seq_num": "0",
+        "block_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state_root": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4",
+    }
 
     genesis_toml = {
-        "state_root": state_root,
-        "root_qc": root_qc,
+        "root": root,
+        "high_qc": high_qc,
         "validator_sets": [epoch1_validators, epoch2_validators],
     }
 

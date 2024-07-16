@@ -7,7 +7,7 @@ use consensus::ConsensusChildState;
 use epoch::EpochChildState;
 use mempool::MempoolChildState;
 use monad_async_state_verify::AsyncStateVerifyProcess;
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, RootInfo};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
@@ -21,9 +21,9 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
-    quorum_certificate::QuorumCertificate,
+    quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::{StateRootHash, StateRootHashInfo},
+    state_root_hash::StateRootHash,
     txpool::TxPool,
     validation,
     validator_data::{ParsedValidatorData, Validator, ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -129,25 +129,25 @@ pub enum ForkpointValidationError {
     MissingValidatorSet,
     /// Validator set is not populated with the right fields
     InvalidValidatorSet,
-    /// root_qc cannot be verified
+    /// high_qc cannot be verified
     InvalidQC,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-
 pub struct Forkpoint<SCT: SignatureCollection> {
-    // FIXME: root qc root of block tree, not high qc. If all nodes reboot and
-    // start from root of their local block trees, we have a safety violation.
-    // In a minimal version, we should lock on high qc round, and wait until
-    // observing a higher qc that traces back to our local qc, with block syncs.
+    // TODO when we have a consensus genesis block, we only need root_id.
+    // We need the full RootInfo right now because GENESIS_BLOCK_ID doesn't have an associated
+    // block.
+    pub root: RootInfo,
+    // TODO high_round?
     #[serde(bound(
         serialize = "SCT: SignatureCollection",
         deserialize = "SCT: SignatureCollection",
     ))]
-    pub root_qc: QuorumCertificate<SCT>,
-    pub state_root: StateRootHashInfo,
+    pub high_qc: QuorumCertificate<SCT>,
 
+    // TODO can we get rid of this by including an epoch_start_block_id in every block?
     #[serde(bound(
         serialize = "SCT: SignatureCollection",
         deserialize = "SCT: SignatureCollection",
@@ -156,13 +156,15 @@ pub struct Forkpoint<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> Forkpoint<SCT> {
-    pub fn genesis(validator_set: ValidatorSetData<SCT>, state_root_hash: StateRootHash) -> Self {
+    pub fn genesis(validator_set: ValidatorSetData<SCT>, state_root: StateRootHash) -> Self {
         Self {
-            root_qc: QuorumCertificate::genesis_qc(),
-            state_root: StateRootHashInfo {
+            root: RootInfo {
+                block_id: GENESIS_BLOCK_ID,
+                round: Round(0),
                 seq_num: GENESIS_SEQ_NUM,
-                state_root_hash,
+                state_root,
             },
+            high_qc: QuorumCertificate::genesis_qc(),
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(1),
@@ -189,14 +191,13 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     }
 
     /// A valid forkpoint must satisfy the following requirements
-    /// 1. Enough state roots to validate the next proposal it accepts
-    /// 2. Carries the validator set to verify QC
-    /// 3. QC is valid against the validator set
-    /// 4. QC epoch-round and validator set epoch-round are set correctly
-    /// 5. Has n+1 validator set locked
-    /// 6. If the last ledger block is on epoch boundary, n+2 validator set is
+    /// 1. Carries the validator set to verify QC
+    /// 2. QC is valid against the validator set
+    /// 3. QC epoch-round and validator set epoch-round are set correctly
+    /// 4. Has n+1 validator set locked
+    /// 5. If the last ledger block is on epoch boundary, n+2 validator set is
     ///    locked
-    /// 7. Every validator set except the last one is scheduled to start on a
+    /// 6. Every validator set except the last one is scheduled to start on a
     ///    round
     pub fn validate<VTF>(
         &self,
@@ -207,48 +208,32 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        // 1. Validate enough state roots are attached to continue verifying the
-        // next blocks
-        self.validate_state_root(state_root_delay)?;
-
-        // 2. Validator set exists for qc.epoch
+        // 1. Validator set exists for qc.epoch
         let qc_vset_data = self
-            .get_validator_set(self.root_qc.get_epoch())
+            .get_validator_set(self.high_qc.get_epoch())
             .ok_or(ForkpointValidationError::MissingValidatorSet)?;
 
-        // 5. Epoch n+1 validator set must be locked
+        // 4. Epoch n+1 validator set must be locked
         let n_1_vset_data = self
-            .get_validator_set(self.root_qc.get_epoch() + Epoch(1))
+            .get_validator_set(self.high_qc.get_epoch() + Epoch(1))
             .ok_or(ForkpointValidationError::MissingValidatorSet)?;
 
-        // 3/4/7
+        // 2/3/6
         self.validate_and_verify_qc(qc_vset_data, n_1_vset_data.round, validator_set_factory)?;
 
-        // 6. If QC is from the boundary block, epoch n+2 must also be locked
-        if (self.root_qc.get_seq_num() + SeqNum(1)).is_epoch_end(val_set_update_interval) {
-            // 7. n+1 validator set is scheduled when n+2 is locked
+        // 5. If QC is from the boundary block, epoch n+2 must also be locked
+        if (self.high_qc.get_seq_num() + SeqNum(1)).is_epoch_end(val_set_update_interval) {
+            // 6. n+1 validator set is scheduled when n+2 is locked
             if n_1_vset_data.round.is_none() {
                 return Err(ForkpointValidationError::InvalidValidatorSet);
             }
 
-            let n_2_exists = self.get_validator_set(self.root_qc.get_epoch() + Epoch(2));
+            let n_2_exists = self.get_validator_set(self.high_qc.get_epoch() + Epoch(2));
             if n_2_exists.is_none() {
                 return Err(ForkpointValidationError::MissingValidatorSet);
             }
         }
 
-        Ok(())
-    }
-
-    fn validate_state_root(
-        &self,
-        state_root_delay: SeqNum,
-    ) -> Result<(), ForkpointValidationError> {
-        if self.state_root.seq_num
-            != self.root_qc.get_seq_num().max(state_root_delay) - state_root_delay
-        {
-            return Err(ForkpointValidationError::StateRootSeqNumMismatch);
-        }
         Ok(())
     }
 
@@ -265,16 +250,16 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        assert_eq!(qc_vset_data.epoch, self.root_qc.get_epoch());
-        // 7.
+        assert_eq!(qc_vset_data.epoch, self.high_qc.get_epoch());
+        // 6.
         if qc_vset_data.round.is_none() {
             return Err(ForkpointValidationError::InvalidValidatorSet);
         }
 
-        // 4. Check QC carries consistent round numbers
-        if self.root_qc.get_round() < qc_vset_data.round.expect("asserted before")
+        // 3. Check QC carries consistent round numbers
+        if self.high_qc.get_round() < qc_vset_data.round.expect("asserted before")
             || (next_epoch_start.is_some()
-                && self.root_qc.get_round() >= next_epoch_start.expect("asserted before"))
+                && self.high_qc.get_round() >= next_epoch_start.expect("asserted before"))
         {
             return Err(ForkpointValidationError::InvalidQC);
         }
@@ -299,8 +284,8 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
             .create(vset_stake)
             .map_err(|_| ForkpointValidationError::InvalidValidatorSet)?;
 
-        // 3.
-        if verify_qc(&qc_vset, &qc_vmap, &self.root_qc).is_err() {
+        // 2.
+        if verify_qc(&qc_vset, &qc_vmap, &self.high_qc).is_err() {
             return Err(ForkpointValidationError::InvalidQC);
         }
 
@@ -638,12 +623,11 @@ where
 
         let consensus = ConsensusState::new(
             &self.consensus_config,
-            self.forkpoint.root_qc.clone(),
-            // TODO change this to high_qc once forkpoint includes it
-            self.forkpoint.root_qc.clone(),
+            self.forkpoint.root.clone(),
+            self.forkpoint.high_qc.clone(),
             epoch_manager
-                .get_epoch(self.forkpoint.root_qc.get_round() + Round(1))
-                .expect("forkpoint has epoch for root qc"),
+                .get_epoch(self.forkpoint.high_qc.get_round() + Round(1))
+                .expect("forkpoint has epoch for high_qc"),
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
@@ -676,8 +660,8 @@ where
         let mut init_cmds = Vec::new();
 
         let Forkpoint {
-            root_qc,
-            state_root,
+            root,
+            high_qc: _,
             validator_sets,
         } = self.forkpoint;
 
@@ -687,13 +671,11 @@ where
             )));
         }
 
-        let root_seq_num = root_qc.get_seq_num();
-        assert_eq!(state_root.seq_num, root_seq_num.max(delay) - delay);
+        let root_seq_num = root.seq_num;
 
-        // if root_qc is N, we need to request the roots from (N-delay, N]
-        let state_root_queue_range = ((state_root.seq_num + SeqNum(1)).0.saturating_sub(delay.0)
-            ..=root_seq_num.0)
-            .map(SeqNum);
+        // if root is N, we need to request the roots from (N-delay, N]
+        let state_root_queue_range =
+            ((root_seq_num + SeqNum(1)).0.saturating_sub(delay.0)..=root_seq_num.0).map(SeqNum);
         init_cmds.extend(state_root_queue_range.map(|committed_seq_num| {
             Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
         }));
@@ -856,7 +838,7 @@ mod test {
         ledger::CommitResult,
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
-        state_root_hash::{StateRootHash, StateRootHashInfo},
+        state_root_hash::StateRootHash,
         validator_data::ValidatorSetData,
         voting::{Vote, VoteInfo},
     };
@@ -914,12 +896,7 @@ mod test {
 
         let qc = QuorumCertificate::new(qc_info, sigcol);
 
-        let state_root = StateRootHashInfo {
-            state_root_hash: StateRootHash(Hash(
-                [(qc.get_seq_num() - STATE_ROOT_DELAY).0 as u8; 32],
-            )),
-            seq_num: qc.get_seq_num() - STATE_ROOT_DELAY,
-        };
+        let state_root = StateRootHash(Hash([(qc.get_seq_num() - STATE_ROOT_DELAY).0 as u8; 32]));
 
         let mut validators = Vec::new();
 
@@ -930,8 +907,13 @@ mod test {
         let validator_data = ValidatorSetData::<SignatureCollectionType>::new(validators);
 
         let forkpoint: Forkpoint<BlsSignatureCollection<monad_secp::PubKey>> = Forkpoint {
-            root_qc: qc,
-            state_root,
+            root: RootInfo {
+                block_id: qc.get_block_id(),
+                seq_num: qc.get_seq_num(),
+                round: qc.get_round(),
+                state_root,
+            },
+            high_qc: qc,
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(3),
@@ -973,34 +955,11 @@ mod test {
     }
 
     #[test]
-    fn test_forkpoint_validate_seq_num() {
-        let mut forkpoint = get_forkpoint();
-        assert_eq!(
-            forkpoint.validate(
-                STATE_ROOT_DELAY,
-                &ValidatorSetFactory::default(),
-                EPOCH_LENGTH
-            ),
-            Ok(())
-        );
-
-        forkpoint.state_root.seq_num += SeqNum(1);
-        assert_eq!(
-            forkpoint.validate(
-                STATE_ROOT_DELAY,
-                &ValidatorSetFactory::default(),
-                EPOCH_LENGTH
-            ),
-            Err(ForkpointValidationError::StateRootSeqNumMismatch)
-        );
-    }
-
-    #[test]
     fn test_forkpoint_validate_2() {
         let mut forkpoint = get_forkpoint();
         forkpoint
             .validator_sets
-            .retain(|data| data.epoch != forkpoint.root_qc.get_epoch());
+            .retain(|data| data.epoch != forkpoint.high_qc.get_epoch());
 
         assert_eq!(
             forkpoint.validate(
@@ -1016,7 +975,7 @@ mod test {
     fn test_forkpoint_validate_3() {
         let mut forkpoint = get_forkpoint();
         // change qc content so signature collection is invalid
-        forkpoint.root_qc.info.vote.vote_info.round = forkpoint.root_qc.get_round() - Round(1);
+        forkpoint.high_qc.info.vote.vote_info.round = forkpoint.high_qc.get_round() - Round(1);
 
         assert_eq!(
             forkpoint.validate(
@@ -1030,15 +989,15 @@ mod test {
 
     #[test]
     fn test_forkpoint_validate_4() {
-        // epoch n is set to start later than root qc
+        // epoch n is set to start later than high_qc
         let mut forkpoint = get_forkpoint();
 
         let qc_vset = forkpoint
             .validator_sets
             .iter_mut()
-            .find(|data| data.epoch == forkpoint.root_qc.get_epoch())
+            .find(|data| data.epoch == forkpoint.high_qc.get_epoch())
             .unwrap();
-        qc_vset.round = Some(forkpoint.root_qc.get_round() + Round(1));
+        qc_vset.round = Some(forkpoint.high_qc.get_round() + Round(1));
 
         assert_eq!(
             forkpoint.validate(
@@ -1049,15 +1008,15 @@ mod test {
             Err(ForkpointValidationError::InvalidQC)
         );
 
-        // epoch n+1 is set to start earlier than root qc
+        // epoch n+1 is set to start earlier than high_qc
         let mut forkpoint = get_forkpoint();
 
         let qc_vset = forkpoint
             .validator_sets
             .iter_mut()
-            .find(|data| data.epoch == forkpoint.root_qc.get_epoch() + Epoch(1))
+            .find(|data| data.epoch == forkpoint.high_qc.get_epoch() + Epoch(1))
             .unwrap();
-        qc_vset.round = Some(forkpoint.root_qc.get_round());
+        qc_vset.round = Some(forkpoint.high_qc.get_round());
 
         assert_eq!(
             forkpoint.validate(
@@ -1075,7 +1034,7 @@ mod test {
         // remove validator set n+1
         forkpoint
             .validator_sets
-            .retain(|data| data.epoch != Epoch(forkpoint.root_qc.get_epoch().0 + 1));
+            .retain(|data| data.epoch != Epoch(forkpoint.high_qc.get_epoch().0 + 1));
 
         assert_eq!(
             forkpoint.validate(
@@ -1090,11 +1049,11 @@ mod test {
     #[test]
     fn test_forkpoint_validate_6() {
         let mut forkpoint = get_forkpoint();
-        assert!((forkpoint.root_qc.get_seq_num() + SeqNum(1)).is_epoch_end(EPOCH_LENGTH));
+        assert!((forkpoint.high_qc.get_seq_num() + SeqNum(1)).is_epoch_end(EPOCH_LENGTH));
         // remove validator set n+2
         forkpoint
             .validator_sets
-            .retain(|data| data.epoch != Epoch(forkpoint.root_qc.get_epoch().0 + 2));
+            .retain(|data| data.epoch != Epoch(forkpoint.high_qc.get_epoch().0 + 2));
 
         assert_eq!(
             forkpoint.validate(

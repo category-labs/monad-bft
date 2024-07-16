@@ -8,9 +8,11 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round, SeqNum};
+use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 type Result<T> = StdResult<T, BlockTreeError>;
@@ -35,11 +37,17 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootInfo {
+    pub round: Round,
+    pub seq_num: SeqNum,
+    pub block_id: BlockId,
+    pub state_root: StateRootHash,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Root {
-    round: Round,
-    seq_num: SeqNum,
-    block_id: BlockId,
+    info: RootInfo,
     children_blocks: Vec<BlockId>,
 }
 
@@ -110,12 +118,10 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> fmt::Debug for BlockTree<SC
 }
 
 impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
-    pub fn new(root: QuorumCertificate<SCT>) -> Self {
+    pub fn new(root: RootInfo) -> Self {
         Self {
             root: Root {
-                round: root.info.get_round(),
-                seq_num: root.get_seq_num(),
-                block_id: root.get_block_id(),
+                info: root,
                 children_blocks: Vec::new(),
             },
             tree: HashMap::new(),
@@ -147,7 +153,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         assert!(self.is_coherent(new_root));
         let mut commit: Vec<BP::ValidatedBlock> = Vec::new();
 
-        if new_root == &self.root.block_id {
+        if new_root == &self.root.info.block_id {
             return commit;
         }
 
@@ -168,7 +174,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
 
             commit.push(validated_block);
 
-            if parent_id == self.root.block_id {
+            if parent_id == self.root.info.block_id {
                 break;
             }
             entry_to_commit = self
@@ -182,11 +188,13 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         self.tree.retain(|_, b| {
             b.validated_block.get_parent_round() >= new_root_entry.validated_block.get_round()
         });
-        // new root should be set to QC of the block that's the new root
         self.root = Root {
-            round: new_root_entry.validated_block.get_round(),
-            seq_num: new_root_entry.validated_block.get_seq_num(),
-            block_id: new_root_entry.validated_block.get_id(),
+            info: RootInfo {
+                round: new_root_entry.validated_block.get_round(),
+                seq_num: new_root_entry.validated_block.get_seq_num(),
+                block_id: new_root_entry.validated_block.get_id(),
+                state_root: new_root_entry.validated_block.get_state_root(),
+            },
             children_blocks: new_root_entry.children_blocks,
         };
 
@@ -226,7 +234,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         self.tree.insert(new_block_id, new_block_entry);
 
         // Retrieve the parent block's coherency and children blocks
-        let children_blocks_to_update = if parent_id == self.root.block_id {
+        let children_blocks_to_update = if parent_id == self.root.info.block_id {
             Some(&mut self.root.children_blocks)
         } else if let Some(parent_entry) = self.tree.get_mut(&parent_id) {
             Some(&mut parent_entry.children_blocks)
@@ -336,7 +344,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
         &self,
         qc: &QuorumCertificate<SCT>,
     ) -> Option<QuorumCertificate<SCT>> {
-        if self.root.round >= qc.get_round() {
+        if self.root.info.round >= qc.get_round() {
             return None;
         }
 
@@ -346,7 +354,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
             maybe_unknown_block_qc = known_block_entry.validated_block.get_qc();
             maybe_unknown_bid = known_block_entry.validated_block.get_parent_id();
             // If the unknown block's round == self.root, that means we've already committed it
-            if maybe_unknown_block_qc.get_round() == self.root.round {
+            if maybe_unknown_block_qc.get_round() == self.root.info.round {
                 return None;
             }
         }
@@ -354,7 +362,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
     }
 
     pub fn is_coherent(&self, b: &BlockId) -> bool {
-        if b == &self.root.block_id {
+        if b == &self.root.info.block_id {
             return true;
         }
 
@@ -368,7 +376,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
     /// Fetches blocks on path from root
     pub fn get_blocks_on_path_from_root(&self, b: &BlockId) -> Option<Vec<&BP::ValidatedBlock>> {
         let mut blocks = Vec::new();
-        if b == &self.root.block_id {
+        if b == &self.root.info.block_id {
             return Some(blocks);
         }
 
@@ -378,7 +386,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
             let btb = &blocktree_entry.validated_block;
             blocks.push(btb);
 
-            if btb.get_parent_id() == self.root.block_id {
+            if btb.get_parent_id() == self.root.info.block_id {
                 blocks.reverse();
                 return Some(blocks);
             }
@@ -398,7 +406,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &BP::ValidatedBlock) -> bool {
-        !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.round
+        !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.info.round
     }
 
     pub fn tree(&self) -> &Tree<BlockTreeEntry<SCT, BP>> {
@@ -410,7 +418,7 @@ impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
     }
 
     pub fn get_root_seq_num(&self) -> SeqNum {
-        self.root.seq_num
+        self.root.info.seq_num
     }
 
     pub fn get_block(&self, block_id: &BlockId) -> Option<&BP::ValidatedBlock> {
@@ -443,6 +451,7 @@ mod test {
     use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
     use super::BlockTree;
+    use crate::blocktree::RootInfo;
 
     type SignatureType = NopSignature;
     type BlockPolicyType = PassthruBlockPolicy;
@@ -673,8 +682,14 @@ mod test {
         //  b2    b5
         //        |
         //        b6
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
 
@@ -816,8 +831,14 @@ mod test {
         );
 
         let gid = g.get_id();
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g, &block_policy).is_ok());
 
@@ -949,8 +970,14 @@ mod test {
         //  b1    b2
         //  |
         //  b3
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
@@ -1021,8 +1048,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g, &block_policy).is_ok());
         assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
@@ -1125,8 +1158,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.is_coherent(&g.get_id()));
@@ -1255,8 +1294,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -1356,8 +1401,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.add(b1.clone(), &block_policy).is_ok());
@@ -1447,8 +1498,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -1564,8 +1621,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -1694,8 +1757,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -1814,8 +1883,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -1996,8 +2071,14 @@ mod test {
             ),
         );
 
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree =
-            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(g.clone(), &block_policy).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
@@ -2071,9 +2152,14 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::<MockSignatures<SignatureType>, BlockPolicyType>::new(
-            QuorumCertificate::genesis_qc(),
-        );
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let mut blocktree =
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree.add(b2.clone(), &block_policy).is_ok());
         assert!(blocktree.root.children_blocks.is_empty());
@@ -2218,9 +2304,14 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(
-            QuorumCertificate::genesis_qc(),
-        );
+        let genesis_qc: QC = QuorumCertificate::genesis_qc();
+        let mut blocktree =
+            BlockTree::<MockSignatures<NopSignature>, BlockPolicyType>::new(RootInfo {
+                round: genesis_qc.get_round(),
+                seq_num: genesis_qc.get_seq_num(),
+                block_id: genesis_qc.get_block_id(),
+                state_root: Default::default(),
+            });
         let block_policy = PassthruBlockPolicy;
 
         // insertion order: insert all blocks except b3, then b3

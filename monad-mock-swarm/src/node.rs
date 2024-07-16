@@ -6,9 +6,10 @@ use std::{
 
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
+use monad_blocktree::blocktree::RootInfo;
 use monad_consensus_types::{
-    payload::StateRootValidator,
-    quorum_certificate::QuorumCertificate,
+    block::BlockType,
+    quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::ValidatorMapping,
@@ -20,7 +21,7 @@ use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_types::Epoch;
+use monad_types::{Epoch, Round, GENESIS_SEQ_NUM};
 use monad_updaters::state_root_hash::MockableStateRootHash;
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
@@ -330,30 +331,40 @@ impl<S: SwarmRelation> Node<S> {
     }
 
     pub fn get_forkpoint(&self) -> Forkpoint<S::SignatureCollectionType> {
-        // ledger is length n, this gets the QC(n-1)
-        let root_qc = self
+        let root = self
             .executor
             .ledger()
             .get_blocks()
             .last()
-            .map(|b| b.qc.clone())
-            .unwrap_or(QuorumCertificate::genesis_qc());
-
-        let delay = self.state.state_root_validator().get_delay();
-
-        let state_root_executor = self.executor.state_root_hash_executor();
-        let state_root = state_root_executor
-            .compute_state_root_hash(&(root_qc.get_seq_num().max(delay) - delay));
+            .map(|b| RootInfo {
+                block_id: b.get_id(),
+                round: b.get_round(),
+                seq_num: b.get_seq_num(),
+                state_root: b.get_state_root(),
+            })
+            .unwrap_or_else(|| {
+                let state_root_executor = self.executor.state_root_hash_executor();
+                let state_root = state_root_executor
+                    .compute_state_root_hash(&GENESIS_SEQ_NUM)
+                    .state_root_hash;
+                RootInfo {
+                    block_id: GENESIS_BLOCK_ID,
+                    seq_num: GENESIS_SEQ_NUM,
+                    round: Round(0),
+                    state_root,
+                }
+            });
 
         let epoch_manager = self.state.epoch_manager();
         let val_epoch_mapping = self.state.validators_epoch_mapping();
 
-        // fetch all epoch & validator sets after root_qc epoch
+        // fetch all epoch & validator sets after high_qc epoch
 
         // If the node on the highest round fails and causes a liveness failure,
         // the network might be on an older epoch. Need the previous epoch to
         // validate
-        let mut epoch = root_qc.get_epoch();
+        let high_qc = self.state.consensus().get_high_qc().clone();
+        let mut epoch = high_qc.get_epoch();
         let mut validator_sets = Vec::new();
 
         while let Some(validator_set) = val_epoch_mapping.get_val_set(&epoch) {
@@ -375,8 +386,8 @@ impl<S: SwarmRelation> Node<S> {
         assert!(validator_sets.len() >= 2 && validator_sets.len() <= 4);
 
         Forkpoint {
-            root_qc,
-            state_root,
+            root,
+            high_qc,
             validator_sets,
         }
     }

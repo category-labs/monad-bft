@@ -6,6 +6,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -78,6 +79,10 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
 
     fn get_seq_num(&self) -> SeqNum {
         SeqNum(0)
+    }
+
+    fn get_state_root(&self) -> StateRootHash {
+        StateRootHash(Hash([1_u8; 32]))
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {

@@ -4,6 +4,7 @@ use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
 use monad_eth_tx::{EthTransaction, EthTxHash};
@@ -82,6 +83,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
 
     fn get_seq_num(&self) -> SeqNum {
         self.block.payload.seq_num
+    }
+
+    fn get_state_root(&self) -> StateRootHash {
+        self.block.payload.header.state_root
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {

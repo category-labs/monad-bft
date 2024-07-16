@@ -9,6 +9,7 @@ use crate::{
     payload::{FullTransactionList, Payload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
 };
 
 /// This trait represents a consensus block
@@ -37,6 +38,9 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
 
     /// Sequence number when this block was proposed
     fn get_seq_num(&self) -> SeqNum;
+
+    /// State root hash included in the block
+    fn get_state_root(&self) -> StateRootHash;
 
     /// get list of all txn hashes in this block
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash>;
@@ -166,6 +170,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 
     fn get_seq_num(&self) -> SeqNum {
         self.payload.seq_num
+    }
+
+    fn get_state_root(&self) -> StateRootHash {
+        self.payload.header.state_root
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {

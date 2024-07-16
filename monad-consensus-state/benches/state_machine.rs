@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use monad_blocktree::blocktree::RootInfo;
 use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     validation::signing::Verified,
@@ -13,6 +14,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::{Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     txpool::TxPool,
     voting::ValidatorMapping,
 };
@@ -311,10 +313,16 @@ fn setup<
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
             };
+            let genesis_qc = QuorumCertificate::genesis_qc();
             let cs = ConsensusState::new(
                 &consensus_config,
-                QuorumCertificate::genesis_qc(),
-                QuorumCertificate::genesis_qc(),
+                RootInfo {
+                    round: genesis_qc.get_round(),
+                    seq_num: genesis_qc.get_seq_num(),
+                    block_id: genesis_qc.get_block_id(),
+                    state_root: StateRootHash(Hash([0xb; 32])),
+                },
+                genesis_qc,
                 Epoch(1),
             );
 

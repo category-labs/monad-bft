@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, RootInfo};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -201,15 +201,15 @@ where
     /// config - collection of configurable parameters for core consensus algorithm
     pub fn new(
         config: &ConsensusConfig,
-        root_qc: QuorumCertificate<SCT>,
+        root: RootInfo,
         high_qc: QuorumCertificate<SCT>,
         consensus_epoch: Epoch,
     ) -> Self {
         let high_qc_round = high_qc.get_round();
-        assert!(high_qc_round >= root_qc.get_round());
+        assert!(high_qc_round >= root.round);
         let consensus_round = high_qc_round + Round(1);
         ConsensusState {
-            pending_block_tree: BlockTree::new(root_qc),
+            pending_block_tree: BlockTree::new(root),
             vote_state: VoteState::new(consensus_round),
             high_qc,
             pacemaker: Pacemaker::new(config.delta, consensus_epoch, consensus_round, None),
@@ -243,6 +243,10 @@ where
 
     pub fn block_sync_requester(&self) -> &BlockSyncRequester<ST, SCT> {
         &self.block_sync_requester
+    }
+
+    pub fn get_high_qc(&self) -> &QuorumCertificate<SCT> {
+        &self.high_qc
     }
 
     pub fn get_current_epoch(&self) -> Epoch {
@@ -1104,6 +1108,7 @@ mod test {
     use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
     use itertools::Itertools;
+    use monad_blocktree::blocktree::RootInfo;
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
@@ -1420,10 +1425,16 @@ mod test {
                     max_blocksync_retries: 5,
                     state_sync_threshold: SeqNum(100),
                 };
+                let genesis_qc = QuorumCertificate::genesis_qc();
                 let cs = ConsensusState::new(
                     &consensus_config,
-                    QuorumCertificate::genesis_qc(),
-                    QuorumCertificate::genesis_qc(),
+                    RootInfo {
+                        round: genesis_qc.get_round(),
+                        seq_num: genesis_qc.get_seq_num(),
+                        block_id: genesis_qc.get_block_id(),
+                        state_root: StateRootHash(Hash([0xb; 32])),
+                    },
+                    genesis_qc,
                     Epoch(1),
                 );
 
