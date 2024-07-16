@@ -3398,6 +3398,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "rand",
+ "rayon",
  "reth-primitives",
  "test-case",
  "tracing",

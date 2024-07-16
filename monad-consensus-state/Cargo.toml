@@ -37,6 +37,7 @@ tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 
 rand = { workspace = true }
+rayon = { workspace = true }
 reth-primitives = { workspace = true }
 
 [[bench]]

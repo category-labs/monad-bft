@@ -41,7 +41,7 @@ use monad_validator::{
 };
 
 const NUM_TRANSACTIONS: usize = 1000;
-const TRANSACTION_SIZE_BYTES: usize = 40;
+const TRANSACTION_SIZE_BYTES: usize = 400;
 
 type NodeCtx = NodeContext<
     SignatureType,
@@ -535,6 +535,12 @@ where
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
+    // hardware requirement: CPU (16 cores, hyperthreading disabled)
+    // assume half of those are allocated to consensus
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build_global()
+        .unwrap();
     let mut group = c.benchmark_group("consensus_state_machine");
     group.bench_function("handle_proposal_message", |b| {
         b.iter_batched_ref(
