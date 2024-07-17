@@ -18,6 +18,17 @@ fi
 
 git submodule update --init common/blst
 
+export PYENV_ROOT="$HOME/.pyenv"
+[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+
+if [ ! -d "./.venv" ]; then
+    python -m venv ./.venv
+fi
+source ./.venv/bin/activate
+
+pip install ./testing-library
+
 rm -rf logs && mkdir -p logs
 set +e
 nets/net2/scripts/net-run.sh --output-dir logs --net-dir nets/net2/ --flexnet-root . --monad-bft-root ../.. 
