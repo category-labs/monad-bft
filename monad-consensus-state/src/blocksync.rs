@@ -19,7 +19,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
+use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_types::{BlockId, NodeId, SeqNum, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, info_span, Span};
@@ -57,12 +57,13 @@ impl<SCT: SignatureCollection> Eq for InFlightRequest<SCT> {}
 
 /// Possible results from handling a BlockSyncMessage, which is
 /// the reply to a request
-pub enum BlockSyncResult<ST, SCT, RBCT, BPT>
+pub enum BlockSyncResult<ST, SCT, BPT, SBT, RBCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    RBCT: ReserveBalanceCacheTrait,
-    BPT: BlockPolicy<SCT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     /// retrieved and validated
     Success(BPT::ValidatedBlock),
@@ -74,12 +75,13 @@ where
     UnexpectedResponse,
 }
 
-impl<ST, SCT, RBCT, BPT> fmt::Debug for BlockSyncResult<ST, SCT, RBCT, BPT>
+impl<ST, SCT, BPT, SBT, RBCT> fmt::Debug for BlockSyncResult<ST, SCT, BPT, SBT, RBCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    RBCT: ReserveBalanceCacheTrait,
-    BPT: BlockPolicy<SCT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -90,12 +92,13 @@ where
     }
 }
 
-impl<ST, SCT, RBCT, BPT> BlockSyncResult<ST, SCT, RBCT, BPT>
+impl<ST, SCT, BPT, SBT, RBCT> BlockSyncResult<ST, SCT, BPT, SBT, RBCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    RBCT: ReserveBalanceCacheTrait,
-    BPT: BlockPolicy<SCT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     pub fn log(&self, bid: BlockId, metrics: &mut Metrics) {
         match self {
@@ -248,7 +251,7 @@ where
     /// If the request was not fulfilled, the request is tried again with
     /// a different node
     /// FIXME: does it reset timeout?
-    pub fn handle_response<VT, RBCT, BP, BV>(
+    pub fn handle_response<VT, BP, SBT, RBCT, BV>(
         &mut self,
         author: &NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
@@ -256,12 +259,13 @@ where
         validator_set: &VT,
         block_validator: &BV,
         metrics: &mut Metrics,
-    ) -> BlockSyncResult<ST, SCT, RBCT, BP>
+    ) -> BlockSyncResult<ST, SCT, BP, SBT, RBCT>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        RBCT: ReserveBalanceCacheTrait,
-        BP: BlockPolicy<SCT, RBCT>,
-        BV: BlockValidator<SCT, RBCT, BP>,
+        BP: BlockPolicy<SCT, SBT, RBCT>,
+        SBT: StateBackend,
+        RBCT: ReserveBalanceCacheTrait<SBT>,
+        BV: BlockValidator<SCT, BP, SBT, RBCT>,
     {
         let bid = msg.get_block_id();
 
@@ -385,7 +389,7 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
-    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+    use monad_eth_reserve_balance::{state_backend::NopStateBackend, PassthruReserveBalanceCache};
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
@@ -398,8 +402,9 @@ mod test {
     use crate::{command::ConsensusCommand, BlockSyncResponseMessage, BlockSyncResult};
     type ST = NopSignature;
     type SC = MockSignatures<ST>;
+    type SB = NopStateBackend;
     type BP = PassthruBlockPolicy;
-    type RBCT = PassthruReserveBalanceCache;
+    type RBCT = PassthruReserveBalanceCache<NopStateBackend>;
     type VT = ValidatorSet<CertificateSignaturePubKey<ST>>;
     type QC = QuorumCertificate<SC>;
     type TV = MockValidator;
@@ -656,7 +661,7 @@ mod test {
         let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(block_3.clone());
 
         // arbitrary response should be rejected
-        let BlockSyncResult::<ST, SC, RBCT, BP>::UnexpectedResponse = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
             msg_no_block_1,
             &self_id,
@@ -669,7 +674,7 @@ mod test {
 
         // valid message from invalid individual should still get dropped
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::UnexpectedResponse = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
             msg_with_block_2.clone(),
             &self_id,
@@ -680,14 +685,16 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
-            &peer_2,
-            msg_no_block_2.clone(),
-            &self_id,
-            &valset,
-            &transaction_validator,
-            &mut metrics,
-        ) else {
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Failed(retry_command) = manager
+            .handle_response(
+                &peer_2,
+                msg_no_block_2.clone(),
+                &self_id,
+                &valset,
+                &transaction_validator,
+                &mut metrics,
+            )
+        else {
             panic!("illegal response is processed");
         };
 
@@ -699,7 +706,7 @@ mod test {
             panic!("request sync not found")
         };
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Success(b) = manager.handle_response(
             &peer_1,
             msg_with_block_1,
             &self_id,
@@ -710,14 +717,16 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
-            &peer_3,
-            msg_no_block_3,
-            &self_id,
-            &valset,
-            &transaction_validator,
-            &mut metrics,
-        ) else {
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Failed(retry_command) = manager
+            .handle_response(
+                &peer_3,
+                msg_no_block_3,
+                &self_id,
+                &valset,
+                &transaction_validator,
+                &mut metrics,
+            )
+        else {
             panic!("illegal response is processed");
         };
 
@@ -731,14 +740,16 @@ mod test {
 
         assert!(b == block_1);
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
-            peer_2,
-            msg_no_block_2,
-            &self_id,
-            &valset,
-            &transaction_validator,
-            &mut metrics,
-        ) else {
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Failed(retry_command) = manager
+            .handle_response(
+                peer_2,
+                msg_no_block_2,
+                &self_id,
+                &valset,
+                &transaction_validator,
+                &mut metrics,
+            )
+        else {
             panic!("illegal response is processed");
         };
 
@@ -750,7 +761,7 @@ mod test {
             panic!("request sync not found")
         };
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Success(b) = manager.handle_response(
             peer_3,
             msg_with_block_3,
             &self_id,
@@ -763,7 +774,7 @@ mod test {
 
         assert!(b == block_3);
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Success(b) = manager.handle_response(
             peer_2,
             msg_with_block_2,
             &self_id,
@@ -815,7 +826,7 @@ mod test {
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
         for _ in 0..10 {
             for i in 2..31 {
-                let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager
+                let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Failed(retry_command) = manager
                     .handle_response(
                         &peer,
                         msg_failed.clone(),
@@ -935,14 +946,16 @@ mod test {
 
         let transaction_validator = TV::default();
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
-            &peer,
-            msg_failed,
-            &my_id,
-            &valset,
-            &transaction_validator,
-            &mut metrics,
-        ) else {
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Failed(retry_command) = manager
+            .handle_response(
+                &peer,
+                msg_failed,
+                &my_id,
+                &valset,
+                &transaction_validator,
+                &mut metrics,
+            )
+        else {
             panic!("illegal response is processed");
         };
 
@@ -1003,7 +1016,7 @@ mod test {
 
         let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(block.clone());
 
-        let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
+        let BlockSyncResult::<ST, SC, BP, SB, RBCT>::Success(b) = manager.handle_response(
             &peer,
             msg_with_block,
             &my_id,

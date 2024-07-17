@@ -92,46 +92,37 @@ def gen_secret_bytes(config_path: Path, volume: str, seed: bytes) -> bytes:
 
 def gen_keystore_file(secret, config_path):
     scrypt_params = {
-        'salt': randbits(256).to_bytes(32, 'big'),
-        'key_len': 32,
-        'N': 2**18,
-        'r': 8,
-        'p': 1,
+        "salt": randbits(256).to_bytes(32, "big"),
+        "key_len": 32,
+        "N": 2**18,
+        "r": 8,
+        "p": 1,
     }
-    iv = randbits(128).to_bytes(16, 'big')
+    iv = randbits(128).to_bytes(16, "big")
     password = ""
 
     encryption_key = scrypt(password=password, **scrypt_params)
-    encryption_key = encryption_key if isinstance(encryption_key, bytes) else encryption_key[0]
+    encryption_key = (
+        encryption_key if isinstance(encryption_key, bytes) else encryption_key[0]
+    )
 
     cipher = AES.new(
-        key=encryption_key[:16],
-        mode=AES.MODE_CTR,
-        initial_value=iv,
-        nonce=b''
+        key=encryption_key[:16], mode=AES.MODE_CTR, initial_value=iv, nonce=b""
     )
     cipher_message = cipher.encrypt(secret)
     checksum = SHA256.new(encryption_key[16:32] + cipher_message).digest()
 
-    for (k, v) in scrypt_params.items():
+    for k, v in scrypt_params.items():
         scrypt_params[k] = v.hex() if isinstance(v, bytes) else v
     keystore_json = {
         "ciphertext": cipher_message.hex(),
         "checksum": checksum.hex(),
-        "cipher": {
-            "cipher_function": "AES_128_CTR",
-            "params": {
-                "iv": iv.hex()
-            }
-        },
-        "kdf": {
-            "kdf_name": "scrypt",
-            "params": scrypt_params
-        },
+        "cipher": {"cipher_function": "AES_128_CTR", "params": {"iv": iv.hex()}},
+        "kdf": {"kdf_name": "scrypt", "params": scrypt_params},
         "hash": "SHA256",
     }
 
-    with open(config_path, 'w+') as f:
+    with open(config_path, "w+") as f:
         f.write(json.dumps(keystore_json))
 
 
@@ -173,8 +164,15 @@ if __name__ == "__main__":
         help="Seed for key generation",
         required=False,
     )
-    parser.add_argument('-i', '--id', help="run ID to append to node names", required=False)
-    parser.add_argument('-t', '--topology', help="The name of the topology file", default='topology.json')
+    parser.add_argument(
+        "-i", "--id", help="run ID to append to node names", required=False
+    )
+    parser.add_argument(
+        "-t",
+        "--topology",
+        help="The name of the topology file",
+        default="topology.json",
+    )
 
     args = parser.parse_args()
     node_count = args.count
@@ -226,7 +224,7 @@ if __name__ == "__main__":
         for volume, peer in peers.items():
             if volume == this_volume:
                 continue
-            id_append = f'-{args.id}' if args.id is not None else ''
+            id_append = f"-{args.id}" if args.id is not None else ""
             local_peers.append(
                 {
                     "address": peer.service + id_append + ":" + str(BIND_ADDRESS_PORT),
@@ -302,7 +300,7 @@ if __name__ == "__main__":
         "seq_num": "0",
         "epoch": 1,
         "block_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "state_root": "0x3aeacb8c741724594aa4d8853e431eb8378cf490cf27fc2f176ce02e93a61eb4",
+        "state_root": "0x5eb6e371a698b8d68f665192350ffcecbbbf322916f4b51bd79bb6887da3f494",
     }
 
     genesis_toml = {

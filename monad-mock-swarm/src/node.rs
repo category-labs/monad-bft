@@ -36,6 +36,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::SignatureType,
         S::SignatureCollectionType,
         S::BlockPolicyType,
+        S::StateBackendType,
         S::ReserveBalanceCacheType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
@@ -46,6 +47,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
+    pub ledger: S::Ledger,
     pub outbound_pipeline: S::Pipeline,
     pub inbound_pipeline: S::Pipeline,
     pub timestamper_config: TimestamperConfig,
@@ -58,6 +60,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::SignatureType,
             S::SignatureCollectionType,
             S::BlockPolicyType,
+            S::StateBackendType,
             S::ReserveBalanceCacheType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
@@ -68,6 +71,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
+        ledger: S::Ledger,
         outbound_pipeline: S::Pipeline,
         inbound_pipeline: S::Pipeline,
         timestamper_config: TimestamperConfig,
@@ -77,6 +81,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             id,
             state_builder,
             router_scheduler,
+            ledger,
             state_root_executor,
             outbound_pipeline,
             inbound_pipeline,
@@ -90,12 +95,14 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
-            TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
-            BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+                TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+                BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+                StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             ReserveBalanceCacheType = <DebugSwarmRelation as SwarmRelation>::ReserveBalanceCacheType,
         >,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
+        S::Ledger: Sync,
     {
         NodeBuilder {
             id: self.id,
@@ -124,6 +131,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
+            ledger: Box::new(self.ledger),
             outbound_pipeline: Box::new(self.outbound_pipeline),
             inbound_pipeline: Box::new(self.inbound_pipeline),
             timestamper_config: self.timestamper_config,
@@ -134,6 +142,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         let mut executor: MockExecutor<S> = MockExecutor::new(
             self.router_scheduler,
             self.state_root_executor,
+            self.ledger,
             self.timestamper_config,
             tick,
         );

@@ -9,14 +9,20 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, txpool::MockTxPool,
+        block::{Block, PassthruBlockPolicy},
+        block_validator::MockValidator,
+        metrics::Metrics,
+        payload::StateRoot,
+        txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+    use monad_eth_reserve_balance::{
+        state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+    };
+    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -35,19 +41,22 @@ mod test {
         PartitionTransformer, ID,
     };
     use monad_types::{Epoch, NodeId, Round, SeqNum};
-    use monad_updaters::state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap};
+    use monad_updaters::{
+        ledger::{MockLedger, MockableLedger},
+        state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
+    };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use test_case::test_case;
-
     pub struct ValidatorSwapSwarm;
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type StateBackendType = NopStateBackend;
         type BlockPolicyType = PassthruBlockPolicy;
-        type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+        type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -58,6 +67,11 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
+        type Ledger = MockLedger<
+            Self::SignatureCollectionType,
+            Block<Self::SignatureCollectionType>,
+            MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        >;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -68,7 +82,6 @@ mod test {
             MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         >;
-
         type Pipeline = GenericTransformerPipeline<
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,
@@ -160,7 +173,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -190,6 +203,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
+                        MockLedger::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -255,7 +269,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -288,6 +302,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
+                        MockLedger::default(),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -418,7 +433,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -468,6 +483,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
+                        MockLedger::default(),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -606,7 +622,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 4),
             || {
                 StateRoot::new(
                     SeqNum(4), // state_root_delay
@@ -636,6 +652,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
+                        MockLedger::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),

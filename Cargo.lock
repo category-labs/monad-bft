@@ -3680,7 +3680,24 @@ dependencies = [
  "monad-eth-reserve-balance",
  "monad-eth-tx",
  "monad-eth-types",
+ "tracing",
+]
+
+[[package]]
+name = "monad-eth-ledger"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-block-validator",
+ "monad-eth-reserve-balance",
+ "monad-executor",
+ "monad-executor-glue",
  "monad-triedb-cache",
+ "monad-types",
+ "monad-updaters",
  "tracing",
 ]
 
@@ -3697,12 +3714,14 @@ dependencies = [
 name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-tx",
  "monad-eth-types",
  "monad-multi-sig",
+ "monad-secp",
  "monad-types",
  "rand",
  "reth-primitives",
@@ -3901,6 +3920,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
+ "monad-eth-ledger",
  "monad-eth-reserve-balance",
  "monad-eth-testutil",
  "monad-eth-tx",
@@ -3982,6 +4002,7 @@ dependencies = [
  "monad-quic",
  "monad-secp",
  "monad-state",
+ "monad-triedb",
  "monad-triedb-cache",
  "monad-types",
  "monad-updaters",
@@ -4271,6 +4292,7 @@ dependencies = [
  "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "tracing",
 ]
@@ -4284,7 +4306,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-reserve-balance",
  "monad-eth-types",
- "monad-triedb",
  "monad-types",
  "rand",
  "sorted_vector_map",
@@ -4322,6 +4343,7 @@ dependencies = [
  "monad-transformer",
  "monad-twins-utils",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "serde",
  "serde_json",

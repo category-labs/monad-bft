@@ -208,7 +208,7 @@ mod tests {
                 UnsafeGossipsubConfig {
                     seed: {
                         let mut hasher = HasherType::new();
-                        hasher.update(&me.pubkey().bytes());
+                        hasher.update(me.pubkey().bytes());
                         hasher.hash().0
                     },
                     me: *me,

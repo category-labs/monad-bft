@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -38,6 +38,7 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::ReserveBalanceCache;
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
@@ -58,7 +59,6 @@ use rand_chacha::{
     rand_core::{RngCore, SeedableRng},
     ChaChaRng,
 };
-use sorted_vector_map::SortedVectorMap;
 use tokio::signal;
 use tracing::{event, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -254,18 +254,18 @@ async fn run(
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
             chain_id: node_state.node_config.chain_id,
         },
-        block_policy: EthBlockPolicy {
-            account_nonces: BTreeMap::new(),
-            // MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            last_commit: GENESIS_SEQ_NUM,
-            txn_cache: SortedVectorMap::new(),
-            max_reserve_balance: node_state.node_config.consensus.max_reserve_balance.into(),
-            execution_delay: node_state.node_config.consensus.execution_delay,
-            chain_id: node_state.node_config.chain_id,
-            reserve_balance_check_mode: node_state.node_config.consensus.reserve_balance_check_mode,
-        },
+        // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
+        // mode
+        block_policy: EthBlockPolicy::new(
+            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+            node_state.node_config.consensus.max_reserve_balance.into(),
+            node_state.node_config.consensus.execution_delay,
+            node_state.node_config.consensus.reserve_balance_check_mode,
+            node_state.node_config.chain_id,
+        ),
         reserve_balance_cache: ReserveBalanceCache::new(
-            node_state.triedb_path,
+            TriedbHandle::try_new(node_state.triedb_path.as_path())
+                .expect("triedb should exist in path"),
             node_state.node_config.consensus.execution_delay,
         ),
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,

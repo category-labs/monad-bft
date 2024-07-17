@@ -17,6 +17,7 @@ members = [
     "monad-debugger",
     "monad-eth-block-policy",
     "monad-eth-block-validator",
+    "monad-eth-ledger",
     "monad-eth-testutil",
     "monad-eth-types",
     "monad-eth-tx",

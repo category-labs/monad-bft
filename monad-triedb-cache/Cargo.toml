@@ -10,10 +10,10 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-triedb = { path = "../monad-triedb" }
 monad-types = { path = "../monad-types" }
-sorted_vector_map = { workspace = true }
+
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
+sorted_vector_map = { workspace = true }
 tracing = { workspace = true }

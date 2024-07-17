@@ -14,7 +14,9 @@ use monad_consensus_types::{
     payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     fetch_metric,
@@ -33,7 +35,7 @@ use monad_transformer::{
     BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
@@ -48,7 +50,7 @@ fn two_nodes_noser() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -78,6 +80,7 @@ fn two_nodes_noser() {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),
@@ -117,7 +120,7 @@ fn two_nodes_quic_latency() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -162,6 +165,7 @@ fn two_nodes_quic_latency() {
                     )
                     .build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),
@@ -239,7 +243,7 @@ fn two_nodes_quic_bw() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -284,6 +288,7 @@ fn two_nodes_quic_bw() {
                     )
                     .build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             20,

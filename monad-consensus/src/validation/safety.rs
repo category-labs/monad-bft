@@ -8,7 +8,7 @@ use monad_consensus_types::{
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
-use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
+use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_types::*;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -108,8 +108,9 @@ impl Safety {
     /// consecutive with `block.round`
     pub fn make_vote<
         SCT: SignatureCollection,
-        RBCT: ReserveBalanceCacheTrait,
-        BPT: BlockPolicy<SCT, RBCT>,
+        BPT: BlockPolicy<SCT, SBT, RBCT>,
+        SBT: StateBackend,
+        RBCT: ReserveBalanceCacheTrait<SBT>,
     >(
         &mut self,
         block: &BPT::ValidatedBlock,

@@ -7,7 +7,9 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
@@ -20,7 +22,7 @@ use monad_tracing_counter::{
 };
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};
@@ -49,7 +51,7 @@ fn many_nodes_metrics() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, 4),
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -79,6 +81,7 @@ fn many_nodes_metrics() {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),

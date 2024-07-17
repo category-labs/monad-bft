@@ -216,10 +216,12 @@ where
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+            StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             ReserveBalanceCacheType = <DebugSwarmRelation as SwarmRelation>::ReserveBalanceCacheType,
         > + 'static,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
+        S::Ledger: Sync,
     {
         SwarmBuilder(self.0.into_iter().map(NodeBuilder::debug).collect())
     }

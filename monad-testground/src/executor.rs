@@ -15,7 +15,9 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor};
 use monad_executor_glue::{
@@ -99,7 +101,7 @@ pub fn make_monad_executor<ST, SCT>(
         MonadEvent<ST, SCT>,
     >,
     TokioTimer<MonadEvent<ST, SCT>>,
-    MockLedger<SCT, CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
+    MockLedger<SCT, Block<SCT>, MonadEvent<ST, SCT>>,
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,
@@ -159,7 +161,8 @@ type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
     PassthruBlockPolicy,
-    PassthruReserveBalanceCache,
+    NopStateBackend,
+    PassthruReserveBalanceCache<NopStateBackend>,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockTxPool,
@@ -200,7 +203,7 @@ where
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
-        reserve_balance_cache: PassthruReserveBalanceCache {},
+        reserve_balance_cache: PassthruReserveBalanceCache::new(NopStateBackend::default(), 0),
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,

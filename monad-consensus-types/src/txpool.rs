@@ -1,5 +1,8 @@
 use bytes::Bytes;
-use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
+use monad_eth_reserve_balance::{
+    state_backend::{NopStateBackend, StateBackend},
+    PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_types::SeqNum;
 
 use crate::{
@@ -21,8 +24,9 @@ pub enum TxPoolInsertionError {
 /// are potentially available for a proposal
 pub trait TxPool<
     SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, RBCT>,
-    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 >
 {
     /// Handle transactions:
@@ -59,10 +63,11 @@ pub trait TxPool<
 
 impl<
         SCT: SignatureCollection,
-        BPT: BlockPolicy<SCT, RBCT>,
-        RBCT: ReserveBalanceCacheTrait,
-        T: TxPool<SCT, BPT, RBCT> + ?Sized,
-    > TxPool<SCT, BPT, RBCT> for Box<T>
+        BPT: BlockPolicy<SCT, SBT, RBCT>,
+        SBT: StateBackend,
+        RBCT: ReserveBalanceCacheTrait<SBT>,
+        T: TxPool<SCT, BPT, SBT, RBCT> + ?Sized,
+    > TxPool<SCT, BPT, SBT, RBCT> for Box<T>
 {
     fn insert_tx(
         &mut self,
@@ -116,14 +121,15 @@ impl Default for MockTxPool {
     }
 }
 
-impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy, PassthruReserveBalanceCache>
+impl<SCT: SignatureCollection>
+    TxPool<SCT, PassthruBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
     for MockTxPool
 {
     fn insert_tx(
         &mut self,
         _tx: Bytes,
         _block_policy: &PassthruBlockPolicy,
-        _reserve_balance_cache: &mut PassthruReserveBalanceCache,
+        _reserve_balance_cache: &mut PassthruReserveBalanceCache<NopStateBackend>,
     ) -> Result<(), TxPoolInsertionError> {
         Ok(())
     }
@@ -135,9 +141,13 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy, PassthruReserveB
         _gas_limit: u64,
         _block_policy: &PassthruBlockPolicy,
         _pending_blocks: Vec<
-            &<PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
+            &<PassthruBlockPolicy as BlockPolicy<
+                SCT,
+                NopStateBackend,
+                PassthruReserveBalanceCache<NopStateBackend>,
+            >>::ValidatedBlock,
         >,
-        _reserve_balance_cache: &mut PassthruReserveBalanceCache,
+        _reserve_balance_cache: &mut PassthruReserveBalanceCache<NopStateBackend>,
     ) -> Result<FullTransactionList, CarriageCostValidationError> {
         if tx_limit == 0 {
             Ok(FullTransactionList::empty())

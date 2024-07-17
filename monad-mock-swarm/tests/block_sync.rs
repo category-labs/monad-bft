@@ -13,7 +13,9 @@ mod test {
         payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
-    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+    use monad_eth_reserve_balance::{
+        state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+    };
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -33,7 +35,10 @@ mod test {
         PeriodicTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum};
-    use monad_updaters::state_root_hash::MockStateRootHashNop;
+    use monad_updaters::{
+        ledger::{MockLedger, MockableLedger},
+        state_root_hash::MockStateRootHashNop,
+    };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
@@ -49,7 +54,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -92,6 +97,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         outbound_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -168,7 +174,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -205,6 +211,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -249,7 +256,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -286,6 +293,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -380,7 +388,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || PassthruReserveBalanceCache,
+            || PassthruReserveBalanceCache::new(NopStateBackend, 10_000_000),
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -419,6 +427,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(

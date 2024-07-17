@@ -547,7 +547,7 @@ where
     PT: PubKey,
 {
     let mut hasher = HasherType::new();
-    hasher.update(&id.pubkey().bytes());
+    hasher.update(id.pubkey().bytes());
     hasher.hash().0[..20].try_into().expect("20 bytes")
 }
 
@@ -746,7 +746,7 @@ where
                     chunk_payload[0] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
 
                     let mut hasher = HasherType::new();
-                    hasher.update(&chunk_payload);
+                    hasher.update(chunk_payload);
                     hasher.hash()
                 })
                 .collect_vec();

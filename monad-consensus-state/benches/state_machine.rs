@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::Deref, time::Duration};
+use std::{ops::Deref, time::Duration};
 
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
@@ -26,7 +26,9 @@ use monad_crypto::{
     NopPubKey, NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
@@ -43,7 +45,6 @@ use monad_validator::{
     validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use sorted_vector_map::SortedVectorMap;
 
 const NUM_TRANSACTIONS: usize = 1000;
 const TRANSACTION_SIZE_BYTES: usize = 400;
@@ -173,9 +174,16 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
+        + Default,
 {
-    consensus_state: ConsensusState<ST, SCT, PassthruReserveBalanceCache, EthBlockPolicy>,
+    consensus_state: ConsensusState<
+        ST,
+        SCT,
+        EthBlockPolicy,
+        NopStateBackend,
+        PassthruReserveBalanceCache<NopStateBackend>,
+    >,
 
     metrics: Metrics,
     txpool: TT,
@@ -188,7 +196,7 @@ where
     state_root_validator: SVT,
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
-    reserve_balahce_cache: PassthruReserveBalanceCache,
+    reserve_balance_cache: PassthruReserveBalanceCache<NopStateBackend>,
     block_timestamp: BlockTimestamp,
     beneficiary: EthAddress,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
@@ -205,7 +213,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
+        + Default,
     // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 {
     fn wrapped_state(
@@ -214,7 +223,8 @@ where
         ST,
         SCT,
         EthBlockPolicy,
-        PassthruReserveBalanceCache,
+        NopStateBackend,
+        PassthruReserveBalanceCache<NopStateBackend>,
         VTF,
         LT,
         TT,
@@ -235,7 +245,7 @@ where
             state_root_validator: &self.state_root_validator,
             block_validator: &self.block_validator,
             block_policy: &mut self.block_policy,
-            reserve_balance_cache: &mut self.reserve_balahce_cache,
+            reserve_balance_cache: &mut self.reserve_balance_cache,
             block_timestamp: &mut self.block_timestamp,
             beneficiary: &self.beneficiary,
             nodeid: &self.nodeid,
@@ -285,7 +295,8 @@ fn setup<
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, NopStateBackend, PassthruReserveBalanceCache<NopStateBackend>>
+        + Default,
 >(
     num_states: u32,
     valset_factory: VTF,
@@ -363,16 +374,11 @@ fn setup<
 
                 state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX, 1337),
-                block_policy: EthBlockPolicy {
-                    account_nonces: BTreeMap::new(),
-                    last_commit: GENESIS_SEQ_NUM,
-                    execution_delay: 0,
-                    max_reserve_balance: 0,
-                    txn_cache: SortedVectorMap::new(),
-                    reserve_balance_check_mode: 0,
-                    chain_id: 1337,
-                },
-                reserve_balahce_cache: PassthruReserveBalanceCache::default(),
+                block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337),
+                reserve_balance_cache: PassthruReserveBalanceCache::new(
+                    NopStateBackend::default(),
+                    0,
+                ),
                 block_timestamp: BlockTimestamp::new(
                     100,
                     consensus_config.timestamp_latency_estimate_ms,
@@ -412,6 +418,8 @@ type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type StateRootValidatorType = NopStateRoot;
 type BlockPolicyType = EthBlockPolicy;
+type StateBackendType = NopStateBackend;
+type ReserveBalanceCacheType = PassthruReserveBalanceCache<StateBackendType>;
 
 use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::{
@@ -492,7 +500,8 @@ fn init(seed_mempool: bool) -> BenchTuple {
             <EthTxPool as TxPool<
                 SignatureCollectionType,
                 EthBlockPolicy,
-                PassthruReserveBalanceCache,
+                NopStateBackend,
+                PassthruReserveBalanceCache<NopStateBackend>,
             >>::insert_tx(
                 wrapped_state.tx_pool,
                 Bytes::from(txn.envelope_encoded()),
@@ -629,7 +638,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (raw_txns, encoded_txns) = make_txns();
 
                 for txn in raw_txns.iter() {
-                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, PassthruReserveBalanceCache>>::insert_tx(
+                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend,PassthruReserveBalanceCache<NopStateBackend>>>::insert_tx(
                         wrapped_state.tx_pool,
                         Bytes::from(txn.envelope_encoded()),
                         wrapped_state.block_policy,
@@ -686,21 +695,15 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     );
 
                 let (raw_txns, _) = make_txns();
-                let block_policy = EthBlockPolicy {
-                    account_nonces: BTreeMap::new(),
-                    last_commit: GENESIS_SEQ_NUM,
-                    execution_delay: 0,
-                    max_reserve_balance: 0,
-                    txn_cache: SortedVectorMap::new(),
-                    reserve_balance_check_mode: 0,
-                    chain_id: 1337,
-                };
-                let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
+                let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337);
+                let mut reserve_balance_cache =
+                    PassthruReserveBalanceCache::new(NopStateBackend::default(), 0);
                 for txn in raw_txns.iter() {
-                    <EthTxPool as TxPool<
+                    let _ = <EthTxPool as TxPool<
                         SignatureCollectionType,
                         EthBlockPolicy,
-                        PassthruReserveBalanceCache,
+                        NopStateBackend,
+                        PassthruReserveBalanceCache<NopStateBackend>,
                     >>::insert_tx(
                         &mut ctx[3].txpool,
                         Bytes::from(txn.envelope_encoded()),

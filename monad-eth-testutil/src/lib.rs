@@ -8,9 +8,11 @@ use monad_eth_block_policy::EthValidatedBlock;
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
+use monad_secp::KeyPair;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use reth_primitives::{
-    revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind, TxLegacy,
+    keccak256, revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
+    TxLegacy,
 };
 
 pub fn make_tx(
@@ -37,6 +39,14 @@ pub fn make_tx(
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
     EthSignedTransaction::from_transaction_and_signature(transaction, signature)
+}
+
+pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> EthAddress {
+    let kp = KeyPair::from_bytes(secret.as_mut_slice()).unwrap();
+    let pubkey_bytes = kp.pubkey().bytes();
+    assert!(pubkey_bytes.len() == 65);
+    let hash = keccak256(&pubkey_bytes[1..]);
+    EthAddress(Address::from_slice(&hash[12..]))
 }
 
 pub fn generate_random_block_with_txns(
@@ -82,5 +92,23 @@ pub fn generate_random_block_with_txns(
         block,
         validated_txns,
         nonces,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use reth_primitives::B256;
+
+    use super::*;
+    #[test]
+    fn test_secret_to_eth_address() {
+        let secret = B256::random();
+
+        let eth_address_converted = secret_to_eth_address(secret);
+
+        let tx = make_tx(secret, 0, 0, 0, 0);
+        let eth_address_recovered = EthAddress(tx.recover_signer().unwrap());
+
+        assert_eq!(eth_address_converted, eth_address_recovered);
     }
 }

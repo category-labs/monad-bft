@@ -44,6 +44,7 @@ class Node:
             'mkdir /monad/logs; '
             'export RUST_BACKTRACE=1; '
             'export RUST_LOG=debug; '
+            'cp /monad/config/forkpoint.genesis.toml /monad/config/forkpoint.toml; '
             'monad-node --secp-identity /monad/config/id-secp '
             '--bls-identity /monad/config/id-bls '
             '--node-config /monad/config/node.toml '

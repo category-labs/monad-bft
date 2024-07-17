@@ -3,7 +3,7 @@ use monad_async_state_verify::{
     AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
 use monad_consensus_types::{
-    block::{BlockPolicy, PassthruBlockPolicy},
+    block::{Block, BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
@@ -13,13 +13,19 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_eth_reserve_balance::{
+    state_backend::{NopStateBackend, StateBackend},
+    PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
+use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
-use monad_updaters::state_root_hash::{MockStateRootHashNop, MockableStateRootHash};
+use monad_updaters::{
+    ledger::{MockLedger, MockableLedger},
+    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
+};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -32,6 +38,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::SignatureType,
     <S as SwarmRelation>::SignatureCollectionType,
     <S as SwarmRelation>::BlockPolicyType,
+    <S as SwarmRelation>::StateBackendType,
     <S as SwarmRelation>::ReserveBalanceCacheType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
@@ -50,8 +57,15 @@ where
     type SignatureCollectionType: SignatureCollection<
         NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
     >;
-    type ReserveBalanceCacheType: ReserveBalanceCacheTrait + Send + Sync + Unpin;
-    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType, Self::ReserveBalanceCacheType>
+    type BlockPolicyType: BlockPolicy<
+            Self::SignatureCollectionType,
+            Self::StateBackendType,
+            Self::ReserveBalanceCacheType,
+        > + Send
+        + Sync
+        + Unpin;
+    type StateBackendType: StateBackend + Send + Sync + Unpin;
+    type ReserveBalanceCacheType: ReserveBalanceCacheTrait<Self::StateBackendType>
         + Send
         + Sync
         + Unpin;
@@ -60,8 +74,9 @@ where
 
     type BlockValidator: BlockValidator<
             Self::SignatureCollectionType,
-            Self::ReserveBalanceCacheType,
             Self::BlockPolicyType,
+            Self::StateBackendType,
+            Self::ReserveBalanceCacheType,
         > + Send
         + Sync
         + Unpin;
@@ -74,9 +89,19 @@ where
         + Send
         + Sync
         + Unpin;
-    type TxPool: TxPool<Self::SignatureCollectionType, Self::BlockPolicyType, Self::ReserveBalanceCacheType>
-        + Send
+    type TxPool: TxPool<
+            Self::SignatureCollectionType,
+            Self::BlockPolicyType,
+            Self::StateBackendType,
+            Self::ReserveBalanceCacheType,
+        > + Send
         + Sync
+        + Unpin;
+    type Ledger: MockableLedger<
+            Block<Self::SignatureCollectionType>,
+            SignatureCollection = Self::SignatureCollectionType,
+            Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        > + Send
         + Unpin;
     type AsyncStateRootVerify: AsyncStateVerifyProcess<
             SignatureCollectionType = Self::SignatureCollectionType,
@@ -116,15 +141,17 @@ impl SwarmRelation for DebugSwarmRelation {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type StateBackendType = NopStateBackend;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
     type BlockValidator = Box<
         dyn BlockValidator<
                 Self::SignatureCollectionType,
-                Self::ReserveBalanceCacheType,
                 Self::BlockPolicyType,
+                Self::StateBackendType,
+                Self::ReserveBalanceCacheType,
             > + Send
             + Sync,
     >;
@@ -140,7 +167,22 @@ impl SwarmRelation for DebugSwarmRelation {
         dyn TxPool<
                 Self::SignatureCollectionType,
                 Self::BlockPolicyType,
+                Self::StateBackendType,
                 Self::ReserveBalanceCacheType,
+            > + Send
+            + Sync,
+    >;
+    type Ledger = Box<
+        dyn MockableLedger<
+                Block<Self::SignatureCollectionType>,
+                SignatureCollection = Self::SignatureCollectionType,
+                Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+                Command = LedgerCommand<
+                    CertificateSignaturePubKey<Self::SignatureType>,
+                    Block<Self::SignatureCollectionType>,
+                    MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+                >,
+                Item = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
             > + Send
             + Sync,
     >;
@@ -184,7 +226,8 @@ impl SwarmRelation for NoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type StateBackendType = NopStateBackend;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -195,6 +238,11 @@ impl SwarmRelation for NoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -220,7 +268,8 @@ impl SwarmRelation for BytesSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type StateBackendType = NopStateBackend;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
@@ -230,6 +279,11 @@ impl SwarmRelation for BytesSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -255,7 +309,8 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type StateBackendType = NopStateBackend;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -266,6 +321,11 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,

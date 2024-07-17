@@ -4,17 +4,22 @@ use std::{
     ptr::{null, null_mut},
 };
 
-use alloy_primitives::keccak256;
+use alloy_primitives::{keccak256, B256};
 use alloy_rlp::Decodable;
-use tracing::debug;
+use key::create_addr_key;
+use monad_eth_reserve_balance::state_backend::StateBackend;
+use monad_eth_types::{EthAccount, EthAddress};
+use tracing::{debug, error};
+
+pub mod key;
 
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
-use monad_eth_types::EthAddress;
 
 const STATE_NIBBLE: u8 = 0x0;
 
+// TODO: rename to TriedbHandle
 #[derive(Clone, Debug)]
 pub struct Handle {
     db_ptr: *mut bindings::triedb,
@@ -127,37 +132,55 @@ impl Handle {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
 
-    pub fn get_account_balance(&self, block_id: u64, address: &EthAddress) -> Option<u128> {
-        let (triedb_key, key_len_nibbles) = Handle::create_addr_key(address);
+    pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
+        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
 
         let result = self.read(&triedb_key, key_len_nibbles, block_id);
-        let Some(result) = result else {
-            // can not read
+
+        let Some(account_rlp) = result else {
+            debug!("account {:?} not found at {:?}", eth_address, block_id);
             return None;
         };
 
-        let mut buf = result.as_slice();
+        let mut buf = account_rlp.as_slice();
         let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
-            debug!("rlp decode failed: {:?}", buf);
+            error!("rlp decode failed: {:?}", buf);
             return None;
         };
 
         // account incarnation decode (currently not needed)
         let Ok(_) = u64::decode(&mut buf) else {
-            debug!("rlp incarnation decode failed: {:?}", buf);
+            error!("rlp incarnation decode failed: {:?}", buf);
             return None;
         };
 
-        let Ok(nonce) = u128::decode(&mut buf) else {
-            debug!("rlp nonce decode failed: {:?}", buf);
+        let Ok(nonce) = u64::decode(&mut buf) else {
+            error!("rlp nonce decode failed: {:?}", buf);
+
             return None;
         };
         let Ok(balance) = u128::decode(&mut buf) else {
-            debug!("rlp balance decode failed: {:?}", buf);
+            error!("rlp balance decode failed: {:?}", buf);
             return None;
         };
 
-        Some(balance)
+        let code_hash = if buf.is_empty() {
+            None
+        } else {
+            match <[u8; 32]>::decode(&mut buf) {
+                Ok(x) => Some(x),
+                Err(e) => {
+                    error!("rlp code_hash decode failed: {:?}", e);
+                    return None;
+                }
+            }
+        };
+
+        Some(EthAccount {
+            nonce,
+            balance,
+            code_hash: code_hash.map(B256::from),
+        })
     }
 }
 
@@ -165,6 +188,16 @@ impl Drop for Handle {
     fn drop(&mut self) {
         let result = unsafe { bindings::triedb_close(self.db_ptr) };
         assert_eq!(result, 0);
+    }
+}
+
+impl StateBackend for Handle {
+    fn get_account(&self, block: u64, eth_address: &EthAddress) -> Option<EthAccount> {
+        self.get_account(eth_address.as_ref(), block)
+    }
+
+    fn is_available(&self, block: u64) -> bool {
+        self.latest_block() >= block
     }
 }
 

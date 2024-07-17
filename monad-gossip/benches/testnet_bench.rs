@@ -75,7 +75,7 @@ fn make_gossipsub<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> Unsa
     UnsafeGossipsubConfig {
         seed: {
             let mut hasher = HasherType::new();
-            hasher.update(&me.pubkey().bytes());
+            hasher.update(me.pubkey().bytes());
             hasher.hash().0
         },
         me: *me,

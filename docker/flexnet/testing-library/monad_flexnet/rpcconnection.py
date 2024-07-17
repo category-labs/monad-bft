@@ -11,6 +11,7 @@ from web3 import Web3
 
 from .transaction import Transaction
 
+
 class RpcConnection:
     def __init__(self, rpc_server: str, internal_tx_count: bool = False):
         self.rpc_server = rpc_server
@@ -18,10 +19,12 @@ class RpcConnection:
         self.transaction_count = collections.defaultdict(lambda: 0)
         self.internal_tx_count = internal_tx_count
 
-        adapter = requests.adapters.HTTPAdapter(max_retries=urllib3.util.retry.Retry(connect=3, backoff_factor=1))
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=urllib3.util.retry.Retry(connect=3, backoff_factor=1)
+        )
         session = requests.Session()
-        session.mount('http://', adapter)
-        session.mount('https://', adapter)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         self.w3 = Web3(Web3.HTTPProvider(rpc_server, session=session))
 
     def create_account(self, key: str | None = None) -> eth_account.Account:
@@ -32,7 +35,9 @@ class RpcConnection:
     def get_next_valid_nonce(self, sender):
         return self.get_transaction_count(sender)
 
-    def create_transaction(self, transaction: Transaction, nonce: int | None = None) -> HexBytes:
+    def create_transaction(
+        self, transaction: Transaction, nonce: int | None = None
+    ) -> HexBytes:
         valid_nonce = self.get_next_valid_nonce(transaction.sender)
         if nonce is None:
             nonce = valid_nonce
@@ -40,23 +45,25 @@ class RpcConnection:
             self.transaction_count[transaction.sender.address] += 1
 
         transfer_tx = {
-            'from': transaction.sender.address,
-            'to': transaction.recipient.address,
-            'value': transaction.amount,
-            'nonce': nonce,
-            'gas': transaction.gas,
-            'maxFeePerGas': transaction.maxFeePerGas,
-            'maxPriorityFeePerGas': 0,
-            'chainId': 1
+            "from": transaction.sender.address,
+            "to": transaction.recipient.address,
+            "value": transaction.amount,
+            "nonce": nonce,
+            "gas": transaction.gas,
+            "maxFeePerGas": transaction.maxFeePerGas,
+            "maxPriorityFeePerGas": 0,
+            "chainId": 41454,
         }
 
         signed_transfer = transaction.sender.sign_transaction(transfer_tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed_transfer.raw_transaction)
 
         if tx_hash != signed_transfer.hash:
-            print(f'incorrect transaction hash ({signed_transfer.hash.hex()} != {tx_hash.hex()}')
+            print(
+                f"incorrect transaction hash ({signed_transfer.hash.hex()} != {tx_hash.hex()}"
+            )
 
-        self.transactions.append({'hash': tx_hash.hex(), 'submitted': True})
+        self.transactions.append({"hash": tx_hash.hex(), "submitted": True})
         return tx_hash
 
     def create_and_wait_for_transaction(self, transaction: Transaction) -> HexBytes:
@@ -71,7 +78,7 @@ class RpcConnection:
         return self.w3.eth.get_balance(account.address)
 
     def expect_account_balance(self, account: eth_account.Account, balance: int):
-        assert(self.get_account_balance(account) == balance)
+        assert self.get_account_balance(account) == balance
 
     def get_transaction_count(self, account: eth_account.Account) -> int:
         if self.internal_tx_count:
@@ -79,5 +86,5 @@ class RpcConnection:
         return self.w3.eth.get_transaction_count(account.address)
 
     def dump_transaction_data(self, out_file: str | os.PathLike):
-        with open(out_file, 'w') as  f:
+        with open(out_file, "w") as f:
             json.dump(self.transactions, f)

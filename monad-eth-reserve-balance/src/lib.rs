@@ -1,45 +1,87 @@
-use std::path::PathBuf;
+use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
+use monad_types::SeqNum;
+use state_backend::StateBackend;
+use tracing::{debug, trace};
+pub mod state_backend;
 
-use monad_eth_types::EthAddress;
-use monad_types::{SeqNum, GENESIS_SEQ_NUM};
-use tracing::debug;
-
+// TODO: rename this result
 pub enum ReserveBalanceCacheResult {
-    Val(SeqNum, u128), // triedb block seq_num, balance
-    None,              // No balance found for the requested block_seq_num and address
-    NeedSync,          // The requested block is ahead of latest triedb block seq num
+    Val(Balance, Nonce), // balance, nonce
+    None,                // Account doesn't exist
+    NeedSync,            // The requested block is ahead of latest triedb block seq num
 }
 
-pub trait ReserveBalanceCacheTrait {
-    fn new(triedb_path: PathBuf, execution_delay: u64) -> Self;
+// TODO: rename to AccountCachePolicy
+pub trait ReserveBalanceCacheTrait<SBT> {
+    fn new(state_backend: SBT, execution_delay: u64) -> Self;
 
-    fn clone(&self) -> Self;
-
-    fn get_account_balance(
+    fn get_account(
         &mut self,
-        consensus_block_seq_num: SeqNum,
+        backend_block_seq_num: SeqNum,
         address: &EthAddress,
     ) -> ReserveBalanceCacheResult;
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct PassthruReserveBalanceCache;
+#[derive(Debug)]
+pub struct PassthruReserveBalanceCache<SBT> {
+    state_backend: SBT,
+}
 
-impl ReserveBalanceCacheTrait for PassthruReserveBalanceCache {
-    fn new(_path: PathBuf, _execution_delay: u64) -> Self {
-        Self
+impl<SBT: StateBackend + Clone> PassthruReserveBalanceCache<SBT> {
+    /// for debug reasons: in mock-swarm, MonadStateBuilder accepts a function
+    /// pointer which returns ReserveBalanceCache. The executors, in particular
+    /// ledger is created separately. Need this method so MockEthLedger can be
+    /// constructed to write to the shared state backend
+    pub fn get_state_backend(&self) -> SBT {
+        self.state_backend.clone()
     }
+}
 
+/// For twins testing only
+impl<SBT: Clone> Clone for PassthruReserveBalanceCache<SBT> {
     fn clone(&self) -> Self {
-        Clone::clone(self)
+        Self {
+            state_backend: self.state_backend.clone(),
+        }
+    }
+}
+
+impl<SBT: StateBackend> ReserveBalanceCacheTrait<SBT> for PassthruReserveBalanceCache<SBT> {
+    fn new(state_backend: SBT, _execution_delay: u64) -> Self {
+        Self { state_backend }
     }
 
-    fn get_account_balance(
+    fn get_account(
         &mut self,
-        _consensus_block_seq_num: SeqNum,
-        _address: &EthAddress,
+        backend_block_seq_num: SeqNum,
+        address: &EthAddress,
     ) -> ReserveBalanceCacheResult {
-        debug!("passthru cache get_reserve_balance");
-        ReserveBalanceCacheResult::Val(GENESIS_SEQ_NUM, u64::MAX.into())
+        debug!(
+            block = backend_block_seq_num.0,
+            "Passthru cache get_account"
+        );
+
+        if !self.state_backend.is_available(backend_block_seq_num.0) {
+            trace!(
+                block = backend_block_seq_num.0,
+                "passthru cache get_account 1 \
+                    backend needs sync "
+            );
+            return ReserveBalanceCacheResult::NeedSync;
+        }
+
+        if let Some(account) = self
+            .state_backend
+            .get_account(backend_block_seq_num.0, address)
+        {
+            let EthAccount {
+                nonce,
+                balance,
+                code_hash: _,
+            } = account;
+            ReserveBalanceCacheResult::Val(balance, nonce)
+        } else {
+            ReserveBalanceCacheResult::None
+        }
     }
 }

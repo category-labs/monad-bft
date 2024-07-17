@@ -108,6 +108,7 @@ echo "Root of node volumes created at: $vol_root"
 mkdir -p $vol_root/node
 cp -r $net_dir/* $vol_root
 cp -r $devnet_dir/monad/config $vol_root/node
+cp $vol_root/node/config/forkpoint.genesis.toml $vol_root/node/config/forkpoint.toml
 
 # create fresh triedb file
 mkdir -p $vol_root/node/triedb

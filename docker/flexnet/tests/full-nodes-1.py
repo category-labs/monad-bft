@@ -4,7 +4,7 @@ import time
 
 sender_privkey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
-INITIAL_ACCOUNT_BAL = 10000000000000000000000
+INITIAL_ACCOUNT_BAL = 1000000000000000000000
 TRANSACTION_AMOUNT = 1000
 GAS_AMOUNT = 21000
 MAX_FEE_PER_GAS = 1000
@@ -28,7 +28,6 @@ def main():
             clients[rpc_node] = client
             if sender_account is None:
                 sender_account = client.create_account(sender_privkey)
-
         NUM_VALID_TX = 5
         for i in range(NUM_VALID_TX):
             # Pick different RPC to service the transaction
@@ -79,7 +78,7 @@ def main():
                 sender_tx_count = other_client.get_transaction_count(sender_account)
                 if sender_tx_count != NUM_VALID_TX:
                     print(f'{other_client_name}: incorrect sender_tx_count ({sender_tx_count} != {NUM_VALID_TX})')
-                other_client.expect_account_balance(sender_account, INITIAL_ACCOUNT_BAL - (GAS_AMOUNT * MAX_FEE_PER_GAS + TRANSACTION_AMOUNT) * NUM_VALID_TX)  
+                other_client.expect_account_balance(sender_account, INITIAL_ACCOUNT_BAL - (GAS_AMOUNT * MAX_FEE_PER_GAS + TRANSACTION_AMOUNT) * NUM_VALID_TX)
 
 if __name__ == "__main__":
     main()

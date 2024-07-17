@@ -7,14 +7,19 @@ use bytes::Bytes;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    block::{Block, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    payload::StateRoot,
     txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
+use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -29,7 +34,7 @@ use monad_transformer::{
     BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -43,8 +48,9 @@ struct NopSwarm;
 impl SwarmRelation for NopSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
@@ -54,6 +60,11 @@ impl SwarmRelation for NopSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -76,8 +87,9 @@ struct BlsSwarm;
 impl SwarmRelation for BlsSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
-    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
     type TransportMessage = Bytes;
 
@@ -87,6 +99,11 @@ impl SwarmRelation for BlsSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -113,7 +130,7 @@ fn many_nodes_nop_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, u64::MAX),
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -158,6 +175,7 @@ fn many_nodes_nop_timeout() -> u128 {
                     )
                     .build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,
@@ -191,7 +209,7 @@ fn many_nodes_bls_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, u64::MAX),
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -236,6 +254,7 @@ fn many_nodes_bls_timeout() -> u128 {
                     )
                     .build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,

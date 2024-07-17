@@ -24,7 +24,7 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockLedger,
+    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
     loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
     timestamp::TimestampAdjuster,
 };
@@ -33,12 +33,7 @@ use priority_queue::PriorityQueue;
 use crate::swarm_relation::SwarmRelation;
 
 pub struct MockExecutor<S: SwarmRelation> {
-    ledger: MockLedger<
-        S::SignatureCollectionType,
-        CertificateSignaturePubKey<S::SignatureType>,
-        Block<S::SignatureCollectionType>,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
-    >,
+    ledger: S::Ledger,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<S::SignatureCollectionType>,
     state_root_hash: S::StateRootHashExecutor,
@@ -168,12 +163,13 @@ impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
         state_root_hash: S::StateRootHashExecutor,
+        ledger: S::Ledger,
         timestamp_config: TimestamperConfig,
         tick: Duration,
     ) -> Self {
         Self {
             checkpoint: Default::default(),
-            ledger: Default::default(),
+            ledger,
             execution_ledger: Default::default(),
             state_root_hash,
             ipc: Default::default(),
@@ -397,14 +393,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
 }
 
 impl<S: SwarmRelation> MockExecutor<S> {
-    pub fn ledger(
-        &self,
-    ) -> &MockLedger<
-        S::SignatureCollectionType,
-        CertificateSignaturePubKey<S::SignatureType>,
-        Block<S::SignatureCollectionType>,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
-    > {
+    pub fn ledger(&self) -> &S::Ledger {
         &self.ledger
     }
 

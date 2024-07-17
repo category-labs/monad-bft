@@ -42,6 +42,7 @@ pub struct ConsensusEvents {
     pub rx_proposal: u64,
     pub proposal_with_tc: u64,
     pub failed_verify_randao_reveal_sig: u64,
+    pub commit_block: u64,
     pub commit_empty_block: u64,
     pub committed_bytes: u64,
     pub state_root_update: u64,
@@ -70,6 +71,7 @@ pub struct BlocksyncEvents {
     pub blocksync_response_failed: u64,
     pub blocksync_response_unexpected: u64,
     pub blocksync_request: u64,
+    pub blocksync_txn_validation_failed: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -127,6 +129,7 @@ impl Metrics {
             metric!(self, consensus_events.rx_proposal),
             metric!(self, consensus_events.proposal_with_tc),
             metric!(self, consensus_events.failed_verify_randao_reveal_sig),
+            metric!(self, consensus_events.commit_block),
             metric!(self, consensus_events.commit_empty_block),
             metric!(self, consensus_events.committed_bytes),
             metric!(self, consensus_events.state_root_update),
@@ -146,6 +149,7 @@ impl Metrics {
             metric!(self, blocksync_events.blocksync_response_failed),
             metric!(self, blocksync_events.blocksync_response_unexpected),
             metric!(self, blocksync_events.blocksync_request),
+            metric!(self, blocksync_events.blocksync_txn_validation_failed),
         ]
     }
 }

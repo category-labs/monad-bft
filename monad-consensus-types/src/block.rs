@@ -2,7 +2,7 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
+use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -219,6 +219,7 @@ pub enum CarriageCostValidationError {
     TrieDBNeedsSync,
     InsufficientReserveBalance,
     InternalError,
+    AccountNoExist,
 }
 
 #[derive(Debug, PartialEq)]
@@ -228,7 +229,12 @@ pub enum BlockPolicyError {
     CarriageCostError(CarriageCostValidationError),
 }
 /// Trait that represents how inner contents of a block should be validated
-pub trait BlockPolicy<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> {
+pub trait BlockPolicy<
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
+>
+{
     type ValidatedBlock: Sized
         + Clone
         + PartialEq
@@ -250,9 +256,10 @@ pub trait BlockPolicy<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> 
 
 impl<
         SCT: SignatureCollection,
-        RBCT: ReserveBalanceCacheTrait,
-        T: BlockPolicy<SCT, RBCT> + ?Sized,
-    > BlockPolicy<SCT, RBCT> for Box<T>
+        SBT: StateBackend,
+        RBCT: ReserveBalanceCacheTrait<SBT>,
+        T: BlockPolicy<SCT, SBT, RBCT> + ?Sized,
+    > BlockPolicy<SCT, SBT, RBCT> for Box<T>
 {
     type ValidatedBlock = T::ValidatedBlock;
 
@@ -274,8 +281,8 @@ impl<
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
 
-impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> BlockPolicy<SCT, RBCT>
-    for PassthruBlockPolicy
+impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
+    BlockPolicy<SCT, SBT, RBCT> for PassthruBlockPolicy
 {
     type ValidatedBlock = Block<SCT>;
 

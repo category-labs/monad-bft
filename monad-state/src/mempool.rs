@@ -14,7 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
+use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_executor_glue::{Command, MempoolEvent, MonadEvent, RouterCommand};
 use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
@@ -29,16 +29,19 @@ use crate::{MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, RBCT>,
-    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, RBCT>,
-    BVT: BlockValidator<SCT, RBCT, BPT>,
+    TT: TxPool<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
+
     SVT: StateRootValidator,
 {
     txpool: &'a mut TT,
@@ -47,7 +50,7 @@ where
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusState<ST, SCT, RBCT, BPT>,
+    consensus: &'a ConsensusState<ST, SCT, BPT, SBT, RBCT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
@@ -59,21 +62,22 @@ pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+    MempoolChildState<'a, ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT, RBCT>,
-    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT, RBCT>,
-    BVT: BlockValidator<SCT, RBCT, BPT>,
+    TT: TxPool<SCT, BPT, SBT, RBCT>,
+    BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,

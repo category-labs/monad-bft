@@ -1,19 +1,19 @@
 use core::fmt::Debug;
 
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
-use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
+use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 
 use crate::{
     block::{Block, BlockPolicy, PassthruBlockPolicy},
     signature_collection::SignatureCollection,
 };
 
-//pub trait BlockValidator<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BPT: BlockPolicy<SCT, RBCT>> {
-pub trait BlockValidator<SCT, RBCT, BPT>
+pub trait BlockValidator<SCT, BPT, SBT, RBCT>
 where
     SCT: SignatureCollection,
-    RBCT: ReserveBalanceCacheTrait,
-    BPT: BlockPolicy<SCT, RBCT>,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock>;
     fn other_validation(
@@ -25,10 +25,11 @@ where
 
 impl<
         SCT: SignatureCollection,
-        RBCT: ReserveBalanceCacheTrait,
-        BPT: BlockPolicy<SCT, RBCT>,
-        T: BlockValidator<SCT, RBCT, BPT> + ?Sized,
-    > BlockValidator<SCT, RBCT, BPT> for Box<T>
+        BPT: BlockPolicy<SCT, SBT, RBCT>,
+        SBT: StateBackend,
+        RBCT: ReserveBalanceCacheTrait<SBT>,
+        T: BlockValidator<SCT, BPT, SBT, RBCT> + ?Sized,
+    > BlockValidator<SCT, BPT, SBT, RBCT> for Box<T>
 {
     fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock> {
         (**self).validate(block)
@@ -46,21 +47,19 @@ impl<
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl<SCT: SignatureCollection> BlockValidator<SCT, PassthruReserveBalanceCache, PassthruBlockPolicy>
-    for MockValidator
+impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
+    BlockValidator<SCT, PassthruBlockPolicy, SBT, RBCT> for MockValidator
 {
     fn validate(
         &self,
         block: Block<SCT>,
-    ) -> Option<
-        <PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
-    > {
+    ) -> Option<<PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock> {
         Some(block)
     }
 
     fn other_validation(
         &self,
-        _block: &<PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
+        _block: &<PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock,
         _author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
     ) -> bool {
         true

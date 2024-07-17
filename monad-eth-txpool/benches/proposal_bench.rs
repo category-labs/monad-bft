@@ -1,13 +1,12 @@
-use std::collections::BTreeMap;
-
 use alloy_rlp::Encodable;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
+use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
 use monad_eth_txpool::EthTxPool;
+use monad_eth_types::{Balance, EthAddress};
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
@@ -16,10 +15,10 @@ use rand_chacha::ChaCha8Rng;
 use reth_primitives::{
     sign_message, Address, Transaction, TransactionKind, TransactionSigned, TxLegacy, B256,
 };
-use sorted_vector_map::SortedVectorMap;
 
 const NUM_TRANSACTIONS: usize = 10_000;
 const TRANSACTION_SIZE_BYTES: usize = 400;
+const EXECUTION_DELAY: u64 = 4;
 
 fn make_tx(rng: &mut ChaCha8Rng, input_len: usize) -> TransactionSigned {
     let mut input = vec![0; input_len];
@@ -47,29 +46,29 @@ struct BenchController {
     pub transactions: FullTransactionList,
     pub gas_limit: u64,
     pub block_policy: EthBlockPolicy,
-    pub reserve_balance_cache: PassthruReserveBalanceCache,
+    pub reserve_balance_cache: PassthruReserveBalanceCache<InMemoryState>,
 }
 
 type SignatureCollectionType = MultiSig<NopSignature>;
 
 fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
-    let eth_block_policy = EthBlockPolicy {
-        account_nonces: BTreeMap::new(),
-        last_commit: GENESIS_SEQ_NUM,
-        execution_delay: 0,
-        max_reserve_balance: 0,
-        txn_cache: SortedVectorMap::new(),
-        reserve_balance_check_mode: 0,
-        chain_id: 1337,
-    };
-    let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
+
+    // TODO: change this to something more meaningful, i.e. what's is the block
+    // policy state we want to benchmark
+    let eth_block_policy =
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, EXECUTION_DELAY, 0, 1337);
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);
 
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(&mut rng, TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
+    let acc = txns
+        .iter()
+        .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+    let mut reserve_balance_cache =
+        PassthruReserveBalanceCache::new(InMemoryState::new(acc, Balance::MAX, 0), EXECUTION_DELAY);
 
     let proposal_gas_limit: u64 = txns
         .iter()
@@ -83,12 +82,18 @@ fn create_pool_and_transactions() -> BenchController {
     let bytes = Bytes::copy_from_slice(&txns_encoded);
 
     for txn in txns.iter() {
-        TxPool::<SignatureCollectionType, EthBlockPolicy, PassthruReserveBalanceCache>::insert_tx(
+        TxPool::<
+            SignatureCollectionType,
+            EthBlockPolicy,
+            InMemoryState,
+            PassthruReserveBalanceCache<InMemoryState>,
+        >::insert_tx(
             &mut txpool,
             Bytes::from(txn.envelope_encoded()),
             &eth_block_policy,
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
     }
     let txns_list = FullTransactionList::new(bytes);
 
@@ -115,16 +120,18 @@ fn criterion_benchmark(c: &mut Criterion) {
                         TxPool::<
                             SignatureCollectionType,
                             EthBlockPolicy,
-                            PassthruReserveBalanceCache,
+                            InMemoryState,
+                            PassthruReserveBalanceCache<InMemoryState>,
                         >::create_proposal(
                             &mut controller.pool,
-                            controller.block_policy.last_commit + SeqNum(1),
+                            controller.block_policy.get_last_commit() + SeqNum(1),
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
                             &mut controller.reserve_balance_cache,
-                        );
+                        )
+                        .unwrap();
                         perf.disable();
                     },
                     BatchSize::SmallInput,
@@ -143,16 +150,18 @@ fn criterion_benchmark(c: &mut Criterion) {
                         TxPool::<
                             SignatureCollectionType,
                             EthBlockPolicy,
-                            PassthruReserveBalanceCache,
+                            InMemoryState,
+                            PassthruReserveBalanceCache<InMemoryState>,
                         >::create_proposal(
                             &mut controller.pool,
-                            controller.block_policy.last_commit + SeqNum(1),
+                            controller.block_policy.get_last_commit() + SeqNum(1),
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
                             &mut controller.reserve_balance_cache,
-                        );
+                        )
+                        .unwrap();
                     },
                     BatchSize::SmallInput,
                 )

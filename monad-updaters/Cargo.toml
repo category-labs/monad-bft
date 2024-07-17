@@ -19,15 +19,20 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-triedb = { path = "../monad-triedb", optional = true }
 monad-types = { path = "../monad-types" }
 
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
-alloy-rlp = { workspace = true }
 sorted-vec = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time", "sync"], optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "time",
+    "sync",
+], optional = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 

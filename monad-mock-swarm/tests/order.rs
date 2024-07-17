@@ -12,7 +12,9 @@ use monad_consensus_types::{
     payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
-use monad_eth_reserve_balance::PassthruReserveBalanceCache;
+use monad_eth_reserve_balance::{
+    state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
+};
 use monad_mock_swarm::{
     fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
@@ -24,7 +26,10 @@ use monad_transformer::{
     TransformerReplayOrder, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{
+    ledger::{MockLedger, MockableLedger},
+    state_root_hash::MockStateRootHashNop,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -69,7 +74,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || PassthruReserveBalanceCache,
+        || PassthruReserveBalanceCache::new(NopStateBackend, 1),
         || {
             StateRoot::new(
                 // due to the burst behavior of replay-transformer, its okay to
@@ -112,6 +117,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),

@@ -3,7 +3,8 @@ mod common;
 #[cfg(test)]
 mod test {
     use std::{
-        collections::{BTreeMap, BTreeSet, HashSet},
+        collections::{BTreeSet, HashSet},
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -15,12 +16,15 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_block_policy::EthBlockPolicy;
+    use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
-    use monad_eth_testutil::make_tx;
+    use monad_eth_ledger::MockEthLedger;
+    use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
+    use monad_eth_testutil::{make_tx, secret_to_eth_address};
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
+    use monad_eth_types::{Balance, EthAddress};
+    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -38,19 +42,21 @@ mod test {
         PartitionTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-    use monad_updaters::state_root_hash::MockStateRootHashNop;
+    use monad_updaters::{ledger::MockableLedger, state_root_hash::MockStateRootHashNop};
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use reth_primitives::B256;
-    use sorted_vector_map::SortedVectorMap;
+    use tracing::info;
+
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type StateBackendType = Arc<Mutex<InMemoryState>>;
         type BlockPolicyType = EthBlockPolicy;
-        type ReserveBalanceCacheType = PassthruReserveBalanceCache;
+        type ReserveBalanceCacheType = PassthruReserveBalanceCache<Self::StateBackendType>;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -61,6 +67,10 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = EthTxPool;
+        type Ledger = MockEthLedger<
+            Self::SignatureCollectionType,
+            MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        >;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -83,28 +93,35 @@ mod test {
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
 
-    fn generate_eth_swarm(num_nodes: u16) -> Nodes<EthSwarm> {
+    fn generate_eth_swarm(
+        num_nodes: u16,
+        existing_accounts: impl IntoIterator<Item = EthAddress>,
+    ) -> Nodes<EthSwarm> {
+        let execution_delay = SeqNum(4);
+
+        let existing_nonces = existing_accounts
+            .into_iter()
+            .map(|acc| (acc, 0))
+            .collect_vec();
+
         let state_configs = make_state_configs::<EthSwarm>(
-            num_nodes, // num_nodes
+            num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000, 1337),
-            || EthBlockPolicy {
-                account_nonces: BTreeMap::new(),
-                last_commit: GENESIS_SEQ_NUM,
-                execution_delay: 0,
-                max_reserve_balance: u64::MAX.into(),
-                txn_cache: SortedVectorMap::new(),
-                reserve_balance_check_mode: 0,
-                chain_id: 1337,
-            },
-            || PassthruReserveBalanceCache,
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
             || {
-                StateRoot::new(
-                    SeqNum(4), // state_root_delay
+                PassthruReserveBalanceCache::new(
+                    Arc::new(Mutex::new(InMemoryState::new(
+                        existing_nonces.clone(),
+                        Balance::MAX,
+                        0,
+                    ))),
+                    execution_delay.0,
                 )
             },
+            || StateRoot::new(execution_delay),
             PeerAsyncStateVerify::new,
             CONSENSUS_DELTA,    // delta
             10,                 // proposal_tx_limit
@@ -124,11 +141,14 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let state_backend =
+                        Arc::clone(&state_builder.reserve_balance_cache.get_state_backend());
                     NodeBuilder::<EthSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockEthLedger::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],
@@ -186,11 +206,11 @@ mod test {
 
     #[test]
     fn non_sequential_nonces() {
-        let mut swarm = generate_eth_swarm(2);
+        let sender_1_key = B256::random();
+        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
 
-        let sender_1_key = B256::random();
         let mut expected_txns = Vec::new();
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -229,14 +249,15 @@ mod test {
 
     #[test]
     fn duplicate_nonces_multi_nodes() {
-        let mut swarm = generate_eth_swarm(2);
+        let sender_1_key = B256::random();
+        let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
+
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
         let node_2_id = node_ids[1];
 
         let mut expected_txns = Vec::new();
 
-        let sender_1_key = B256::random();
         // Send 10 transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -289,15 +310,22 @@ mod test {
 
     #[test]
     fn committed_nonces() {
-        let mut swarm = generate_eth_swarm(2);
+        let sender_1_key = B256::random();
+        let sender_2_key = B256::random();
+        let mut swarm = generate_eth_swarm(
+            2,
+            vec![
+                secret_to_eth_address(sender_1_key),
+                secret_to_eth_address(sender_2_key),
+            ],
+        );
+
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
         let node_2_id = node_ids[1];
 
         let mut expected_txns = Vec::new();
 
-        let sender_1_key = B256::random();
-        let sender_2_key = B256::random();
         // Send transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
             let eth_txn_sender_1 = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -376,7 +404,9 @@ mod test {
 
     #[test]
     fn blocksync_missing_nonces() {
-        let mut swarm = generate_eth_swarm(4);
+        let sender_1_key = B256::random();
+
+        let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
         let node_ids = swarm.states().keys().copied().collect_vec();
         let (node_1_id, other_nodes) = node_ids.split_first().unwrap();
         let node_1_id = *node_1_id;
@@ -395,7 +425,6 @@ mod test {
 
         let mut expected_txns = Vec::new();
 
-        let sender_1_key = B256::random();
         // Send transactions with nonces 0..10 to node 2 so that nodes 2, 3 and 4 can make progress
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, 1, 1, nonce, 10);
@@ -404,6 +433,7 @@ mod test {
 
             expected_txns.push(eth_txn);
         }
+        info!("node starting with blackout {}", node_1_id);
 
         while swarm
             .step_until(&mut UntilTerminator::new().until_block(10))
@@ -420,6 +450,12 @@ mod test {
             vec![node_1_id],
             vec![]
         ));
+
+        info!(
+            id = format!("{}", node_1_id),
+            "node restarting metrics {:?}",
+            swarm.states().get(&node_1_id).unwrap().state.metrics()
+        );
 
         // remove blackout from node 1
         let regular_pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
@@ -441,6 +477,12 @@ mod test {
             .step_until(&mut UntilTerminator::new().until_block(30))
             .is_some()
         {}
+
+        println!(
+            "node {} metrics {:#?}",
+            node_1_id,
+            swarm.states().get(&node_1_id).unwrap().state.metrics()
+        );
 
         assert!(verify_transactions_in_ledger(
             &swarm,

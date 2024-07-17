@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{Address, FixedBytes, B256};
 
 #[cfg(feature = "serde")]
 pub mod serde;
@@ -6,6 +6,7 @@ pub mod serde;
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
 pub type Nonce = u64;
+pub type Balance = u128;
 
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
@@ -22,4 +23,17 @@ impl AsRef<[u8]> for EthAddress {
     fn as_ref(&self) -> &[u8] {
         self.0.as_slice()
     }
+}
+
+impl AsRef<[u8; 20]> for EthAddress {
+    fn as_ref(&self) -> &[u8; 20] {
+        &self.0 .0 .0
+    }
+}
+
+#[derive(Debug)]
+pub struct EthAccount {
+    pub nonce: Nonce,
+    pub balance: Balance,
+    pub code_hash: Option<B256>,
 }

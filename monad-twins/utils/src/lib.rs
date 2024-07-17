@@ -40,6 +40,7 @@ where
         StateRootValidator = StateRoot,
         StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
     >,
+    S::Ledger: Default,
 {
     let TwinsTestCase {
         description: _,
@@ -91,6 +92,7 @@ where
                 validators.validators,
                 monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
             ),
+            S::Ledger::default(),
             outbound_pipeline,
             vec![],
             TimestamperConfig::default(),
