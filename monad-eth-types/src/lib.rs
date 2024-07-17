@@ -23,3 +23,9 @@ impl AsRef<[u8]> for EthAddress {
         self.0.as_slice()
     }
 }
+
+impl AsRef<[u8; 20]> for EthAddress {
+    fn as_ref(&self) -> &[u8; 20] {
+        &self.0 .0 .0
+    }
+}

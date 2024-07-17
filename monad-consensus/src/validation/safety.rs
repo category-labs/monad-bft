@@ -5,6 +5,7 @@ use monad_consensus_types::{
     ledger::CommitResult,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
+    state::StateBackend,
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
@@ -105,7 +106,7 @@ impl Safety {
     /// Make a Vote if it's safe to vote in the round. Set the commit field if
     /// QC formed on the voted block can cause a commit: `block.qc.round` is
     /// consecutive with `block.round`
-    pub fn make_vote<SCT: SignatureCollection, BPT: BlockPolicy<SCT>>(
+    pub fn make_vote<SCT: SignatureCollection, SBT: StateBackend, BPT: BlockPolicy<SCT, SBT>>(
         &mut self,
         block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,

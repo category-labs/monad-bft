@@ -97,6 +97,10 @@ impl Handle {
     pub fn latest_block(&self) -> u64 {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
+
+    pub fn get_account_nonce(&self, eth_address: &[u8; 20], block_id: u64) -> Option<u64> {
+        todo!()
+    }
 }
 
 impl Drop for Handle {

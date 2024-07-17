@@ -11,6 +11,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::SignatureCollection,
+    state::StateBackend,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -66,37 +67,39 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     block_sync_responder: &'a BlockSyncResponder,
 
     /// BlockSyncResponder queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a ConsensusState<ST, SCT, BPT>,
+    consensus: &'a ConsensusState<ST, SCT, SBT, BPT>,
 
     metrics: &'a mut Metrics,
 
     _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    BlockSyncChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    BlockSyncChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<SCT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,

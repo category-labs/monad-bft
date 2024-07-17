@@ -23,6 +23,7 @@ use monad_consensus_types::{
     payload::StateRootValidator,
     quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state::StateBackend,
     state_root_hash::StateRootHash,
     txpool::TxPool,
     validation,
@@ -293,12 +294,13 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
     }
 }
 
-pub struct MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     keypair: ST::KeyPairType,
@@ -308,7 +310,7 @@ where
     consensus_config: ConsensusConfig,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<ST, SCT, BPT>,
+    consensus: ConsensusState<ST, SCT, SBT, BPT>,
     /// Handle responses to block sync requests from other nodes
     block_sync_responder: BlockSyncResponder,
 
@@ -326,6 +328,7 @@ where
     state_root_validator: SVT,
     block_validator: BVT,
     block_policy: BPT,
+    state_backend: SBT,
     beneficiary: EthAddress,
 
     /// Metrics counters for events and errors
@@ -335,22 +338,23 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BPT> {
+    pub fn consensus(&self) -> &ConsensusState<ST, SCT, SBT, BPT> {
         &self.consensus
     }
 
@@ -370,7 +374,7 @@ where
         self.nodeid.pubkey()
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT, BPT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, SBT, BPT> {
         self.consensus.blocktree()
     }
 
@@ -539,15 +543,16 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadStateBuilder<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
@@ -560,6 +565,7 @@ where
     pub leader_election: LT,
     pub transaction_pool: TT,
     pub block_validator: BVT,
+    pub state_backend: SBT,
     pub block_policy: BPT,
     pub state_root_validator: SVT,
     pub async_state_verify: ASVT,
@@ -574,16 +580,17 @@ where
     pub _pd: PhantomData<BPT>,
 }
 
-impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadStateBuilder<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadStateBuilder<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
@@ -593,7 +600,7 @@ where
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT>,
@@ -650,6 +657,7 @@ where
 
             state_root_validator: self.state_root_validator,
             block_validator: self.block_validator,
+            state_backend: self.state_backend,
             block_policy: self.block_policy,
             beneficiary: self.beneficiary,
 
@@ -692,16 +700,17 @@ where
     }
 }
 
-impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,

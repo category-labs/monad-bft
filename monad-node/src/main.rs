@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,7 +21,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
@@ -255,11 +254,11 @@ async fn run(
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
         },
-        block_policy: EthBlockPolicy {
-            account_nonces: BTreeMap::new(),
-            // MonadStateBuilder is responsible for updating this to forkpoint root if necessary
-            last_commit: GENESIS_SEQ_NUM,
-        },
+        state_backend: InMemoryState::default(),
+        block_policy: EthBlockPolicy::new(
+            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+            SeqNum(5),       // FIXME: use state root delay
+        ),
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
         key: node_state.secp256k1_identity,

@@ -5,6 +5,7 @@ use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
     signature_collection::SignatureCollection,
+    state::StateBackend,
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -18,16 +19,17 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct EpochChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, BPT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, SBT, BPT)>,
 }
 
 pub(super) enum EpochCommand<PT>
@@ -37,17 +39,18 @@ where
     AddEpochValidatorSet(Epoch, Vec<(NodeId<PT>, Stake)>),
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    EpochChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    EpochChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

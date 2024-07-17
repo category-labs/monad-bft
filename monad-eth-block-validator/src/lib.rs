@@ -5,6 +5,7 @@ use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
     block_validator::BlockValidator,
     signature_collection::SignatureCollection,
+    state::StateBackend,
 };
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
@@ -32,11 +33,13 @@ impl EthValidator {
 }
 
 // FIXME: add specific error returns for the different failures
-impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValidator {
+impl<SCT: SignatureCollection, SBT: StateBackend> BlockValidator<SCT, SBT, EthBlockPolicy>
+    for EthValidator
+{
     fn validate(
         &self,
         block: Block<SCT>,
-    ) -> Option<<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock> {
+    ) -> Option<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock> {
         // RLP decodes the txns
         let Ok(eth_txns) =
             Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
@@ -85,7 +88,7 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, EthBlockPolicy> for EthValida
 
     fn other_validation(
         &self,
-        block: &<EthBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock,
+        block: &<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock,
         author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
     ) -> bool {
         if let Err(e) = block

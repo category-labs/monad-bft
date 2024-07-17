@@ -9,6 +9,7 @@ use crate::{
     payload::{FullTransactionList, Payload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    state::StateBackend,
     state_root_hash::StateRootHash,
 };
 
@@ -202,7 +203,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 }
 
 /// Trait that represents how inner contents of a block should be validated
-pub trait BlockPolicy<SCT: SignatureCollection> {
+pub trait BlockPolicy<SCT: SignatureCollection, SBT: StateBackend> {
     type ValidatedBlock: Sized
         + Clone
         + PartialEq
@@ -216,24 +217,28 @@ pub trait BlockPolicy<SCT: SignatureCollection> {
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        state_backend: &SBT,
     ) -> bool;
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, state_backend: &mut SBT);
 }
 
-impl<SCT: SignatureCollection, T: BlockPolicy<SCT> + ?Sized> BlockPolicy<SCT> for Box<T> {
+impl<SCT: SignatureCollection, SBT: StateBackend, T: BlockPolicy<SCT, SBT> + ?Sized>
+    BlockPolicy<SCT, SBT> for Box<T>
+{
     type ValidatedBlock = T::ValidatedBlock;
 
     fn check_coherency(
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        state_backend: &SBT,
     ) -> bool {
-        (**self).check_coherency(block, extending_blocks)
+        (**self).check_coherency(block, extending_blocks, state_backend)
     }
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
-        (**self).update_committed_block(block)
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, state_backend: &mut SBT) {
+        (**self).update_committed_block(block, state_backend)
     }
 }
 
@@ -241,12 +246,17 @@ impl<SCT: SignatureCollection, T: BlockPolicy<SCT> + ?Sized> BlockPolicy<SCT> fo
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
 
-impl<SCT: SignatureCollection> BlockPolicy<SCT> for PassthruBlockPolicy {
+impl<SCT: SignatureCollection, SBT: StateBackend> BlockPolicy<SCT, SBT> for PassthruBlockPolicy {
     type ValidatedBlock = Block<SCT>;
 
-    fn check_coherency(&self, _: &Self::ValidatedBlock, _: Vec<&Self::ValidatedBlock>) -> bool {
+    fn check_coherency(
+        &self,
+        _: &Self::ValidatedBlock,
+        _: Vec<&Self::ValidatedBlock>,
+        _: &SBT,
+    ) -> bool {
         true
     }
 
-    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock, _: &mut SBT) {}
 }
