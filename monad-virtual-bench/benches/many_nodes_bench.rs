@@ -8,7 +8,7 @@ use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -42,6 +42,7 @@ struct NopSwarm;
 impl SwarmRelation for NopSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -74,6 +75,7 @@ struct BlsSwarm;
 impl SwarmRelation for BlsSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -109,6 +111,7 @@ fn many_nodes_nop_timeout() -> u128 {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(
@@ -185,6 +188,7 @@ fn many_nodes_bls_timeout() -> u128 {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(

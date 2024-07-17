@@ -11,7 +11,7 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-    payload::StateRoot, txpool::MockTxPool,
+    payload::StateRoot, state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
@@ -45,6 +45,7 @@ fn two_nodes_noser() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(
@@ -112,6 +113,7 @@ fn two_nodes_quic_latency() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(
@@ -232,6 +234,7 @@ fn two_nodes_quic_bw() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(

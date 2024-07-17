@@ -7,6 +7,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
+    state::NopStateBackend,
     state_root_hash::StateRootHash,
     txpool::MockTxPool,
     validator_data::ValidatorSetData,
@@ -155,6 +156,7 @@ where
 type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
+    NopStateBackend,
     PassthruBlockPolicy,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
@@ -203,6 +205,7 @@ where
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
+        state_backend: NopStateBackend {},
         block_policy: PassthruBlockPolicy {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),

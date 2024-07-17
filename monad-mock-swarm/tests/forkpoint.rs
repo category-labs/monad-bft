@@ -6,7 +6,7 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -35,6 +35,7 @@ pub struct ForkpointSwarm;
 impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
@@ -102,6 +103,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
@@ -130,6 +132,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -147,6 +150,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -339,6 +343,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
@@ -377,6 +382,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -394,6 +400,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,

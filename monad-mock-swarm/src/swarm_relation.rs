@@ -7,6 +7,7 @@ use monad_consensus_types::{
     block_validator::{BlockValidator, MockValidator},
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
+    state::{NopStateBackend, StateBackend},
     txpool::{MockTxPool, TxPool},
 };
 use monad_crypto::{
@@ -30,6 +31,7 @@ use crate::{mock::MockExecutor, node::Node, transformer::MonadMessageTransformer
 pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::SignatureType,
     <S as SwarmRelation>::SignatureCollectionType,
+    <S as SwarmRelation>::StateBackendType,
     <S as SwarmRelation>::BlockPolicyType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
@@ -48,11 +50,15 @@ where
     type SignatureCollectionType: SignatureCollection<
         NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
     >;
-    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType> + Send + Sync + Unpin;
+    type StateBackendType: StateBackend + Send + Sync + Unpin;
+    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType, Self::StateBackendType>
+        + Send
+        + Sync
+        + Unpin;
 
     type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
 
-    type BlockValidator: BlockValidator<Self::SignatureCollectionType, Self::BlockPolicyType>
+    type BlockValidator: BlockValidator<Self::SignatureCollectionType, Self::StateBackendType, Self::BlockPolicyType>
         + Send
         + Sync
         + Unpin;
@@ -65,7 +71,10 @@ where
         + Send
         + Sync
         + Unpin;
-    type TxPool: TxPool<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync + Unpin;
+    type TxPool: TxPool<Self::SignatureCollectionType, Self::StateBackendType, Self::BlockPolicyType>
+        + Send
+        + Sync
+        + Unpin;
     type AsyncStateRootVerify: AsyncStateVerifyProcess<
             SignatureCollectionType = Self::SignatureCollectionType,
             ValidatorSetType = <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -103,12 +112,19 @@ pub struct DebugSwarmRelation;
 impl SwarmRelation for DebugSwarmRelation {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
 
-    type BlockValidator =
-        Box<dyn BlockValidator<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync>;
+    type BlockValidator = Box<
+        dyn BlockValidator<
+                Self::SignatureCollectionType,
+                Self::StateBackendType,
+                Self::BlockPolicyType,
+            > + Send
+            + Sync,
+    >;
     type StateRootValidator = Box<dyn StateRootValidator + Send + Sync>;
     type ValidatorSetTypeFactory =
         BoxedValidatorSetTypeFactory<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -117,8 +133,11 @@ impl SwarmRelation for DebugSwarmRelation {
             + Send
             + Sync,
     >;
-    type TxPool =
-        Box<dyn TxPool<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync>;
+    type TxPool = Box<
+        dyn TxPool<Self::SignatureCollectionType, Self::StateBackendType, Self::BlockPolicyType>
+            + Send
+            + Sync,
+    >;
     type AsyncStateRootVerify = BoxedAsyncStateVerifyProcess<Self::SignatureCollectionType>;
 
     type RouterScheduler = Box<
@@ -158,6 +177,7 @@ pub struct NoSerSwarm;
 impl SwarmRelation for NoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
@@ -193,6 +213,7 @@ pub struct BytesSwarm;
 impl SwarmRelation for BytesSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
@@ -227,6 +248,7 @@ pub struct MonadMessageNoSerSwarm;
 impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =

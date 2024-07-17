@@ -2,7 +2,7 @@ use bytes::Bytes;
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_gossip::mock::MockGossip;
@@ -22,6 +22,7 @@ pub struct QuicSwarm;
 impl SwarmRelation for QuicSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
