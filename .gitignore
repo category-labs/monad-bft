@@ -4,5 +4,6 @@
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal
 /docker/devnet/monad/triedb
+/docker/flexnet/.venv
 
 test-keys

@@ -27,6 +27,7 @@ if [ ! -d "./.venv" ]; then
 fi
 source ./.venv/bin/activate
 
+pip install -r testing-library/requirements.txt
 pip install ./testing-library
 
 rm -rf logs && mkdir -p logs
