@@ -9,6 +9,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state::StateBackend,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -24,11 +25,12 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     async_state_verify: &'a mut ASVT,
@@ -42,16 +44,17 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, SBT, BPT)>,
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    AsyncStateVerifyChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    AsyncStateVerifyChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ASVT: AsyncStateVerifyProcess<
@@ -60,7 +63,7 @@ where
     >,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,

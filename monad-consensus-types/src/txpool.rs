@@ -4,6 +4,7 @@ use crate::{
     block::{BlockPolicy, PassthruBlockPolicy},
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
+    state::StateBackend,
 };
 
 #[derive(Debug)]
@@ -15,7 +16,7 @@ pub enum TxPoolInsertionError {
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
-pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
+pub trait TxPool<SCT: SignatureCollection, SBT: StateBackend, BPT: BlockPolicy<SCT, SBT>> {
     /// Handle transactions:
     /// 1. submitted by users via RPC
     /// 2. forwarded by other validators/full-nodes
@@ -35,14 +36,19 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
         gas_limit: u64,
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
+        state_backend: &SBT,
     ) -> FullTransactionList;
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
 }
 
-impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
-    for Box<T>
+impl<
+        SCT: SignatureCollection,
+        SBT: StateBackend,
+        BPT: BlockPolicy<SCT, SBT>,
+        T: TxPool<SCT, SBT, BPT> + ?Sized,
+    > TxPool<SCT, SBT, BPT> for Box<T>
 {
     fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError> {
         (**self).insert_tx(tx)
@@ -54,8 +60,15 @@ impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Siz
         gas_limit: u64,
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
+        state_backend: &SBT,
     ) -> FullTransactionList {
-        (**self).create_proposal(tx_limit, gas_limit, block_policy, pending_blocks)
+        (**self).create_proposal(
+            tx_limit,
+            gas_limit,
+            block_policy,
+            pending_blocks,
+            state_backend,
+        )
     }
 
     fn clear(&mut self) {
@@ -82,7 +95,9 @@ impl Default for MockTxPool {
     }
 }
 
-impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
+impl<SCT: SignatureCollection, SBT: StateBackend> TxPool<SCT, SBT, PassthruBlockPolicy>
+    for MockTxPool
+{
     fn insert_tx(&mut self, _tx: Bytes) -> Result<(), TxPoolInsertionError> {
         Ok(())
     }
@@ -92,7 +107,8 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
         tx_limit: usize,
         _gas_limit: u64,
         _block_policy: &PassthruBlockPolicy,
-        _pending_blocks: Vec<&<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock>,
+        _pending_blocks: Vec<&<PassthruBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock>,
+        _state_backend: &SBT,
     ) -> FullTransactionList {
         if tx_limit == 0 {
             FullTransactionList::empty()

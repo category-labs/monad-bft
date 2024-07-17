@@ -14,6 +14,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state::StateBackend,
     txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
@@ -32,22 +33,24 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BPT>,
+    consensus: &'a mut ConsensusState<ST, SCT, SBT, BPT>,
 
     metrics: &'a mut Metrics,
     txpool: &'a mut TT,
     epoch_manager: &'a mut EpochManager,
+    state_backend: &'a mut SBT,
     block_policy: &'a mut BPT,
 
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
@@ -66,20 +69,21 @@ where
     _phantom: PhantomData<ASVT>,
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    ConsensusChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    ConsensusChildState<'a, ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    SBT: StateBackend,
+    BPT: BlockPolicy<SCT, SBT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, SBT, BPT>,
+    BVT: BlockValidator<SCT, SBT, BPT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, SBT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -87,6 +91,7 @@ where
             metrics: &mut monad_state.metrics,
             txpool: &mut monad_state.txpool,
             epoch_manager: &mut monad_state.epoch_manager,
+            state_backend: &mut monad_state.state_backend,
             block_policy: &mut monad_state.block_policy,
 
             val_epoch_map: &monad_state.val_epoch_map,
@@ -115,6 +120,7 @@ where
             metrics: self.metrics,
             tx_pool: self.txpool,
             epoch_manager: self.epoch_manager,
+            state_backend: self.state_backend,
             block_policy: self.block_policy,
 
             val_epoch_map: self.val_epoch_map,
