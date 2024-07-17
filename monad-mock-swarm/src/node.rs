@@ -41,6 +41,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub state_builder: MonadStateBuilder<
         S::SignatureType,
         S::SignatureCollectionType,
+        S::StateBackendType,
         S::BlockPolicyType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
@@ -63,6 +64,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         state_builder: MonadStateBuilder<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::StateBackendType,
             S::BlockPolicyType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
@@ -98,6 +100,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
                 TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+                StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
         >,
     // FIXME can this be deleted?
@@ -113,6 +116,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 leader_election: Box::new(self.state_builder.leader_election),
                 transaction_pool: Box::new(self.state_builder.transaction_pool),
                 block_validator: Box::new(self.state_builder.block_validator),
+                state_backend: self.state_builder.state_backend,
                 block_policy: self.state_builder.block_policy,
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(

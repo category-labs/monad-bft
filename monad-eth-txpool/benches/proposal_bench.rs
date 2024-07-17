@@ -1,15 +1,13 @@
-use std::collections::BTreeMap;
-
 use alloy_rlp::Encodable;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
 use monad_eth_txpool::EthTxPool;
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
-use monad_types::GENESIS_SEQ_NUM;
+use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use reth_primitives::{
@@ -51,10 +49,7 @@ type SignatureCollectionType = MultiSig<NopSignature>;
 
 fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
-    let eth_block_policy = EthBlockPolicy {
-        account_nonces: BTreeMap::new(),
-        last_commit: GENESIS_SEQ_NUM,
-    };
+    let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, SeqNum(5));
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);
 
@@ -74,7 +69,7 @@ fn create_pool_and_transactions() -> BenchController {
     let bytes = Bytes::copy_from_slice(&txns_encoded);
 
     for txn in txns.iter() {
-        TxPool::<SignatureCollectionType, EthBlockPolicy>::insert_tx(
+        TxPool::<SignatureCollectionType, InMemoryState, EthBlockPolicy>::insert_tx(
             &mut txpool,
             Bytes::from(txn.envelope_encoded()),
         );
@@ -100,12 +95,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                     create_pool_and_transactions,
                     |controller| {
                         perf.enable();
-                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                        TxPool::<SignatureCollectionType,InMemoryState, EthBlockPolicy>::create_proposal(
                             &mut controller.pool,
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
+                            &Default::default(),
                         );
                         perf.disable();
                     },
@@ -122,12 +118,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched_ref(
                     create_pool_and_transactions,
                     |controller| {
-                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                        TxPool::<SignatureCollectionType,InMemoryState, EthBlockPolicy>::create_proposal(
                             &mut controller.pool,
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
+                            &Default::default(),
                         );
                     },
                     BatchSize::SmallInput,

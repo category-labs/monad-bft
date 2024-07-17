@@ -4,7 +4,7 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-    payload::StateRoot, txpool::MockTxPool,
+    payload::StateRoot, state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -40,6 +40,7 @@ struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
@@ -129,6 +130,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(
@@ -155,6 +157,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(

@@ -5,7 +5,7 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -34,6 +34,7 @@ fn two_nodes() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(

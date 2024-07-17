@@ -5,7 +5,7 @@ use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::MonadEvent;
@@ -34,6 +34,7 @@ impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
@@ -79,6 +80,7 @@ fn two_nodes_bls() {
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || {
             StateRoot::new(

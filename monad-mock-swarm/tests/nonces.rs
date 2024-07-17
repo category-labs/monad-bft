@@ -3,7 +3,7 @@ mod common;
 #[cfg(test)]
 mod test {
     use std::{
-        collections::{BTreeMap, BTreeSet, HashSet},
+        collections::{BTreeSet, HashSet},
         time::Duration,
     };
 
@@ -15,7 +15,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_block_policy::EthBlockPolicy;
+    use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::EthSignedTransaction;
@@ -48,6 +48,7 @@ mod test {
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type StateBackendType = InMemoryState;
         type BlockPolicyType = EthBlockPolicy;
 
         type TransportMessage =
@@ -90,9 +91,12 @@ mod test {
             SimpleRoundRobin::default,
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000),
-            || EthBlockPolicy {
-                account_nonces: BTreeMap::new(),
-                last_commit: GENESIS_SEQ_NUM,
+            InMemoryState::default,
+            || {
+                EthBlockPolicy::new(
+                    GENESIS_SEQ_NUM,
+                    SeqNum(4), // state_root_delay
+                )
             },
             || {
                 StateRoot::new(

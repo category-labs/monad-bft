@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    txpool::MockTxPool,
+    state::NopStateBackend, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::BytesSwarm};
@@ -35,6 +35,7 @@ pub fn simulation_make() -> *mut Simulation {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(

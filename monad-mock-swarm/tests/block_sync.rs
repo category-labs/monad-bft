@@ -10,7 +10,7 @@ mod test {
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, txpool::MockTxPool,
+        payload::StateRoot, state::NopStateBackend, txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -47,6 +47,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
@@ -165,6 +166,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
@@ -245,6 +247,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(
@@ -375,6 +378,7 @@ mod test {
             SimpleRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
+            || NopStateBackend,
             || PassthruBlockPolicy,
             || {
                 StateRoot::new(

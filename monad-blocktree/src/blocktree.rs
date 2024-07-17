@@ -722,6 +722,7 @@ mod test {
                     state_root: Default::default(),
                 },
             );
+        let state_backend = NopStateBackend;
         let block_policy = PassthruBlockPolicy;
         assert!(blocktree
             .add(g.clone(), &block_policy, &state_backend)

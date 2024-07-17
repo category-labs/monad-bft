@@ -10,6 +10,7 @@ use monad_consensus_types::{
     block::{BlockType, PassthruBlockPolicy},
     block_validator::MockValidator,
     payload::NopStateRoot,
+    state::NopStateBackend,
     txpool::MockTxPool,
 };
 use monad_crypto::{
@@ -42,6 +43,7 @@ struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type StateBackendType = NopStateBackend;
     type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
@@ -95,6 +97,7 @@ pub fn recover_nodes_msg_delays(
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
@@ -181,6 +184,7 @@ pub fn recover_nodes_msg_delays(
         SimpleRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
+        || NopStateBackend,
         || PassthruBlockPolicy,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
