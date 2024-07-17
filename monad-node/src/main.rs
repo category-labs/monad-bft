@@ -20,7 +20,7 @@ use monad_consensus_types::{
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
-    hasher::Hash,
+    hasher::{Hash, Hasher, HasherType},
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
@@ -309,7 +309,19 @@ async fn run(
         executor.replay(cmds);
     }
 
-    let mut otel_context = maybe_coordinator_provider.as_ref().map(build_otel_context);
+    let network_name_hash = {
+        let mut hasher = HasherType::new();
+        hasher.update(&node_state.network_name);
+        let hash = hasher.hash();
+        u64::from_le_bytes(
+            hash.0[..std::mem::size_of::<u64>()]
+                .try_into()
+                .expect("u64 is 8 bytes"),
+        )
+    };
+    let mut otel_context = maybe_coordinator_provider
+        .as_ref()
+        .map(|provider| build_otel_context(provider, network_name_hash));
 
     let mut last_ledger_len = executor.ledger().get_num_commits();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
@@ -369,6 +381,7 @@ async fn run(
                                 maybe_coordinator_provider
                                     .as_ref()
                                     .expect("coordinator must exist"),
+                                    network_name_hash,
                             );
                             *cx = new_cx;
                             *expiry = new_expiry;
@@ -427,7 +440,7 @@ where
 }
 
 /// Returns (otel_context, expiry)
-fn build_otel_context(provider: &TracerProvider) -> (Context, SystemTime) {
+fn build_otel_context(provider: &TracerProvider, network_name_hash: u64) -> (Context, SystemTime) {
     const ROUND_SECONDS: u64 = 60 * 1; // 1 minute
 
     let (start_time, start_seconds) = {
@@ -440,7 +453,7 @@ fn build_otel_context(provider: &TracerProvider) -> (Context, SystemTime) {
     };
     let context = {
         let span = SpanBuilder::from_name("exec")
-            .with_trace_id((1_u128 << 64 | u128::from(start_seconds)).into())
+            .with_trace_id(((network_name_hash as u128) << 64 | u128::from(start_seconds)).into())
             .with_span_id(15.into())
             .with_start_time(start_time)
             .with_end_time(start_time + Duration::from_secs(1));
