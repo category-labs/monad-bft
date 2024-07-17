@@ -26,6 +26,8 @@ pub type SignatureCollectionType =
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     pub name: Option<String>,
+    pub network_name: Option<String>,
+
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: EthAddress,
 

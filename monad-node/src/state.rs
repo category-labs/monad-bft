@@ -34,6 +34,7 @@ pub struct NodeState {
     pub otel_endpoint: Option<String>,
     pub record_metrics_interval: Option<Duration>,
     pub node_name: String,
+    pub network_name: String,
 
     pub run_mode: RunModeCommand,
 }
@@ -70,6 +71,10 @@ impl NodeState {
             .name
             .clone()
             .unwrap_or(format!("monad-node-{:?}", secp_pubkey));
+        let network_name = node_config
+            .network_name
+            .clone()
+            .unwrap_or("monad-coordinator".to_owned());
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(cli.forkpoint_config)?)?;
 
@@ -94,6 +99,7 @@ impl NodeState {
                 .record_metrics_interval_seconds
                 .and_then(|s| Some(Duration::from_secs(s))),
             node_name,
+            network_name,
 
             run_mode,
         })

@@ -123,7 +123,7 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
 
     // if provider is dropped, then traces stop getting sent silently...
     let maybe_coordinator_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_provider(endpoint, "monad-coordinator".to_owned())
+        build_otel_provider(endpoint, node_state.network_name.clone())
             .expect("failed to build otel monad-coordinator")
     });
 
