@@ -4,7 +4,13 @@ use std::{
     ptr::{null, null_mut},
 };
 
-use log::debug;
+use alloy_primitives::{B256, U256};
+use alloy_rlp::Decodable;
+use key::create_addr_key;
+use log::{debug, error};
+use monad_eth_types::EthAccount;
+
+pub mod key;
 
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
@@ -98,8 +104,55 @@ impl Handle {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
 
-    pub fn get_account_nonce(&self, eth_address: &[u8; 20], block_id: u64) -> Option<u64> {
-        todo!()
+    pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
+        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
+
+        let result = self.read(&triedb_key, key_len_nibbles, block_id);
+
+        let Some(account_rlp) = result else {
+            debug!("account {:?} not found at {:?}", eth_address, block_id);
+            return None;
+        };
+
+        let mut buf = account_rlp.as_slice();
+        let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+            error!("rlp decode failed: {:?}", buf);
+            return None;
+        };
+
+        // account incarnation decode (currently not needed)
+        let Ok(_) = u64::decode(&mut buf) else {
+            error!("rlp incarnation decode failed: {:?}", buf);
+            return None;
+        };
+
+        let Ok(nonce) = u64::decode(&mut buf) else {
+            error!("rlp nonce decode failed: {:?}", buf);
+
+            return None;
+        };
+        let Ok(balance) = U256::decode(&mut buf) else {
+            error!("rlp balance decode failed: {:?}", buf);
+            return None;
+        };
+
+        let code_hash = if buf.is_empty() {
+            None
+        } else {
+            match <[u8; 32]>::decode(&mut buf) {
+                Ok(x) => Some(x),
+                Err(e) => {
+                    error!("rlp code_hash decode failed: {:?}", e);
+                    return None;
+                }
+            }
+        };
+
+        Some(EthAccount {
+            nonce,
+            balance,
+            code_hash: code_hash.map(B256::from),
+        })
     }
 }
 

@@ -8,7 +8,7 @@ use alloy_rlp::{Decodable, Encodable};
 use log::debug;
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockTags;
-use monad_triedb::Handle;
+use monad_triedb::{key::create_addr_key, Handle};
 
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];
@@ -65,7 +65,7 @@ impl TriedbEnv {
                 let db = db_handle.get_or_insert_with(|| {
                     TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
                 });
-                let (triedb_key, key_len_nibbles) = TriedbEnv::create_addr_key(&addr);
+                let (triedb_key, key_len_nibbles) = create_addr_key(&addr);
 
                 // parse block tag
                 let block_num = match block_tag {
@@ -240,31 +240,6 @@ impl TriedbEnv {
 
     fn latest_block(handle: &Handle) -> u64 {
         handle.latest_block()
-    }
-
-    fn create_addr_key(addr: &EthAddress) -> (Vec<u8>, u8) {
-        let mut key_nibbles: Vec<u8> = vec![];
-
-        let state_nibble = 0_u8;
-
-        key_nibbles.push(state_nibble);
-
-        let hashed_addr = keccak256(addr);
-        for byte in &hashed_addr {
-            key_nibbles.push(*byte >> 4);
-            key_nibbles.push(*byte & 0xF);
-        }
-
-        let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
-        if num_nibbles % 2 != 0 {
-            key_nibbles.push(0);
-        }
-        let key: Vec<_> = key_nibbles
-            .chunks(2)
-            .map(|chunk| (chunk[0] << 4) | chunk[1])
-            .collect();
-
-        (key, num_nibbles)
     }
 
     fn create_storage_at_key(addr: &EthAddress, at: &EthStorageKey) -> (Vec<u8>, u8) {

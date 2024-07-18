@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{Address, FixedBytes, B256, U256};
 
 #[cfg(feature = "serde")]
 pub mod serde;
@@ -28,4 +28,10 @@ impl AsRef<[u8; 20]> for EthAddress {
     fn as_ref(&self) -> &[u8; 20] {
         &self.0 .0 .0
     }
+}
+
+pub struct EthAccount {
+    pub nonce: u64,
+    pub balance: U256,
+    pub code_hash: Option<B256>,
 }

@@ -14,6 +14,7 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-proto = { path = "../monad-proto" }
+monad-triedb = { path = "../monad-triedb" }
 monad-types = { path = "../monad-types" }
 
 alloy-rlp = { workspace = true }

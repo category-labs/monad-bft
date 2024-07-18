@@ -1,8 +1,10 @@
 use monad_eth_types::{EthAddress, Nonce};
+use monad_triedb::Handle as TriedbHandle;
+use tracing::debug;
 
-/// Backend provider of account nonce
+/// Backend provider of account nonce and balance
 pub trait StateBackend {
-    fn get_account_nonce(&self, eth_address: &EthAddress, block: u64) -> Option<Nonce>;
+    fn get_account_nonce(&self, eth_address: &EthAddress, block_number: u64) -> Option<Nonce>;
     fn update_committed_nonces<'a>(
         &mut self,
         nonces: impl IntoIterator<Item = (&'a EthAddress, &'a Nonce)>,
@@ -13,7 +15,7 @@ pub trait StateBackend {
 pub struct NopStateBackend;
 
 impl StateBackend for NopStateBackend {
-    fn get_account_nonce(&self, _eth_address: &EthAddress, _block: u64) -> Option<Nonce> {
+    fn get_account_nonce(&self, _eth_address: &EthAddress, _block_number: u64) -> Option<Nonce> {
         None
     }
 
@@ -24,14 +26,16 @@ impl StateBackend for NopStateBackend {
     }
 }
 
-// impl StateBackend for TriedbHandle {
-//     fn get_account_nonce(&self, eth_address: &EthAddress, block: u64) -> Option<Nonce> {
-//         self.get_account_nonce(eth_address.as_ref(), block)
-//     }
+impl StateBackend for TriedbHandle {
+    fn get_account_nonce(&self, eth_address: &EthAddress, block_number: u64) -> Option<Nonce> {
+        debug!("reading account nonce from triedb");
+        self.get_account(eth_address.as_ref(), block_number)
+            .map(|account| account.nonce)
+    }
 
-//     fn update_committed_nonces<'a>(
-//         &mut self,
-//         _nonces: impl IntoIterator<Item = (&'a EthAddress, &'a Nonce)>,
-//     ) {
-//     }
-// }
+    fn update_committed_nonces<'a>(
+        &mut self,
+        _nonces: impl IntoIterator<Item = (&'a EthAddress, &'a Nonce)>,
+    ) {
+    }
+}

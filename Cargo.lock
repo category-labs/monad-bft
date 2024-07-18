@@ -3418,6 +3418,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
+ "monad-triedb",
  "monad-types",
  "prost",
  "rand",
@@ -4139,9 +4140,12 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
  "log",
+ "monad-eth-types",
 ]
 
 [[package]]

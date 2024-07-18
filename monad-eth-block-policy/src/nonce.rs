@@ -17,7 +17,7 @@ impl InMemoryState {
 }
 
 impl StateBackend for InMemoryState {
-    fn get_account_nonce(&self, eth_address: &EthAddress, _block: u64) -> Option<Nonce> {
+    fn get_account_nonce(&self, eth_address: &EthAddress, _block_number: u64) -> Option<Nonce> {
         self.account_nonces.get(eth_address).copied()
     }
 
