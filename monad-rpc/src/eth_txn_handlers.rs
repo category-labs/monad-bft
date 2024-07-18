@@ -6,23 +6,23 @@ use alloy_primitives::{
 };
 use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
+use monad_rpc_docs::rpc;
+use monad_triedb_utils::{EthAddress, TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
 };
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, trace, warn};
 
 use crate::{
     block_handlers::block_receipts,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, serialize_result, BlockTags, EthHash, Quantity,
-        UnformattedData,
+        deserialize_unformatted_data, BlockTags, EthHash, MonadLog, MonadTransaction,
+        MonadTransactionReceipt, Quantity, UnformattedData,
     },
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
 };
 
@@ -184,17 +184,17 @@ impl From<FilterError> for JsonRpcError {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
-struct MonadEthGetLogsParams {
+pub struct MonadEthGetLogsParams {
     filters: Vec<FilterParams>,
 }
 
-#[derive(Debug)]
-struct FilterParams {
+#[derive(Debug, schemars::JsonSchema)]
+pub struct FilterParams {
     filter: LogFilter,
     address: AddressValueOrArray,
-    topics: Option<Vec<FixedBytes<32>>>,
+    topics: Option<Vec<EthHash>>,
 }
 
 // Must use this impl instead of derive because serde does not support default with flatten: https://github.com/serde-rs/serde/issues/1626
@@ -208,7 +208,7 @@ impl<'de> Deserialize<'de> for FilterParams {
             #[serde(flatten)]
             filter: Option<LogFilter>,
             address: AddressValueOrArray,
-            topics: Option<Vec<FixedBytes<32>>>,
+            topics: Option<Vec<EthHash>>,
         }
 
         let result = ParamsHelper::deserialize(deserializer)?;
@@ -221,7 +221,7 @@ impl<'de> Deserialize<'de> for FilterParams {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum LogFilter {
     Range {
@@ -245,29 +245,27 @@ impl Default for LogFilter {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum AddressValueOrArray {
-    Address(Option<Address>),
-    Addresses(Vec<Address>),
+    Address(Option<EthAddress>),
+    Addresses(Vec<EthAddress>),
 }
 
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetLogsResult {
+    logs: Vec<MonadLog>,
+}
+
+#[rpc(method = "eth_getLogs")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getLogs: {params:?}");
-
-    let p: MonadEthGetLogsParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
+    p: MonadEthGetLogsParams,
+) -> JsonRpcResult<MonadEthGetLogsResult> {
+    trace!("monad_eth_getLogs: {p:?}");
 
     let mut logs = Vec::new();
 
@@ -276,17 +274,22 @@ pub async fn monad_eth_getLogs(
 
         match req.address {
             AddressValueOrArray::Address(Some(address)) => {
-                filter = filter.address(address);
+                filter = filter.address(Address::from_slice(&address));
             }
             AddressValueOrArray::Addresses(addresses) => {
-                filter = filter.address(addresses);
+                filter = filter.address(
+                    addresses
+                        .iter()
+                        .map(|a| Address::from_slice(a))
+                        .collect::<Vec<_>>(),
+                );
             }
             _ => {}
         }
 
         if let Some(topics) = req.topics {
             for topic in topics {
-                filter = filter.event_signature(topic);
+                filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
             }
         }
 
@@ -360,40 +363,35 @@ pub async fn monad_eth_getLogs(
         }
     }
 
-    serialize_result(logs)
+    Ok(MonadEthGetLogsResult {
+        logs: logs.into_iter().map(MonadLog).collect(),
+    })
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthSendRawTransactionParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthSendRawTransactionParams {
     #[serde(deserialize_with = "deserialize_unformatted_data")]
     hex_tx: UnformattedData,
 }
 
 // TODO: need to support EIP-4844 transactions
+#[rpc(method = "eth_sendRawTransaction", ignore = "ipc")]
 #[allow(non_snake_case)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
     ipc: flume::Sender<TransactionSigned>,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthSendRawTransactionParams,
+) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
-    let p: MonadEthSendRawTransactionParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    match TransactionSigned::decode_enveloped(&mut &p.hex_tx.0[..]) {
+    match TransactionSigned::decode_enveloped(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
             match ipc.try_send(txn) {
-                Ok(_) => Ok(Value::String(hash.to_string())),
+                Ok(_) => Ok(hash.to_string()),
                 Err(err) => {
                     warn!(?err, "mempool ipc send error");
                     Err(JsonRpcError::internal_error())
@@ -407,41 +405,34 @@ pub async fn monad_eth_sendRawTransaction(
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionReceiptParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetTransactionReceiptParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
+#[rpc(method = "eth_getTransactionReceipt")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
 pub async fn monad_eth_getTransactionReceipt(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getTransactionReceipt: {params:?}");
-
-    let p: MonadEthGetTransactionReceiptParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
+    p: MonadEthGetTransactionReceiptParams,
+) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
+    trace!("monad_eth_getTransactionReceipt: {p:?}");
 
     let key = EthTxKey(B256::new(p.tx_hash.0));
     let Some(txn_value) = blockdb_env.get_txn(key).await else {
-        return serialize_result(None::<TransactionReceipt>);
+        return Ok(None);
     };
     let txn_index = txn_value.transaction_index;
 
     let Some(block) = blockdb_env.get_block_by_hash(txn_value.block_hash).await else {
-        return serialize_result(None::<TransactionReceipt>);
+        return Ok(None);
     };
     let block_num = block.block.number;
     match triedb_env.get_receipt(txn_index, block_num).await {
-        TriedbResult::Null => serialize_result(None::<TransactionReceipt>),
+        TriedbResult::Null => Ok(None),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
             let receipt =
@@ -466,37 +457,30 @@ pub async fn monad_eth_getTransactionReceipt(
             else {
                 return Err(JsonRpcError::internal_error());
             };
-            serialize_result(Some(receipt))
+            Ok(Some(MonadTransactionReceipt(receipt)))
         }
         _ => Err(JsonRpcError::internal_error()),
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionByHashParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetTransactionByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
+#[rpc(method = "eth_getTransactionByHash")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
 pub async fn monad_eth_getTransactionByHash(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetTransactionByHashParams,
+) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    let p: MonadEthGetTransactionByHashParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let key = EthTxKey(B256::new(p.tx_hash.0));
+    let key = EthTxKey(B256::new(params.tx_hash.0));
     let Some(result) = blockdb_env.get_txn(key).await else {
-        return serialize_result(None::<Transaction>);
+        return Ok(None);
     };
 
     let block_key = result.block_hash;
@@ -511,83 +495,69 @@ pub async fn monad_eth_getTransactionByHash(
         .get(result.transaction_index as usize)
         .expect("txn and block found so its index should be correct");
 
-    let retval = parse_tx_content(&block, transaction, result.transaction_index);
+    let retval =
+        parse_tx_content(&block, transaction, result.transaction_index).map(MonadTransaction);
 
-    serialize_result(retval)
+    Ok(retval)
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionByBlockHashAndIndexParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
     #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 
+#[rpc(method = "eth_getTransactionByBlockHashAndIndex")]
 #[allow(non_snake_case)]
 /// Returns information about a transaction by block hash and transaction index position.
 pub async fn monad_eth_getTransactionByBlockHashAndIndex(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetTransactionByBlockHashAndIndexParams,
+) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
-    let p: MonadEthGetTransactionByBlockHashAndIndexParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let key = p.block_hash.into();
+    let key = params.block_hash.into();
     let Some(block) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(None::<Transaction>);
+        return Ok(None);
     };
 
-    let Some(transaction) = block.block.body.get(p.index.0 as usize) else {
-        return serialize_result(None::<Transaction>);
+    let Some(transaction) = block.block.body.get(params.index.0 as usize) else {
+        return Ok(None);
     };
 
-    let retval = parse_tx_content(&block, transaction, p.index.0);
+    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction);
 
-    serialize_result(retval)
+    Ok(retval)
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionByBlockNumberAndIndexParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
     #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 
+#[rpc(method = "eth_getTransactionByBlockNumberAndIndex")]
 #[allow(non_snake_case)]
 /// Returns information about a transaction by block number and transaction index position.
 pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetTransactionByBlockNumberAndIndexParams,
+) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
 
-    let p: MonadEthGetTransactionByBlockNumberAndIndexParams = match serde_json::from_value(params)
-    {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
+    let Some(block) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
+        return Ok(None);
     };
 
-    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
-        return serialize_result(None::<Transaction>);
+    let Some(transaction) = block.block.body.get(params.index.0 as usize) else {
+        return Ok(None);
     };
 
-    let Some(transaction) = block.block.body.get(p.index.0 as usize) else {
-        return serialize_result(None::<Transaction>);
-    };
+    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction);
 
-    let retval = parse_tx_content(&block, transaction, p.index.0);
-
-    serialize_result(retval)
+    Ok(retval)
 }

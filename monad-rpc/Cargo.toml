@@ -17,6 +17,7 @@ monad-cxx = { path = "../monad-cxx" }
 monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
+monad-rpc-docs = { path = "./monad-rpc-docs" }
 
 actix = { workspace = true }
 actix-codec = { workspace = true }
@@ -45,6 +46,7 @@ tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
+schemars = "0.8.21"
 
 [dev-dependencies]
 test-case = { workspace = true }

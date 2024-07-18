@@ -1,157 +1,138 @@
-use alloy_primitives::aliases::{B160, U256};
+use alloy_primitives::aliases::U256;
+use monad_rpc_docs::rpc;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
+        EthHash, MonadU256,
     },
     hex,
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBalanceParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBalanceParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
+#[rpc(method = "eth_getBalance")]
 #[allow(non_snake_case)]
 /// Returns the balance of the account of given address.
 pub async fn monad_eth_getBalance(
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetBalanceParams,
+) -> JsonRpcResult<MonadU256> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    let p: MonadEthGetBalanceParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
     match triedb_env
-        .get_account(p.account.0, p.block_number.into())
+        .get_account(params.account.0, params.block_number.into())
         .await
     {
-        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
-        TriedbResult::Account(_, balance, _) => serialize_result(format!("0x{:x}", balance)),
+        TriedbResult::Null => Ok(MonadU256(U256::ZERO)),
+        TriedbResult::Account(_, balance, _) => Ok(MonadU256(U256::from(balance))),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetCodeParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetCodeParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
+#[rpc(method = "eth_getCode")]
 #[allow(non_snake_case)]
 /// Returns code at a given address.
 pub async fn monad_eth_getCode(
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetCodeParams,
+) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let p: MonadEthGetCodeParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
     let code_hash = match triedb_env
-        .get_account(p.account.0, p.block_number.clone().into())
+        .get_account(params.account.0, params.block_number.clone().into())
         .await
     {
-        TriedbResult::Null => return serialize_result(format!("0x")),
+        TriedbResult::Null => return Ok(format!("0x")),
         TriedbResult::Account(_, _, code_hash) => code_hash,
         _ => return Err(JsonRpcError::internal_error()),
     };
 
-    match triedb_env.get_code(code_hash, p.block_number.into()).await {
-        TriedbResult::Null => serialize_result(format!("0x")),
-        TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
+    match triedb_env
+        .get_code(code_hash, params.block_number.into())
+        .await
+    {
+        TriedbResult::Null => Ok(format!("0x")),
+        TriedbResult::Code(code) => Ok(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetStorageAtParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetStorageAtParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
-    position: U256,
+    position: MonadU256,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
+#[rpc(method = "eth_getStorageAt")]
 #[allow(non_snake_case)]
 /// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt(
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getStorageAt: {params:?}");
-
-    let p: MonadEthGetStorageAtParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
+    p: MonadEthGetStorageAtParams,
+) -> JsonRpcResult<String> {
+    trace!("monad_eth_getStorageAt: {p:?}");
 
     match triedb_env
-        .get_storage_at(p.account.0, B256::from(p.position).0, p.block_number.into())
+        .get_storage_at(
+            p.account.0,
+            B256::from(p.position.0).0,
+            p.block_number.into(),
+        )
         .await
     {
-        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
-        TriedbResult::Storage(storage) => serialize_result(hex::encode(&storage)),
+        TriedbResult::Null => Ok(format!("0x{:x}", 0)),
+        TriedbResult::Storage(storage) => Ok(hex::encode(&storage)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionCountParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetTransactionCountParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
+#[rpc(method = "eth_getTransactionCount")]
 #[allow(non_snake_case)]
 /// Returns the number of transactions sent from an address.
 pub async fn monad_eth_getTransactionCount(
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetTransactionCountParams,
+) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    let p: MonadEthGetTransactionCountParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
     match triedb_env
-        .get_account(p.account.0, p.block_number.into())
+        .get_account(params.account.0, params.block_number.into())
         .await
     {
-        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
-        TriedbResult::Account(nonce, _, _) => serialize_result(format!("0x{:x}", nonce)),
+        TriedbResult::Null => Ok(format!("0x{:x}", 0)),
+        TriedbResult::Account(nonce, _, _) => Ok(format!("0x{:x}", nonce)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
@@ -166,29 +147,48 @@ pub async fn monad_eth_syncing(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcE
     serialize_result(serde_json::Value::Bool(false))
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthCoinbaseReturn {
-    address: B160,
-}
-
-#[allow(non_snake_case)]
-/// Returns the client coinbase address.
-pub async fn monad_eth_coinbase(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_coinbase");
-
-    // TODO. TBD where this data actually comes from
-
-    let retval = MonadEthCoinbaseReturn {
-        address: B160::default(),
-    };
-
-    serialize_result(retval)
-}
-
 #[allow(non_snake_case)]
 /// Returns a list of addresses owned by client.
 pub async fn monad_eth_accounts(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_accounts");
 
     serialize_result(serde_json::Value::Array(vec![]))
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetProofParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    account: EthAddress,
+    keys: Vec<EthHash>,
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_number: BlockTags,
+}
+
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct StorageProof {
+    key: EthHash,
+    value: EthHash,
+    proof: Vec<EthHash>,
+}
+
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetProofResult {
+    balance: MonadU256,
+    code_hash: EthHash,
+    nonce: u128,
+    storage_hash: EthHash,
+    account_proof: Vec<EthHash>,
+    storage_proof: Vec<StorageProof>,
+}
+
+#[rpc(method = "eth_getProof")]
+#[allow(non_snake_case)]
+/// Returns the account and storage values of the specified account including the Merkle-proof.
+// TODO: this is a stub to support rpc docs, need to implement
+pub async fn monad_eth_getProof(
+    triedb_env: &TriedbEnv,
+    params: MonadEthGetProofParams,
+) -> JsonRpcResult<MonadEthGetProofResult> {
+    trace!("monad_eth_getProof");
+    Err(JsonRpcError::method_not_supported())
 }

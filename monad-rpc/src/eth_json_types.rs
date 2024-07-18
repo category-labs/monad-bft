@@ -1,22 +1,243 @@
 use std::str::FromStr;
 
-use monad_blockdb::BlockTagKey;
-use reth_primitives::{Address, U256};
-use serde::{Deserialize, Deserializer, Serialize};
+use alloy_primitives::FixedBytes;
+use reth_primitives::{Address, Bloom, Bytes, U256};
+use reth_rpc_types::{
+    Block, BlockTransactions, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
 
 use crate::{
-    hex::{decode, decode_quantity, DecodeHexError},
+    hex::{self, decode, decode_quantity, DecodeHexError},
     jsonrpc::JsonRpcError,
 };
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
+#[derive(Debug)]
+pub struct MonadU256(pub U256);
+
+impl Serialize for MonadU256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&format!("0x{:x}", self.0))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MonadLog(pub Log);
+
+impl schemars::JsonSchema for MonadLog {
+    fn schema_name() -> String {
+        "MonadLog".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(Log::default());
+        schema.schema.into()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MonadTransaction(pub Transaction);
+
+impl schemars::JsonSchema for MonadTransaction {
+    fn schema_name() -> String {
+        "MonadTransaction".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(Transaction::default());
+        schema.schema.into()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MonadTransactionReceipt(pub TransactionReceipt);
+
+impl schemars::JsonSchema for MonadTransactionReceipt {
+    fn schema_name() -> String {
+        "MonadTransactionReceipt".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(TransactionReceipt::default());
+        schema.schema.into()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MonadBlock(pub Block);
+
+impl schemars::JsonSchema for MonadBlock {
+    fn schema_name() -> String {
+        "MonadBlock".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(Block {
+            header: Header {
+                hash: Some(FixedBytes::<32>::default()),
+                uncles_hash: FixedBytes::<32>::default(),
+                miner: Address::default(),
+                difficulty: U256::default(),
+                number: None,
+                gas_limit: U256::default(),
+                gas_used: U256::default(),
+                timestamp: U256::default(),
+                excess_blob_gas: None,
+                base_fee_per_gas: None,
+                extra_data: Bytes::default(),
+                mix_hash: None,
+                nonce: None,
+                blob_gas_used: None,
+                parent_beacon_block_root: None,
+                withdrawals_root: None,
+                parent_hash: FixedBytes::<32>::default(),
+                state_root: FixedBytes::<32>::default(),
+                transactions_root: FixedBytes::<32>::default(),
+                receipts_root: FixedBytes::<32>::default(),
+                logs_bloom: Bloom::default(),
+            },
+            total_difficulty: None,
+            withdrawals: None,
+            size: None,
+            other: Default::default(),
+            uncles: Vec::new(),
+            transactions: BlockTransactions::Full(Vec::new()),
+        });
+        schema.schema.into()
+    }
+}
+
+impl schemars::JsonSchema for EthAddress {
+    fn schema_name() -> String {
+        "EthAddress".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("hex".to_owned()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+impl schemars::JsonSchema for MonadU256 {
+    fn schema_name() -> String {
+        "MonadU256".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::Integer.into()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
+impl<'de> Deserialize<'de> for MonadU256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        let u = U256::from_str_radix(&buf, 16)
+            .map_err(|e| serde::de::Error::custom(format!("U256 parse failed: {e:?}")))?;
+        Ok(Self(u))
+    }
+}
+
+#[derive(Serialize, Debug)]
+pub struct MonadFeeHistory(pub FeeHistory);
+
+impl schemars::JsonSchema for MonadFeeHistory {
+    fn schema_name() -> String {
+        "FeeHistory".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(FeeHistory::default());
+        schema.schema.into()
+    }
+}
+
+impl schemars::JsonSchema for EthHash {
+    fn schema_name() -> String {
+        "EthHash".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("hex".to_owned()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 // https://ethereum.org/developers/docs/apis/json-rpc#unformatted-data-encoding
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnformattedData(pub Vec<u8>);
+
+impl schemars::JsonSchema for UnformattedData {
+    fn schema_name() -> String {
+        "UnformattedData".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("hex".to_owned()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 impl FromStr for UnformattedData {
     type Err = DecodeHexError;
@@ -36,14 +257,42 @@ where
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#hex-encoding
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Quantity(pub u64);
+
+impl schemars::JsonSchema for Quantity {
+    fn schema_name() -> String {
+        "Quantity".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            format: Some("hex".to_owned()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 impl FromStr for Quantity {
     type Err = DecodeHexError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         decode_quantity(s).map(Quantity)
+    }
+}
+
+impl Serialize for Quantity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&format!("0x{:x}", self.0))
     }
 }
 
@@ -83,6 +332,26 @@ impl From<Address> for FixedData<20> {
     }
 }
 
+impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        FixedData::from_str(&buf)
+            .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
+    }
+}
+
+impl Serialize for EthHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
+    }
+}
+
 pub fn deserialize_fixed_data<'de, D, const N: usize>(
     deserializer: D,
 ) -> Result<FixedData<N>, D::Error>
@@ -100,17 +369,33 @@ impl From<FixedData<32>> for monad_blockdb::BlockTableKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
 pub enum BlockTags {
     Number(Quantity),
     Default(BlockTagKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+pub enum BlockTagKey {
+    Latest,
+    Finalized,
+}
+
+impl From<BlockTagKey> for monad_blockdb::BlockTagKey {
+    fn from(t: BlockTagKey) -> Self {
+        match t {
+            BlockTagKey::Latest => monad_blockdb::BlockTagKey::Latest,
+            BlockTagKey::Finalized => monad_blockdb::BlockTagKey::Finalized,
+        }
+    }
 }
 
 impl From<BlockTags> for monad_blockdb_utils::BlockTags {
     fn from(t: BlockTags) -> Self {
         match t {
             BlockTags::Number(q) => monad_blockdb_utils::BlockTags::Number(q.0),
-            BlockTags::Default(k) => monad_blockdb_utils::BlockTags::Default(k),
+            BlockTags::Default(k) => monad_blockdb_utils::BlockTags::Default(k.into()),
         }
     }
 }
@@ -154,14 +439,13 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
 
 #[cfg(test)]
 mod tests {
-    use monad_blockdb::BlockTagKey;
     use reth_primitives::U256;
     use serde::Deserialize;
     use serde_json::json;
 
     use super::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, FixedData, Quantity, UnformattedData,
+        deserialize_unformatted_data, BlockTagKey, BlockTags, FixedData, Quantity, UnformattedData,
     };
 
     #[derive(Deserialize, Debug)]

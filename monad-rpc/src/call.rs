@@ -3,16 +3,16 @@ use std::{cmp::min, path::Path};
 use alloy_primitives::{Address, Uint, U256, U64, U8};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_cxx::StateOverrideSet;
+use monad_rpc_docs::rpc;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use tracing::debug;
 
 use crate::{
     eth_json_types::{deserialize_block_tags, BlockTags},
     hex,
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -35,6 +35,37 @@ pub struct CallRequest {
     pub blob_versioned_hashes: Option<Vec<U256>>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub transaction_type: Option<U8>,
+}
+
+impl schemars::JsonSchema for CallRequest {
+    fn schema_name() -> String {
+        "CallRequest".to_string()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(concat!(module_path!(), "::NonGenericType"))
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let schema = schemars::schema_for_value!(CallRequest {
+            from: None,
+            to: None,
+            gas: None,
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::default()),
+                max_priority_fee_per_gas: Some(U256::default())
+            },
+            value: None,
+            input: CallInput::default(),
+            nonce: None,
+            chain_id: None,
+            access_list: None,
+            max_fee_per_blob_gas: None,
+            blob_versioned_hashes: None,
+            transaction_type: None,
+        });
+        schema.schema.into()
+    }
 }
 
 impl CallRequest {
@@ -272,30 +303,26 @@ pub async fn sender_gas_allowance(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct MonadEthCallParams {
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MonadEthCallParams {
     transaction: CallRequest,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_overrides: StateOverrideSet, // empty = no state overrides
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
+#[rpc(method = "eth_call", ignore = "chain_id")]
 pub async fn monad_eth_call(
     blockdb_env: &BlockDbEnv,
     triedb_path: &Path,
     execution_ledger_path: &Path,
     chain_id: u64,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    let mut params: MonadEthCallParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
+    params: MonadEthCallParams,
+) -> JsonRpcResult<String> {
+    let mut params = params;
     params.transaction.input.input = match (
         params.transaction.input.input.take(),
         params.transaction.input.data.take(),
@@ -383,7 +410,7 @@ pub async fn monad_eth_call(
         state_overrides,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
-            Ok(json!(hex::encode(&output_data)))
+            Ok(hex::encode(&output_data))
         }
         monad_cxx::CallResult::Failure(error) => {
             Err(JsonRpcError::eth_call_error(error.message, error.data))
