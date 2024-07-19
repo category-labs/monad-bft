@@ -496,19 +496,21 @@ fn init(seed_mempool: bool) -> BenchTuple {
     let (raw_txns, encoded_txns) = make_txns();
 
     if seed_mempool {
-        for txn in raw_txns.iter() {
-            <EthTxPool as TxPool<
-                SignatureCollectionType,
-                EthBlockPolicy,
-                NopStateBackend,
-                PassthruReserveBalanceCache<NopStateBackend>,
-            >>::insert_tx(
-                wrapped_state.tx_pool,
-                Bytes::from(txn.envelope_encoded()),
-                wrapped_state.block_policy,
-                wrapped_state.reserve_balance_cache,
-            );
-        }
+        let txns: Vec<Bytes> = raw_txns
+            .iter()
+            .map(|t| Bytes::from(t.envelope_encoded()))
+            .collect();
+        <EthTxPool as TxPool<
+            SignatureCollectionType,
+            EthBlockPolicy,
+            NopStateBackend,
+            PassthruReserveBalanceCache<NopStateBackend>,
+        >>::insert_tx(
+            wrapped_state.tx_pool,
+            txns,
+            wrapped_state.block_policy,
+            wrapped_state.reserve_balance_cache,
+        );
     }
     let (author, _, proposal_message) = env
         .next_proposal(
@@ -637,14 +639,16 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 assert_eq!(&leader, wrapped_state.nodeid);
                 let (raw_txns, encoded_txns) = make_txns();
 
-                for txn in raw_txns.iter() {
-                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend,PassthruReserveBalanceCache<NopStateBackend>>>::insert_tx(
-                        wrapped_state.tx_pool,
-                        Bytes::from(txn.envelope_encoded()),
-                        wrapped_state.block_policy,
-                        wrapped_state.reserve_balance_cache,
-                    );
-                }
+                let txns: Vec<Bytes> = raw_txns
+                    .iter()
+                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .collect();
+                <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, NopStateBackend,PassthruReserveBalanceCache<NopStateBackend>>>::insert_tx(
+                    wrapped_state.tx_pool,
+                    txns,
+                    wrapped_state.block_policy,
+                    wrapped_state.reserve_balance_cache,
+                );
                 let (author, _, proposal_message) = env
                     .next_proposal(
                         encoded_txns,
@@ -698,19 +702,21 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337);
                 let mut reserve_balance_cache =
                     PassthruReserveBalanceCache::new(NopStateBackend::default(), 0);
-                for txn in raw_txns.iter() {
-                    let _ = <EthTxPool as TxPool<
-                        SignatureCollectionType,
-                        EthBlockPolicy,
-                        NopStateBackend,
-                        PassthruReserveBalanceCache<NopStateBackend>,
-                    >>::insert_tx(
-                        &mut ctx[3].txpool,
-                        Bytes::from(txn.envelope_encoded()),
-                        &block_policy,
-                        &mut reserve_balance_cache,
-                    );
-                }
+                let txns: Vec<Bytes> = raw_txns
+                    .iter()
+                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .collect();
+                let _ = <EthTxPool as TxPool<
+                    SignatureCollectionType,
+                    EthBlockPolicy,
+                    NopStateBackend,
+                    PassthruReserveBalanceCache<NopStateBackend>,
+                >>::insert_tx(
+                    &mut ctx[3].txpool,
+                    txns,
+                    &block_policy,
+                    &mut reserve_balance_cache,
+                );
                 let _ = env.next_tc(Epoch(1));
                 let tc = env.next_tc(Epoch(1));
                 (ctx, tc)

@@ -84,6 +84,11 @@ use state::NodeState;
 fn main() {
     let mut cmd = Cli::command();
 
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build_global()
+        .unwrap();
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

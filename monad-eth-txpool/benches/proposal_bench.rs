@@ -80,21 +80,23 @@ fn create_pool_and_transactions() -> BenchController {
     txns.encode(&mut txns_encoded);
 
     let bytes = Bytes::copy_from_slice(&txns_encoded);
+    let txns: Vec<Bytes> = txns
+        .iter()
+        .map(|t| Bytes::from(t.envelope_encoded()))
+        .collect();
 
-    for txn in txns.iter() {
-        TxPool::<
-            SignatureCollectionType,
-            EthBlockPolicy,
-            InMemoryState,
-            PassthruReserveBalanceCache<InMemoryState>,
-        >::insert_tx(
-            &mut txpool,
-            Bytes::from(txn.envelope_encoded()),
-            &eth_block_policy,
-            &mut reserve_balance_cache,
-        )
-        .unwrap();
-    }
+    assert!(!TxPool::<
+        SignatureCollectionType,
+        EthBlockPolicy,
+        InMemoryState,
+        PassthruReserveBalanceCache<InMemoryState>,
+    >::insert_tx(
+        &mut txpool,
+        txns,
+        &eth_block_policy,
+        &mut reserve_balance_cache,
+    )
+    .is_empty());
     let txns_list = FullTransactionList::new(bytes);
 
     BenchController {

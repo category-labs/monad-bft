@@ -19,6 +19,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }
+rayon = { workspace = true }
 reth-primitives = { workspace = true }
 sorted_vector_map = { workspace = true }
 tracing = { workspace = true }

@@ -54,6 +54,7 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 sorted_vector_map = { workspace = true }
 thiserror = { workspace = true }

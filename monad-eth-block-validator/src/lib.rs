@@ -59,13 +59,9 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
         for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
-            if let Some(tx_chain_id) = eth_txn.chain_id() {
-                if tx_chain_id != self.chain_id {
-                    return None;
-                }
-            } else {
-                return None;
-            }
+            eth_txn
+                .chain_id()
+                .and_then(|cid| (cid == self.chain_id).then_some(()))?;
 
             let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
             // txn iteration is following the same order as they are in the

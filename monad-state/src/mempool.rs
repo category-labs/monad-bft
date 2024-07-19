@@ -113,23 +113,14 @@ where
     ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
         match event {
             MempoolEvent::UserTxns(txns) => {
-                let txs = txns
-                    .into_iter()
-                    .filter_map(|tx| {
-                        if let Err(err) = self.txpool.insert_tx(
-                            tx.clone(),
-                            self.block_policy,
-                            self.reserve_balance_cache,
-                        ) {
-                            self.metrics.txpool_events.dropped_txns += 1;
-                            tracing::trace!(?err, "failed to insert rpc tx");
-                            None
-                        } else {
-                            self.metrics.txpool_events.local_inserted_txns += 1;
-                            Some(tx)
-                        }
-                    })
-                    .collect();
+                let num_txns = txns.len() as u64;
+                let valid_encoded_txs =
+                    self.txpool
+                        .insert_tx(txns, self.block_policy, self.reserve_balance_cache);
+
+                let num_valid_txns = valid_encoded_txs.len() as u64;
+                self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
+                self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
 
                 let round = self.consensus.get_current_round();
                 let next_k_leaders = (round.0..)
@@ -138,20 +129,24 @@ where
                     .unique()
                     .filter(|leader| leader != self.nodeid)
                     .collect_vec();
-                vec![MempoolCommand::ForwardTxns(next_k_leaders, txs)]
+                vec![MempoolCommand::ForwardTxns(
+                    next_k_leaders,
+                    valid_encoded_txs,
+                )]
             }
             MempoolEvent::ForwardedTxns { sender, txns } => {
-                for tx in txns {
-                    if let Err(err) =
-                        self.txpool
-                            .insert_tx(tx, self.block_policy, self.reserve_balance_cache)
-                    {
-                        self.metrics.txpool_events.dropped_txns += 1;
-                        tracing::trace!(?sender, ?err, "failed to insert forwarded tx");
-                    } else {
-                        self.metrics.txpool_events.external_inserted_txns += 1;
-                    }
+                let num_txns = txns.len() as u64;
+                let valid_encoded_txs =
+                    self.txpool
+                        .insert_tx(txns, self.block_policy, self.reserve_balance_cache);
+
+                let num_valid_txns = valid_encoded_txs.len() as u64;
+                self.metrics.txpool_events.external_inserted_txns += num_valid_txns;
+
+                if num_valid_txns != num_txns {
+                    tracing::warn!(?sender, "sender forwarded bad txns");
                 }
+
                 vec![]
             }
             MempoolEvent::Clear => {

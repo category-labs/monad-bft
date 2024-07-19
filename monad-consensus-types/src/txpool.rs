@@ -41,10 +41,10 @@ pub trait TxPool<
     /// TxPool is generic over.
     fn insert_tx(
         &mut self,
-        tx: Bytes,
+        txns: Vec<Bytes>,
         block_policy: &BPT,
         reserve_balance_cache: &mut RBCT,
-    ) -> Result<(), TxPoolInsertionError>;
+    ) -> Vec<Bytes>;
 
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
@@ -71,11 +71,11 @@ impl<
 {
     fn insert_tx(
         &mut self,
-        tx: Bytes,
+        txns: Vec<Bytes>,
         block_policy: &BPT,
         reserve_balance_cache: &mut RBCT,
-    ) -> Result<(), TxPoolInsertionError> {
-        (**self).insert_tx(tx, block_policy, reserve_balance_cache)
+    ) -> Vec<Bytes> {
+        (**self).insert_tx(txns, block_policy, reserve_balance_cache)
     }
 
     fn create_proposal(
@@ -127,11 +127,11 @@ impl<SCT: SignatureCollection>
 {
     fn insert_tx(
         &mut self,
-        _tx: Bytes,
+        _tx: Vec<Bytes>,
         _block_policy: &PassthruBlockPolicy,
         _reserve_balance_cache: &mut PassthruReserveBalanceCache<NopStateBackend>,
-    ) -> Result<(), TxPoolInsertionError> {
-        Ok(())
+    ) -> Vec<Bytes> {
+        vec![]
     }
 
     fn create_proposal(
