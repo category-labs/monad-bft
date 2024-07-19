@@ -281,6 +281,7 @@ struct MonadEthCallParams {
     state_overrides: StateOverrideSet, // empty = no state overrides
 }
 
+/// Executes a new message call immediately without creating a transaction on the block chain.
 pub async fn monad_eth_call(
     blockdb_env: &BlockDbEnv,
     triedb_path: &Path,

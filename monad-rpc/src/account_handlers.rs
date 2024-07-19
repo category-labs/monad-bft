@@ -22,6 +22,7 @@ struct MonadEthGetBalanceParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the balance of the account of given address.
 pub async fn monad_eth_getBalance(
     triedb_env: &TriedbEnv,
     params: Value,
@@ -55,6 +56,7 @@ struct MonadEthGetCodeParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns code at a given address.
 pub async fn monad_eth_getCode(
     triedb_env: &TriedbEnv,
     params: Value,
@@ -95,6 +97,7 @@ struct MonadEthGetStorageAtParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt(
     triedb_env: &TriedbEnv,
     params: Value,
@@ -128,6 +131,7 @@ struct MonadEthGetTransactionCountParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the number of transactions sent from an address.
 pub async fn monad_eth_getTransactionCount(
     triedb_env: &TriedbEnv,
     params: Value,
@@ -153,6 +157,7 @@ pub async fn monad_eth_getTransactionCount(
 }
 
 #[allow(non_snake_case)]
+/// Returns an object with data about the sync status or false.
 pub async fn monad_eth_syncing(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_syncing");
 
@@ -167,6 +172,7 @@ struct MonadEthCoinbaseReturn {
 }
 
 #[allow(non_snake_case)]
+/// Returns the client coinbase address.
 pub async fn monad_eth_coinbase(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_coinbase");
 
@@ -180,6 +186,7 @@ pub async fn monad_eth_coinbase(triedb_env: &TriedbEnv) -> Result<Value, JsonRpc
 }
 
 #[allow(non_snake_case)]
+/// Returns a list of addresses owned by client.
 pub async fn monad_eth_accounts(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_accounts");
 

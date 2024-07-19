@@ -47,6 +47,7 @@ fn set_gas_limit(tx: &mut Transaction, gas_limit: u64) {
 }
 
 #[allow(non_snake_case)]
+/// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas(
     blockdb_env: &BlockDbEnv,
     triedb_path: &Path,
@@ -211,6 +212,7 @@ pub async fn suggested_priority_fee(blockdb_env: &BlockDbEnv) -> Result<u64, Jso
 }
 
 #[allow(non_snake_case)]
+/// Returns the current price per gas in wei.
 pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_gasPrice");
 
@@ -237,6 +239,7 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonR
 }
 
 #[allow(non_snake_case)]
+/// Returns the current maxPriorityFeePerGas per gas in wei.
 pub async fn monad_eth_maxPriorityFeePerGas(
     blockdb_env: &BlockDbEnv,
 ) -> Result<Value, JsonRpcError> {
@@ -258,6 +261,8 @@ struct MonadEthHistoryParams {
 }
 
 #[allow(non_snake_case)]
+/// Transaction fee history
+/// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
 pub async fn monad_eth_feeHistory(
     blockdb_env: &BlockDbEnv,
     params: Value,
