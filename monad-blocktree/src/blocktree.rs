@@ -476,7 +476,7 @@ mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, PassthruBlockPolicy},
         ledger::CommitResult,
-        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
+        payload::{FullTransactionList, Payload},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -488,9 +488,8 @@ mod test {
         NopSignature,
     };
     use monad_eth_reserve_balance::PassthruReserveBalanceCache;
-    use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round};
 
     use super::BlockTree;
     use crate::blocktree::RootInfo;
@@ -531,191 +530,105 @@ mod test {
         }
     }
 
+    pub fn mock_qc(vote_info: VoteInfo) -> QC {
+        QC::new(
+            QcInfo {
+                vote: Vote {
+                    vote_info,
+                    ledger_commit_info: CommitResult::NoCommit,
+                },
+            },
+            MockSignatures::with_pubkeys(&[]),
+        )
+    }
+
+    pub fn mock_qc_for_block(block: &Block) -> QC {
+        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
+            CommitResult::Commit
+        } else {
+            CommitResult::NoCommit
+        };
+        let vote = Vote {
+            vote_info: VoteInfo {
+                id: block.get_id(),
+                epoch: block.get_epoch(),
+                round: block.get_round(),
+                parent_id: block.get_parent_id(),
+                parent_round: block.get_parent_round(),
+                seq_num: block.get_seq_num(),
+            },
+            ledger_commit_info,
+        };
+        QC::new(QcInfo { vote }, MockSignatures::with_pubkeys(&[]))
+    }
+
     #[test]
     fn test_prune() {
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v2));
 
         let v3 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v3,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b3 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v3));
 
         let v4 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b4 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v4,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b4 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v4));
 
         let v5 = VoteInfo {
             id: b3.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b5 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v5,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b5 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v5));
 
         let v6 = VoteInfo {
             id: b5.get_id(),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: b5.get_parent_id(),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b6 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v6,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b6 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v6));
 
         let v7 = VoteInfo {
             id: b6.get_id(),
-            epoch: Epoch(1),
             round: Round(6),
             parent_id: b5.get_id(),
             parent_round: Round(5),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b7 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(7),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v7,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b7 = Block::new(node_id(), Epoch(1), Round(7), &payload, &mock_qc(v7));
 
         // Initial blocktree
         //        g
@@ -805,28 +718,13 @@ mod test {
 
         let v8 = VoteInfo {
             id: b5.get_id(),
-            epoch: Epoch(1),
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
-        let b8 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(8),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v8,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b8 = Block::new(node_id(), Epoch(1), Round(8), &payload, &mock_qc(v8));
 
         assert!(blocktree
             .add(b8, &mut reserve_balance_cache, &mut block_policy)
@@ -836,64 +734,28 @@ mod test {
 
     #[test]
     fn test_add_parent_not_exist() {
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let gid = g.get_id();
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
@@ -945,23 +807,16 @@ mod test {
             node_id(),
             Epoch(1),
             Round(1),
-            &Payload {
-                txns: FullTransactionList::empty(),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
-            },
+            &Payload::dont_care(),
             &QC::genesis_qc(),
         );
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
         let b1 = Block::new(
@@ -970,20 +825,9 @@ mod test {
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![1].into()),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
+                ..DontCare::dont_care()
             },
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc(v1),
         );
 
         let b2 = Block::new(
@@ -992,29 +836,17 @@ mod test {
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![2].into()),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
+                ..DontCare::dont_care()
             },
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc(v1),
         );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
         let b3 = Block::new(
@@ -1023,20 +855,9 @@ mod test {
             Round(3),
             &Payload {
                 txns: FullTransactionList::new(vec![3].into()),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
+                ..DontCare::dont_care()
             },
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc(v2),
         );
 
         // Initial blocktree
@@ -1094,23 +915,16 @@ mod test {
             node_id(),
             Epoch(1),
             Round(1),
-            &Payload {
-                txns: FullTransactionList::empty(),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
-            },
+            &Payload::dont_care(),
             &QC::genesis_qc(),
         );
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
         let b1 = Block::new(
@@ -1119,20 +933,9 @@ mod test {
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![1].into()),
-                header: ExecutionArtifacts::zero(),
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
+                ..DontCare::dont_care()
             },
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc(v1),
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
@@ -1166,96 +969,28 @@ mod test {
 
     #[test]
     fn paths_to_root() {
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b4 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(5),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v2));
+        let b4 = Block::new(node_id(), Epoch(1), Round(5), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1316,96 +1051,28 @@ mod test {
         //  |  -  |  -  |
         //  b2    b3    b4
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b4 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(5),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v2));
+        let b4 = Block::new(node_id(), Epoch(1), Round(5), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1469,64 +1136,26 @@ mod test {
         //
         // blocktree is updated with b2
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1576,64 +1205,26 @@ mod test {
         //
         // blocktree is updated with b1
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1684,89 +1275,35 @@ mod test {
         //
         // blocktree is updated with b2 followed by b1
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let v3 = VoteInfo {
             id: b2.get_id(),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: b2.get_parent_id(),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v3,
-                        ledger_commit_info: CommitResult::Commit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v3));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1832,89 +1369,35 @@ mod test {
         //
         // blocktree is updated with b1 followed by b2
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let v3 = VoteInfo {
             id: b2.get_id(),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: b2.get_parent_id(),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v3,
-                        ledger_commit_info: CommitResult::Commit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v3));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -1979,80 +1462,28 @@ mod test {
         //
         // blocktree is updated with b1
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v2));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -2113,146 +1544,47 @@ mod test {
         //
         // blocktree is updated with missing b1
 
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
-            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(2),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v1,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b1 = Block::new(node_id(), Epoch(1), Round(2), &payload, &mock_qc(v1));
 
         let v2 = VoteInfo {
             id: b1.get_id(),
-            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b2 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(3),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b2 = Block::new(node_id(), Epoch(1), Round(3), &payload, &mock_qc(v2));
 
         let v3 = VoteInfo {
             id: b2.get_id(),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: b2.get_parent_id(),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b3 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(4),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v2,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b3 = Block::new(node_id(), Epoch(1), Round(4), &payload, &mock_qc(v2));
 
         let v4 = VoteInfo {
             id: b3.get_id(),
-            epoch: Epoch(1),
             round: Round(4),
             parent_id: b3.get_parent_id(),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
-
-        let b4 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(5),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v3,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b5 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(6),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v4,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let b6 = Block::new(
-            node_id(),
-            Epoch(1),
-            Round(7),
-            &payload,
-            &QC::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: v4,
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
+        let b4 = Block::new(node_id(), Epoch(1), Round(5), &payload, &mock_qc(v3));
+        let b5 = Block::new(node_id(), Epoch(1), Round(6), &payload, &mock_qc(v4));
+        let b6 = Block::new(node_id(), Epoch(1), Round(7), &payload, &mock_qc(v4));
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTree::<
@@ -2332,25 +1664,14 @@ mod test {
         //   ... missing b1
         //    |
         //   b2
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let b1 = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
         let b2 = Block::new(
             node_id(),
             Epoch(1),
             Round(2),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b1),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b1),
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
@@ -2402,13 +1723,7 @@ mod test {
 
         // Need to craft b4 and b6 block id such that b6 is before b4 when
         // populating b3.children
-        let payload = Payload {
-            txns: FullTransactionList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
+        let payload = Payload::dont_care();
         let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let b3 = Block::new(
@@ -2416,10 +1731,7 @@ mod test {
             Epoch(1),
             Round(3),
             &payload,
-            &QC::new(
-                QcInfo { vote: get_vote(&g) },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&g),
         );
 
         let b4 = Block::new(
@@ -2427,12 +1739,7 @@ mod test {
             Epoch(1),
             Round(4),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b3),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b3),
         );
 
         let b5 = Block::new(
@@ -2440,12 +1747,7 @@ mod test {
             Epoch(1),
             Round(5),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b4),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b4),
         );
 
         let b6 = Block::new(
@@ -2453,12 +1755,7 @@ mod test {
             Epoch(1),
             Round(6),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b5),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b5),
         );
 
         let b7 = Block::new(
@@ -2466,12 +1763,7 @@ mod test {
             Epoch(1),
             Round(7),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b6),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b6),
         );
 
         let b9 = Block::new(
@@ -2479,12 +1771,7 @@ mod test {
             Epoch(1),
             Round(9),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b3),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b3),
         );
 
         let b10 = Block::new(
@@ -2492,12 +1779,7 @@ mod test {
             Epoch(1),
             Round(10),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b9),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b9),
         );
 
         let b11 = Block::new(
@@ -2505,12 +1787,7 @@ mod test {
             Epoch(1),
             Round(11),
             &payload,
-            &QC::new(
-                QcInfo {
-                    vote: get_vote(&b10),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
+            &mock_qc_for_block(&b10),
         );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();

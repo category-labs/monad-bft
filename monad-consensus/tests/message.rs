@@ -10,7 +10,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    hasher::{Hashable, Hasher, HasherType},
     NopKeyPair, NopSignature,
 };
 use monad_eth_types::EthAddress;
@@ -32,12 +32,7 @@ fn timeout_digest() {
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
-                        id: BlockId(Hash([0x00_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x00_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -66,12 +61,7 @@ fn timeout_info_hash() {
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
-                        id: BlockId(Hash([0x00_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x00_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -101,12 +91,7 @@ fn timeout_hash() {
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
-                        id: BlockId(Hash([0x00_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x00_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -141,12 +126,7 @@ fn timeout_msg_hash() {
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
-                        id: BlockId(Hash([0x00_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x00_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -212,12 +192,7 @@ fn proposal_msg_hash() {
         QcInfo {
             vote: Vote {
                 vote_info: VoteInfo {
-                    epoch: Epoch(1),
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                    ..DontCare::dont_care()
                 },
                 ledger_commit_info: CommitResult::NoCommit,
             },
@@ -281,12 +256,7 @@ fn max_high_qc() {
 #[test_case(CommitResult::Commit ; "Some commit_state")]
 fn vote_msg_hash(cs: CommitResult) {
     let vi = VoteInfo {
-        id: BlockId(Hash([0x00_u8; 32])),
-        epoch: Epoch(1),
-        round: Round(0),
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: Round(0),
-        seq_num: SeqNum(0),
+        ..DontCare::dont_care()
     };
 
     let v = Vote {

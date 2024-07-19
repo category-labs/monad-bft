@@ -753,7 +753,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake, GENESIS_SEQ_NUM};
+    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum, Stake, GENESIS_SEQ_NUM};
     use monad_validator::{
         epoch_manager::EpochManager,
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
@@ -824,12 +824,7 @@ mod test {
     #[test]
     fn qc_verification_vote_doesnt_match() {
         let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
 
         let keypair = get_key::<SignatureType>(6);
@@ -848,12 +843,8 @@ mod test {
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keypair);
 
         let vi2 = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
             round: Round(1),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
         let sigs = vec![(NodeId::new(keypair.pubkey()), s)];
         let sigs = MultiSig::new(sigs, &val_mapping, msg.as_ref()).unwrap();
@@ -877,12 +868,8 @@ mod test {
     #[test]
     fn test_qc_verify_insufficient_stake() {
         let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
             round: Round(1),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
         let vote = Vote {
             vote_info: vi,
@@ -1032,11 +1019,10 @@ mod test {
 
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: BlockId(Hash([0x01_u8; 32])),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
         let vote = Vote {
             vote_info: vi,
@@ -1100,12 +1086,10 @@ mod test {
 
         // create an old qc on Round(3)
         let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
             round: Round(3),
             parent_id: BlockId(Hash([0x01_u8; 32])),
             parent_round: Round(2),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
         let vote = Vote {
             vote_info: vi,
@@ -1154,12 +1138,7 @@ mod test {
     #[test]
     fn vote_message_test() {
         let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
+            ..DontCare::dont_care()
         };
         let v = Vote {
             vote_info: vi,

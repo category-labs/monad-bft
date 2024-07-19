@@ -387,7 +387,7 @@ mod test {
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, TimeoutVariant};
+    use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory, ValidatorSetType};
 
     use super::BlockSyncRequester;
@@ -428,11 +428,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -462,11 +459,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x02_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -514,11 +508,8 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
-                            epoch: Epoch(1),
-                            round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                            ..DontCare::dont_care()
                         },
                         ledger_commit_info: CommitResult::NoCommit,
                     },
@@ -537,11 +528,8 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
-                            epoch: Epoch(1),
-                            round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                            ..DontCare::dont_care()
                         },
                         ledger_commit_info: CommitResult::NoCommit,
                     },
@@ -560,11 +548,8 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
-                            epoch: Epoch(1),
-                            round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                            ..DontCare::dont_care()
                         },
                         ledger_commit_info: CommitResult::NoCommit,
                     },
@@ -579,11 +564,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_1.get_id(),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -608,11 +590,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_2.get_id(),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -637,11 +616,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_3.get_id(),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -809,11 +785,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },
@@ -894,11 +867,8 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
-                            epoch: Epoch(1),
-                            round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                            ..DontCare::dont_care()
                         },
                         ledger_commit_info: CommitResult::NoCommit,
                     },
@@ -920,11 +890,8 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block.get_id(),
-                        epoch: Epoch(1),
-                        round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                        ..DontCare::dont_care()
                     },
                     ledger_commit_info: CommitResult::NoCommit,
                 },

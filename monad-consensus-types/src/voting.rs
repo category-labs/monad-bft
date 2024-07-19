@@ -97,6 +97,19 @@ impl Hashable for VoteInfo {
     }
 }
 
+impl DontCare for VoteInfo {
+    fn dont_care() -> Self {
+        Self {
+            id: BlockId(Hash([0x0_u8; 32])),
+            epoch: Epoch(1),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x0_u8; 32])),
+            parent_round: Round(0),
+            seq_num: SeqNum(0),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};

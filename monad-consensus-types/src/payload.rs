@@ -6,7 +6,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{Round, SeqNum};
+use monad_types::{DontCare, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::state_root_hash::StateRootHash;
@@ -153,6 +153,18 @@ impl Hashable for Payload {
         state.update(self.seq_num);
         state.update(self.beneficiary);
         state.update(&self.randao_reveal);
+    }
+}
+
+impl DontCare for Payload {
+    fn dont_care() -> Self {
+        Self {
+            txns: FullTransactionList::empty(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        }
     }
 }
 

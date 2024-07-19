@@ -3,7 +3,7 @@ use monad_consensus_types::{
     quorum_certificate::{QcInfo, QuorumCertificate, Rank},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::{hasher::Hash, NopSignature};
+use monad_crypto::NopSignature;
 use monad_testutil::signing::MockSignatures;
 use monad_types::*;
 
@@ -14,21 +14,13 @@ fn comparison() {
     let ci = CommitResult::NoCommit;
 
     let vi_1 = VoteInfo {
-        id: BlockId(Hash([0x00_u8; 32])),
-        epoch: Epoch(1),
         round: Round(2),
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: Round(0),
-        seq_num: SeqNum(0),
+        ..DontCare::dont_care()
     };
 
     let vi_2 = VoteInfo {
-        id: BlockId(Hash([0x00_u8; 32])),
-        epoch: Epoch(1),
         round: Round(3),
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: Round(0),
-        seq_num: SeqNum(0),
+        ..DontCare::dont_care()
     };
 
     let qc_1 = QuorumCertificate::<MockSignatures<NopSignature>>::new(

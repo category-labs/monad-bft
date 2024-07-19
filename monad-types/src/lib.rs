@@ -386,6 +386,11 @@ impl Hashable for EnumDiscriminant {
     }
 }
 
+/// Trait for use in tests to populate structs where the value of the fields is not relevant
+pub trait DontCare {
+    fn dont_care() -> Self;
+}
+
 #[cfg(test)]
 mod test {
     use test_case::test_case;

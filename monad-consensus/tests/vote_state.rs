@@ -7,12 +7,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
-    hasher::Hash,
     NopKeyPair, NopSignature,
 };
 use monad_multi_sig::MultiSig;
 use monad_testutil::validators::create_keys_w_validators;
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{DontCare, Epoch, NodeId, Round};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory};
 use test_case::test_case;
 
@@ -27,12 +26,9 @@ fn create_vote_message(
     vote_round: Round,
 ) -> (NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>) {
     let vi = VoteInfo {
-        id: BlockId(Hash([0x00_u8; 32])),
         epoch: vote_epoch,
         round: vote_round,
-        parent_id: BlockId(Hash([0x00_u8; 32])),
-        parent_round: Round(0),
-        seq_num: SeqNum(0),
+        ..DontCare::dont_care()
     };
 
     let v = Vote {
