@@ -208,6 +208,7 @@ pub enum LogFilter {
 }
 
 #[allow(non_snake_case)]
+/// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
@@ -316,6 +317,8 @@ struct MonadEthSendRawTransactionParams {
 
 // TODO: need to support EIP-4844 transactions
 #[allow(non_snake_case)]
+/// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
+/// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
     ipc: flume::Sender<TransactionSigned>,
     params: Value,
@@ -356,6 +359,7 @@ struct MonadEthGetTransactionReceiptParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the receipt of a transaction by transaction hash.
 pub async fn monad_eth_getTransactionReceipt(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
@@ -420,6 +424,7 @@ struct MonadEthGetTransactionByHashParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the information about a transaction requested by transaction hash.
 pub async fn monad_eth_getTransactionByHash(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -465,6 +470,7 @@ struct MonadEthGetTransactionByBlockHashAndIndexParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns information about a transaction by block hash and transaction index position.
 pub async fn monad_eth_getTransactionByBlockHashAndIndex(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -502,6 +508,7 @@ struct MonadEthGetTransactionByBlockNumberAndIndexParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns information about a transaction by block number and transaction index position.
 pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
     blockdb_env: &BlockDbEnv,
     params: Value,

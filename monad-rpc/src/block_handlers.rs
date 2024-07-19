@@ -92,6 +92,7 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
 }
 
 #[allow(non_snake_case)]
+/// Returns the number of most recent block.
 pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_blockNumber");
 
@@ -103,6 +104,7 @@ pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> Result<Value, Json
 
 // TODO: does chainId come from a config file?
 #[allow(non_snake_case)]
+/// Returns the chain ID of the current network.
 pub async fn monad_eth_chainId() -> Result<Value, JsonRpcError> {
     trace!("monad_eth_chainId");
 
@@ -117,6 +119,7 @@ struct MonadEthGetBlockByHashParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -148,6 +151,7 @@ struct MonadEthGetBlockByNumberParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -177,6 +181,7 @@ struct MonadEthGetBlockTransactionCountByHashParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -207,6 +212,7 @@ struct MonadEthGetBlockTransactionCountByNumberParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -277,6 +283,7 @@ struct MonadEthGetBlockReceiptsParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,

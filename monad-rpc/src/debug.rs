@@ -21,6 +21,7 @@ pub struct MonadDebugGetRawBlockParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock(
     blockdb_env: &BlockDbEnv,
     params: MonadDebugGetRawBlockParams,
@@ -42,6 +43,7 @@ pub struct MonadDebugGetRawHeaderParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns an RLP-encoded header.
 pub async fn monad_debug_getRawHeader(
     blockdb_env: &BlockDbEnv,
     params: MonadDebugGetRawHeaderParams,
@@ -63,6 +65,7 @@ pub struct MonadDebugGetRawReceiptsParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns an array of EIP-2718 binary-encoded receipts.
 pub async fn monad_debug_getRawReceipts(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
@@ -98,6 +101,7 @@ pub struct MonadDebugGetRawTransactionParams {
 }
 
 #[allow(non_snake_case)]
+/// Returns an array of EIP-2718 binary-encoded transactions.
 pub async fn monad_debug_getRawTransaction(
     blockdb_env: &BlockDbEnv,
     params: MonadDebugGetRawTransactionParams,
