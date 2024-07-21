@@ -102,6 +102,7 @@ pub trait ValidatorSetType: Send + Sync + AsAny {
     fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool;
+    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake;
 }
 
 impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
@@ -137,6 +138,10 @@ impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
 
     fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
         (**self).has_threshold_votes(addrs, threshold)
+    }
+
+    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake {
+        (**self).calculate_current_stake(addrs)
     }
 }
 
@@ -236,6 +241,16 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
             }
         }
         voter_stake >= threshold
+    }
+
+    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake {
+        let mut voter_stake: Stake = Stake(0);
+        for addr in addrs {
+            if let Some(v) = self.validators.get(addr) {
+                voter_stake += *v;
+            }
+        }
+        voter_stake
     }
 }
 

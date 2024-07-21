@@ -106,7 +106,7 @@ where
             }
         };
 
-        debug!("Block sync response: bid={:?}, result={:?}", bid, self);
+        debug!(block_id = ?bid, result = ?self, "Block sync response");
     }
 }
 
@@ -203,12 +203,12 @@ where
 
         if self.requests.contains_key(&id) {
             debug!(
-                "Block sync request for block already in flight: bid={:?}",
-                id
+                block_id = ?id,
+                "Block sync request for block already in flight",
             );
             return vec![];
         } else if req_cnt > self.max_retry_cnt {
-            debug!("Block sync exceeded max retries: bid={:?}", id);
+            debug!(block_id = ?id, "Block sync exceeded max retries");
             return vec![];
         }
 
@@ -226,8 +226,10 @@ where
             req_cnt,
         );
         debug!(
-            "Block sync request: bid={:?}, qc={:?} peer={:?}",
-            id, qc, req_peer
+            block_id = ?id,
+            ?qc,
+            peer = ?req_peer,
+            "Block sync request",
         );
         let span = info_span!("block_sync_request_span", bid=?id, peer=?req_peer);
         let _enter = span.enter();
@@ -303,7 +305,7 @@ where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         // FIXME: we're not resetting block sync timeout on success. This can be wrong
-        debug!("Block sync timeout bid={:?}", bid);
+        debug!(block_id = ?bid, "Block sync timeout bid");
         // avoid duplicate logging
         let mut cmds = vec![ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(
             bid,

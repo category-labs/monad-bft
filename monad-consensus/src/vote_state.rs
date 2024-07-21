@@ -13,7 +13,7 @@ use monad_crypto::{
 };
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
-use tracing::error;
+use tracing::{debug, error, info, warn};
 
 use crate::messages::message::VoteMessage;
 
@@ -85,8 +85,9 @@ where
 
         if round < self.earliest_round {
             error!(
-                "process_vote called on round < self.earliest_round: {:?} < {:?}",
-                round, self.earliest_round
+                ?round,
+                earliest_round = ?self.earliest_round,
+                "process_vote called on round < self.earliest_round",
             );
             return (None, ret_commands);
         }
@@ -105,6 +106,15 @@ where
         let round_pending_votes = round_state.pending_votes.entry(vote_idx).or_default();
         round_pending_votes.insert(*author, vote_msg.sig);
 
+        debug!(
+            ?round,
+            ?vote,
+            epoch = ?vote.vote_info.epoch,
+            current_stake = ?validators.calculate_current_stake(&round_pending_votes.keys().copied().collect::<Vec<_>>()),
+            total_stake = ?validators.get_total_stake(),
+            "collecting vote"
+        );
+
         while validators
             .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
         {
@@ -121,11 +131,23 @@ where
                     // we update self.earliest round so that we no longer will build a QC for
                     // current round
                     self.earliest_round = round + Round(1);
+
+                    info!(
+                        round = ?vote.vote_info.round,
+                        epoch = ?vote.vote_info.epoch,
+                        "Created new QC"
+                    );
                     return (Some(qc), ret_commands);
                 }
                 Err(SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs)) => {
                     // remove invalid signatures from round_pending_votes, and populate commands
                     let cmds = Self::handle_invalid_vote(round_pending_votes, invalid_sigs);
+
+                    warn!(
+                        round = ?vote.vote_info.round,
+                        epoch = ?vote.vote_info.epoch,
+                        "Invalid signatures when creating new QC"
+                    );
                     ret_commands.extend(cmds);
                 }
                 Err(

@@ -35,7 +35,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     blocksync::{BlockSyncRequester, BlockSyncResult},
@@ -274,8 +274,8 @@ where
     pub fn handle_timeout_expiry(&mut self) -> Vec<PacemakerCommand<SCT>> {
         self.metrics.consensus_events.local_timeout += 1;
         debug!(
-            "local timeout: round={:?}",
-            self.consensus.pacemaker.get_current_round()
+            round = ?self.consensus.pacemaker.get_current_round(),
+            "local timeout"
         );
         self.consensus
             .pacemaker
@@ -299,7 +299,8 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let _handle_proposal_span =
             tracing::info_span!("handle_proposal_span", "{}", author).entered();
-        debug!("Proposal Message: {:?}", p);
+        info!(round = ?p.block.get_round(), "Received Proposal");
+        debug!(proposal = ?p, "Proposal Message");
         self.metrics.consensus_events.handle_proposal += 1;
         let mut cmds = Vec::new();
 
@@ -330,16 +331,12 @@ where
             || p.block.get_author() != block_round_leader
         {
             debug!(
-                "Invalid proposal: expected-round={:?} \
-                round={:?} \
-                expected-leader={:?} \
-                author={:?} \
-                block-author={:?}",
-                round,
-                p.block.get_round(),
-                block_round_leader,
-                author,
-                p.block.get_author()
+                expected_round = ?round,
+                round = ?p.block.get_round(),
+                expected_leader = ?block_round_leader,
+                author = ?author,
+                block_author = ?p.block.get_author(),
+                "Invalid Proposal"
             );
             self.metrics.consensus_events.invalid_proposal_round_leader += 1;
             return cmds;
@@ -372,10 +369,9 @@ where
         // before R because of network conditions. The proposals are still valid
         if block.get_round() != round {
             debug!(
-                "Out-of-order proposal: expected-round={:?} \
-                round={:?}",
-                round,
-                block.get_round(),
+                expected_round = ?round,
+                round = ?block.get_round(),
+                "out-of-order proposal"
             );
             self.metrics.consensus_events.out_of_order_proposals += 1;
         }
@@ -391,7 +387,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        debug!("Vote Message: {:?}", vote_msg);
+        debug!(?vote_msg, "Vote Message");
         if vote_msg.vote.vote_info.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
@@ -421,7 +417,7 @@ where
         cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
         if let Some(qc) = maybe_qc {
-            debug!("Created QC {:?}", qc);
+            debug!(?qc, "Created QC");
             self.metrics.consensus_events.created_qc += 1;
 
             cmds.extend(self.process_certificate_qc(&qc));
@@ -445,7 +441,7 @@ where
             return cmds;
         }
 
-        debug!("Remote timeout msg: {:?}", tm);
+        debug!(timeout_msg = ?tm, "Remote timeout msg");
         self.metrics.consensus_events.remote_timeout_msg += 1;
 
         let epoch = self
@@ -465,6 +461,7 @@ where
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
+            info!(?last_round_tc, "advance round from remote TC");
             self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .consensus
@@ -503,7 +500,7 @@ where
             )
         }));
         if let Some(tc) = tc {
-            debug!("Created TC: {:?}", tc);
+            info!(?tc, "Created TC");
             self.metrics.consensus_events.created_tc += 1;
             let advance_round_cmds = self
                 .consensus
@@ -575,7 +572,7 @@ where
                 // and the state issues another request, wiping the record for
                 // the first request. When the first response comes back, it
                 // triggers this warning
-                warn!("Block sync unexpected response: author={:?}", author);
+                warn!(?author, "Block sync unexpected response");
             }
         }
         cmds
@@ -601,6 +598,8 @@ where
     /// Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
     pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
+        trace!(?qc, our_high_qc = ?self.consensus.high_qc, "process qc");
+
         if Rank(qc.info) <= Rank(self.consensus.high_qc.info) {
             self.metrics.consensus_events.process_old_qc += 1;
             return Vec::new();
@@ -619,6 +618,7 @@ where
     #[must_use]
     fn try_commit(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
+        debug!(?qc, "try committing blocks using qc");
 
         if qc.info.vote.ledger_commit_info.is_commitable()
             && self
@@ -632,8 +632,8 @@ where
                 .prune(&qc.info.vote.vote_info.parent_id);
 
             debug!(
-                "QC triggered commit: num_commits={:?}",
-                blocks_to_commit.len()
+                num_commits = ?blocks_to_commit.len(),
+                "qc triggered commit"
             );
 
             if !blocks_to_commit.is_empty() {
@@ -727,6 +727,7 @@ where
         block: &BPT::ValidatedBlock,
         state_root_action: Option<StateRootAction>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
+        trace!(?block, "adding block to blocktree");
         self.consensus
             .pending_block_tree
             .add(block.clone(), self.block_policy)
@@ -773,6 +774,8 @@ where
             return cmds;
         }
 
+        debug!(?round, block_id = ?validated_block.get_id(), ?state_root_action, "try vote");
+
         // StateRootAction::Defer means we don't have enough information to
         // decide if the state root hash is valid. It's ok to insert into the
         // block tree, but we can't vote on the block
@@ -788,6 +791,8 @@ where
             .consensus
             .safety
             .make_vote::<SCT, BPT>(validated_block, last_tc);
+
+        debug!(?round, ?vote, "vote result");
 
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new(v, self.cert_keypair);
@@ -815,7 +820,7 @@ where
                 target: RouterTarget::PointToPoint(next_leader),
                 message: msg,
             };
-            debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
+            debug!(vote = ?v, ?next_leader, "created vote");
             self.metrics.consensus_events.created_vote += 1;
             cmds.push(send_cmd);
         }
@@ -841,8 +846,11 @@ where
             (round, validator_set)
         };
 
+        let leader = &self.election.get_leader(round, validator_set.get_members());
+        trace!(?round, ?leader, ?self.consensus.last_proposed_round, "try propose");
+
         // check that self is leader
-        if self.nodeid != &self.election.get_leader(round, validator_set.get_members()) {
+        if self.nodeid != leader {
             return cmds;
         }
 
@@ -943,8 +951,14 @@ where
                     .get_blocks_on_path_from_root(&parent_bid)
                     .expect("there should be a path to root");
 
-                debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
-                                node_id, round, high_qc, proposed_seq_num, last_round_tc);
+                debug!(
+                    ?node_id,
+                    ?round,
+                    ?high_qc,
+                    ?proposed_seq_num,
+                    ?last_round_tc,
+                    "Creating Proposal"
+                );
 
                 let prop_txns = self.tx_pool.create_proposal(
                     self.config.proposal_txn_limit,
@@ -959,8 +973,14 @@ where
                 // Don't have the necessary state root hash ready so propose
                 // a NULL block
                 self.metrics.consensus_events.creating_empty_block_proposal += 1;
-                debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
-                                node_id, round, high_qc, proposed_seq_num, last_round_tc);
+                debug!(
+                    ?node_id,
+                    ?round,
+                    ?high_qc,
+                    ?proposed_seq_num,
+                    ?last_round_tc,
+                    "Creating Empty Proposal"
+                );
 
                 let txns = FullTransactionList::empty();
                 // TODO: should empty blocks have their own special hash?
@@ -1029,7 +1049,7 @@ where
         if p.block.payload.txns == FullTransactionList::empty()
             && p.block.payload.header.state_root == INITIAL_DELAY_STATE_ROOT_HASH
         {
-            debug!("Received empty block: block={:?}", p.block);
+            debug!(block = ?p.block, "Received empty block");
             self.metrics.consensus_events.rx_empty_block += 1;
             return StateRootAction::Proceed;
         }
@@ -1081,7 +1101,7 @@ where
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
-            debug!("Handled proposal with TC: {:?}", last_round_tc);
+            debug!(?last_round_tc, "Handled proposal with TC");
             self.metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .consensus

@@ -11,6 +11,7 @@ use monad_consensus_types::{
 };
 use monad_types::{Epoch, NodeId, Round};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
+use tracing::{debug, info};
 
 use crate::{
     messages::message::TimeoutMessage,
@@ -217,6 +218,13 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.pending_timeouts.insert(author, timeout_msg.clone());
 
         let mut timeouts: Vec<NodeId<_>> = self.pending_timeouts.keys().copied().collect();
+        debug!(
+            round = ?tm_info.round,
+            epoch = ?tm_info.epoch,
+            current_stake = ?validators.calculate_current_stake(&timeouts),
+            total_stake = ?validators.get_total_stake(),
+            "processing remote timeout"
+        );
 
         if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
             // self.local_timeout_round emits PacemakerCommand::ScheduleReset
@@ -322,6 +330,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         let new_epoch = epoch_manager
             .get_epoch(self.current_round)
             .expect("current epoch available");
+        info!(current_epoch=?self.current_epoch, ?new_epoch, "advancing epoch");
         if new_epoch <= self.current_epoch {
             return Default::default();
         }
