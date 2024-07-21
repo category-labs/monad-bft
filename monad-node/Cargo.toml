@@ -39,7 +39,6 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
-monad-opentelemetry-executor = { path = "../monad-opentelemetry-executor" }
 
 bytes = { workspace = true }
 chrono = { workspace = true }

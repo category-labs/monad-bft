@@ -3835,7 +3835,6 @@ dependencies = [
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
- "monad-opentelemetry-executor",
  "monad-quic",
  "monad-secp",
  "monad-state",
@@ -3855,23 +3854,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "zeroize",
-]
-
-[[package]]
-name = "monad-opentelemetry-executor"
-version = "0.1.0"
-dependencies = [
- "futures",
- "monad-consensus-types",
- "monad-crypto",
- "monad-executor",
- "monad-executor-glue",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_api",
- "opentelemetry_sdk",
- "tokio",
- "tracing",
 ]
 
 [[package]]

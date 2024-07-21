@@ -26,7 +26,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message};
 use monad_gossip::{
     mock::MockGossipConfig,
     seeder::{Raptor, SeederConfig},
@@ -39,8 +39,7 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
-    nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    timer::TokioTimer, BoxUpdater, Updater,
+    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -67,7 +66,6 @@ mod mode;
 
 mod error;
 use error::NodeSetupError;
-use monad_opentelemetry_executor::OpenTelemetryExecutor;
 
 mod state;
 use state::{build_otel_provider, NodeState};
@@ -188,23 +186,6 @@ async fn run(
 
     let val_set_update_interval = SeqNum(2000);
 
-    let metrics_executor: BoxUpdater<
-        'static,
-        MetricsCommand,
-        MonadEvent<SignatureType, SignatureCollectionType>,
-    > = if let Some(record_metrics_interval) = node_state.record_metrics_interval {
-        Updater::boxed(OpenTelemetryExecutor::new(
-            node_state.otel_endpoint.expect(
-                "cannot specify record metrics interval without specifying OpenTelemetry endpoint",
-            ),
-            node_state.node_name.clone(),
-            record_metrics_interval,
-            /*enable_grpc_gzip=*/ false,
-        ))
-    } else {
-        Updater::boxed(NopMetricsExecutor::default())
-    };
-
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let state_sync_bound: usize = 100;
     let mut executor = ParentExecutor {
@@ -227,7 +208,6 @@ async fn run(
         control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
             .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        metrics: metrics_executor,
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> =

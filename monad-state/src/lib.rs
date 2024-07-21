@@ -35,8 +35,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MetricsCommand,
-    MetricsEvent, MonadEvent, ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
+    ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MonadEvent,
+    ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant, GENESIS_SEQ_NUM};
 use monad_validator::{
@@ -686,8 +686,6 @@ where
             ))),
         );
 
-        init_cmds.extend(monad_state.update(MonadEvent::MetricsEvent(MetricsEvent::Timeout)));
-
         (monad_state, init_cmds)
     }
 }
@@ -778,13 +776,6 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
-            MonadEvent::MetricsEvent(metrics_event) => match metrics_event {
-                MetricsEvent::Timeout => {
-                    vec![Command::MetricsCommand(MetricsCommand::RecordMetrics(
-                        self.metrics,
-                    ))]
-                }
-            },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
                 ControlPanelEvent::GetValidatorSet => {
                     let round = self.consensus.get_current_round();

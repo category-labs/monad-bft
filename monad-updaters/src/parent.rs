@@ -9,13 +9,13 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::Executor;
 use monad_executor_glue::{
     CheckpointCommand, Command, ControlPanelCommand, ExecutionLedgerCommand, LedgerCommand,
-    LoopbackCommand, MetricsCommand, RouterCommand, StateRootHashCommand, TimerCommand,
+    LoopbackCommand, RouterCommand, StateRootHashCommand, TimerCommand,
 };
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M> {
+pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -26,12 +26,11 @@ pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M> {
     pub ipc: IPC,
     pub control_panel: CP,
     pub loopback: LO,
-    pub metrics: M,
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, ME, E, OM, B, C, SCT: SignatureCollection> Executor
-    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, ME>
+impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, E, OM, B, C, SCT: SignatureCollection> Executor
+    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -42,7 +41,6 @@ where
     SE: Executor<Command = StateRootHashCommand>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
-    ME: Executor<Command = MetricsCommand>,
 {
     type Command = Command<E, OM, B, C, SCT>;
 
@@ -56,7 +54,6 @@ where
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
-            metrics_cmds,
             control_panel_cmds,
         ) = Command::split_commands(commands);
 
@@ -67,13 +64,11 @@ where
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
-        self.metrics.exec(metrics_cmds);
         self.control_panel.exec(control_panel_cmds);
     }
 }
 
-impl<E, R, T, L, EL, C, S, IPC, CP, LO, M> Stream
-    for ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M>
+impl<E, R, T, L, EL, C, S, IPC, CP, LO> Stream for ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
@@ -82,7 +77,6 @@ where
     IPC: Stream<Item = E> + Unpin,
     CP: Stream<Item = E> + Unpin,
     LO: Stream<Item = E> + Unpin,
-    M: Stream<Item = E> + Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -97,14 +91,13 @@ where
             this.state_root_hash.next().boxed_local(),
             this.loopback.next().boxed_local(),
             this.router.next().boxed_local(),
-            this.metrics.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)
         .poll_unpin(cx)
     }
 }
 
-impl<R, T, L, EL, C, S, IPC, CP, LO, M> ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, M> {
+impl<R, T, L, EL, C, S, IPC, CP, LO> ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

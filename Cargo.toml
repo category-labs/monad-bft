@@ -32,7 +32,6 @@ members = [
     "monad-triedb",
     "monad-multi-sig",
     "monad-node",
-    "monad-opentelemetry-executor",
     "monad-perf-util",
     "monad-proto",
     "monad-quic",

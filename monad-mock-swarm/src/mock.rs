@@ -191,7 +191,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
-            metrics_cmds,
             control_panel_cmds,
         ) = Self::Command::split_commands(commands);
 

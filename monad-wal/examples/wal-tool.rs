@@ -442,7 +442,6 @@ impl Widget for &EventListWidget {
                 MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
                 MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
                 MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
-                MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
                 MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
             };
 
@@ -561,7 +560,6 @@ fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
             MonadEvent::MempoolEvent(_) => "mempoolevent",
             MonadEvent::StateRootEvent(_) => "staterootevent",
             MonadEvent::AsyncStateVerifyEvent(_) => "asyncstateverifyevent",
-            MonadEvent::MetricsEvent(_) => "metricsevent",
             WalEvent::ControlPanelEvent(_) => "controlpanelevent",
         };
 

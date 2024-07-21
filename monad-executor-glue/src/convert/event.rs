@@ -7,7 +7,7 @@ use monad_proto::{
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, FetchedBlock, MempoolEvent,
-    MetricsEvent, MonadEvent, ValidatorEvent,
+    MonadEvent, ValidatorEvent,
 };
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
@@ -72,7 +72,6 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             MonadEvent::AsyncStateVerifyEvent(event) => {
                 proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
             }
-            MonadEvent::MetricsEvent(event) => proto_monad_event::Event::MetricsEvent(event.into()),
             MonadEvent::ControlPanelEvent(event) => {
                 proto_monad_event::Event::ControlPanelEvent(event.into())
             }
@@ -111,9 +110,6 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::AsyncStateVerifyEvent(event)) => {
                 MonadEvent::AsyncStateVerifyEvent(event.try_into()?)
-            }
-            Some(proto_monad_event::Event::MetricsEvent(event)) => {
-                MonadEvent::MetricsEvent(event.try_into()?)
             }
             Some(proto_monad_event::Event::ControlPanelEvent(e)) => {
                 MonadEvent::ControlPanelEvent(e.try_into()?)
@@ -336,31 +332,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStat
             ))?,
         };
         Ok(event)
-    }
-}
-
-impl From<&MetricsEvent> for ProtoMetricsEvent {
-    fn from(value: &MetricsEvent) -> Self {
-        match value {
-            MetricsEvent::Timeout => ProtoMetricsEvent {
-                event: Some(proto_metrics_event::Event::Timeout(ProtoMetricsTimeout {})),
-            },
-        }
-    }
-}
-
-impl TryFrom<ProtoMetricsEvent> for MetricsEvent {
-    type Error = ProtoError;
-
-    fn try_from(e: ProtoMetricsEvent) -> Result<Self, Self::Error> {
-        Ok({
-            let ProtoMetricsEvent { event } = e;
-            match event.ok_or(ProtoError::MissingRequiredField(
-                "MetricsEvent::Timeout".to_owned(),
-            ))? {
-                proto_metrics_event::Event::Timeout(proto_timeout) => MetricsEvent::Timeout,
-            }
-        })
     }
 }
 

@@ -35,8 +35,8 @@ use monad_state::{
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
-    loopback::LoopbackExecutor, nop_metrics::NopMetricsExecutor, parent::ParentExecutor,
-    state_root_hash::MockStateRootHashNop, timer::TokioTimer, BoxUpdater, Updater,
+    loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -105,7 +105,6 @@ pub fn make_monad_executor<ST, SCT>(
     IpcReceiver<ST, SCT>,
     ControlPanelIpcReceiver<ST, SCT>,
     LoopbackExecutor<MonadEvent<ST, SCT>>,
-    NopMetricsExecutor<MonadEvent<ST, SCT>>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -150,7 +149,6 @@ where
         control_panel: ControlPanelIpcReceiver::new(generate_uds_path().into(), 1000)
             .expect("usd bind failed"),
         loopback: LoopbackExecutor::default(),
-        metrics: NopMetricsExecutor::default(),
     }
 }
 

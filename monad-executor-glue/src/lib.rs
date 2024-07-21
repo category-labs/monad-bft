@@ -132,10 +132,6 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-pub enum MetricsCommand {
-    RecordMetrics(Metrics),
-}
-
 pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
@@ -145,7 +141,6 @@ pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand),
     LoopbackCommand(LoopbackCommand<E>),
-    MetricsCommand(MetricsCommand),
     ControlPanelCommand(ControlPanelCommand<SCT>),
 }
 
@@ -160,7 +155,6 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand>,
         Vec<LoopbackCommand<E>>,
-        Vec<MetricsCommand>,
         Vec<ControlPanelCommand<SCT>>,
     ) {
         let mut router_cmds = Vec::new();
@@ -170,7 +164,6 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
-        let mut metrics_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
 
         for command in commands {
@@ -182,7 +175,6 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
-                Command::MetricsCommand(cmd) => metrics_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
             }
         }
@@ -194,7 +186,6 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
-            metrics_cmds,
             control_panel_cmds,
         )
     }
@@ -335,12 +326,6 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MetricsEvent {
-    /// Used to drive periodic collection of metrics.
-    Timeout,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent {
     GetValidatorSet,
     ClearMetricsEvent,
@@ -365,8 +350,6 @@ where
     StateRootEvent(StateRootHashInfo),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
-    /// Events for metrics
-    MetricsEvent(MetricsEvent),
     /// Events for the debug control panel
     ControlPanelEvent(ControlPanelEvent),
 }
@@ -432,7 +415,6 @@ where
                 )
             }
             MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
-            MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
         };
 
