@@ -102,7 +102,7 @@ pub enum ExecutionLedgerArgs {
 fn make_provider(
     otel_endpoint: String,
     service_name: String,
-) -> opentelemetry::sdk::trace::TracerProvider {
+) -> opentelemetry_sdk::trace::TracerProvider {
     let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
         opentelemetry_otlp::new_exporter()
             .tonic()
@@ -110,10 +110,10 @@ fn make_provider(
     )
     .build_span_exporter()
     .unwrap();
-    let rt = opentelemetry::runtime::Tokio;
-    let provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry::sdk::trace::config().with_resource(
-            opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+    let rt = opentelemetry_sdk::runtime::Tokio;
+    let provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(
+            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
                 service_name,
             )]),
@@ -359,7 +359,7 @@ where
 }
 
 async fn run<ST, SCT>(
-    cx: Option<opentelemetry_api::Context>,
+    cx: Option<opentelemetry::Context>,
     wg_tx: tokio::sync::broadcast::Sender<()>,
     mut wg_rx: tokio::sync::broadcast::Receiver<()>,
     config: Config<ST, SCT>,

@@ -39,4 +39,11 @@ impl<'a> ExecutorMetricsChain<'a> {
         self.0.extend(metrics.0);
         self
     }
+
+    pub fn into_inner(self) -> Vec<(&'static str, u64)> {
+        self.0
+            .into_iter()
+            .flat_map(|metrics| metrics.0.clone().into_iter())
+            .collect()
+    }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -14,6 +14,7 @@ use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_blockdb::BlockDbBuilder;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
+    metrics::Metrics,
     payload::{NopStateRoot, StateRoot, StateRootValidator},
     state_root_hash::StateRootHash,
 };
@@ -25,7 +26,7 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
 use monad_gossip::{
     mock::MockGossipConfig,
@@ -44,10 +45,12 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::{
-    sdk::trace::TracerProvider,
+    metrics::MeterProvider,
     trace::{Span, SpanBuilder, TraceContextExt},
     Context,
 };
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::TracerProvider;
 use rand_chacha::{
     rand_core::{RngCore, SeedableRng},
     ChaChaRng,
@@ -68,7 +71,7 @@ mod error;
 use error::NodeSetupError;
 
 mod state;
-use state::{build_otel_provider, NodeState};
+use state::NodeState;
 
 fn main() {
     let mut cmd = Cli::command();
@@ -91,7 +94,7 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
 
     // if provider is dropped, then traces stop getting sent silently...
     let maybe_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_provider(endpoint, node_state.node_name.clone())
+        build_otel_tracer_provider(endpoint, node_state.node_name.clone())
             .expect("failed to build otel monad-node")
     });
 
@@ -116,7 +119,7 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
 
     // if provider is dropped, then traces stop getting sent silently...
     let maybe_coordinator_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
-        build_otel_provider(endpoint, node_state.network_name.clone())
+        build_otel_tracer_provider(endpoint, node_state.network_name.clone())
             .expect("failed to build otel monad-coordinator")
     });
 
@@ -301,12 +304,45 @@ async fn run(
         ledger_span.set_parent(cx.clone());
     }
 
+    // if provider is dropped, then traces stop getting sent silently...
+    let maybe_otel_meter_provider = node_state.otel_endpoint.and_then(|otel_endpoint| {
+        let record_metrics_interval = node_state.record_metrics_interval?;
+        let provider = build_otel_meter_provider(
+            &otel_endpoint,
+            node_state.node_name.clone(),
+            record_metrics_interval,
+        )
+        .expect("failed to build otel monad-node");
+        Some(provider)
+    });
+    let maybe_otel_meter = maybe_otel_meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("opentelemetry"));
+    let mut gauge_cache = HashMap::new();
+    let mut maybe_metrics_ticker =
+        node_state
+            .record_metrics_interval
+            .map(|record_metrics_interval| {
+                let mut timer = tokio::time::interval(record_metrics_interval);
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                timer
+            });
+
     let mut ctrlc = Box::pin(signal::ctrl_c()).into_stream();
 
     loop {
         tokio::select! {
             _ = ctrlc.next() => {
                 break;
+            }
+            _ = match &mut maybe_metrics_ticker {
+                Some(ticker) => ticker.tick().boxed(),
+                None => futures_util::future::pending().boxed(),
+            } => {
+                let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
+                let state_metrics = state.metrics();
+                let executor_metrics = executor.metrics();
+                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics);
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -439,4 +475,80 @@ fn build_otel_context(provider: &TracerProvider, network_name_hash: u64) -> (Con
         Context::default().with_remote_span_context(context),
         start_time + Duration::from_secs(ROUND_SECONDS),
     )
+}
+
+fn send_metrics(
+    meter: &opentelemetry::metrics::Meter,
+    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
+    state_metrics: &Metrics,
+    executor_metrics: ExecutorMetricsChain,
+) {
+    for (k, v) in state_metrics
+        .metrics()
+        .into_iter()
+        .chain(executor_metrics.into_inner())
+    {
+        let gauge = gauge_cache
+            .entry(k)
+            .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
+        gauge.record(v, &[]);
+    }
+}
+
+fn build_otel_tracer_provider(
+    otel_endpoint: &str,
+    service_name: String,
+) -> Result<opentelemetry_sdk::trace::TracerProvider, NodeSetupError> {
+    let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(otel_endpoint),
+    )
+    .build_span_exporter()?;
+
+    let provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(
+            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                service_name,
+            )]),
+        ))
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio);
+
+    Ok(provider_builder.build())
+}
+
+fn build_otel_meter_provider(
+    otel_endpoint: &str,
+    service_name: String,
+    interval: Duration,
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
+    let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(otel_endpoint),
+    )
+    .build_metrics_exporter(
+        Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
+        Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
+    )?;
+
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
+        exporter,
+        opentelemetry_sdk::runtime::Tokio,
+    )
+    .with_interval(interval / 2)
+    .with_timeout(interval * 2)
+    .build();
+
+    let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(opentelemetry_sdk::Resource::new(vec![
+            opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                service_name,
+            ),
+        ]));
+
+    Ok(provider_builder.build())
 }
