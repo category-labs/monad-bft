@@ -17,7 +17,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
@@ -67,6 +67,7 @@ where
     pending_events: VecDeque<M::Event>,
 
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     _phantom: PhantomData<OM>,
 }
 
@@ -163,6 +164,7 @@ where
             pending_events: Default::default(),
 
             waker: None,
+            metrics: Default::default(),
             _phantom: PhantomData,
         }
     }
@@ -334,6 +336,10 @@ where
                 }
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

@@ -7,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::Gossip;
 use monad_types::{Deserializable, NodeId, Serializable};
@@ -31,6 +31,8 @@ where
 
     endpoint: SyncEndpoint<QC, G, M, OM>,
     rx: tokio::sync::mpsc::Receiver<M::Event>,
+
+    metrics: ExecutorMetrics,
 }
 
 /// Configuration for Service
@@ -90,6 +92,8 @@ where
 
             endpoint,
             rx,
+
+            metrics: Default::default(),
         }
     }
     pub fn me(&self) -> NodeId<QC::NodeIdPubKey> {
@@ -111,6 +115,10 @@ where
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.endpoint.exec(commands);
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

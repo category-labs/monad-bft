@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, Message, MonadEvent, RouterCommand, TimerCommand,
 };
@@ -232,6 +232,11 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             }
         }
     }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        // TODO do we want to see executor metrics in mock?
+        Default::default()
+    }
 }
 
 pub enum MockExecutorEvent<E, PT: PubKey, TransportMessage> {
@@ -360,6 +365,9 @@ where
             }
         }
     }
+    fn metrics(&self) -> ExecutorMetricsChain {
+        Default::default()
+    }
 }
 impl<E> Stream for MockTimer<E>
 where
@@ -386,6 +394,9 @@ impl<SCT: SignatureCollection> Executor for MockExecutionLedger<SCT> {
     type Command = ExecutionLedgerCommand<SCT>;
 
     fn exec(&mut self, _: Vec<Self::Command>) {}
+    fn metrics(&self) -> ExecutorMetricsChain {
+        Default::default()
+    }
 }
 
 impl<O> Default for MockExecutionLedger<O> {

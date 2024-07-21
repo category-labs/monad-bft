@@ -6,7 +6,7 @@ use std::{
 
 use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ControlPanelCommand, ExecutionLedgerCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateRootHashCommand, TimerCommand,
@@ -65,6 +65,18 @@ where
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
         self.control_panel.exec(control_panel_cmds);
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        ExecutorMetricsChain::default()
+            .chain(self.router.metrics())
+            .chain(self.timer.metrics())
+            .chain(self.ledger.metrics())
+            .chain(self.execution_ledger.metrics())
+            .chain(self.checkpoint.metrics())
+            .chain(self.state_root_hash.metrics())
+            .chain(self.loopback.metrics())
+            .chain(self.control_panel.metrics())
     }
 }
 
