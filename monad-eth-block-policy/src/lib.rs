@@ -238,12 +238,13 @@ impl EthBlockPolicy {
 
             // TODO: account incarnation
             state_backend
-                .get_account_nonce(
+                .get_account(
                     eth_address,
                     (self.last_commit.max(self.committed_nonces.cache_size)
                         - self.committed_nonces.cache_size)
                         .0,
                 )
+                .map(|account| account.nonce)
                 .unwrap_or(0)
         }
     }

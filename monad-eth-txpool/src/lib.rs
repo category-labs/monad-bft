@@ -299,7 +299,7 @@ mod test {
     use monad_eth_block_policy::nonce::InMemoryState;
     use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
     use monad_eth_tx::EthSignedTransaction;
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{Balance, EthAddress};
     use monad_multi_sig::MultiSig;
     use monad_types::{SeqNum, GENESIS_SEQ_NUM};
     use tracing_test::traced_test;
@@ -771,7 +771,7 @@ mod test {
             50_000,
             &eth_block_policy,
             Vec::new(),
-            &InMemoryState::new(vec![(sender_1_address, 1)]),
+            &InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX),
         );
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
@@ -841,7 +841,7 @@ mod test {
             50_000,
             &eth_block_policy,
             vec![&extending_block_1, &extending_block_2],
-            &InMemoryState::new(vec![(sender_1_address, 1)]),
+            &InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX),
         );
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
