@@ -50,6 +50,13 @@ pub struct ConsensusEvents {
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub struct TxPoolEvents {
+    pub local_inserted_txns: u64,
+    pub dropped_txns: u64,
+    pub external_inserted_txns: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocktreeEvents {
     pub prune_success: u64,
     pub add_success: u64,
@@ -70,4 +77,5 @@ pub struct Metrics {
     pub consensus_events: ConsensusEvents,
     pub blocktree_events: BlocktreeEvents,
     pub blocksync_events: BlocksyncEvents,
+    pub txpool_events: TxPoolEvents,
 }

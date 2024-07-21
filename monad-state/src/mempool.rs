@@ -6,6 +6,7 @@ use monad_consensus_state::{command::Checkpoint, ConsensusState};
 use monad_consensus_types::{
     block::{Block, BlockPolicy},
     block_validator::BlockValidator,
+    metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::SignatureCollection,
     txpool::TxPool,
@@ -40,6 +41,7 @@ where
 {
     txpool: &'a mut TT,
 
+    metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
     consensus: &'a ConsensusState<ST, SCT, BPT>,
     leader_election: &'a LT,
@@ -70,6 +72,7 @@ where
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
+            metrics: &mut monad_state.metrics,
 
             nodeid: &monad_state.nodeid,
             consensus: &monad_state.consensus,
@@ -103,9 +106,11 @@ where
                     .into_iter()
                     .filter_map(|tx| {
                         if let Err(err) = self.txpool.insert_tx(tx.clone()) {
+                            self.metrics.txpool_events.dropped_txns += 1;
                             tracing::warn!("failed to insert rpc tx: {:?}", err);
                             None
                         } else {
+                            self.metrics.txpool_events.local_inserted_txns += 1;
                             Some(tx)
                         }
                     })
@@ -123,11 +128,9 @@ where
             MempoolEvent::ForwardedTxns { sender, txns } => {
                 for tx in txns {
                     if let Err(err) = self.txpool.insert_tx(tx) {
-                        tracing::warn!(
-                            "failed to insert forwarded tx from {:?}: {:?}",
-                            sender,
-                            err
-                        );
+                        tracing::warn!(?sender, "failed to insert forwarded tx: {:?}", err);
+                    } else {
+                        self.metrics.txpool_events.external_inserted_txns += 1;
                     }
                 }
                 vec![]
