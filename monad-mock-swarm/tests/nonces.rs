@@ -20,7 +20,6 @@ mod test {
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
-    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
@@ -42,7 +41,6 @@ mod test {
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
-    use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
     use reth_primitives::B256;
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
@@ -74,8 +72,6 @@ mod test {
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,
         >;
-
-        type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
         type StateRootHashExecutor =
             MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
@@ -121,7 +117,6 @@ mod test {
                     NodeBuilder::<EthSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(

@@ -24,8 +24,6 @@ impl<E> Default for NopMetricsExecutor<E> {
 impl<E> Executor for NopMetricsExecutor<E> {
     type Command = MetricsCommand;
 
-    fn replay(&mut self, mut _commands: Vec<Self::Command>) {}
-
     fn exec(&mut self, _commands: Vec<Self::Command>) {}
 }
 

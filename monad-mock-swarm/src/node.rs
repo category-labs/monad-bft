@@ -26,7 +26,6 @@ use monad_updaters::state_root_hash::MockableStateRootHash;
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
 };
-use monad_wal::{PersistenceLogger, PersistenceLoggerBuilder};
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
 
@@ -49,8 +48,6 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::StateRootValidator,
         S::AsyncStateRootVerify,
     >,
-    pub logger: S::Logger,
-    pub replay_events: Vec<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
     pub outbound_pipeline: S::Pipeline,
@@ -71,19 +68,15 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::StateRootValidator,
             S::AsyncStateRootVerify,
         >,
-        logger_builder: impl PersistenceLoggerBuilder<PersistenceLogger = S::Logger>,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
         outbound_pipeline: S::Pipeline,
         inbound_pipeline: S::Pipeline,
         seed: u64,
     ) -> Self {
-        let (logger, replay_events) = logger_builder.build().unwrap();
         Self {
             id,
             state_builder,
-            logger,
-            replay_events,
             router_scheduler,
             state_root_executor,
             outbound_pipeline,
@@ -127,8 +120,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 consensus_config: self.state_builder.consensus_config,
                 _pd: PhantomData,
             },
-            logger: Box::new(self.logger),
-            replay_events: self.replay_events,
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
             outbound_pipeline: Box::new(self.outbound_pipeline),
@@ -139,13 +130,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
     pub fn build(self, tick: Duration) -> Node<S> {
         let mut executor: MockExecutor<S> =
             MockExecutor::new(self.router_scheduler, self.state_root_executor, tick);
-        let (mut state, init_commands) = self.state_builder.build();
-
+        let (state, init_commands) = self.state_builder.build();
         executor.exec(init_commands);
-
-        for event in self.replay_events {
-            executor.replay(state.update(event));
-        }
 
         let mut rng = ChaChaRng::seed_from_u64(self.seed);
 
@@ -153,7 +139,6 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             id: self.id,
             executor,
             state,
-            logger: self.logger,
             outbound_pipeline: self.outbound_pipeline,
             inbound_pipeline: self.inbound_pipeline,
             pending_inbound_messages: Default::default(),
@@ -170,7 +155,6 @@ where
     pub id: ID<CertificateSignaturePubKey<S::SignatureType>>,
     pub executor: MockExecutor<S>,
     pub state: SwarmRelationStateType<S>,
-    pub logger: S::Logger,
     pub outbound_pipeline: S::Pipeline,
     pub inbound_pipeline: S::Pipeline,
     pub pending_inbound_messages: BTreeMap<
@@ -247,7 +231,6 @@ impl<S: SwarmRelation> Node<S> {
                     match executor_event {
                         None => continue,
                         Some(MockExecutorEvent::Event(event)) => {
-                            self.logger.push(&event).unwrap(); // FIXME-4: propagate the error
                             let node_span =
                                 tracing::trace_span!("node", id = format!("{}", self.id));
                             let _guard = node_span.enter();

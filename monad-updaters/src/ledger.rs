@@ -45,15 +45,6 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
 {
     type Command = LedgerCommand<PT, O, E>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LedgerCommand::LedgerFetch(..) => false,
-            LedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
@@ -146,15 +137,6 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
     for BoundedLedger<SCT, PT, O, E>
 {
     type Command = LedgerCommand<PT, O, E>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LedgerCommand::LedgerFetch(..) => false,
-            LedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {

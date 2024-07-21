@@ -156,15 +156,6 @@ where
 {
     type Command = ControlPanelCommand<SCT>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|command| match command {
-            ControlPanelCommand::Read(_) => false,
-            // commands that write/change state should be replayed
-            ControlPanelCommand::Write(_) => true,
-        });
-        self.exec(commands);
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             debug!(num_clients = %self.client_sender.receiver_count(), "broadcasting {:?} to clients", &command);

@@ -182,57 +182,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         S::SignatureCollectionType,
     >;
 
-    fn replay(&mut self, commands: Vec<Self::Command>) {
-        let (
-            router_cmds,
-            timer_cmds,
-            ledger_cmds,
-            execution_ledger_cmds,
-            checkpoint_cmds,
-            state_root_hash_cmds,
-            loopback_cmds,
-            metrics_cmds,
-            control_panel_cmds,
-        ) = Self::Command::split_commands(commands);
-
-        for command in timer_cmds {
-            match command {
-                TimerCommand::ScheduleReset(variant) => {
-                    self.timer.remove(&TimerEvent::new(variant));
-                }
-                TimerCommand::Schedule {
-                    duration,
-                    variant,
-                    on_timeout,
-                } => {
-                    self.timer.push(
-                        TimerEvent::new(variant).with_call_back(on_timeout),
-                        Reverse(self.tick + duration),
-                    );
-                }
-            }
-        }
-
-        self.ledger.replay(ledger_cmds);
-        self.execution_ledger.replay(execution_ledger_cmds);
-        self.checkpoint.replay(checkpoint_cmds);
-        self.state_root_hash.replay(state_root_hash_cmds);
-        self.loopback.replay(loopback_cmds);
-
-        for command in router_cmds {
-            match command {
-                // we match on all commands to be explicit
-                RouterCommand::Publish { .. } => {}
-                RouterCommand::AddEpochValidatorSet { .. } => {
-                    // TODO
-                }
-                RouterCommand::UpdateCurrentRound(_, _) => {
-                    // TODO
-                }
-            }
-        }
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (
             router_cmds,
@@ -385,15 +334,6 @@ where
 {
     type Command = TimerCommand<E>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            TimerCommand::Schedule { .. } => true,
-            TimerCommand::ScheduleReset(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
         for command in commands {
@@ -445,14 +385,6 @@ pub struct MockExecutionLedger<SCT> {
 
 impl<SCT: SignatureCollection> Executor for MockExecutionLedger<SCT> {
     type Command = ExecutionLedgerCommand<SCT>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            ExecutionLedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands);
-    }
 
     fn exec(&mut self, _: Vec<Self::Command>) {}
 }

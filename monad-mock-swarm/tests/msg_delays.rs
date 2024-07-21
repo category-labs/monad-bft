@@ -21,7 +21,6 @@ use monad_transformer::{GenericTransformer, XorLatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 
 #[test]
 fn two_nodes() {
@@ -62,7 +61,6 @@ fn two_nodes() {
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(

@@ -5,7 +5,6 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_multi_sig::MultiSig;
@@ -17,7 +16,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use monad_wal::mock::MockWALogger;
 
 pub struct QuicSwarm;
 
@@ -46,8 +44,6 @@ impl SwarmRelation for QuicSwarm {
     >;
 
     type Pipeline = BytesTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
-
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;

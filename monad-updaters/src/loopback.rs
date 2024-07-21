@@ -32,15 +32,6 @@ impl<E> Default for LoopbackExecutor<E> {
 impl<E> Executor for LoopbackExecutor<E> {
     type Command = LoopbackCommand<E>;
 
-    /// The events replayed are idempotentent
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LoopbackCommand::Forward(_) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
             match cmd {

@@ -32,15 +32,6 @@ where
 {
     type Command = TimerCommand<E>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            TimerCommand::Schedule { .. } => true,
-            TimerCommand::ScheduleReset(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
         for command in commands {

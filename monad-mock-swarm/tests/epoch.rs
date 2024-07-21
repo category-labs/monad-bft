@@ -16,7 +16,6 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         fetch_metric,
         mock_swarm::SwarmBuilder,
@@ -39,7 +38,6 @@ mod test {
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
-    use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
     use test_case::test_case;
 
     pub struct ValidatorSwapSwarm;
@@ -72,8 +70,6 @@ mod test {
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,
         >;
-
-        type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
         type StateRootHashExecutor =
             MockStateRootHashSwap<Self::SignatureType, Self::SignatureCollectionType>;
@@ -188,7 +184,6 @@ mod test {
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
@@ -285,7 +280,6 @@ mod test {
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
@@ -461,7 +455,6 @@ mod test {
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         regular_pipeline.clone(),
@@ -628,7 +621,6 @@ mod test {
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators.validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],

@@ -6,7 +6,6 @@ use monad_consensus_types::{payload::StateRoot, signature_collection::SignatureC
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
@@ -18,7 +17,6 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_transformer::RandLatencyTransformer;
 use monad_types::NodeId;
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use twin_reader::TWINS_STATE_ROOT_DELAY;
@@ -33,7 +31,6 @@ where
         SignatureType = ST,
         SignatureCollectionType = SCT,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
-        Logger = MockWALogger<MonadEvent<ST, SCT>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,
             MonadMessage<ST, SCT>,
@@ -83,7 +80,6 @@ where
         swarm.add_state(NodeBuilder::<S>::new(
             id,
             state_builder,
-            MockWALoggerConfig::default(),
             NoSerRouterConfig::new(
                 ids.iter()
                     .map(|id| NodeId::new(id.get_peer_id().pubkey()))

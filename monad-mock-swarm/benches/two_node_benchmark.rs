@@ -17,7 +17,6 @@ use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("two_nodes", |b| b.iter(two_nodes));
@@ -65,7 +64,6 @@ fn two_nodes() {
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(

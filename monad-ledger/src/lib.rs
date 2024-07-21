@@ -86,14 +86,6 @@ where
 {
     type Command = ExecutionLedgerCommand<SCT>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            ExecutionLedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {

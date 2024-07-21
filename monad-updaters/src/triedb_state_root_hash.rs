@@ -137,15 +137,6 @@ where
 {
     type Command = StateRootHashCommand;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::Request(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 

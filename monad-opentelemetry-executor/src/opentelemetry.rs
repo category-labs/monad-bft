@@ -432,8 +432,6 @@ where
 {
     type Command = MetricsCommand;
 
-    fn replay(&mut self, mut _commands: Vec<Self::Command>) {}
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
         for command in commands {

@@ -109,16 +109,6 @@ where
 {
     type Command = RouterCommand<G::NodeIdPubKey, OM>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            RouterCommand::Publish { .. } => false,
-            RouterCommand::UpdateCurrentRound(..) => true,
-            RouterCommand::AddEpochValidatorSet { .. } => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.endpoint.exec(commands);
     }

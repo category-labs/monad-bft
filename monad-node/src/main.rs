@@ -245,6 +245,7 @@ async fn run(
         );
         return Err(());
     };
+    assert!(wal_events.is_empty(), "wal must be cleared after restart");
 
     let mut builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
@@ -303,11 +304,6 @@ async fn run(
 
     let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);
-
-    for wal_event in wal_events {
-        let cmds = state.update(wal_event.event);
-        executor.replay(cmds);
-    }
 
     let network_name_hash = {
         let mut hasher = HasherType::new();

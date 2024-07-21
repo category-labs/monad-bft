@@ -176,16 +176,6 @@ where
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            RouterCommand::Publish { .. } => false,
-            RouterCommand::UpdateCurrentRound(_, _) => true,
-            RouterCommand::AddEpochValidatorSet { .. } => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
         for command in commands {

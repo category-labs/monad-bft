@@ -13,7 +13,6 @@ use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 use wasm_bindgen::prelude::*;
 
 mod graphql;
@@ -63,7 +62,6 @@ pub fn simulation_make() -> *mut Simulation {
                     NodeBuilder::<BytesSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         BytesRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(

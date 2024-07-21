@@ -16,7 +16,6 @@ use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 
 fn two_nodes_virtual() -> u128 {
     let state_configs = make_state_configs::<NoSerSwarm>(
@@ -54,7 +53,6 @@ fn two_nodes_virtual() -> u128 {
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(

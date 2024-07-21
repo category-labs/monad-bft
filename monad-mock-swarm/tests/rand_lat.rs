@@ -22,7 +22,6 @@ use monad_transformer::{GenericTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
 
@@ -106,7 +105,6 @@ fn nodes_with_random_latency(latency_seed: u64) {
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(3000)),
                     vec![GenericTransformer::RandLatency(

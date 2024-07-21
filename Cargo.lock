@@ -3521,7 +3521,6 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
  "serde_json",
  "wasm-bindgen",
 ]
@@ -3779,19 +3778,16 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
  "priority-queue",
  "rand",
  "rand_chacha",
  "rayon",
  "rcgen",
  "reth-primitives",
- "tempfile",
  "test-case",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]
@@ -3929,7 +3925,6 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
  "simple-xml-builder",
 ]
 
@@ -4109,7 +4104,6 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
  "zerocopy 0.6.5",
 ]
 
@@ -4176,7 +4170,6 @@ dependencies = [
  "monad-twins-utils",
  "monad-types",
  "monad-validator",
- "monad-wal",
  "serde",
  "serde_json",
  "test-case",
@@ -4202,7 +4195,6 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
  "rand",
  "rand_chacha",
  "serde",
@@ -4283,7 +4275,6 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "monad-wal",
 ]
 
 [[package]]

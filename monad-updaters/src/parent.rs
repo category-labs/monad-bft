@@ -46,30 +46,6 @@ where
 {
     type Command = Command<E, OM, B, C, SCT>;
 
-    fn replay(&mut self, commands: Vec<Self::Command>) {
-        let _exec_span = tracing::trace_span!("replay_span", num_cmds = commands.len()).entered();
-        let (
-            router_cmds,
-            timer_cmds,
-            ledger_cmds,
-            execution_ledger_cmds,
-            checkpoint_cmds,
-            _state_root_hash_cmds,
-            loopback_cmds,
-            metrics_cmds,
-            control_panel_commands,
-        ) = Command::split_commands(commands);
-
-        self.router.replay(router_cmds);
-        self.timer.replay(timer_cmds);
-        self.ledger.replay(ledger_cmds);
-        self.execution_ledger.replay(execution_ledger_cmds);
-        self.checkpoint.replay(checkpoint_cmds);
-        self.loopback.replay(loopback_cmds);
-        self.metrics.replay(metrics_cmds);
-        self.control_panel.replay(control_panel_commands);
-    }
-
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, SCT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
