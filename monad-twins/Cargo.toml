@@ -23,7 +23,6 @@ monad-twins-utils = { path = "utils" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
-monad-wal = { path = "../monad-wal" }
 
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }

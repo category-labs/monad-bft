@@ -35,7 +35,6 @@ mod test {
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
-    use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
 
     #[test]
@@ -88,7 +87,6 @@ mod test {
                     NodeBuilder::<MonadMessageNoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         outbound_pipeline.clone(),
@@ -200,7 +198,6 @@ mod test {
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         vec![
@@ -280,7 +277,6 @@ mod test {
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         vec![
@@ -412,7 +408,6 @@ mod test {
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                         vec![

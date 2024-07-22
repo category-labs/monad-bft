@@ -6,7 +6,7 @@ use std::{
 };
 
 use futures::Stream;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::TimerCommand;
 use monad_types::TimeoutVariant;
 use tokio::task::{AbortHandle, JoinSet};
@@ -16,6 +16,7 @@ pub struct TokioTimer<E> {
     timers: JoinSet<Option<E>>,
     aborts: HashMap<TimeoutVariant, AbortHandle>,
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
 }
 impl<E> Default for TokioTimer<E> {
     fn default() -> Self {
@@ -23,6 +24,7 @@ impl<E> Default for TokioTimer<E> {
             timers: JoinSet::new(),
             aborts: HashMap::new(),
             waker: None,
+            metrics: Default::default(),
         }
     }
 }
@@ -31,15 +33,6 @@ where
     E: Send + 'static,
 {
     type Command = TimerCommand<E>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            TimerCommand::Schedule { .. } => true,
-            TimerCommand::ScheduleReset(..) => true,
-        });
-        self.exec(commands)
-    }
 
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
@@ -81,7 +74,12 @@ where
             }
         }
     }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
+    }
 }
+
 impl<E> Stream for TokioTimer<E>
 where
     E: 'static,

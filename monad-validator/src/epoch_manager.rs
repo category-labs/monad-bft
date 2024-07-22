@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use monad_types::{Epoch, Round, SeqNum};
-use tracing::debug;
+use tracing::info;
 
 /// Stores epoch related information and the associated round numbers
 /// of each epoch
@@ -58,9 +58,11 @@ impl EpochManager {
             let next_epoch = block_num.to_epoch(self.val_set_update_interval) + Epoch(1);
             let epoch_start_round = block_round + self.epoch_start_delay;
             self.insert_epoch_start(next_epoch, epoch_start_round);
-            debug!(
-                "schedule epoch start epoch {:?} round {:?} block round {:?}",
-                next_epoch, epoch_start_round, block_round
+            info!(
+                ?next_epoch,
+                ?epoch_start_round,
+                ?block_round,
+                "schedule epoch start epoch",
             );
         }
     }

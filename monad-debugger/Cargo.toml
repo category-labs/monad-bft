@@ -27,7 +27,6 @@ monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
-monad-wal = { path = "../monad-wal" }
 wasm-bindgen = { workspace = true }
 
 console_error_panic_hook = { workspace = true }

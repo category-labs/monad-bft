@@ -14,7 +14,7 @@ use monad_consensus_types::{
     validator_data::ValidatorSetData,
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_triedb::Handle as TriedbHandle;
 use monad_types::{Epoch, SeqNum};
@@ -35,6 +35,7 @@ pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -91,6 +92,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
             val_set_update_interval,
 
             waker: None,
+            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -137,15 +139,6 @@ where
 {
     type Command = StateRootHashCommand;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::Request(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -182,5 +175,9 @@ where
                 waker.wake()
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }

@@ -27,7 +27,6 @@ monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
-monad-wal = { path = "../monad-wal" }
 
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -55,12 +54,10 @@ alloy-rlp = { workspace = true }
 criterion = { workspace = true }
 rcgen = { workspace = true }
 reth-primitives = { workspace = true }
-tempfile = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-test = { workspace = true, features = ["no-env-filter"] }
 
 [[bench]]
 name = "two_node_benchmark"

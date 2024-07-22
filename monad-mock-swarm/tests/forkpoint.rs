@@ -12,7 +12,6 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
-use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
@@ -28,7 +27,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rayon::prelude::*;
 
 const STATE_SYNC_THRESHOLD: SeqNum = SeqNum(100);
@@ -64,8 +62,6 @@ impl SwarmRelation for ForkpointSwarm {
         Self::TransportMessage,
     >;
 
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
-
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
@@ -100,7 +96,6 @@ fn test_forkpoint_restart_f() {
 fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epoch_length: SeqNum) {
     let delta = Duration::from_millis(100);
     let state_root_delay = SeqNum(4);
-    // ForkpointSwarm uses MockWALogger, which doesn't persist events
     let state_configs = make_state_configs::<ForkpointSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -182,7 +177,6 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, epoch_length),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
@@ -249,7 +243,6 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
             restart_builder,
-            MockWALoggerConfig::default(),
             NoSerRouterConfig::new(all_peers.clone()).build(),
             MockStateRootHashNop::new(validators.validators, epoch_length),
             vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
@@ -340,7 +333,6 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
     let num_nodes = 4;
     let delta = Duration::from_millis(100);
     let state_root_delay = SeqNum(4);
-    // ForkpointSwarm uses MockWALogger, which doesn't persist events
     let state_configs = make_state_configs::<ForkpointSwarm>(
         num_nodes,
         ValidatorSetFactory::default,
@@ -427,7 +419,6 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
-                        MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, epoch_length),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
@@ -517,7 +508,6 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
             swarm.add_state(NodeBuilder::new(
                 ID::new(node_id),
                 builder,
-                MockWALoggerConfig::default(),
                 NoSerRouterConfig::new(all_peers.clone()).build(),
                 MockStateRootHashNop::new(validators.validators, epoch_length),
                 vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],

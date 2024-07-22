@@ -22,7 +22,6 @@ use monad_transformer::{
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use monad_wal::mock::MockWALoggerConfig;
 
 use crate::RandomizedTest;
 
@@ -61,7 +60,6 @@ fn random_latency_test(latency_seed: u64) {
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::RandLatency(
@@ -122,7 +120,6 @@ fn delayed_message_test(latency_seed: u64) {
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![

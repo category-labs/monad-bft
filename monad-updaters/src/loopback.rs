@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::Stream;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::LoopbackCommand;
 
 /// The loopback executor routes outputs from one child state to another. The
@@ -18,6 +18,7 @@ pub struct LoopbackExecutor<E> {
     /// Buffered events to send back
     buffer: VecDeque<E>,
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
 }
 
 impl<E> Default for LoopbackExecutor<E> {
@@ -25,21 +26,13 @@ impl<E> Default for LoopbackExecutor<E> {
         Self {
             buffer: Default::default(),
             waker: Default::default(),
+            metrics: Default::default(),
         }
     }
 }
 
 impl<E> Executor for LoopbackExecutor<E> {
     type Command = LoopbackCommand<E>;
-
-    /// The events replayed are idempotentent
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LoopbackCommand::Forward(_) => true,
-        });
-        self.exec(commands)
-    }
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
@@ -53,6 +46,10 @@ impl<E> Executor for LoopbackExecutor<E> {
                 waker.wake()
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

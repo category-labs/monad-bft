@@ -17,7 +17,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
@@ -67,6 +67,7 @@ where
     pending_events: VecDeque<M::Event>,
 
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     _phantom: PhantomData<OM>,
 }
 
@@ -163,6 +164,7 @@ where
             pending_events: Default::default(),
 
             waker: None,
+            metrics: Default::default(),
             _phantom: PhantomData,
         }
     }
@@ -175,16 +177,6 @@ where
     OM: Serializable<Bytes> + Into<M> + Clone,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            RouterCommand::Publish { .. } => false,
-            RouterCommand::UpdateCurrentRound(_, _) => true,
-            RouterCommand::AddEpochValidatorSet { .. } => true,
-        });
-        self.exec(commands)
-    }
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -344,6 +336,10 @@ where
                 }
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

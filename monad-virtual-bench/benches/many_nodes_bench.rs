@@ -14,7 +14,6 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
-use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
@@ -34,7 +33,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 type SignatureType = NopSignature;
 type NodeIdPubKey = CertificateSignaturePubKey<NopSignature>;
@@ -67,8 +65,6 @@ impl SwarmRelation for NopSwarm {
 
     type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
 
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
-
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
@@ -100,8 +96,6 @@ impl SwarmRelation for BlsSwarm {
     >;
 
     type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
-
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
@@ -144,7 +138,6 @@ fn many_nodes_nop_timeout() -> u128 {
                 NodeBuilder::<NopSwarm>::new(
                     ID::new(me),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     QuicRouterSchedulerConfig::new(
                         zero_instant,
                         all_peers.iter().cloned().collect(),
@@ -221,7 +214,6 @@ fn many_nodes_bls_timeout() -> u128 {
                 NodeBuilder::<BlsSwarm>::new(
                     ID::new(me),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     QuicRouterSchedulerConfig::new(
                         zero_instant,
                         all_peers.iter().cloned().collect(),

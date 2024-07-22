@@ -25,7 +25,6 @@ monad-transformer = { path = "../../monad-transformer" }
 monad-types = { path = "../../monad-types" }
 monad-updaters = { path = "../../monad-updaters" }
 monad-validator = { path = "../../monad-validator" }
-monad-wal = { path = "../../monad-wal" }
 
 itertools = { workspace = true }
 rand = { workspace = true }

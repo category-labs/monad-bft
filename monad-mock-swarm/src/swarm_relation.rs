@@ -24,7 +24,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{BoxedValidatorSetTypeFactory, ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use monad_wal::{mock::MockWALogger, PersistenceLogger};
 
 use crate::{mock::MockExecutor, node::Node, transformer::MonadMessageTransformerPipeline};
 
@@ -92,11 +91,6 @@ where
         + Sync
         + Unpin;
 
-    type Logger: PersistenceLogger<Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>
-        + Send
-        + Sync
-        + Unpin;
-
     type StateRootHashExecutor: MockableStateRootHash<
             Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
             SignatureCollection = Self::SignatureCollectionType,
@@ -148,13 +142,6 @@ impl SwarmRelation for DebugSwarmRelation {
             + Sync,
     >;
 
-    type Logger = Box<
-        dyn PersistenceLogger<
-                Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-            > + Send
-            + Sync,
-    >;
-
     type StateRootHashExecutor = Box<
         dyn MockableStateRootHash<
                 Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
@@ -198,8 +185,6 @@ impl SwarmRelation for NoSerSwarm {
         Self::TransportMessage,
     >;
 
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
-
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
@@ -234,8 +219,6 @@ impl SwarmRelation for BytesSwarm {
         Self::TransportMessage,
     >;
 
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
-
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
@@ -268,8 +251,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
 
     type Pipeline =
         MonadMessageTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
-
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;

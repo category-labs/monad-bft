@@ -13,7 +13,7 @@ use monad_consensus_types::{
     validator_data::ValidatorSetData,
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
 use rand::RngCore;
@@ -71,6 +71,7 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
     calc_state_root: fn(&SeqNum) -> StateRootHash,
 
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -95,6 +96,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
             calc_state_root: Self::state_root_honest,
 
             waker: None,
+            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -143,15 +145,6 @@ where
 {
     type Command = StateRootHashCommand;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::Request(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -195,6 +188,10 @@ where
                 waker.wake()
             };
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 
@@ -251,6 +248,7 @@ pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -283,6 +281,7 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
             next_val_data: None,
             val_set_update_interval,
             waker: None,
+            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -340,15 +339,6 @@ where
 {
     type Command = StateRootHashCommand;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            StateRootHashCommand::CancelBelow(..) => true,
-            StateRootHashCommand::Request(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -398,6 +388,10 @@ where
                 waker.wake()
             };
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

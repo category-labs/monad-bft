@@ -39,7 +39,6 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
-monad-opentelemetry-executor = { path = "../monad-opentelemetry-executor" }
 
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -47,7 +46,8 @@ clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 hex = { workspace = true }
 log = { workspace = true }
-opentelemetry = { workspace = true, features = ["rt-tokio"] }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
@@ -57,5 +57,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 zeroize = { workspace = true }

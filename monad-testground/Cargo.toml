@@ -29,8 +29,8 @@ monad-validator = { path = "../monad-validator" }
 
 clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
-opentelemetry = { workspace = true, features = ["rt-tokio"] }
-opentelemetry_api = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true }
 rand = { workspace = true }

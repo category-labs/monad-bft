@@ -113,12 +113,6 @@ message ProtoAsyncStateVerifyEvent {
 
 message ProtoMetricsTimeout {}
 
-message ProtoMetricsEvent {
-  oneof event {
-    ProtoMetricsTimeout timeout = 1;
-  }
-}
-
 message ProtoGetValidatorSetEvent {}
 message ProtoClearMetricsEvent {}
 
@@ -137,7 +131,6 @@ message ProtoMonadEvent{
     ProtoMempoolEvent mempool_event = 4;
     ProtoStateUpdateEvent state_root_event = 5;
     ProtoAsyncStateVerifyEvent async_state_verify_event = 6;
-    ProtoMetricsEvent metrics_event = 7;
-    ProtoControlPanelEvent control_panel_event = 8;
+    ProtoControlPanelEvent control_panel_event = 7;
   }
 }

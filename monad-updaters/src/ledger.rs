@@ -9,7 +9,7 @@ use std::{
 use futures::Stream;
 use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::LedgerCommand;
 use monad_types::{BlockId, NodeId};
 use tracing::warn;
@@ -23,8 +23,11 @@ pub struct MockLedger<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E
     block_index: HashMap<BlockId, usize>,
     ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     _pd: PhantomData<SCT>,
 }
+
+const GAUGE_LEDGER_NUM_COMMITS: &str = "monad.ledger.num_commits";
 
 impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Default
     for MockLedger<SCT, PT, O, E>
@@ -35,6 +38,7 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Default
             block_index: HashMap::new(),
             ledger_fetches: HashMap::default(),
             waker: None,
+            metrics: Default::default(),
             _pd: PhantomData,
         }
     }
@@ -45,20 +49,12 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
 {
     type Command = LedgerCommand<PT, O, E>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LedgerCommand::LedgerFetch(..) => false,
-            LedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
+                        self.metrics[GAUGE_LEDGER_NUM_COMMITS] += 1;
                         self.block_index
                             .insert(block.get_id(), self.blockchain.len());
                         self.blockchain.push(block);
@@ -83,6 +79,10 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
                 waker.wake()
             };
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 
@@ -126,6 +126,7 @@ pub struct BoundedLedger<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>
     num_commits: usize,
     ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
+    metrics: ExecutorMetrics,
     _pd: PhantomData<SCT>,
 }
 
@@ -137,6 +138,7 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> BoundedLedger<S
             num_commits: 0,
             ledger_fetches: HashMap::default(),
             waker: None,
+            metrics: Default::default(),
             _pd: PhantomData,
         }
     }
@@ -146,15 +148,6 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
     for BoundedLedger<SCT, PT, O, E>
 {
     type Command = LedgerCommand<PT, O, E>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            LedgerCommand::LedgerFetch(..) => false,
-            LedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -189,6 +182,10 @@ impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
                 waker.wake()
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

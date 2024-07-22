@@ -8,7 +8,6 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
@@ -27,7 +26,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct BLSSwarm;
 impl SwarmRelation for BLSSwarm {
@@ -60,8 +58,6 @@ impl SwarmRelation for BLSSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         Self::TransportMessage,
     >;
-
-    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor =
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
@@ -107,7 +103,6 @@ fn two_nodes_bls() {
                 NodeBuilder::<BLSSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
-                    MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],

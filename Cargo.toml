@@ -32,7 +32,6 @@ members = [
     "monad-triedb",
     "monad-multi-sig",
     "monad-node",
-    "monad-opentelemetry-executor",
     "monad-perf-util",
     "monad-proto",
     "monad-quic",
@@ -118,11 +117,10 @@ log = "0.4"
 lz4 = "1.24"
 multihash = "0.17"
 ntest = "0.9"
-opentelemetry = "0.20"
-opentelemetry_api = "0.20"
-opentelemetry-otlp = "0.13"
-opentelemetry-semantic-conventions = "0.12"
-opentelemetry_sdk = "0.20"
+opentelemetry = "0.24"
+opentelemetry-otlp = "0.17"
+opentelemetry-semantic-conventions = "0.16"
+opentelemetry_sdk = "0.24"
 pbkdf2 = "0.12"
 peak_alloc = "0.2"
 priority-queue = "1.3"
@@ -165,7 +163,7 @@ tokio-util = "0.7"
 toml = "0.7"
 tracing = "0.1"
 tracing-core = "0.1"
-tracing-opentelemetry = "0.20"
+tracing-opentelemetry = "0.25"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
 wasm-bindgen = "0.2"

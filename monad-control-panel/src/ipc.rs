@@ -9,7 +9,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MonadEvent, ReadCommand,
     WriteCommand,
@@ -28,6 +28,8 @@ where
 {
     receiver: mpsc::Receiver<MonadEvent<ST, SCT>>,
     client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
+
+    metrics: ExecutorMetrics,
 }
 
 impl<ST, SCT> Stream for ControlPanelIpcReceiver<ST, SCT>
@@ -56,6 +58,8 @@ where
         let r = Self {
             receiver,
             client_sender,
+
+            metrics: Default::default(),
         };
 
         let listener = UnixListener::bind(bind_path)?;
@@ -156,15 +160,6 @@ where
 {
     type Command = ControlPanelCommand<SCT>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|command| match command {
-            ControlPanelCommand::Read(_) => false,
-            // commands that write/change state should be replayed
-            ControlPanelCommand::Write(_) => true,
-        });
-        self.exec(commands);
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             debug!(num_clients = %self.client_sender.receiver_count(), "broadcasting {:?} to clients", &command);
@@ -172,5 +167,9 @@ where
                 .send(command)
                 .expect("failed to broadcast command to clients");
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }

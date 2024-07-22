@@ -16,7 +16,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_tx::EthFullTransactionList;
-use monad_executor::Executor;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::ExecutionLedgerCommand;
 use monad_proto::proto::block::ProtoBlock;
 use monad_types::SeqNum;
@@ -35,8 +35,13 @@ pub struct MonadBlockFileLedger<SCT> {
     dir_path: PathBuf,
     blockdb: BlockDb,
     header_param: EthHeaderParam,
+    metrics: ExecutorMetrics,
     phantom: PhantomData<SCT>,
 }
+
+const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
+const GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS: &str = "monad.execution_ledger.num_tx_commits";
+const GAUGE_EXECUTION_LEDGER_BLOCK_NUM: &str = "monad.execution_ledger.block_num";
 
 impl<SCT> MonadBlockFileLedger<SCT>
 where
@@ -52,6 +57,7 @@ where
             dir_path,
             blockdb,
             header_param,
+            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -86,14 +92,6 @@ where
 {
     type Command = ExecutionLedgerCommand<SCT>;
 
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            ExecutionLedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
-
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
@@ -102,6 +100,12 @@ where
                         .iter()
                         .map(|b| self.create_eth_block(b))
                         .collect();
+                    for eth_block in &eth_blocks {
+                        self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
+                        self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
+                            eth_block.body.len() as u64;
+                        self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
+                    }
                     let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
                         std::iter::zip(eth_blocks.iter(), full_blocks.iter())
                             .map(|(eth, monad)| (monad.get_seq_num(), encode_eth_block(eth)))
@@ -126,6 +130,10 @@ where
                 }
             }
         }
+    }
+
+    fn metrics(&self) -> ExecutorMetricsChain {
+        self.metrics.as_ref().into()
     }
 }
 

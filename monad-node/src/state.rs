@@ -8,7 +8,6 @@ use log::info;
 use monad_bls::BlsKeyPair;
 use monad_keystore::keystore::Keystore;
 use monad_secp::KeyPair;
-use opentelemetry_otlp::WithExportConfig;
 
 use crate::{
     cli::Cli,
@@ -135,27 +134,4 @@ fn load_bls12_381_keypair(
         kind: ErrorKind::ValueValidation,
         msg: "bls secret secret must be encoded in keystore json".to_owned(),
     })
-}
-
-pub fn build_otel_provider(
-    otel_endpoint: &str,
-    service_name: String,
-) -> Result<opentelemetry::sdk::trace::TracerProvider, NodeSetupError> {
-    let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_span_exporter()?;
-
-    let provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry::sdk::trace::config().with_resource(
-            opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            )]),
-        ))
-        .with_batch_exporter(exporter, opentelemetry::runtime::Tokio);
-
-    Ok(provider_builder.build())
 }
