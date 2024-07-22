@@ -58,7 +58,11 @@ use rand_chacha::{
 use tokio::signal;
 use tracing::{event, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::{fmt::Layer as FmtLayer, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{
+    fmt::{format::FmtSpan, Layer as FmtLayer},
+    layer::SubscriberExt,
+    EnvFilter, Registry,
+};
 
 mod cli;
 use cli::Cli;
@@ -110,6 +114,10 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         .with(EnvFilter::from_default_env())
         .with(
             FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
                 .with_writer(std::io::stdout)
                 .with_ansi(false),
         )

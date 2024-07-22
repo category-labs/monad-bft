@@ -172,7 +172,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Tree<ST> {
     }
 
     fn is_seeder(&self) -> bool {
-        self.chunks.len() == self.meta.num_chunks.into()
+        self.chunks.len() == self.meta.num_chunks as usize
     }
 
     fn weight(&self) -> u64 {
@@ -213,7 +213,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Tree<ST> {
             ),
         );
 
-        Ok(if self.chunks.len() == self.meta.num_chunks.into() {
+        Ok(if self.chunks.len() == self.meta.num_chunks as usize {
             let message_size = self.chunks.values().map(|status| status.data.len()).sum();
             let message = self
                 .chunks

@@ -330,10 +330,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         let new_epoch = epoch_manager
             .get_epoch(self.current_round)
             .expect("current epoch available");
-        info!(current_epoch=?self.current_epoch, ?new_epoch, "advancing epoch");
         if new_epoch <= self.current_epoch {
             return Default::default();
         }
+        info!(current_epoch=?self.current_epoch, ?new_epoch, "advancing epoch");
         self.enter_round(new_epoch, self.current_round)
     }
 }
