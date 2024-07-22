@@ -2,13 +2,24 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
 };
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    NopKeyPair, NopPubKey, NopSignature,
 };
-use monad_types::{NodeId, Stake};
-use monad_validator::validator_set::ValidatorSetTypeFactory;
+use monad_types::{Epoch, NodeId, Round, SeqNum, Stake};
+use monad_validator::{
+    epoch_manager::EpochManager,
+    validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 use crate::signing::{create_certificate_keys, create_keys};
+
+type SignatureType = NopSignature;
+type SignatureCollectionType = MockSignatures<SignatureType>;
+use crate::signing::MockSignatures;
 
 pub fn create_keys_w_validators<ST, SCT, VTF>(
     num_nodes: u32,
@@ -62,4 +73,53 @@ where
     let validator_mapping = ValidatorMapping::new(voting_identity);
 
     (validators, validator_mapping)
+}
+
+pub fn setup_val_state(
+    known_epoch: Epoch,
+    known_round: Round,
+    val_epoch: Epoch,
+    num_node: u32,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
+) -> (
+    Vec<NopKeyPair>,
+    Vec<NopKeyPair>,
+    EpochManager,
+    ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, SignatureCollectionType>,
+) {
+    let (keypairs, _certkeys, _, _) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(num_node, ValidatorSetFactory::default());
+
+    let mut vlist = Vec::new();
+    let mut vmap_vec = Vec::new();
+
+    for keypair in &keypairs {
+        let node_id = NodeId::new(keypair.pubkey());
+
+        vlist.push((node_id, Stake(33)));
+        vmap_vec.push((node_id, keypair.pubkey()));
+    }
+
+    let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
+    let _vmap = ValidatorMapping::new(vmap_vec);
+
+    let epoch_manager = EpochManager::new(
+        val_set_update_interval,
+        epoch_start_delay,
+        &[(known_epoch, known_round)],
+    );
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+
+    val_epoch_map.insert(
+        val_epoch,
+        _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        _vmap,
+    );
+
+    (keypairs, _certkeys, epoch_manager, val_epoch_map)
 }

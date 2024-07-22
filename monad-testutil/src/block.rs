@@ -14,9 +14,12 @@ use monad_crypto::{
         CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hash, Hasher, HasherType},
+    NopSignature,
 };
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+
+use crate::signing::MockSignatures;
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
@@ -168,6 +171,54 @@ where
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
+        },
+        &qc,
+    )
+}
+
+type SignatureType = NopSignature;
+type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+// test utility for custom QC and Block parameters
+pub fn set_block_and_qc(
+    author: NodeId<PubKeyType>,
+    block_epoch: Epoch,
+    block_round: Round,
+    block_seq_num: SeqNum,
+    qc_epoch: Epoch,
+    qc_round: Round,
+    qc_parent_round: Round,
+    seq_num: SeqNum,
+    signers: &[PubKeyType],
+) -> Block<MockSignatures<SignatureType>> {
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
+    let vi = VoteInfo {
+        id: BlockId(Hash([0x00_u8; 32])),
+        epoch: qc_epoch,
+        round: qc_round,
+        parent_id: BlockId(Hash([0x00_u8; 32])),
+        parent_round: qc_parent_round,
+        seq_num,
+    };
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+        QcInfo {
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit,
+            },
+        },
+        MockSignatures::with_pubkeys(signers),
+    );
+
+    Block::<MockSignatures<SignatureType>>::new(
+        author,
+        block_epoch,
+        block_round,
+        &Payload {
+            txns,
+            header: ExecutionArtifacts::zero(),
+            seq_num: block_seq_num,
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         },
         &qc,
     )

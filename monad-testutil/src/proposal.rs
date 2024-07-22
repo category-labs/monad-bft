@@ -18,15 +18,20 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
         CertificateSignatureRecoverable,
     },
-    hasher::{Hasher, HasherType},
+    hasher::{Hash, Hasher, HasherType},
+    NopKeyPair, NopPubKey, NopSignature,
 };
 use monad_eth_types::EthAddress;
-use monad_types::{Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
-    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
+};
+
+use crate::{
+    block::set_block_and_qc, signing::MockSignatures, validators::create_keys_w_validators,
 };
 
 #[derive(Clone)]
@@ -247,4 +252,135 @@ where
 
         QuorumCertificate::new(qcinfo, sigcol)
     }
+}
+type SignatureType = NopSignature;
+type SignatureCollectionType = MockSignatures<SignatureType>;
+
+pub fn define_proposal_with_tc(
+    known_epoch: Epoch,
+    known_round: Round,
+    val_epoch: Epoch,
+    block_epoch: Epoch,
+    block_round: Round,
+    block_seq_num: SeqNum,
+    qc_epoch: Epoch,
+    qc_round: Round,
+    qc_parent_round: Round,
+    qc_seq_num: SeqNum,
+    tc_epoch: Epoch,
+    tc_round: Round,
+    tc_epoch_signed: Epoch,
+    tc_round_signed: Round,
+    num_node: u32,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
+) -> (
+    Vec<NopKeyPair>,
+    Vec<NopKeyPair>,
+    EpochManager,
+    ValidatorsEpochMapping<ValidatorSetFactory<NopPubKey>, SignatureCollectionType>,
+    ProposalMessage<SignatureCollectionType>,
+) {
+    let (keys, cert_keys, _, _) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(num_node, ValidatorSetFactory::default());
+
+    let mut vlist = Vec::new();
+    let mut vmap_vec = Vec::new();
+
+    for keypair in &keys {
+        let node_id = NodeId::new(keypair.pubkey());
+
+        vlist.push((node_id, Stake(1)));
+        vmap_vec.push((node_id, keypair.pubkey()));
+    }
+
+    let _vset = ValidatorSetFactory::default().create(vlist).unwrap();
+
+    // create valid QC
+    let vi = VoteInfo {
+        id: BlockId(Hash([0x09_u8; 32])),
+        epoch: qc_epoch,
+        round: qc_round,
+        parent_id: BlockId(Hash([0x00_u8; 32])),
+        parent_round: qc_parent_round,
+        seq_num: qc_seq_num,
+    };
+
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
+        QcInfo {
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit,
+            },
+        },
+        MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+    );
+
+    // Not actually signed
+    let _tminfo = TimeoutInfo {
+        epoch: tc_epoch_signed,
+        round: tc_round_signed,
+        high_qc: qc.clone(),
+    };
+
+    let high_qc_sig_tuple = HighQcRoundSigColTuple {
+        high_qc_round: HighQcRound {
+            qc_round: qc.get_round(),
+        },
+        sigs: MockSignatures::with_pubkeys(
+            keys.iter()
+                .map(|kp| kp.pubkey())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ),
+    };
+
+    let tc = TimeoutCertificate {
+        epoch: tc_epoch, // wrong epoch here
+        round: tc_round,
+        high_qc_rounds: vec![high_qc_sig_tuple],
+    };
+
+    // moved here because of valmap ownership
+    let epoch_manager = EpochManager::new(
+        val_set_update_interval,
+        epoch_start_delay,
+        &[(known_epoch, known_round)],
+    );
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+
+    val_epoch_map.insert(
+        val_epoch,
+        _vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        ValidatorMapping::new(vmap_vec),
+    );
+
+    let author = NodeId::new(keys[0].pubkey());
+    let block = set_block_and_qc(
+        author,
+        block_epoch,
+        block_round,
+        block_seq_num,
+        qc_epoch,
+        qc_round,
+        qc_parent_round,
+        qc_seq_num,
+        &[keys[0].pubkey(), keys[1].pubkey(), keys[2].pubkey()],
+    );
+
+    let proposal = ProposalMessage {
+        block,
+        last_round_tc: Some(tc),
+    };
+
+    (keys, cert_keys, epoch_manager, val_epoch_map, proposal)
 }

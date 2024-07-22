@@ -25,6 +25,8 @@ monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
+libfuzzer-sys = { version = "0.4.0", features = ["arbitrary-derive"] }
+arbitrary = { version = "1", optional = true, features = ["derive"] }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
