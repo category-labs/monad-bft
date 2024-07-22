@@ -120,6 +120,7 @@ pub fn setup_block<ST, SCT>(
     author: NodeId<CertificateSignaturePubKey<ST>>,
     block_round: Round,
     qc_round: Round,
+    parent_id: BlockId,
     txns: FullTransactionList,
     execution_header: ExecutionArtifacts,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
@@ -136,7 +137,7 @@ where
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: qc_round,
-        parent_id: BlockId(Hash([43_u8; 32])),
+        parent_id,
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };

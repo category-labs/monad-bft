@@ -84,6 +84,7 @@ fn bench_proposal(c: &mut Criterion) {
         NodeId::new(author_keypair.pubkey()),
         Round(10),
         Round(9),
+        BlockId(Hash([43_u8; 32])),
         txns,
         ExecutionArtifacts::zero(),
         &keypairs,

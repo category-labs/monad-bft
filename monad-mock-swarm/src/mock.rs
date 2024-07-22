@@ -32,7 +32,6 @@ pub struct MockExecutor<S: SwarmRelation> {
     ledger: MockLedger<
         S::SignatureCollectionType,
         CertificateSignaturePubKey<S::SignatureType>,
-        Block<S::SignatureCollectionType>,
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     >,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
@@ -308,7 +307,6 @@ impl<S: SwarmRelation> MockExecutor<S> {
     ) -> &MockLedger<
         S::SignatureCollectionType,
         CertificateSignaturePubKey<S::SignatureType>,
-        Block<S::SignatureCollectionType>,
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     > {
         &self.ledger

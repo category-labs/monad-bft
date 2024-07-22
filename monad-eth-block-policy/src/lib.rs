@@ -292,6 +292,5 @@ impl<SCT: SignatureCollection, SBT: StateBackend> BlockPolicy<SCT, SBT> for EthB
         let committed_block_account_nonces = block.get_account_nonces();
         self.committed_nonces
             .update_committed_nonces(block.get_seq_num(), committed_block_account_nonces.iter());
-        state_backend.update_committed_nonces(committed_block_account_nonces.iter());
     }
 }

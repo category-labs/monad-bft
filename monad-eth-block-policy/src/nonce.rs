@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
-use monad_consensus_types::state::StateBackend;
+use monad_consensus_types::{block::BlockType, state::StateBackend};
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
+
+use crate::AccountNonceRetrievable;
 
 #[derive(Debug, Clone)]
 pub struct InMemoryState {
@@ -31,6 +33,14 @@ impl InMemoryState {
             max_reserve_balance,
         }
     }
+
+    pub fn update_committed_nonces<'a>(&mut self, block: impl AccountNonceRetrievable) {
+        let nonces = block.get_account_nonces();
+
+        for (address, account_nonce) in nonces {
+            self.account_nonces.insert(address, account_nonce);
+        }
+    }
 }
 
 impl StateBackend for InMemoryState {
@@ -43,14 +53,5 @@ impl StateBackend for InMemoryState {
             });
         }
         None
-    }
-
-    fn update_committed_nonces<'a>(
-        &mut self,
-        nonces: impl IntoIterator<Item = (&'a EthAddress, &'a Nonce)>,
-    ) {
-        for (&address, &account_nonce) in nonces {
-            self.account_nonces.insert(address, account_nonce);
-        }
     }
 }

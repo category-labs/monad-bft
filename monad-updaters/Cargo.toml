@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
@@ -26,8 +27,14 @@ rand_chacha = { workspace = true }
 rayon = { workspace = true }
 alloy-rlp = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time", "sync"], optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "time",
+    "sync",
+], optional = true }
 tracing = { workspace = true }
+monad-eth-block-validator = { version = "0.1.0", path = "../monad-eth-block-validator" }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
@@ -35,3 +42,4 @@ monad-multi-sig = { path = "../monad-multi-sig" }
 
 ntest = { workspace = true }
 test-case = { workspace = true }
+monad-validator = { path = "../monad-validator" }
