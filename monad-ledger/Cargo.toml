@@ -27,6 +27,7 @@ tokio = { workspace = true, features = [
     "net",
     "rt",
 ]}
+tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }

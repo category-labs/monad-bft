@@ -105,6 +105,11 @@ where
                         self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
                             eth_block.body.len() as u64;
                         self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
+                        tracing::info!(
+                            num_tx = eth_block.body.len(),
+                            block_num = eth_block.number,
+                            "committed block"
+                        );
                     }
                     let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
                         std::iter::zip(eth_blocks.iter(), full_blocks.iter())

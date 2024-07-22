@@ -259,7 +259,8 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         tracing::info!(
             proposal_num_tx,
             proposal_total_gas = total_gas,
-            proposal_tx_bytes = full_tx_list.len()
+            proposal_tx_bytes = full_tx_list.len(),
+            "created proposal"
         );
 
         if !self.garbage.is_empty() {
