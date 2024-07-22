@@ -3,6 +3,7 @@ import functools
 import json
 import os
 import pathlib
+import stat
 
 from monad_flexnet.topology import LatencyProfile, Node, Topology
 
@@ -112,3 +113,6 @@ class TrafficControlScriptGenerator:
                 with open(out_path, 'w+') as f:
                     all_cmds = cmds + node_cmds
                     f.writelines([cmd + '\n' for cmd in all_cmds])
+                    mode = os.fstat(f.fileno()).st_mode
+                    mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH # set executable bits
+                    os.fchmod(f.fileno(), stat.S_IMODE(mode))

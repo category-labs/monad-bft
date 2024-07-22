@@ -43,14 +43,10 @@ class BlockLedger(Ledger):
         if isinstance(other, BlockLedger):
             if abs(self.block_count - other.block_count) > 20:
                 return False
-            blocks_to_compare = min(self.block_count, other.block_count)
-            compared = 0
-            for f in pathlib.Path(self.blockpath).iterdir():
+            iterpath = self.blockpath if self.block_count <= other.block_count else other.blockpath
+            for f in pathlib.Path(iterpath).iterdir():
                 if not filecmp.cmp(f, pathlib.Path(other.blockpath) / f.name):
                     return False
-                compared += 1
-                if compared == blocks_to_compare:
-                    break
             return True
         else:
             return Ledger.__eq__(self, other)

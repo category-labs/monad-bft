@@ -24,3 +24,7 @@ class Region:
     def stop_all_nodes(self):
         for node in self.nodes:
             node.stop()
+
+    def for_all_nodes(self, func):
+        for node in self.nodes:
+            func(node)

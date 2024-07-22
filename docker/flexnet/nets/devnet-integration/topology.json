@@ -1,0 +1,20 @@
+{
+    "regions": [
+        {
+            "name": "us",
+            "intraregion_latency": {
+                "ms": 10
+            },
+            "nodes": [
+                {
+                    "name": "node",
+                    "up_Mbps": 100,
+                    "down_Mbps": 100,
+                    "execution": true,
+                    "rpc": true
+                }
+            ]
+        }
+    ],
+    "latencies": []
+}

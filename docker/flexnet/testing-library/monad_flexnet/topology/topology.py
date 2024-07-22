@@ -2,6 +2,7 @@ import functools
 import json
 import os
 import pathlib
+import threading
 
 from . import LatencyProfile, Node, Region
 
@@ -52,12 +53,22 @@ class Topology:
         return functools.reduce(lambda n, r: n + len(r.nodes), self.regions.values(), 0)
 
     def start_all_nodes(self, root_dir: str | os.PathLike, network_name: str, run_id: str):
-        for region in self.regions.values():
-            region.start_all_nodes(root_dir, network_name, run_id)
+        threads = []
+        def do_start(node: Node):
+            threads.append(threading.Thread(target=node.start, args=(root_dir, network_name, run_id)))
+            threads[-1].start()
+        self.for_all_nodes(do_start)
+        for t in threads:
+            t.join()
 
     def stop_all_nodes(self):
-        for region in self.regions.values():
-            region.stop_all_nodes()
+        threads = []
+        def do_stop(node: Node):
+            threads.append(threading.Thread(target=node.stop))
+            threads[-1].start()
+        self.for_all_nodes(do_stop)
+        for t in threads:
+            t.join()
 
     def find_node_by_name(self, node_name: str):
         for region in self.regions.values():
@@ -72,3 +83,7 @@ class Topology:
             print(f'\t{region.name}:')
             for node in region.nodes:
                 node.print_containers('\t\t')
+
+    def for_all_nodes(self, func):
+        for region in self.regions.values():
+            region.for_all_nodes(func)
