@@ -9,6 +9,7 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
     terminator::UntilTerminator,
@@ -33,6 +34,7 @@ fn random_latency_test(latency_seed: u64) {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -88,6 +90,7 @@ fn delayed_message_test(latency_seed: u64) {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

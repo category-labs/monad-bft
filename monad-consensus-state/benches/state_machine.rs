@@ -25,6 +25,7 @@ use monad_crypto::{
     NopPubKey, NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
@@ -41,6 +42,7 @@ use monad_validator::{
     validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use sorted_vector_map::SortedVectorMap;
 
 const NUM_TRANSACTIONS: usize = 1000;
 const TRANSACTION_SIZE_BYTES: usize = 400;
@@ -170,9 +172,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
 {
-    consensus_state: ConsensusState<ST, SCT, EthBlockPolicy>,
+    consensus_state: ConsensusState<ST, SCT, PassthruReserveBalanceCache, EthBlockPolicy>,
 
     metrics: Metrics,
     txpool: TT,
@@ -185,6 +187,7 @@ where
     state_root_validator: SVT,
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
+    reserve_balahce_cache: PassthruReserveBalanceCache,
     beneficiary: EthAddress,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
     consensus_config: ConsensusConfig,
@@ -200,12 +203,22 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
     // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 {
     fn wrapped_state(
         &mut self,
-    ) -> ConsensusStateWrapper<ST, SCT, EthBlockPolicy, VTF, LT, TT, EthValidator, SVT> {
+    ) -> ConsensusStateWrapper<
+        ST,
+        SCT,
+        EthBlockPolicy,
+        PassthruReserveBalanceCache,
+        VTF,
+        LT,
+        TT,
+        EthValidator,
+        SVT,
+    > {
         ConsensusStateWrapper {
             consensus: &mut self.consensus_state,
 
@@ -220,6 +233,7 @@ where
             state_root_validator: &self.state_root_validator,
             block_validator: &self.block_validator,
             block_policy: &mut self.block_policy,
+            reserve_balance_cache: &mut self.reserve_balahce_cache,
             beneficiary: &self.beneficiary,
             nodeid: &self.nodeid,
             config: &self.consensus_config,
@@ -268,7 +282,7 @@ fn setup<
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    TT: TxPool<SCT, EthBlockPolicy> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, PassthruReserveBalanceCache> + Default,
 >(
     num_states: u32,
     valset_factory: VTF,
@@ -342,7 +356,12 @@ fn setup<
                 block_policy: EthBlockPolicy {
                     account_nonces: BTreeMap::new(),
                     last_commit: GENESIS_SEQ_NUM,
+                    execution_delay: 0,
+                    max_reserve_balance: 0,
+                    txn_cache: SortedVectorMap::new(),
+                    reserve_balance_check_mode: 0,
                 },
+                reserve_balahce_cache: PassthruReserveBalanceCache::default(),
                 beneficiary: EthAddress::default(),
                 nodeid: NodeId::new(keys[i as usize].pubkey()),
                 consensus_config,
@@ -455,9 +474,15 @@ fn init(seed_mempool: bool) -> BenchTuple {
 
     if seed_mempool {
         for txn in raw_txns.iter() {
-            <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy>>::insert_tx(
+            <EthTxPool as TxPool<
+                SignatureCollectionType,
+                EthBlockPolicy,
+                PassthruReserveBalanceCache,
+            >>::insert_tx(
                 wrapped_state.tx_pool,
                 Bytes::from(txn.envelope_encoded()),
+                wrapped_state.block_policy,
+                wrapped_state.reserve_balance_cache,
             );
         }
     }
@@ -588,9 +613,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (raw_txns, encoded_txns) = make_txns();
 
                 for txn in raw_txns.iter() {
-                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy>>::insert_tx(
+                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, PassthruReserveBalanceCache>>::insert_tx(
                         wrapped_state.tx_pool,
                         Bytes::from(txn.envelope_encoded()),
+                        wrapped_state.block_policy,
+                        wrapped_state.reserve_balance_cache,
                     );
                 }
                 let (author, _, proposal_message) = env
@@ -643,10 +670,25 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     );
 
                 let (raw_txns, _) = make_txns();
+                let block_policy = EthBlockPolicy {
+                    account_nonces: BTreeMap::new(),
+                    last_commit: GENESIS_SEQ_NUM,
+                    execution_delay: 0,
+                    max_reserve_balance: 0,
+                    txn_cache: SortedVectorMap::new(),
+                    reserve_balance_check_mode: 0,
+                };
+                let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
                 for txn in raw_txns.iter() {
-                    <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy>>::insert_tx(
+                    <EthTxPool as TxPool<
+                        SignatureCollectionType,
+                        EthBlockPolicy,
+                        PassthruReserveBalanceCache,
+                    >>::insert_tx(
                         &mut ctx[3].txpool,
                         Bytes::from(txn.envelope_encoded()),
+                        &block_policy,
+                        &mut reserve_balance_cache,
                     );
                 }
                 let _ = env.next_tc(Epoch(1));

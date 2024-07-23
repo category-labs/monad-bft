@@ -12,6 +12,8 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-triedb-cache = { path = "../monad-triedb-cache" }
 
 alloy-rlp = { workspace = true }
 tracing = { workspace = true }

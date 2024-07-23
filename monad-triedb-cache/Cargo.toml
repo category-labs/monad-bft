@@ -1,5 +1,5 @@
 [package]
-name = "monad-eth-block-policy"
+name = "monad-triedb-cache"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,11 +7,10 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 monad-eth-types = { path = "../monad-eth-types" }
+monad-triedb = { path = "../monad-triedb" }
 monad-types = { path = "../monad-types" }
 sorted_vector_map = { workspace = true }
 alloy-rlp = { workspace = true }

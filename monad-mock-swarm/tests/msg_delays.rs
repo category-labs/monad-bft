@@ -8,6 +8,7 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
@@ -34,6 +35,7 @@ fn two_nodes() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

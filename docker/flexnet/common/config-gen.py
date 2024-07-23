@@ -236,6 +236,9 @@ if __name__ == "__main__":
         toml["consensus"] = {
             "block_txn_limit": 1000,
             "block_gas_limit": 800_000_000,
+            "max_reserve_balance": 100_000_000,
+            "execution_delay": 10,
+            "reserve_balance_check_mode": 0,
         }
 
         toml["network"] = {

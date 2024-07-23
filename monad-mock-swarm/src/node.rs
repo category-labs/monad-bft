@@ -41,6 +41,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::SignatureType,
         S::SignatureCollectionType,
         S::BlockPolicyType,
+        S::ReserveBalanceCacheType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -61,6 +62,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::SignatureType,
             S::SignatureCollectionType,
             S::BlockPolicyType,
+            S::ReserveBalanceCacheType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::TxPool,
@@ -90,8 +92,9 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         S: SwarmRelation<
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
-                TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+            TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
+            ReserveBalanceCacheType = <DebugSwarmRelation as SwarmRelation>::ReserveBalanceCacheType,
         >,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
@@ -107,6 +110,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 transaction_pool: Box::new(self.state_builder.transaction_pool),
                 block_validator: Box::new(self.state_builder.block_validator),
                 block_policy: self.state_builder.block_policy,
+                reserve_balance_cache: self.state_builder.reserve_balance_cache,
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,

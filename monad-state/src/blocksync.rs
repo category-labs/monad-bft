@@ -15,6 +15,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_executor_glue::{
     BlockSyncEvent, Command, FetchedBlock, LedgerCommand, MonadEvent, RouterCommand,
 };
@@ -66,37 +67,39 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
-    BVT: BlockValidator<SCT, BPT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     block_sync_responder: &'a BlockSyncResponder,
 
     /// BlockSyncResponder queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a ConsensusState<ST, SCT, BPT>,
+    consensus: &'a ConsensusState<ST, SCT, RBCT, BPT>,
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    BlockSyncChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+    BlockSyncChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<SCT, BPT>,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,

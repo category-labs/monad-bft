@@ -14,6 +14,7 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
@@ -43,6 +44,7 @@ impl SwarmRelation for NopSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
     type TransportMessage = Bytes;
 
@@ -75,6 +77,7 @@ impl SwarmRelation for BlsSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
     type TransportMessage = Bytes;
 
@@ -110,6 +113,7 @@ fn many_nodes_nop_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -186,6 +190,7 @@ fn many_nodes_bls_timeout() -> u128 {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay

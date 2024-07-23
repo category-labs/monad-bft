@@ -15,6 +15,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true }

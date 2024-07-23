@@ -27,6 +27,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
@@ -46,15 +47,16 @@ pub mod blocksync;
 pub mod command;
 
 /// core consensus algorithm
-pub struct ConsensusState<ST, SCT, BPT>
+pub struct ConsensusState<ST, SCT, RBCT, BPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, RBCT>,
 {
     /// Prospective blocks are stored here while they wait to be
     /// committed
-    pending_block_tree: BlockTree<SCT, BPT>,
+    pending_block_tree: BlockTree<SCT, RBCT, BPT>,
     /// State machine to track collected votes for proposals
     vote_state: VoteState<SCT>,
     /// The highest QC (QC height determined by Round) known to this node
@@ -69,11 +71,12 @@ where
     last_proposed_round: Round,
 }
 
-impl<ST, SCT, BPT> PartialEq for ConsensusState<ST, SCT, BPT>
+impl<ST, SCT, RBCT, BPT> PartialEq for ConsensusState<ST, SCT, RBCT, BPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, RBCT>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -85,11 +88,12 @@ where
     }
 }
 
-impl<ST, SCT, BPT> std::fmt::Debug for ConsensusState<ST, SCT, BPT>
+impl<ST, SCT, RBCT, BPT> std::fmt::Debug for ConsensusState<ST, SCT, RBCT, BPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, RBCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -103,18 +107,19 @@ where
     }
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, BPT, RBCT>,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     SVT: StateRootValidator,
 {
-    pub consensus: &'a mut ConsensusState<ST, SCT, BPT>,
+    pub consensus: &'a mut ConsensusState<ST, SCT, RBCT, BPT>,
 
     pub metrics: &'a mut Metrics,
     pub tx_pool: &'a mut TT,
@@ -122,6 +127,7 @@ where
     /// Policy for validating chain extension
     /// Mutable because consensus tip will be updated
     pub block_policy: &'a mut BPT,
+    pub reserve_balance_cache: &'a mut RBCT,
 
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     pub election: &'a LT,
@@ -188,11 +194,12 @@ pub enum StateRootAction {
     Defer,
 }
 
-impl<ST, SCT, BPT> ConsensusState<ST, SCT, BPT>
+impl<ST, SCT, RBCT, BPT> ConsensusState<ST, SCT, RBCT, BPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    RBCT: ReserveBalanceCacheTrait,
+    BPT: BlockPolicy<SCT, RBCT>,
 {
     /// Create the core consensus state
     ///
@@ -237,7 +244,7 @@ where
             .map(|b| b.get_unvalidated_block_ref())
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT, BPT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, RBCT, BPT> {
         &self.pending_block_tree
     }
 
@@ -258,16 +265,17 @@ where
     }
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT>
-    ConsensusStateWrapper<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT>
+    ConsensusStateWrapper<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, BPT, RBCT>,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     SVT: StateRootValidator,
 {
     /// handles the local timeout expiry event
@@ -730,7 +738,7 @@ where
         trace!(?block, "adding block to blocktree");
         self.consensus
             .pending_block_tree
-            .add(block.clone(), self.block_policy)
+            .add(block.clone(), self.reserve_balance_cache, self.block_policy)
             .expect("Failed to add block to blocktree");
 
         let mut cmds = Vec::new();
@@ -790,7 +798,7 @@ where
         let vote = self
             .consensus
             .safety
-            .make_vote::<SCT, BPT>(validated_block, last_tc);
+            .make_vote::<SCT, RBCT, BPT>(validated_block, last_tc);
 
         debug!(?round, ?vote, "vote result");
 
@@ -961,10 +969,12 @@ where
                 );
 
                 let prop_txns = self.tx_pool.create_proposal(
+                    proposed_seq_num,
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
                     self.block_policy,
                     pending_blocktree_blocks,
+                    self.reserve_balance_cache,
                 );
                 proposer_builder(prop_txns, h, last_round_tc)
             }
@@ -1162,6 +1172,7 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
+    use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
@@ -1183,6 +1194,7 @@ mod test {
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use reth_primitives::B256;
+    use sorted_vector_map::SortedVectorMap;
     use test_case::test_case;
     use tracing_test::traced_test;
 
@@ -1191,21 +1203,23 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
     type BlockValidatorType = MockValidator;
     type StateRootValidatorType = NopStateRoot;
 
-    struct NodeContext<ST, SCT, BPT, BVT, VTF, SVT, LT, TT>
+    struct NodeContext<ST, SCT, BPT, RBCT, BVT, VTF, SVT, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT>,
-        BVT: BlockValidator<SCT, BPT>,
+        BPT: BlockPolicy<SCT, RBCT>,
+        RBCT: ReserveBalanceCacheTrait,
+        BVT: BlockValidator<SCT, RBCT, BPT>,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        TT: TxPool<SCT, BPT>,
+        TT: TxPool<SCT, BPT, RBCT>,
     {
-        consensus_state: ConsensusState<ST, SCT, BPT>,
+        consensus_state: ConsensusState<ST, SCT, RBCT, BPT>,
 
         metrics: Metrics,
         txpool: TT,
@@ -1218,6 +1232,7 @@ mod test {
         state_root_validator: SVT,
         block_validator: BVT,
         block_policy: BPT,
+        reserve_balance_cache: RBCT,
         beneficiary: EthAddress,
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig,
@@ -1226,18 +1241,22 @@ mod test {
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     }
 
-    impl<ST, SCT, BPT, BVT, VTF, SVT, LT, TT> NodeContext<ST, SCT, BPT, BVT, VTF, SVT, LT, TT>
+    impl<ST, SCT, BPT, RBCT, BVT, VTF, SVT, LT, TT>
+        NodeContext<ST, SCT, BPT, RBCT, BVT, VTF, SVT, LT, TT>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT>,
-        BVT: BlockValidator<SCT, BPT>,
+        BPT: BlockPolicy<SCT, RBCT>,
+        RBCT: ReserveBalanceCacheTrait,
+        BVT: BlockValidator<SCT, RBCT, BPT>,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        TT: TxPool<SCT, BPT>,
+        TT: TxPool<SCT, BPT, RBCT>,
     {
-        fn wrapped_state(&mut self) -> ConsensusStateWrapper<ST, SCT, BPT, VTF, LT, TT, BVT, SVT> {
+        fn wrapped_state(
+            &mut self,
+        ) -> ConsensusStateWrapper<ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT> {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
 
@@ -1252,6 +1271,7 @@ mod test {
                 state_root_validator: &self.state_root_validator,
                 block_validator: &self.block_validator,
                 block_policy: &mut self.block_policy,
+                reserve_balance_cache: &mut self.reserve_balance_cache,
                 beneficiary: &self.beneficiary,
                 nodeid: &self.nodeid,
                 config: &self.consensus_config,
@@ -1391,23 +1411,25 @@ mod test {
     fn setup<
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        BPT: BlockPolicy<SCT>,
-        BVT: BlockValidator<SCT, BPT>,
+        BPT: BlockPolicy<SCT, RBCT>,
+        RBCT: ReserveBalanceCacheTrait,
+        BVT: BlockValidator<SCT, RBCT, BPT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-        TT: TxPool<SCT, BPT> + Clone,
+        TT: TxPool<SCT, BPT, RBCT> + Clone,
     >(
         num_states: u32,
         valset_factory: VTF,
         election: LT,
         block_policy: impl Fn() -> BPT,
+        reserve_balance_cache: impl Fn() -> RBCT,
         block_validator: impl Fn() -> BVT,
         txpool: TT,
         state_root: impl Fn() -> SVT,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<ST, SCT, BPT, BVT, VTF, SVT, LT, TT>>,
+        Vec<NodeContext<ST, SCT, BPT, RBCT, BVT, VTF, SVT, LT, TT>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -1420,7 +1442,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<ST, SCT, BPT, BVT, _, _, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<ST, SCT, BPT, RBCT, BVT, _, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1472,6 +1494,7 @@ mod test {
                     state_root_validator: state_root(),
                     block_validator: block_validator(),
                     block_policy: block_policy(),
+                    reserve_balance_cache: reserve_balance_cache(),
                     beneficiary: EthAddress::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,
@@ -1623,6 +1646,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1633,6 +1657,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1686,6 +1711,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1696,6 +1722,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1729,6 +1756,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1739,6 +1767,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1787,6 +1816,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1797,6 +1827,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1836,6 +1867,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1846,6 +1878,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1923,6 +1956,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1933,6 +1967,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -1972,6 +2007,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -1982,6 +2018,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2044,6 +2081,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2054,6 +2092,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2241,6 +2280,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRoot,
@@ -2251,6 +2291,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || StateRoot::new(SeqNum(1)),
@@ -2274,6 +2315,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRoot,
@@ -2284,6 +2326,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || StateRoot::new(SeqNum(1)),
@@ -2339,6 +2382,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRoot,
@@ -2349,6 +2393,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || StateRoot::new(SeqNum(5)),
@@ -2418,6 +2463,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             MissingNextStateRoot,
@@ -2428,6 +2474,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             MissingNextStateRoot::default,
@@ -2497,6 +2544,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRoot,
@@ -2507,6 +2555,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || StateRoot::new(SeqNum(1)),
@@ -2597,6 +2646,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2607,6 +2657,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2686,6 +2737,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2696,6 +2748,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2782,6 +2835,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2792,6 +2846,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2839,6 +2894,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2849,6 +2905,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2878,6 +2935,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -2888,6 +2946,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -2992,6 +3051,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3002,6 +3062,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3053,6 +3114,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3063,6 +3125,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3120,6 +3183,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3130,6 +3194,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3251,6 +3316,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3261,6 +3327,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3373,6 +3440,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3383,6 +3451,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3512,6 +3581,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3522,6 +3592,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3660,6 +3731,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3670,6 +3742,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3776,6 +3849,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3786,6 +3860,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3845,6 +3920,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3855,6 +3931,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3913,6 +3990,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3923,6 +4001,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -3973,6 +4052,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -3983,6 +4063,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -4077,6 +4158,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             BlockPolicyType,
+            ReserveBalanceCacheType,
             BlockValidatorType,
             _,
             StateRootValidatorType,
@@ -4087,6 +4169,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || MockValidator,
             MockTxPool::default(),
             || NopStateRoot,
@@ -4226,6 +4309,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4238,7 +4322,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4277,6 +4366,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4289,7 +4379,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4328,6 +4423,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4340,7 +4436,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4406,6 +4507,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4418,7 +4520,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4507,6 +4614,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4519,7 +4627,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4613,6 +4726,7 @@ mod test {
             SignatureType,
             SignatureCollectionType,
             EthBlockPolicy,
+            ReserveBalanceCacheType,
             EthValidator,
             _,
             StateRootValidatorType,
@@ -4625,7 +4739,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || EthValidator::new(10000, u64::MAX),
             EthTxPool::default(),
             || NopStateRoot,

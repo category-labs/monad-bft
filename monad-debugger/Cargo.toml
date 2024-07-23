@@ -28,6 +28,7 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
 wasm-bindgen = { workspace = true }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 console_error_panic_hook = { workspace = true }
 

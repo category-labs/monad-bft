@@ -5,6 +5,7 @@ use monad_consensus_types::{
     txpool::MockTxPool,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_multi_sig::MultiSig;
@@ -23,6 +24,7 @@ impl SwarmRelation for QuicSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
     type TransportMessage = Bytes;
 

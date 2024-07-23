@@ -12,6 +12,7 @@ use monad_consensus_types::{
     payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     fetch_metric,
@@ -41,6 +42,7 @@ fn many_nodes_noser() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -101,6 +103,7 @@ fn many_nodes_quic_latency() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -199,6 +202,7 @@ fn many_nodes_quic_bw() {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 SeqNum(10_000_000), // state_root_delay

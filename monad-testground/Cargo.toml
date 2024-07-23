@@ -26,6 +26,7 @@ monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }

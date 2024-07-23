@@ -12,6 +12,7 @@ use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
@@ -36,6 +37,7 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -103,6 +105,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
         delta,                // delta
@@ -131,6 +134,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,                // delta
@@ -148,6 +152,7 @@ fn forkpoint_restart_f(blocks_before_failure: SeqNum, recovery_time: SeqNum, epo
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,                // delta
@@ -340,6 +345,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
         delta,                // delta
@@ -378,6 +384,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,                // delta
@@ -395,6 +402,7 @@ fn forkpoint_restart_below_all(blocks_before_failure: SeqNum, epoch_length: SeqN
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,                // delta

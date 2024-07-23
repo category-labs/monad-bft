@@ -39,6 +39,8 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
+monad-triedb-cache = { path = "../monad-triedb-cache" }
 
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -52,6 +54,7 @@ opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true }
+sorted_vector_map = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }

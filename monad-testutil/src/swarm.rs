@@ -21,6 +21,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
+    reserve_balance_cache: impl Fn() -> S::ReserveBalanceCacheType,
     state_root_validator: impl Fn() -> S::StateRootValidator,
     async_state_verify: impl Fn(fn(Stake) -> Stake) -> S::AsyncStateRootVerify,
 
@@ -36,6 +37,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::SignatureType,
         S::SignatureCollectionType,
         S::BlockPolicyType,
+        S::ReserveBalanceCacheType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -73,6 +75,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             block_policy: block_policy(),
+            reserve_balance_cache: reserve_balance_cache(),
             state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(state_root_quorum_threshold),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),

@@ -8,6 +8,7 @@ use monad_consensus_types::{
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
+use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_types::*;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -105,7 +106,11 @@ impl Safety {
     /// Make a Vote if it's safe to vote in the round. Set the commit field if
     /// QC formed on the voted block can cause a commit: `block.qc.round` is
     /// consecutive with `block.round`
-    pub fn make_vote<SCT: SignatureCollection, BPT: BlockPolicy<SCT>>(
+    pub fn make_vote<
+        SCT: SignatureCollection,
+        RBCT: ReserveBalanceCacheTrait,
+        BPT: BlockPolicy<SCT, RBCT>,
+    >(
         &mut self,
         block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,

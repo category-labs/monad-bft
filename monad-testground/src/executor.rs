@@ -15,6 +15,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor};
 use monad_executor_glue::{
@@ -156,6 +157,7 @@ type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
     PassthruBlockPolicy,
+    PassthruReserveBalanceCache,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockTxPool,
@@ -204,6 +206,7 @@ where
         transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
+        reserve_balance_cache: PassthruReserveBalanceCache {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,

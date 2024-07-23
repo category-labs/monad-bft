@@ -14,6 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_executor_glue::{Command, MempoolEvent, MonadEvent, RouterCommand};
 use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
@@ -28,51 +29,57 @@ use crate::{MonadState, VerifiedMonadMessage};
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct MempoolChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct MempoolChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, BPT, RBCT>,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     SVT: StateRootValidator,
 {
     txpool: &'a mut TT,
+    block_policy: &'a BPT,
+    reserve_balance_cache: &'a mut RBCT,
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusState<ST, SCT, BPT>,
+    consensus: &'a ConsensusState<ST, SCT, RBCT, BPT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT)>,
 }
 
 pub(super) enum MempoolCommand<PT: PubKey> {
     ForwardTxns(Vec<NodeId<PT>>, Vec<Bytes>),
 }
 
-impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
+    MempoolChildState<'a, ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BPT: BlockPolicy<SCT>,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, BPT>,
-    BVT: BlockValidator<SCT, BPT>,
+    TT: TxPool<SCT, BPT, RBCT>,
+    BVT: BlockValidator<SCT, RBCT, BPT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
             metrics: &mut monad_state.metrics,
+            block_policy: &monad_state.block_policy,
+            reserve_balance_cache: &mut monad_state.reserve_balance_cache,
 
             nodeid: &monad_state.nodeid,
             consensus: &monad_state.consensus,
@@ -105,7 +112,11 @@ where
                 let txs = txns
                     .into_iter()
                     .filter_map(|tx| {
-                        if let Err(err) = self.txpool.insert_tx(tx.clone()) {
+                        if let Err(err) = self.txpool.insert_tx(
+                            tx.clone(),
+                            self.block_policy,
+                            self.reserve_balance_cache,
+                        ) {
                             self.metrics.txpool_events.dropped_txns += 1;
                             tracing::warn!("failed to insert rpc tx: {:?}", err);
                             None
@@ -127,7 +138,10 @@ where
             }
             MempoolEvent::ForwardedTxns { sender, txns } => {
                 for tx in txns {
-                    if let Err(err) = self.txpool.insert_tx(tx) {
+                    if let Err(err) =
+                        self.txpool
+                            .insert_tx(tx, self.block_policy, self.reserve_balance_cache)
+                    {
                         tracing::warn!(?sender, "failed to insert forwarded tx: {:?}", err);
                     } else {
                         self.metrics.txpool_events.external_inserted_txns += 1;

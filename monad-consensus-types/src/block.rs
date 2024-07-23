@@ -2,6 +2,7 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
+use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -202,7 +203,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 }
 
 /// Trait that represents how inner contents of a block should be validated
-pub trait BlockPolicy<SCT: SignatureCollection> {
+pub trait BlockPolicy<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> {
     type ValidatedBlock: Sized
         + Clone
         + PartialEq
@@ -216,20 +217,27 @@ pub trait BlockPolicy<SCT: SignatureCollection> {
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        reserve_balance_cache: &mut RBCT,
     ) -> bool;
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 }
 
-impl<SCT: SignatureCollection, T: BlockPolicy<SCT> + ?Sized> BlockPolicy<SCT> for Box<T> {
+impl<
+        SCT: SignatureCollection,
+        RBCT: ReserveBalanceCacheTrait,
+        T: BlockPolicy<SCT, RBCT> + ?Sized,
+    > BlockPolicy<SCT, RBCT> for Box<T>
+{
     type ValidatedBlock = T::ValidatedBlock;
 
     fn check_coherency(
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        reserve_balance_cache: &mut RBCT,
     ) -> bool {
-        (**self).check_coherency(block, extending_blocks)
+        (**self).check_coherency(block, extending_blocks, reserve_balance_cache)
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
@@ -241,10 +249,17 @@ impl<SCT: SignatureCollection, T: BlockPolicy<SCT> + ?Sized> BlockPolicy<SCT> fo
 #[derive(Copy, Clone, Default)]
 pub struct PassthruBlockPolicy;
 
-impl<SCT: SignatureCollection> BlockPolicy<SCT> for PassthruBlockPolicy {
+impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> BlockPolicy<SCT, RBCT>
+    for PassthruBlockPolicy
+{
     type ValidatedBlock = Block<SCT>;
 
-    fn check_coherency(&self, _: &Self::ValidatedBlock, _: Vec<&Self::ValidatedBlock>) -> bool {
+    fn check_coherency(
+        &self,
+        _: &Self::ValidatedBlock,
+        _: Vec<&Self::ValidatedBlock>,
+        _: &mut RBCT,
+    ) -> bool {
         true
     }
 

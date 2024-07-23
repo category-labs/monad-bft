@@ -16,6 +16,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
+    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
     use monad_mock_swarm::{
         fetch_metric,
         mock_swarm::SwarmBuilder,
@@ -45,6 +46,7 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type BlockPolicyType = PassthruBlockPolicy;
+        type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -157,6 +159,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -250,6 +253,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -408,6 +412,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || {
                 StateRoot::new(
                     SeqNum(10_000_000), // state_root_delay
@@ -594,6 +599,7 @@ mod test {
             MockTxPool::default,
             || MockValidator,
             || PassthruBlockPolicy,
+            || PassthruReserveBalanceCache,
             || {
                 StateRoot::new(
                     SeqNum(4), // state_root_delay

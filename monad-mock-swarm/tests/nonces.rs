@@ -17,6 +17,7 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
+    use monad_eth_reserve_balance::PassthruReserveBalanceCache;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
@@ -42,11 +43,13 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use reth_primitives::B256;
+    use sorted_vector_map::SortedVectorMap;
     pub struct EthSwarm;
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
         type BlockPolicyType = EthBlockPolicy;
+        type ReserveBalanceCacheType = PassthruReserveBalanceCache;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -89,7 +92,12 @@ mod test {
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
+                execution_delay: 0,
+                max_reserve_balance: 0,
+                txn_cache: SortedVectorMap::new(),
+                reserve_balance_check_mode: 0,
             },
+            || PassthruReserveBalanceCache,
             || {
                 StateRoot::new(
                     SeqNum(4), // state_root_delay

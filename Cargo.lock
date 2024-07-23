@@ -3423,6 +3423,7 @@ dependencies = [
  "bytes",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-testutil",
  "monad-tracing-counter",
@@ -3482,6 +3483,7 @@ dependencies = [
  "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-multi-sig",
  "monad-proto",
@@ -3508,6 +3510,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
+ "monad-eth-reserve-balance",
  "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-txpool",
@@ -3520,6 +3523,7 @@ dependencies = [
  "rand",
  "rayon",
  "reth-primitives",
+ "sorted_vector_map",
  "test-case",
  "tracing",
  "tracing-subscriber",
@@ -3535,6 +3539,7 @@ dependencies = [
  "bytes",
  "hex",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-proto",
  "monad-types",
@@ -3631,6 +3636,7 @@ dependencies = [
  "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-executor-glue",
  "monad-mock-swarm",
  "monad-router-scheduler",
@@ -3652,10 +3658,12 @@ dependencies = [
  "bytes",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-tx",
  "monad-eth-types",
  "monad-types",
  "rand",
+ "sorted_vector_map",
  "tracing",
 ]
 
@@ -3667,8 +3675,19 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-reserve-balance",
  "monad-eth-tx",
  "monad-eth-types",
+ "monad-triedb-cache",
+ "tracing",
+]
+
+[[package]]
+name = "monad-eth-reserve-balance"
+version = "0.1.0"
+dependencies = [
+ "monad-eth-types",
+ "monad-types",
  "tracing",
 ]
 
@@ -3709,6 +3728,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-reserve-balance",
  "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-types",
@@ -3880,6 +3900,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
+ "monad-eth-reserve-balance",
  "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-txpool",
@@ -3904,6 +3925,7 @@ dependencies = [
  "rayon",
  "rcgen",
  "reth-primitives",
+ "sorted_vector_map",
  "test-case",
  "tracing",
  "tracing-core",
@@ -3947,6 +3969,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
+ "monad-eth-reserve-balance",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
@@ -3958,6 +3981,7 @@ dependencies = [
  "monad-quic",
  "monad-secp",
  "monad-state",
+ "monad-triedb-cache",
  "monad-types",
  "monad-updaters",
  "monad-validator",
@@ -3968,6 +3992,7 @@ dependencies = [
  "opentelemetry_sdk",
  "rand_chacha",
  "serde",
+ "sorted_vector_map",
  "thiserror",
  "tokio",
  "toml 0.7.8",
@@ -4020,6 +4045,7 @@ dependencies = [
  "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-mock-swarm",
  "monad-multi-sig",
  "monad-router-scheduler",
@@ -4130,6 +4156,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-executor-glue",
  "monad-multi-sig",
@@ -4162,6 +4189,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4196,6 +4224,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4236,9 +4265,28 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
  "log",
+ "monad-eth-types",
+]
+
+[[package]]
+name = "monad-triedb-cache"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "monad-crypto",
+ "monad-eth-reserve-balance",
+ "monad-eth-types",
+ "monad-triedb",
+ "monad-types",
+ "rand",
+ "sorted_vector_map",
+ "tracing",
 ]
 
 [[package]]
@@ -4288,6 +4336,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-eth-types",
  "monad-executor-glue",
  "monad-mock-swarm",
@@ -4365,6 +4414,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-reserve-balance",
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",

@@ -1,4 +1,6 @@
 use bytes::Bytes;
+use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCacheTrait};
+use monad_types::SeqNum;
 
 use crate::{
     block::{BlockPolicy, PassthruBlockPolicy},
@@ -15,7 +17,12 @@ pub enum TxPoolInsertionError {
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
-pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
+pub trait TxPool<
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, RBCT>,
+    RBCT: ReserveBalanceCacheTrait,
+>
+{
     /// Handle transactions:
     /// 1. submitted by users via RPC
     /// 2. forwarded by other validators/full-nodes
@@ -26,36 +33,61 @@ pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
     /// Because of this, for now, tx well-formedness must be checked again inside the insert_tx
     /// implementation. Ideally, the Bytes type should be replaced with a DecodedTx type which
     /// TxPool is generic over.
-    fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError>;
+    fn insert_tx(
+        &mut self,
+        tx: Bytes,
+        block_policy: &BPT,
+        reserve_balance_cache: &mut RBCT,
+    ) -> Result<(), TxPoolInsertionError>;
 
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
         &mut self,
+        proposed_seq_num: SeqNum,
         tx_limit: usize,
         gas_limit: u64,
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
+        reserve_balance_cache: &mut RBCT,
     ) -> FullTransactionList;
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
 }
 
-impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
-    for Box<T>
+impl<
+        SCT: SignatureCollection,
+        BPT: BlockPolicy<SCT, RBCT>,
+        RBCT: ReserveBalanceCacheTrait,
+        T: TxPool<SCT, BPT, RBCT> + ?Sized,
+    > TxPool<SCT, BPT, RBCT> for Box<T>
 {
-    fn insert_tx(&mut self, tx: Bytes) -> Result<(), TxPoolInsertionError> {
-        (**self).insert_tx(tx)
+    fn insert_tx(
+        &mut self,
+        tx: Bytes,
+        block_policy: &BPT,
+        reserve_balance_cache: &mut RBCT,
+    ) -> Result<(), TxPoolInsertionError> {
+        (**self).insert_tx(tx, block_policy, reserve_balance_cache)
     }
 
     fn create_proposal(
         &mut self,
+        proposed_seq_num: SeqNum,
         tx_limit: usize,
         gas_limit: u64,
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
+        reserve_balance_cache: &mut RBCT,
     ) -> FullTransactionList {
-        (**self).create_proposal(tx_limit, gas_limit, block_policy, pending_blocks)
+        (**self).create_proposal(
+            proposed_seq_num,
+            tx_limit,
+            gas_limit,
+            block_policy,
+            pending_blocks,
+            reserve_balance_cache,
+        )
     }
 
     fn clear(&mut self) {
@@ -82,17 +114,28 @@ impl Default for MockTxPool {
     }
 }
 
-impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
-    fn insert_tx(&mut self, _tx: Bytes) -> Result<(), TxPoolInsertionError> {
+impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy, PassthruReserveBalanceCache>
+    for MockTxPool
+{
+    fn insert_tx(
+        &mut self,
+        _tx: Bytes,
+        _block_policy: &PassthruBlockPolicy,
+        _reserve_balance_cache: &mut PassthruReserveBalanceCache,
+    ) -> Result<(), TxPoolInsertionError> {
         Ok(())
     }
 
     fn create_proposal(
         &mut self,
+        proposed_seq_num: SeqNum,
         tx_limit: usize,
         _gas_limit: u64,
         _block_policy: &PassthruBlockPolicy,
-        _pending_blocks: Vec<&<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock>,
+        _pending_blocks: Vec<
+            &<PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
+        >,
+        _reserve_balance_cache: &mut PassthruReserveBalanceCache,
     ) -> FullTransactionList {
         if tx_limit == 0 {
             FullTransactionList::empty()

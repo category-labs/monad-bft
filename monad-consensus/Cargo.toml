@@ -15,6 +15,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 bytes = { workspace = true }
 prost = { workspace = true }

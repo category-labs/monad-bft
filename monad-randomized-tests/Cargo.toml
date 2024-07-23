@@ -17,6 +17,7 @@ monad-updaters = { path = "../monad-updaters" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
+monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 
 inventory = { workspace = true }
 simple-xml-builder = { workspace = true }

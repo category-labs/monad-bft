@@ -8,6 +8,7 @@ use monad_consensus_types::{
     payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_mock_swarm::{
     fetch_metric,
     mock_swarm::SwarmBuilder,
@@ -76,6 +77,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         MockTxPool::default,
         || MockValidator,
         || PassthruBlockPolicy,
+        || PassthruReserveBalanceCache,
         || {
             StateRoot::new(
                 // avoid state_root trigger in rand latency setting

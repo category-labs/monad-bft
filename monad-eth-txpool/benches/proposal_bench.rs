@@ -6,15 +6,17 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_reserve_balance::PassthruReserveBalanceCache;
 use monad_eth_txpool::EthTxPool;
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
-use monad_types::GENESIS_SEQ_NUM;
+use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use reth_primitives::{
     sign_message, Address, Transaction, TransactionKind, TransactionSigned, TxLegacy, B256,
 };
+use sorted_vector_map::SortedVectorMap;
 
 const NUM_TRANSACTIONS: usize = 10_000;
 const TRANSACTION_SIZE_BYTES: usize = 400;
@@ -45,6 +47,7 @@ struct BenchController {
     pub transactions: FullTransactionList,
     pub gas_limit: u64,
     pub block_policy: EthBlockPolicy,
+    pub reserve_balance_cache: PassthruReserveBalanceCache,
 }
 
 type SignatureCollectionType = MultiSig<NopSignature>;
@@ -54,7 +57,12 @@ fn create_pool_and_transactions() -> BenchController {
     let eth_block_policy = EthBlockPolicy {
         account_nonces: BTreeMap::new(),
         last_commit: GENESIS_SEQ_NUM,
+        execution_delay: 0,
+        max_reserve_balance: 0,
+        txn_cache: SortedVectorMap::new(),
+        reserve_balance_check_mode: 0,
     };
+    let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);
 
@@ -74,9 +82,11 @@ fn create_pool_and_transactions() -> BenchController {
     let bytes = Bytes::copy_from_slice(&txns_encoded);
 
     for txn in txns.iter() {
-        TxPool::<SignatureCollectionType, EthBlockPolicy>::insert_tx(
+        TxPool::<SignatureCollectionType, EthBlockPolicy, PassthruReserveBalanceCache>::insert_tx(
             &mut txpool,
             Bytes::from(txn.envelope_encoded()),
+            &eth_block_policy,
+            &mut reserve_balance_cache,
         );
     }
     let txns_list = FullTransactionList::new(bytes);
@@ -86,6 +96,7 @@ fn create_pool_and_transactions() -> BenchController {
         transactions: txns_list,
         gas_limit: proposal_gas_limit,
         block_policy: eth_block_policy,
+        reserve_balance_cache,
     }
 }
 
@@ -100,12 +111,18 @@ fn criterion_benchmark(c: &mut Criterion) {
                     create_pool_and_transactions,
                     |controller| {
                         perf.enable();
-                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                        TxPool::<
+                            SignatureCollectionType,
+                            EthBlockPolicy,
+                            PassthruReserveBalanceCache,
+                        >::create_proposal(
                             &mut controller.pool,
+                            controller.block_policy.last_commit + SeqNum(1),
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
+                            &mut controller.reserve_balance_cache,
                         );
                         perf.disable();
                     },
@@ -122,12 +139,18 @@ fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched_ref(
                     create_pool_and_transactions,
                     |controller| {
-                        TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                        TxPool::<
+                            SignatureCollectionType,
+                            EthBlockPolicy,
+                            PassthruReserveBalanceCache,
+                        >::create_proposal(
                             &mut controller.pool,
+                            controller.block_policy.last_commit + SeqNum(1),
                             proposal_txn_limit,
                             controller.gas_limit,
                             &controller.block_policy,
                             Default::default(),
+                            &mut controller.reserve_balance_cache,
                         );
                     },
                     BatchSize::SmallInput,
