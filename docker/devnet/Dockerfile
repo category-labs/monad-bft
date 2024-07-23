@@ -78,10 +78,8 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node && \
-    mv target/release/monad-node node
-
-# TODO: uncomment line below when monad-bft uses triedb
-# RUN cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
+    mv target/release/monad-node node && \
+    cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
 
 # Runner
 #FROM ubuntu:24.04
