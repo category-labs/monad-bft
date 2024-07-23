@@ -71,7 +71,7 @@ COPY . .
 
 # default to mock versions
 ARG ETH_CALL_TARGET=mock_eth_call
-ARG TRIEDB_TARGET=triedb_driver_mock
+ARG TRIEDB_TARGET=triedb_driver
 
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry     \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
