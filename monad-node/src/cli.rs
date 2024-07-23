@@ -23,15 +23,15 @@ pub struct Cli {
     #[arg(long)]
     pub forkpoint_config: PathBuf,
 
-    // Set the path where the write-ahead log will be stored
+    /// Set the path where the write-ahead log will be stored
     #[arg(long)]
     pub wal_path: PathBuf,
 
-    // Set the path where the execution ledger will be stored
+    /// Set the path where the execution ledger will be stored
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
-    //
-    // Set the path where the blockdb will be stored
+
+    /// Set the path where the blockdb will be stored
     #[arg(long)]
     pub blockdb_path: PathBuf,
 

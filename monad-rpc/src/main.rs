@@ -78,7 +78,9 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
             ))
         }
         RequestWrapper::Batch(json_batch_request) => {
-            if json_batch_request.is_empty() {
+            if json_batch_request.is_empty()
+                || json_batch_request.len() > app_state.batch_request_limit as usize
+            {
                 return HttpResponse::Ok()
                     .json(Response::from_error(JsonRpcError::invalid_request()));
             }
@@ -99,6 +101,22 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
                 .map(|(request_id, response)| Response::from_result(request_id, response))
                 .collect::<Vec<_>>();
             ResponseWrapper::Batch(batch_response)
+        }
+    };
+
+    // check if the response size exceeds the limit
+    // return invalid request error if it does
+    match serde_json::to_vec(&response) {
+        Ok(bytes) => {
+            if bytes.len() > app_state.max_response_size as usize {
+                debug!("response exceed size limit: {body:?} => {response:?}");
+                return HttpResponse::Ok()
+                    .json(Response::from_error(JsonRpcError::invalid_request()));
+            }
+        }
+        Err(e) => {
+            debug!("response serialization error: {e}");
+            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::internal_error()));
         }
     };
 
@@ -359,6 +377,8 @@ struct MonadRpcResources {
     blockdb_reader: Option<BlockDbEnv>,
     triedb_reader: Option<TriedbEnv>,
     execution_ledger_path: ExecutionLedgerPath,
+    batch_request_limit: u16,
+    max_response_size: u32,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -375,12 +395,16 @@ impl MonadRpcResources {
         blockdb_reader: Option<BlockDbEnv>,
         triedb_reader: Option<TriedbEnv>,
         execution_ledger_path: Option<PathBuf>,
+        batch_request_limit: u16,
+        max_response_size: u32,
     ) -> Self {
         Self {
             mempool_sender,
             blockdb_reader,
             triedb_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
+            batch_request_limit,
+            max_response_size,
         }
     }
 }
@@ -450,6 +474,8 @@ async fn main() -> std::io::Result<()> {
         blockdb_env,
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
         args.execution_ledger_path,
+        args.batch_request_limit,
+        args.max_response_size,
     );
 
     // main server app
@@ -514,6 +540,8 @@ mod tests {
             blockdb_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
+            batch_request_limit: 5,
+            max_response_size: 25_000_000,
         }))
         .await;
         (app, m)
@@ -665,6 +693,15 @@ mod tests {
             Response::new(None, Some(JsonRpcError::method_not_found()), Value::Number(Number::from(1))),
         ],
     ); "partial success")]
+    #[test_case(json!([
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+        {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
+    ]),
+    ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)); "exceed batch request limit")]
     #[actix_web::test]
     async fn json_rpc_specification_batch_compliance(
         payload: Value,

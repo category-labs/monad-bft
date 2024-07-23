@@ -111,6 +111,8 @@ mod tests {
             blockdb_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
+            batch_request_limit: 1000,
+            max_response_size: 25_000_000,
         };
         (
             MonadRpcResourcesState { ipc_receiver },

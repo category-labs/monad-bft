@@ -137,7 +137,7 @@ docker build --builder insecure --allow security.insecure \
 
 if [ "$mode" == "run" ]; then
     cd $vol_root
-    docker compose up build_triedb monad_execution monad_node monad_rpc
+    docker compose up build_triedb monad_execution monad_node monad_rpc --build
 
     exit 0
 elif [ "$mode" == "test" ]; then
