@@ -416,6 +416,13 @@ where
                     )),
                 }
             }
+            ControlPanelEvent::UpdateLogFilter(filter) => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::UpdateLogFilter(
+                    ProtoUpdateLogFilter {
+                        filter: filter.clone(),
+                    },
+                )),
+            },
         }
     }
 }
@@ -451,6 +458,9 @@ where
                             ))?
                             .try_into()?,
                     ))
+                }
+                proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
+                    ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)
                 }
             }
         })
@@ -748,8 +758,8 @@ mod test {
         let mempool_event_bytes: Bytes = mempool_event.serialize();
         assert_eq!(
             mempool_event_bytes,
-            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType,SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
-        )
+            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType, SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
+            )
         )
     }
 }

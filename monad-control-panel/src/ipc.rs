@@ -23,6 +23,9 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, error, warn};
+use tracing_subscriber::{reload::Handle, EnvFilter, Registry};
+
+pub type ReloadHandle = Handle<EnvFilter, Registry>;
 
 pub struct ControlPanelIpcReceiver<ST, SCT>
 where
@@ -33,6 +36,8 @@ where
     client_sender: broadcast::Sender<ControlPanelCommand<SCT>>,
 
     metrics: ExecutorMetrics,
+
+    reload_handle: ReloadHandle,
 }
 
 impl<ST, SCT> Stream for ControlPanelIpcReceiver<ST, SCT>
@@ -52,7 +57,11 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(bind_path: PathBuf, buf_size: usize) -> Result<Self, std::io::Error> {
+    pub fn new(
+        bind_path: PathBuf,
+        reload_handle: ReloadHandle,
+        buf_size: usize,
+    ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::channel(buf_size);
         let (client_sender, _client_receiver) =
             broadcast::channel::<ControlPanelCommand<SCT>>(buf_size);
@@ -61,6 +70,7 @@ where
         let r = Self {
             receiver,
             client_sender,
+            reload_handle,
 
             metrics: Default::default(),
         };
@@ -137,30 +147,12 @@ where
                         m => error!("unhandled message {:?}", m),
                     },
                 },
-                ControlPanelCommand::Write(w) => match w {
-                    WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
-                        ClearMetrics::Request => {
-                            let event =
-                                MonadEvent::ControlPanelEvent(ControlPanelEvent::ClearMetricsEvent);
-                            let Ok(_) = event_channel.send(event.clone()).await else {
-                                error!("failed to forward request {:?} to executor, closing connection", &event);
-                                break;
-                            };
-                        }
-                        m => error!("unhandled message {:?}", m),
-                    },
-                    WriteCommand::UpdateValidatorSet(update_validator_set) => {
-                        match update_validator_set {
-                            UpdateValidatorSet::Request(parsed_validator_set) => {
-                                let ParsedValidatorData::<SCT> { epoch, validators } =
-                                    parsed_validator_set;
-                                let validators =
-                                    validators.into_iter().map(Into::into).collect::<Vec<_>>();
-                                let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
-                                    ControlPanelEvent::UpdateValidators((
-                                        ValidatorSetData(validators),
-                                        epoch,
-                                    )),
+                ControlPanelCommand::Write(w) => {
+                    match w {
+                        WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
+                            ClearMetrics::Request => {
+                                let event = MonadEvent::ControlPanelEvent(
+                                    ControlPanelEvent::ClearMetricsEvent,
                                 );
                                 let Ok(_) = event_channel.send(event.clone()).await else {
                                     error!("failed to forward request {:?} to executor, closing connection", &event);
@@ -168,10 +160,40 @@ where
                                 };
                             }
                             m => error!("unhandled message {:?}", m),
+                        },
+                        WriteCommand::UpdateValidatorSet(update_validator_set) => {
+                            match update_validator_set {
+                                UpdateValidatorSet::Request(parsed_validator_set) => {
+                                    let ParsedValidatorData::<SCT> { epoch, validators } =
+                                        parsed_validator_set;
+                                    let validators =
+                                        validators.into_iter().map(Into::into).collect::<Vec<_>>();
+                                    let event = MonadEvent::<ST, SCT>::ControlPanelEvent(
+                                        ControlPanelEvent::UpdateValidators((
+                                            ValidatorSetData(validators),
+                                            epoch,
+                                        )),
+                                    );
+                                    let Ok(_) = event_channel.send(event.clone()).await else {
+                                        error!("failed to forward request {:?} to executor, closing connection", &event);
+                                        break;
+                                    };
+                                }
+                                m => error!("unhandled message {:?}", m),
+                            }
                         }
+                        WriteCommand::UpdateLogFilter(filter) => {
+                            let event = MonadEvent::ControlPanelEvent(
+                                ControlPanelEvent::UpdateLogFilter(filter),
+                            );
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        m => error!("unhandled message {:?}", m),
                     }
-                    m => error!("unhandled message {:?}", m),
-                },
+                }
             }
         }
     }
@@ -186,6 +208,19 @@ where
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
+            if let ControlPanelCommand::Write(WriteCommand::UpdateLogFilter(filter)) = &command {
+                match EnvFilter::builder().parse(filter) {
+                    Ok(filter) => {
+                        if let Err(e) = self.reload_handle.reload(filter) {
+                            panic!("failed to update logging filter: {:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("failed to parse logging filter: {:?}", e);
+                    }
+                }
+            }
+
             debug!(num_clients = %self.client_sender.receiver_count(), "broadcasting {:?} to clients", &command);
             self.client_sender
                 .send(command)

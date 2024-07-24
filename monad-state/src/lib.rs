@@ -1034,7 +1034,7 @@ where
                         root_parent_chain.push(block);
                         let delay = self.state_root_validator.get_delay();
                         if block_parent_id != GENESIS_BLOCK_ID
-                            && (block_is_empty ||// if block is empty, keep requesting until we hit non-empty
+                            && (block_is_empty || // if block is empty, keep requesting until we hit non-empty
                             block_seq_num
                                 > root_seq_num.max(delay + NUM_BLOCK_HASH) - delay - NUM_BLOCK_HASH)
                         {
@@ -1096,6 +1096,11 @@ where
                     vec![Command::StateRootHashCommand(
                         StateRootHashCommand::UpdateValidators((validators, epoch)),
                     )]
+                }
+                ControlPanelEvent::UpdateLogFilter(filter) => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
+                        WriteCommand::UpdateLogFilter(filter),
+                    ))]
                 }
             },
             MonadEvent::TimestampUpdateEvent(t) => {

@@ -132,12 +132,16 @@ message ProtoMetricsTimeout {}
 
 message ProtoGetValidatorSetEvent {}
 message ProtoClearMetricsEvent {}
+message ProtoUpdateLogFilter {
+  string filter = 1;
+}
 
 message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
     ProtoClearMetricsEvent clear_metrics_event = 2;
     ProtoUpdateValidatorsEvent update_validators_event = 3;
+    ProtoUpdateLogFilter update_log_filter = 4;
   }
 }
 

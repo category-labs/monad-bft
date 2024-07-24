@@ -36,6 +36,7 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
+use tracing_subscriber::EnvFilter;
 
 pub enum MonadP2PGossipConfig<ST: CertificateSignatureRecoverable> {
     Simple(MockGossipConfig<CertificateSignaturePubKey<ST>>),
@@ -107,6 +108,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
+    let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::MonadP2P {
@@ -148,8 +150,12 @@ where
             3,   // queued_batches_watermark
         )
         .expect("uds bind failed"),
-        control_panel: ControlPanelIpcReceiver::new(generate_uds_path().into(), 1000)
-            .expect("usd bind failed"),
+        control_panel: ControlPanelIpcReceiver::new(
+            generate_uds_path().into(),
+            reload_handle,
+            1000,
+        )
+        .expect("usd bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: MockStateSyncExecutor::new(
             state_backend,

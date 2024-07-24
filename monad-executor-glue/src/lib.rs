@@ -130,6 +130,7 @@ pub enum WriteCommand<SCT: SignatureCollection> {
     ))]
     UpdateValidatorSet(UpdateValidatorSet<SCT>),
     ClearMetrics(ClearMetrics),
+    UpdateLogFilter(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -450,6 +451,7 @@ where
     GetValidatorSet,
     ClearMetricsEvent,
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
+    UpdateLogFilter(String),
 }
 
 /// MonadEvent are inputs to MonadState

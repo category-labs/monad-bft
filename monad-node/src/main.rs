@@ -55,6 +55,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
+    reload::Handle,
     EnvFilter, Registry,
 };
 
@@ -109,8 +110,11 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         _ => None,
     };
 
+    let (filter, reload_handle) =
+        tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
     let subscriber = Registry::default()
-        .with(EnvFilter::from_default_env())
+        .with(filter)
         .with(
             FmtLayer::default()
                 .json()
@@ -130,12 +134,13 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
             .expect("failed to build otel monad-coordinator")
     });
 
-    run(maybe_coordinator_provider, node_state).await
+    run(maybe_coordinator_provider, node_state, reload_handle).await
 }
 
 async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
+    reload_handle: Handle<EnvFilter, Registry>,
 ) -> Result<(), ()> {
     let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
         .validators
@@ -229,8 +234,12 @@ async fn run(
             node_state.node_config.ipc_queued_batches_watermark as usize, // queued_batches_watermark
         )
         .expect("uds bind failed"),
-        control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
-            .expect("uds bind failed"),
+        control_panel: ControlPanelIpcReceiver::new(
+            node_state.control_panel_ipc_path,
+            reload_handle,
+            1000,
+        )
+        .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],

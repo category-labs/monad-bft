@@ -2,6 +2,7 @@ use std::{io::Error, path::PathBuf};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
+use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     signature_collection::SignatureCollection, validator_data::ParsedValidatorData,
@@ -167,7 +168,28 @@ fn main() -> Result<(), Error> {
             println!("{}", serde_json::to_string(&response).unwrap());
         }
 
-        Commands::UpdateLogFilter(_) => todo!("UpdateLogFilter not implemented"),
+        Commands::UpdateLogFilter(filter) => match (filter.filter, filter.file) {
+            (Some(filter), None) => {
+                rt.block_on(write.send(Command::Write(WriteCommand::UpdateLogFilter(filter))))?;
+
+                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                println!("{}", serde_json::to_string(&response).unwrap());
+            }
+            (None, Some(file)) => {
+                rt.block_on(
+                    write.send(Command::Write(WriteCommand::UpdateLogFilter(
+                        std::fs::read_to_string(file)?
+                            .split("\n")
+                            .filter(|s| !s.is_empty())
+                            .join(","),
+                    ))),
+                )?;
+
+                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                println!("{}", serde_json::to_string(&response).unwrap());
+            }
+            _ => unreachable!(),
+        },
     }
 
     Ok(())
