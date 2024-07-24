@@ -5,6 +5,8 @@ import os
 import pathlib
 import rlp
 
+from natsort import natsorted
+
 class Ledger:
     def __init__(self, transactions: set[str]):
         self.transactions = transactions 
@@ -27,14 +29,16 @@ class Ledger:
 class BlockLedger(Ledger):
     def __init__(self, blockpath: str | os.PathLike):
         self.blockpath = blockpath
+        self.blocks = []
 
         transactions = set()
         path = pathlib.Path(blockpath)
-        for block_file in path.iterdir():
+        for block_file in natsorted(path.iterdir()):
             with open(block_file, 'rb') as f:
                 data = f.read()
 
             block = rlp.decode(data, eth.vm.forks.shanghai.ShanghaiBlock).as_dict()
+            self.blocks.append(block)
             transactions |= set(['0x' + txn.hash.hex() for txn in block['transactions']])
         self.block_count = len([*path.iterdir()])
         self.transactions = transactions
@@ -50,3 +54,6 @@ class BlockLedger(Ledger):
             return True
         else:
             return Ledger.__eq__(self, other)
+
+    def get_blocks(self, filter_func = lambda b: True):
+        return list(filter(filter_func, self.blocks))

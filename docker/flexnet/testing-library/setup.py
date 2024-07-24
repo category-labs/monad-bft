@@ -8,6 +8,7 @@ setup(
     install_requires=[
         'eth_account',
         'gitpython',
+        'natsort',
         'py-evm',
         'python-on-whales',
         'requests',

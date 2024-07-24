@@ -20,28 +20,22 @@ from . import generators
 class Flexnet:
     def __init__(self, topology_path: str | os.PathLike):
         self.topology_path = pathlib.Path(topology_path)
-        self.topology = None
-        self.transactions = []
-        self.root_dir = None
-        self.run_id = None
-    
+        self.topology = Topology.from_json(self.topology_path)
+        self.run_id = os.urandom(8).hex()
+        self.run_name = f'{self.topology_path.stem}-{time.strftime("%Y%m%d_%H%M%S")}-{self.run_id}'
+        self.root_dir = pathlib.Path(f'{os.getcwd()}/logs/{self.run_name}')
+
     @contextmanager
     def start_topology(self, gen_config: bool = True):
-        self.create_topology(gen_config)
-        self.run()
+        self.run(gen_config=gen_config)
         try:
             yield self
         finally:
             self.stop()
 
-    def create_topology(self, gen_config: bool = True):
+    def run(self, runtime: int | None = None, blocking: bool = False, gen_config: bool = True):
         # Create output directory
-        self.run_id = os.urandom(8).hex()
-        self.run_name = f'{self.topology_path.stem}-{time.strftime("%Y%m%d_%H%M%S")}-{self.run_id}'
-        self.root_dir = pathlib.Path(f'{os.getcwd()}/logs/{self.run_name}')
         shutil.copytree(self.topology_path.parent, self.root_dir)
-
-        self.topology = Topology.from_json(self.topology_path)
 
         # Build the containers that will be needed
         docker.build(
@@ -113,10 +107,8 @@ class Flexnet:
         generators.TrafficControlScriptGenerator.generate_scripts(self.topology, self.root_dir, self.run_id)
 
         # Create a bridge network
-        network = docker.network.create(self.run_name)
+        self.network = docker.network.create(self.run_name)
 
-    def run(self, runtime: int | None = None, blocking: bool = False):
-        ''' Run the topology for a certain amount of time. runtime=None will run indefinitely until stop() is called manually '''
         self.topology.start_all_nodes(self.root_dir, self.run_name, self.run_id)
         self.topology.print_containers()
         # Give a few seconds for nodes to fully start
@@ -131,10 +123,12 @@ class Flexnet:
         else:
             threading.Thread(target=wait_and_stop).start()
 
+    def set_test_mode(self, is_test_mode: bool = True):
+        self.topology.for_all_nodes(lambda n: n.set_test_mode(is_test_mode))
+
     def stop(self):
         self.topology.stop_all_nodes()
-        net = docker.network.inspect(self.run_name)
-        net.remove()
+        self.network.remove()
 
     def connect(self, rpc_node_name: str):
         rpc_node = self.topology.find_node_by_name(rpc_node_name)
@@ -150,10 +144,6 @@ class Flexnet:
             if ledger1 != ledger2:
                 return False
         return True
-
-    def dump_transaction_data(self, out_file: str | os.PathLike):
-        with open(out_file, 'w') as  f:
-            json.dump(self.transactions, f)
 
     def get_block_ledger(self, node_name: str) -> Ledger:
         return BlockLedger(f'{self.root_dir}/{node_name}/ledger')

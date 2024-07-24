@@ -1,18 +1,14 @@
 FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
-RUN apt update
-RUN apt upgrade -y
-RUN apt-get update
-RUN apt install -y clang curl make ca-certificates pkg-config gnupg software-properties-common wget
+RUN apt-get update && apt-get upgrade -y
+RUN apt-get update && apt-get install -y clang curl make ca-certificates pkg-config gnupg software-properties-common wget
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest
-RUN apt update
-RUN apt install -y libstdc++-13-dev
-RUN apt install -y gcc-13 g++-13
+RUN apt-get update && apt-get install -y libstdc++-13-dev gcc-13 g++-13
 
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   libboost-atomic1.83.0 \
   libboost-container1.83.0 \
   libboost-fiber1.83.0 \
@@ -22,7 +18,7 @@ RUN apt-get install -y \
   libboost-regex1.83.0 \
   libboost-stacktrace1.83.0
 
-RUN apt install -y \
+RUN apt-get update && apt-get install -y \
   libabsl-dev \
   libarchive-dev \
   libbenchmark-dev \
@@ -46,15 +42,14 @@ RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/nul
   | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
 RUN echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
   | tee /etc/apt/sources.list.d/kitware.list >/dev/null
-RUN apt-get update
+RUN apt-get update && apt-get -y install kitware-archive-keyring
 RUN rm /usr/share/keyrings/kitware-archive-keyring.gpg
-RUN apt-get -y install kitware-archive-keyring
-RUN apt-get -y install cmake
+RUN apt-get update && apt-get -y install cmake
 ######## END CMAKE
 
-RUN apt install -y clang libssl-dev
+RUN apt-get update && apt-get install -y clang libssl-dev
 
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
   libboost-fiber1.83-dev \
   libboost-graph1.83-dev \
   libboost-json1.83-dev \

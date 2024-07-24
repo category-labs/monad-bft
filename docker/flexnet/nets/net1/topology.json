@@ -11,14 +11,14 @@
                     "up_Mbps": 100,
                     "down_Mbps": 100,
                     "execution": false,
-                    "rpc": false
+                    "rpc": true
                 },
                 {
                     "name": "node1",
                     "up_Mbps": 100,
                     "down_Mbps": 100,
                     "execution": false,
-                    "rpc": false
+                    "rpc": true
                 }
             ]
         },
@@ -33,14 +33,14 @@
                     "up_Mbps": 100,
                     "down_Mbps": 100,
                     "execution": false,
-                    "rpc": false
+                    "rpc": true
                 },
                 {
                     "name": "node3",
                     "up_Mbps": 100,
                     "down_Mbps": 100,
                     "execution": false,
-                    "rpc": false
+                    "rpc": true
                 }
             ]
         }

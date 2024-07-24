@@ -1,7 +1,7 @@
 import os
 import pathlib
 import python_on_whales
-import time
+import tomllib
 
 from python_on_whales import docker
 
@@ -29,22 +29,29 @@ class Node:
         '--log_level DEBUG '
         '> /monad/logs/execution.log 2>&1'
     ]
-    RUN_CMD = [
-        'bash', '-c',
-        '/monad/scripts/tc.sh; '
-        'mkdir /monad/logs; '
-        'monad-node --secp-identity /monad/config/id-secp '
-        '--bls-identity /monad/config/id-bls '
-        '--node-config /monad/config/node.toml '
-        '--forkpoint-config /monad/config/forkpoint.toml '
-        '--wal-path /monad/wal '
-        '--mempool-ipc-path /monad/mempool.sock '
-        '--control-panel-ipc-path /monad/controlpanel.sock '
-        '--execution-ledger-path /monad/ledger '
-        '--blockdb-path /monad/blockdb '
-        '--triedb-path /monad/triedb '
-        '> /monad/logs/client.log 2>&1'
-    ]
+
+    def _run_cmd(self):
+        extra = ''
+        if self.test_mode:
+            extra += ' test-mode '
+        if self.is_byzantine:
+            extra += ' --byzantine-execution '
+        return [
+            'bash', '-c',
+            '/monad/scripts/tc.sh; '
+            'mkdir /monad/logs; '
+            'monad-node --secp-identity /monad/config/id-secp '
+            '--bls-identity /monad/config/id-bls '
+            '--node-config /monad/config/node.toml '
+            '--forkpoint-config /monad/config/forkpoint.toml '
+            '--wal-path /monad/wal '
+            '--mempool-ipc-path /monad/mempool.sock '
+            '--control-panel-ipc-path /monad/controlpanel.sock '
+            '--execution-ledger-path /monad/ledger '
+            '--blockdb-path /monad/blockdb '
+            f'--triedb-path /monad/triedb {extra} '
+            '> /monad/logs/client.log 2>&1'
+        ]
 
     def __init__(self, name: str, has_execution: bool = False, has_rpc: bool = False, upload_speed: int = 100, download_speed: int = 100):
         self.name = name
@@ -56,9 +63,20 @@ class Node:
         self.execution_container = None
         self.node_container = None
         self.rpc_container = None
+        self.is_byzantine = False
+        self.node_root = None
+        self.test_mode = False
+
+    def set_byzantine(self, is_byzantine: bool = True):
+        self.test_mode = True
+        self.is_byzantine = is_byzantine
+
+    def set_test_mode(self, is_test_mode: bool = True):
+        self.test_mode = is_test_mode
 
     def start(self, root_dir: str | os.PathLike, network_name: str, run_id: str):
-        Node._create_empty_triedb(f'{root_dir}/{self.name}/triedb/test.db')
+        self.node_root = pathlib.Path(f'{root_dir}/{self.name}')
+        Node._create_empty_triedb(self.node_root / 'triedb' / 'test.db')
         if self.has_execution:
             docker.run(
                 image='monad-execution-builder:latest',
@@ -87,7 +105,7 @@ class Node:
             volumes=[(f'{root_dir}/{self.name}', '/monad')],
             cap_add=['NET_ADMIN'],
             detach=True,
-            command=Node.RUN_CMD,
+            command=self._run_cmd(),
             networks=[network_name],
             security_options=[f'seccomp={root_dir}/{self.name}/config/profile.json']
         )
@@ -139,3 +157,11 @@ class Node:
         with open(path, 'wb') as f:
             # 4 GiB
             f.truncate(4 * 1024 * 1024 * 1024)
+
+    def get_beneficiary(self):
+        if not self.is_byzantine:
+            return None
+        with open(self.node_root / 'config' / 'node.toml', 'rb') as f:
+            data = tomllib.load(f)
+            beneficiary = bytearray.fromhex(data['beneficiary'][2:])
+        return beneficiary
