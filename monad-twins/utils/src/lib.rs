@@ -16,7 +16,7 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSche
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_transformer::RandLatencyTransformer;
 use monad_types::NodeId;
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use twin_reader::TWINS_STATE_ROOT_DELAY;
@@ -90,6 +90,7 @@ where
                 validators.validators,
                 monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
             ),
+            MockLedger::default(),
             outbound_pipeline,
             vec![],
             seed,

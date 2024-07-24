@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use monad_consensus_types::{block::BlockType, state::StateBackend};
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
 
-use crate::AccountNonceRetrievable;
+use crate::{AccountNonceRetrievable, StateBackend};
 
 #[derive(Debug, Clone)]
 pub struct InMemoryState {

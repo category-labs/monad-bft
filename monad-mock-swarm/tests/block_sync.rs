@@ -31,7 +31,7 @@ mod test {
         PeriodicTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum};
-    use monad_updaters::state_root_hash::MockStateRootHashNop;
+    use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };
@@ -90,6 +90,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         outbound_pipeline.clone(),
                         vec![],
                         seed.try_into().unwrap(),
@@ -202,6 +203,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -282,6 +284,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -414,6 +417,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(

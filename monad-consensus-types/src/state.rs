@@ -1,4 +1,6 @@
-use monad_eth_types::{EthAccount, EthAddress, Nonce};
+use std::sync::{Arc, Mutex};
+
+use monad_eth_types::{EthAccount, EthAddress};
 
 /// Backend provider of account nonce
 pub trait StateBackend {
@@ -20,3 +22,9 @@ impl StateBackend for NopStateBackend {
 //     }
 
 // }
+impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
+    fn get_account(&self, eth_address: &EthAddress, block: u64) -> Option<EthAccount> {
+        let state = self.lock().unwrap();
+        state.get_account(eth_address, block)
+    }
+}

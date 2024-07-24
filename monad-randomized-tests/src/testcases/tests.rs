@@ -20,7 +20,7 @@ use monad_transformer::{
     ReplayTransformer, TransformerReplayOrder, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
 use crate::RandomizedTest;
@@ -63,6 +63,7 @@ fn random_latency_test(latency_seed: u64) {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
@@ -124,6 +125,7 @@ fn delayed_message_test(latency_seed: u64) {
                     state_builder,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                    MockLedger::default(),
                     vec![
                         GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),

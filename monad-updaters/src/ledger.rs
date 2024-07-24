@@ -1,21 +1,20 @@
-use std::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque},
     marker::{PhantomData, Unpin},
     ops::DerefMut,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
 use futures::Stream;
-use monad_consensus_types::block::Block;
 use monad_consensus_types::{
-    block::BlockType, block_validator::BlockValidator, signature_collection::SignatureCollection,
+    block::{Block, BlockType},
+    block_validator::BlockValidator,
+    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::PubKey;
-use monad_eth_block_policy::nonce::InMemoryState;
-use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
 use monad_eth_block_validator::EthValidator;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::LedgerCommand;
@@ -48,6 +47,15 @@ impl<SCT: SignatureCollection, PT: PubKey, E> Default for MockLedger<SCT, PT, E>
             metrics: Default::default(),
             state: None,
             _pd: PhantomData,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection, PT: PubKey, E> MockLedger<SCT, PT, E> {
+    pub fn with_state(state: Arc<Mutex<InMemoryState>>) -> Self {
+        MockLedger {
+            state: Some(state),
+            ..Default::default()
         }
     }
 }
@@ -252,13 +260,9 @@ mod tests {
     use monad_consensus_types::{
         block::{Block, BlockType},
         payload::{ExecutionArtifacts, FullTransactionList},
-        signature_collection::SignatureCollection,
-        voting::ValidatorMapping,
     };
     use monad_crypto::{
-        certificate_signature::{
-            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
-        },
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey, PubKey},
         hasher::Hash,
         NopSignature,
     };

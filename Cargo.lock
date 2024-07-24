@@ -4272,6 +4272,7 @@ dependencies = [
  "monad-transformer",
  "monad-twins-utils",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "serde",
  "serde_json",

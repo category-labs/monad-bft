@@ -11,7 +11,7 @@ use monad_router_scheduler::{BytesRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use wasm_bindgen::prelude::*;
 
@@ -65,6 +65,7 @@ pub fn simulation_make() -> *mut Simulation {
                         state_builder,
                         BytesRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(10),
                         ))],

@@ -28,12 +28,14 @@ use priority_queue::PriorityQueue;
 
 use crate::swarm_relation::SwarmRelation;
 
+pub(crate) type MockLedgerType<S> = MockLedger<
+    <S as SwarmRelation>::SignatureCollectionType,
+    CertificateSignaturePubKey<<S as SwarmRelation>::SignatureType>,
+    MonadEvent<<S as SwarmRelation>::SignatureType, <S as SwarmRelation>::SignatureCollectionType>,
+>;
+
 pub struct MockExecutor<S: SwarmRelation> {
-    ledger: MockLedger<
-        S::SignatureCollectionType,
-        CertificateSignaturePubKey<S::SignatureType>,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
-    >,
+    ledger: MockLedgerType<S>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<Checkpoint<S::SignatureCollectionType>>,
     state_root_hash: S::StateRootHashExecutor,
@@ -96,11 +98,12 @@ impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
         state_root_hash: S::StateRootHashExecutor,
+        ledger: MockLedgerType<S>,
         tick: Duration,
     ) -> Self {
         Self {
             checkpoint: Default::default(),
-            ledger: Default::default(),
+            ledger,
             execution_ledger: Default::default(),
             state_root_hash,
             ipc: Default::default(),

@@ -30,7 +30,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent},
+    mock::{MockExecutor, MockExecutorEvent, MockLedgerType},
     mock_swarm::SwarmEventType,
     swarm_relation::{DebugSwarmRelation, SwarmRelation, SwarmRelationStateType},
 };
@@ -51,6 +51,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
+    pub ledger: MockLedgerType<S>,
     pub outbound_pipeline: S::Pipeline,
     pub inbound_pipeline: S::Pipeline,
     pub seed: u64,
@@ -72,6 +73,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
+        ledger: MockLedgerType<S>,
         outbound_pipeline: S::Pipeline,
         inbound_pipeline: S::Pipeline,
         seed: u64,
@@ -80,6 +82,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             id,
             state_builder,
             router_scheduler,
+            ledger,
             state_root_executor,
             outbound_pipeline,
             inbound_pipeline,
@@ -126,14 +129,19 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
+            ledger: self.ledger,
             outbound_pipeline: Box::new(self.outbound_pipeline),
             inbound_pipeline: Box::new(self.inbound_pipeline),
             seed: self.seed,
         }
     }
     pub fn build(self, tick: Duration) -> Node<S> {
-        let mut executor: MockExecutor<S> =
-            MockExecutor::new(self.router_scheduler, self.state_root_executor, tick);
+        let mut executor: MockExecutor<S> = MockExecutor::new(
+            self.router_scheduler,
+            self.state_root_executor,
+            self.ledger,
+            tick,
+        );
         let (state, init_commands) = self.state_builder.build();
         executor.exec(init_commands);
 

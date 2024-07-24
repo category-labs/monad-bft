@@ -4,6 +4,7 @@ mod common;
 mod test {
     use std::{
         collections::{BTreeSet, HashSet},
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -36,7 +37,7 @@ mod test {
         PartitionTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-    use monad_updaters::state_root_hash::MockStateRootHashNop;
+    use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -46,7 +47,7 @@ mod test {
     impl SwarmRelation for EthSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
-        type StateBackendType = InMemoryState;
+        type StateBackendType = Arc<Mutex<InMemoryState>>;
         type BlockPolicyType = EthBlockPolicy;
 
         type TransportMessage =
@@ -87,7 +88,7 @@ mod test {
             SimpleRoundRobin::default,
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000),
-            InMemoryState::default,
+            || Arc::new(Mutex::new(InMemoryState::default())),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -118,11 +119,13 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let state_backend = Arc::clone(&state_builder.state_backend);
                     NodeBuilder::<EthSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
+                        MockLedger::with_state(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],

@@ -22,6 +22,7 @@ monad-testutil = { path = "../monad-testutil" }
 monad-twins-utils = { path = "utils" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
+monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
 
 serde = { workspace = true, features = ["derive"] }
