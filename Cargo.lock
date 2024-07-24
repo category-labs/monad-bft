@@ -3673,6 +3673,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-ledger"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-block-validator",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-types",
+ "tracing",
+]
+
+[[package]]
 name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [

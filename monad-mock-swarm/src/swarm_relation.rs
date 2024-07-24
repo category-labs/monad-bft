@@ -3,7 +3,7 @@ use monad_async_state_verify::{
     AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
 use monad_consensus_types::{
-    block::{BlockPolicy, PassthruBlockPolicy},
+    block::{Block, BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
@@ -14,12 +14,16 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_executor::Executor;
+use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
-use monad_updaters::state_root_hash::{MockStateRootHashNop, MockableStateRootHash};
+use monad_updaters::{
+    ledger::{MockLedger, MockableLedger},
+    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
+};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -93,6 +97,13 @@ where
         > + Send
         + Unpin;
 
+    type Ledger: MockableLedger<
+            Signature = Self::SignatureType,
+            SignatureCollection = Self::SignatureCollectionType,
+            Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        > + Send
+        + Unpin;
+
     type Pipeline: Pipeline<
             Self::TransportMessage,
             NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
@@ -153,6 +164,21 @@ impl SwarmRelation for DebugSwarmRelation {
             + Sync,
     >;
 
+    type Ledger = Box<
+        dyn MockableLedger<
+                Signature = Self::SignatureType,
+                SignatureCollection = Self::SignatureCollectionType,
+                Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+                Command = LedgerCommand<
+                    CertificateSignaturePubKey<Self::SignatureType>,
+                    Block<Self::SignatureCollectionType>,
+                    MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+                >,
+                Item = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+            > + Send
+            + Sync,
+    >;
+
     type Pipeline = Box<
         dyn Pipeline<
                 Self::TransportMessage,
@@ -200,6 +226,13 @@ impl SwarmRelation for NoSerSwarm {
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+
     type Pipeline = GenericTransformerPipeline<
         CertificateSignaturePubKey<Self::SignatureType>,
         Self::TransportMessage,
@@ -233,6 +266,13 @@ impl SwarmRelation for BytesSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -269,6 +309,13 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline =

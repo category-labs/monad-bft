@@ -30,7 +30,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent, MockLedgerType},
+    mock::{MockExecutor, MockExecutorEvent},
     mock_swarm::SwarmEventType,
     swarm_relation::{DebugSwarmRelation, SwarmRelation, SwarmRelationStateType},
 };
@@ -51,7 +51,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
-    pub ledger: MockLedgerType<S>,
+    pub ledger: S::Ledger,
     pub outbound_pipeline: S::Pipeline,
     pub inbound_pipeline: S::Pipeline,
     pub seed: u64,
@@ -73,7 +73,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
-        ledger: MockLedgerType<S>,
+        ledger: S::Ledger,
         outbound_pipeline: S::Pipeline,
         inbound_pipeline: S::Pipeline,
         seed: u64,

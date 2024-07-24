@@ -51,7 +51,7 @@ members = [
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
-    "monad-wal",
+    "monad-wal", "monad-eth-ledger",
 ]
 resolver = "2"
 
