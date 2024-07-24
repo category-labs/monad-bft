@@ -58,6 +58,7 @@ test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
+monad-eth-ledger = { path = "../monad-eth-ledger" }
 
 [[bench]]
 name = "two_node_benchmark"

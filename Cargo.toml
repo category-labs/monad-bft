@@ -17,6 +17,7 @@ members = [
     "monad-debugger",
     "monad-eth-block-policy",
     "monad-eth-block-validator",
+    "monad-eth-ledger",
     "monad-eth-testutil",
     "monad-eth-types",
     "monad-eth-tx",
@@ -51,7 +52,7 @@ members = [
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
-    "monad-wal", "monad-eth-ledger",
+    "monad-wal",
 ]
 resolver = "2"
 

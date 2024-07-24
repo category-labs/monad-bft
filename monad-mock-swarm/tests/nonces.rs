@@ -11,16 +11,14 @@ mod test {
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::{
-        block::{Block, BlockType},
-        payload::StateRoot,
-    };
+    use monad_consensus_types::{block::BlockType, payload::StateRoot};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
     use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
     use monad_eth_block_validator::EthValidator;
+    use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
@@ -41,10 +39,7 @@ mod test {
         PartitionTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-    use monad_updaters::{
-        ledger::{MockLedger, MockableLedger},
-        state_root_hash::MockStateRootHashNop,
-    };
+    use monad_updaters::{ledger::MockableLedger, state_root_hash::MockStateRootHashNop};
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -67,11 +62,10 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = EthTxPool;
-        type Ledger = MockLedger<
+        type Ledger = MockEthLedger<
             Self::SignatureCollectionType,
-            Block<Self::SignatureCollectionType>,
             MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        >; // FIXME:
+        >;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -138,7 +132,7 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators, SeqNum(2000)),
-                        MockLedger::default(), // FIXME:
+                        MockEthLedger::new(state_backend),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],
