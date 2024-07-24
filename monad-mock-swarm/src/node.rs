@@ -22,7 +22,7 @@ use monad_executor_glue::MonadEvent;
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_types::{Epoch, Round, GENESIS_SEQ_NUM};
-use monad_updaters::state_root_hash::MockableStateRootHash;
+use monad_updaters::{ledger::MockableLedger, state_root_hash::MockableStateRootHash};
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
 };
@@ -101,6 +101,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         >,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
+        S::Ledger: Sync,
     {
         NodeBuilder {
             id: self.id,
@@ -129,7 +130,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
-            ledger: self.ledger,
+            ledger: Box::new(self.ledger),
             outbound_pipeline: Box::new(self.outbound_pipeline),
             inbound_pipeline: Box::new(self.inbound_pipeline),
             seed: self.seed,

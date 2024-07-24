@@ -23,7 +23,7 @@ use monad_multi_sig::MultiSig;
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_secp::SecpSignature;
 use monad_types::{NodeId, Round, SeqNum, Stake};
-use monad_updaters::local_router::LocalRouterConfig;
+use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Instrument, Level};

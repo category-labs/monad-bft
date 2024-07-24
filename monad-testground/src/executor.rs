@@ -99,7 +99,7 @@ pub fn make_monad_executor<ST, SCT>(
         MonadEvent<ST, SCT>,
     >,
     TokioTimer<MonadEvent<ST, SCT>>,
-    MockLedger<SCT, CertificateSignaturePubKey<ST>, MonadEvent<ST, SCT>>,
+    MockLedger<SCT, Block<SCT>, MonadEvent<ST, SCT>>,
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<Checkpoint<SCT>>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,

@@ -98,7 +98,7 @@ where
         + Unpin;
 
     type Ledger: MockableLedger<
-            Signature = Self::SignatureType,
+            Block<Self::SignatureCollectionType>,
             SignatureCollection = Self::SignatureCollectionType,
             Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         > + Send
@@ -166,7 +166,7 @@ impl SwarmRelation for DebugSwarmRelation {
 
     type Ledger = Box<
         dyn MockableLedger<
-                Signature = Self::SignatureType,
+                Block<Self::SignatureCollectionType>,
                 SignatureCollection = Self::SignatureCollectionType,
                 Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
                 Command = LedgerCommand<
@@ -228,7 +228,6 @@ impl SwarmRelation for NoSerSwarm {
 
     type Ledger = MockLedger<
         Self::SignatureCollectionType,
-        CertificateSignaturePubKey<Self::SignatureType>,
         Block<Self::SignatureCollectionType>,
         MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
@@ -270,7 +269,6 @@ impl SwarmRelation for BytesSwarm {
 
     type Ledger = MockLedger<
         Self::SignatureCollectionType,
-        CertificateSignaturePubKey<Self::SignatureType>,
         Block<Self::SignatureCollectionType>,
         MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
@@ -313,7 +311,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
 
     type Ledger = MockLedger<
         Self::SignatureCollectionType,
-        CertificateSignaturePubKey<Self::SignatureType>,
         Block<Self::SignatureCollectionType>,
         MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;

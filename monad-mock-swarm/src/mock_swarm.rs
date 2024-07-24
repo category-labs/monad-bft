@@ -221,6 +221,7 @@ where
         > + 'static,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
+        S::Ledger: Sync,
     {
         SwarmBuilder(self.0.into_iter().map(NodeBuilder::debug).collect())
     }

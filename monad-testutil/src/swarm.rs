@@ -9,6 +9,7 @@ use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_types::{Round, SeqNum, Stake};
+use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::validators::create_keys_w_validators;
