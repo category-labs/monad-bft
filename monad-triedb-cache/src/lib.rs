@@ -5,7 +5,7 @@ use monad_eth_types::EthAddress;
 use monad_triedb::Handle as TriedbHandle;
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::debug;
+use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct ReserveBalanceCache {
@@ -32,16 +32,17 @@ impl ReserveBalanceCacheTrait for ReserveBalanceCache {
         consensus_block_seq_num: SeqNum,
         address: &EthAddress,
     ) -> ReserveBalanceCacheResult {
-        debug!(
+        trace!(
             "ReserveBalance get_account_balance 1 \
                 block seq num {:?}, \
                 address: {:?}",
-            consensus_block_seq_num, address
+            consensus_block_seq_num,
+            address
         );
         // TODO: when the cache is separated from the reserve balance this call should be moved out.
         let triedb_block_seq_num = self.compute_triedb_block_seq_num(consensus_block_seq_num);
         if triedb_block_seq_num.is_none() {
-            debug!(
+            trace!(
                 "ReserveBalance get_account_balance 2 \
                     TrieDB needs sync"
             );
@@ -99,14 +100,14 @@ impl ReserveBalanceCache {
             let triedb_latest_block = self.handle.latest_block();
             if triedb_block_seq_num > SeqNum(triedb_latest_block) {
                 // TODO consensus node needs to wait for the triedb blocks to catch up.
-                debug!("Compute TDB block_seq_num: the latest TDB block: {:?} is less than the computed TDB block_seq_num: {:?} :\
+                trace!("Compute TDB block_seq_num: the latest TDB block: {:?} is less than the computed TDB block_seq_num: {:?} :\
                        will use the latest TDB block_id available",
                     triedb_latest_block,
                     triedb_block_seq_num);
                 return None;
             }
         } else {
-            debug!("Compute TDB block_seq_num: block_seq_num: {:?} is less than execution delay: {:?}, using genesis triedb seq num: {:?}",
+            trace!("Compute TDB block_seq_num: block_seq_num: {:?} is less than execution delay: {:?}, using genesis triedb seq num: {:?}",
                 block_seq_num,
                 self.execution_delay,
                 triedb_block_seq_num);

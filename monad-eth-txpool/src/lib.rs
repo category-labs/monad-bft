@@ -20,7 +20,7 @@ use monad_eth_types::{EthAddress, Nonce};
 use monad_types::SeqNum;
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 type VirtualTimestamp = u64;
 
@@ -161,12 +161,14 @@ impl EthTxPool {
                     ComputeReserveBalanceResult::NeedSync => 0,
                     ComputeReserveBalanceResult::Spent => 0,
                 };
-                debug!(
+                trace!(
                     "ReserveBalance create_proposal 1 \
                         balance is: {:?} \
                         at block_id: {:?} \
                         for address: {:?}",
-                    reserve_balance, proposed_seq_num, eth_address
+                    reserve_balance,
+                    proposed_seq_num,
+                    eth_address
                 );
 
                 let mut nonce_to_remove: Option<u64> = None;
@@ -175,21 +177,25 @@ impl EthTxPool {
 
                     if reserve_balance >= txn_carriage_cost {
                         reserve_balance -= txn_carriage_cost;
-                        debug!(
+                        trace!(
                             "ReserveBalance create_proposal 2 \
                                 updated balance to: {:?} \
                                 at block_id: {:?} \
                                 at nonce: {:?} \
                                 for address: {:?}",
-                            reserve_balance, proposed_seq_num, nonce, eth_address
+                            reserve_balance,
+                            proposed_seq_num,
+                            nonce,
+                            eth_address
                         );
                     } else {
                         nonce_to_remove = Some(*nonce);
-                        debug!(
+                        trace!(
                             "ReserveBalance create_proposal 3 \
                                 insufficient balance at nonce: {:?} \
                                 for address: {:?}",
-                            nonce, eth_address
+                            nonce,
+                            eth_address
                         );
                         break;
                     }
@@ -259,23 +265,29 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                 if val >= txn_carriage_cost {
                     // TODO(rene): should any transaction validation occur here before inserting into mempool
                     self.pool.entry(sender).or_default().add(eth_tx, ratio);
-                    debug!(
+                    trace!(
                         "ReserveBalance insert_tx 1 \
                             reserve balance: {:?} \
                             txn carriage cost: {:?} \
                             block_seq_num: {:?} \
                             for address: {:?}",
-                        val, txn_carriage_cost, block_seq_num, sender
+                        val,
+                        txn_carriage_cost,
+                        block_seq_num,
+                        sender
                     );
                     (Ok(()), val)
                 } else {
-                    debug!(
+                    trace!(
                         "ReserveBalance insert_tx 2 \
                             do not add txn to the pool. insufficient balance: {:?} \
                             txn_carriage_cost: {:?} \
                             block_id: {:?} \
                             for address: {:?}",
-                        val, txn_carriage_cost, block_seq_num, sender
+                        val,
+                        txn_carriage_cost,
+                        block_seq_num,
+                        sender
                     );
                     (Err(TxPoolInsertionError::InsufficientBalance), val)
                 }
@@ -283,34 +295,37 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
             ComputeReserveBalanceResult::TrieDBNone => {
                 /* reserve balance is 0 */
                 self.pool.entry(sender).or_default().add(eth_tx, ratio);
-                debug!(
+                trace!(
                     "ReserveBalance insert_tx 3 \
                         TrieDBNone, but add txn to the pool. \
                         block_seq_num: {:?} \
                         for address: {:?}",
-                    block_seq_num, sender
+                    block_seq_num,
+                    sender
                 );
                 (Ok(()), 0)
             }
             ComputeReserveBalanceResult::NeedSync => {
                 /* TODO implement waiting, reserve balance is 0 for now */
                 self.pool.entry(sender).or_default().add(eth_tx, ratio);
-                debug!(
+                trace!(
                     "ReserveBalance insert_tx 4 \
                         NeedSync, but add txn to the pool. \
                         block_seq_num: {:?} \
                         for address: {:?}",
-                    block_seq_num, sender
+                    block_seq_num,
+                    sender
                 );
                 (Ok(()), 0)
             }
             ComputeReserveBalanceResult::Spent => {
-                debug!(
+                trace!(
                     "ReserveBalance insert_tx 5 \
                         do not add txn to the pool. insufficient balance - spent. \
                         block_seq_num: {:?} \
                         for address: {:?}",
-                    block_seq_num, sender
+                    block_seq_num,
+                    sender
                 );
                 (Err(TxPoolInsertionError::InsufficientBalance), 0)
             }
