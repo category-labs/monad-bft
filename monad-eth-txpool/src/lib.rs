@@ -20,7 +20,7 @@ use monad_eth_types::{EthAddress, Nonce};
 use monad_types::SeqNum;
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 use sorted_vector_map::SortedVectorMap;
-use tracing::debug;
+use tracing::{debug, info, trace, warn};
 
 type VirtualTimestamp = u64;
 
@@ -227,6 +227,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         let eth_tx = EthTransaction::decode(&mut tx.as_ref())
             .map_err(|_e| TxPoolInsertionError::NotWellFormed)?;
         let sender = EthAddress(eth_tx.signer());
+        let txn_hash = eth_tx.hash();
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
         // TODO we should definitely return out early here if the nonce is invalid so that we don't
@@ -252,7 +253,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
             &sender,
         );
 
-        let reserve_balance = match res {
+        let (inserted, reserve_balance) = match res {
             ComputeReserveBalanceResult::Val(val) => {
                 let txn_carriage_cost = compute_txn_carriage_cost(&eth_tx);
                 if val >= txn_carriage_cost {
@@ -266,6 +267,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                             for address: {:?}",
                         val, txn_carriage_cost, block_seq_num, sender
                     );
+                    (Ok(()), val)
                 } else {
                     debug!(
                         "ReserveBalance insert_tx 2 \
@@ -275,8 +277,8 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                             for address: {:?}",
                         val, txn_carriage_cost, block_seq_num, sender
                     );
+                    (Err(TxPoolInsertionError::InsufficientBalance), val)
                 }
-                val
             }
             ComputeReserveBalanceResult::TrieDBNone => {
                 /* reserve balance is 0 */
@@ -288,7 +290,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                         for address: {:?}",
                     block_seq_num, sender
                 );
-                0
+                (Ok(()), 0)
             }
             ComputeReserveBalanceResult::NeedSync => {
                 /* TODO implement waiting, reserve balance is 0 for now */
@@ -300,7 +302,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                         for address: {:?}",
                     block_seq_num, sender
                 );
-                0
+                (Ok(()), 0)
             }
             ComputeReserveBalanceResult::Spent => {
                 debug!(
@@ -310,11 +312,14 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                         for address: {:?}",
                     block_seq_num, sender
                 );
-                0
+                (Err(TxPoolInsertionError::InsufficientBalance), 0)
             }
         };
 
-        Ok(())
+        if inserted.is_ok() {
+            trace!(txn_hash = ?txn_hash, ?sender, "txn inserted into txpool");
+        }
+        inserted
     }
 
     fn create_proposal(
@@ -397,13 +402,14 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
             }
 
             total_gas += best_tx.gas_limit();
+            trace!(txn_hash = ?best_tx.hash(), "txn included in proposal");
             txs.push(best_tx.clone());
         }
 
         let proposal_num_tx = txs.len();
         let full_tx_list = EthFullTransactionList(txs).rlp_encode();
 
-        tracing::info!(
+        info!(
             proposal_num_tx,
             proposal_total_gas = total_gas,
             proposal_tx_bytes = full_tx_list.len(),
@@ -411,7 +417,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         );
 
         if !self.garbage.is_empty() {
-            tracing::warn!(
+            warn!(
                 garbage_len = self.garbage.len(),
                 "we have received consecutive proposals without a mempool clear event in between"
             );

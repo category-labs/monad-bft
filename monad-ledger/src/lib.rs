@@ -22,6 +22,7 @@ use monad_proto::proto::block::ProtoBlock;
 use monad_types::SeqNum;
 use prost::Message;
 use reth_primitives::{Block, BlockBody, Header};
+use tracing::{info, trace};
 
 /// Protocol parameters that go into Eth block header
 pub struct EthHeaderParam {
@@ -105,11 +106,15 @@ where
                         self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
                             eth_block.body.len() as u64;
                         self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
-                        tracing::info!(
+                        info!(
                             num_tx = eth_block.body.len(),
                             block_num = eth_block.number,
                             "committed block"
                         );
+
+                        for t in &eth_block.body {
+                            trace!(txn_hash = ?t.hash(), "txn committed");
+                        }
                     }
                     let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
                         std::iter::zip(eth_blocks.iter(), full_blocks.iter())
