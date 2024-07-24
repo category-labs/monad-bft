@@ -286,7 +286,7 @@ impl<SCT: SignatureCollection, SBT: StateBackend> BlockPolicy<SCT, SBT> for EthB
         true
     }
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, state_backend: &mut SBT) {
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
         let committed_block_account_nonces = block.get_account_nonces();

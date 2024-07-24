@@ -124,7 +124,7 @@ where
     pub metrics: &'a mut Metrics,
     pub tx_pool: &'a mut TT,
     pub epoch_manager: &'a mut EpochManager,
-    pub state_backend: &'a mut SBT,
+    pub state_backend: &'a SBT,
     /// Policy for validating chain extension
     /// Mutable because consensus tip will be updated
     pub block_policy: &'a mut BPT,
@@ -655,8 +655,7 @@ where
                     // epoch manager records
                     self.epoch_manager
                         .schedule_epoch_start(block.get_seq_num(), block.get_round());
-                    self.block_policy
-                        .update_committed_block(block, self.state_backend);
+                    self.block_policy.update_committed_block(block);
 
                     if block.is_txn_list_empty() {
                         self.metrics.consensus_events.commit_empty_block += 1;

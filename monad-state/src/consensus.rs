@@ -50,7 +50,7 @@ where
     metrics: &'a mut Metrics,
     txpool: &'a mut TT,
     epoch_manager: &'a mut EpochManager,
-    state_backend: &'a mut SBT,
+    state_backend: &'a SBT,
     block_policy: &'a mut BPT,
 
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,

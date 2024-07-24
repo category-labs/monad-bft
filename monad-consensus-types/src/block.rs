@@ -220,7 +220,7 @@ pub trait BlockPolicy<SCT: SignatureCollection, SBT: StateBackend> {
         state_backend: &SBT,
     ) -> bool;
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, state_backend: &mut SBT);
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 }
 
 impl<SCT: SignatureCollection, SBT: StateBackend, T: BlockPolicy<SCT, SBT> + ?Sized>
@@ -237,8 +237,8 @@ impl<SCT: SignatureCollection, SBT: StateBackend, T: BlockPolicy<SCT, SBT> + ?Si
         (**self).check_coherency(block, extending_blocks, state_backend)
     }
 
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock, state_backend: &mut SBT) {
-        (**self).update_committed_block(block, state_backend)
+    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
+        (**self).update_committed_block(block)
     }
 }
 
@@ -258,5 +258,5 @@ impl<SCT: SignatureCollection, SBT: StateBackend> BlockPolicy<SCT, SBT> for Pass
         true
     }
 
-    fn update_committed_block(&mut self, _: &Self::ValidatedBlock, _: &mut SBT) {}
+    fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
 }
