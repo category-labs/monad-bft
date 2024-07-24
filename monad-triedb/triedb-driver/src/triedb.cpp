@@ -62,9 +62,6 @@ int triedb_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
     uint64_t block_id)
 {
-    if (!db->db_.is_latest()) {
-        db->db_.load_latest();
-    }
     auto result =
         db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
@@ -86,9 +83,6 @@ int triedb_read_data(
     triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
     uint64_t block_id)
 {
-    if (!db->db_.is_latest()) {
-        db->db_.load_latest();
-    }
     auto result =
         db->db_.get_data(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
@@ -110,10 +104,6 @@ void triedb_async_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user)
 {
-    if (!db->db_.is_latest()) {
-        db->db_.load_latest();
-    }
-
     struct receiver_t
     {
         void (*completed_)(bytes value, int length, void *user);
@@ -170,10 +160,6 @@ int triedb_finalize(bytes value)
 
 uint64_t triedb_latest_block(triedb *db)
 {
-    if (!db->db_.is_latest()) {
-        db->db_.load_latest();
-    }
-
     std::optional<uint64_t> latest_block_id = db->db_.get_latest_block_id();
 
     if (latest_block_id.has_value()) {

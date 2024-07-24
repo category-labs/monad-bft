@@ -46,7 +46,6 @@ namespace
 
         TrieDb ro{mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = dbname_paths}};
         ro.set_block_number(block_number);
-        ro.load_latest();
         BlockState block_state{ro};
         Incarnation incarnation{block_number, Incarnation::LAST_TX};
         State state{block_state, incarnation};
