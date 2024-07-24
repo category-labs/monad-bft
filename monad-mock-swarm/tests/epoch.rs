@@ -9,13 +9,18 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
-        payload::StateRoot, state::NopStateBackend, txpool::MockTxPool,
+        block::{Block, PassthruBlockPolicy},
+        block_validator::MockValidator,
+        metrics::Metrics,
+        payload::StateRoot,
+        state::NopStateBackend,
+        txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
+    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         fetch_metric,
         mock_swarm::SwarmBuilder,
@@ -34,7 +39,7 @@ mod test {
     };
     use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
-        ledger::MockLedger,
+        ledger::{MockLedger, MockableLedger},
         state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
     };
     use monad_validator::{
@@ -42,7 +47,6 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use test_case::test_case;
-
     pub struct ValidatorSwapSwarm;
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
@@ -59,6 +63,11 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
+        type Ledger = MockLedger<
+            Self::SignatureCollectionType,
+            Block<Self::SignatureCollectionType>,
+            MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        >;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -69,7 +78,6 @@ mod test {
             MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         >;
-
         type Pipeline = GenericTransformerPipeline<
             CertificateSignaturePubKey<Self::SignatureType>,
             Self::TransportMessage,

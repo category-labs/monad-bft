@@ -275,7 +275,7 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use test_case::test_case;
 
-    use crate::ledger::MockLedger;
+    use super::*;
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -318,7 +318,6 @@ mod tests {
     fn test_basic_stream_functionality() {
         let mut mock_ledger = MockLedger::<
             SignatureCollectionType,
-            PubKeyType,
             MockBlock<PubKeyType>,
             MockLedgerEvent<PubKeyType>,
         >::default();
@@ -356,7 +355,6 @@ mod tests {
     fn test_seeking_exist() {
         let mut mock_ledger = MockLedger::<
             SignatureCollectionType,
-            PubKeyType,
             MockBlock<PubKeyType>,
             MockLedgerEvent<PubKeyType>,
         >::default();
@@ -428,7 +426,6 @@ mod tests {
     fn test_seeking_non_exist() {
         let mut mock_ledger = MockLedger::<
             SignatureCollectionType,
-            PubKeyType,
             MockBlock<PubKeyType>,
             MockLedgerEvent<PubKeyType>,
         >::default();
@@ -489,7 +486,6 @@ mod tests {
         let poll_pref = rng.gen_range(0.0..1.0);
         let mut mock_ledger = MockLedger::<
             SignatureCollectionType,
-            PubKeyType,
             MockBlock<PubKeyType>,
             MockLedgerEvent<PubKeyType>,
         >::default();

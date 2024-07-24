@@ -5,13 +5,17 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
-    state::NopStateBackend, txpool::MockTxPool,
+    block::{Block, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    payload::StateRoot,
+    state::NopStateBackend,
+    txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
@@ -22,7 +26,10 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
-use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+use monad_updaters::{
+    ledger::{MockLedger, MockableLedger},
+    state_root_hash::MockStateRootHashNop,
+};
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
@@ -46,6 +53,11 @@ impl SwarmRelation for ForkpointSwarm {
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type TxPool = MockTxPool;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,

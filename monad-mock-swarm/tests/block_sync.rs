@@ -31,8 +31,10 @@ mod test {
         PeriodicTransformer, ID,
     };
     use monad_types::{NodeId, Round, SeqNum};
-    use monad_updaters::ledger::MockableLedger;
-    use monad_updaters::{ledger::MockLedger, state_root_hash::MockStateRootHashNop};
+    use monad_updaters::{
+        ledger::{MockLedger, MockableLedger},
+        state_root_hash::MockStateRootHashNop,
+    };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
     };

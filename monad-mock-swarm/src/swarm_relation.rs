@@ -14,7 +14,6 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor::Executor;
 use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
@@ -79,6 +78,12 @@ where
         + Send
         + Sync
         + Unpin;
+    type Ledger: MockableLedger<
+            Block<Self::SignatureCollectionType>,
+            SignatureCollection = Self::SignatureCollectionType,
+            Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        > + Send
+        + Unpin;
     type AsyncStateRootVerify: AsyncStateVerifyProcess<
             SignatureCollectionType = Self::SignatureCollectionType,
             ValidatorSetType = <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -94,13 +99,6 @@ where
                 Self::SignatureCollectionType,
             >,
             TransportMessage = Self::TransportMessage,
-        > + Send
-        + Unpin;
-
-    type Ledger: MockableLedger<
-            Block<Self::SignatureCollectionType>,
-            SignatureCollection = Self::SignatureCollectionType,
-            Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         > + Send
         + Unpin;
 
@@ -149,21 +147,6 @@ impl SwarmRelation for DebugSwarmRelation {
             + Send
             + Sync,
     >;
-    type AsyncStateRootVerify = BoxedAsyncStateVerifyProcess<Self::SignatureCollectionType>;
-
-    type RouterScheduler = Box<
-        dyn RouterScheduler<
-                NodeIdPublicKey = CertificateSignaturePubKey<Self::SignatureType>,
-                TransportMessage = Self::TransportMessage,
-                InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-                OutboundMessage = VerifiedMonadMessage<
-                    Self::SignatureType,
-                    Self::SignatureCollectionType,
-                >,
-            > + Send
-            + Sync,
-    >;
-
     type Ledger = Box<
         dyn MockableLedger<
                 Block<Self::SignatureCollectionType>,
@@ -175,6 +158,20 @@ impl SwarmRelation for DebugSwarmRelation {
                     MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
                 >,
                 Item = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+            > + Send
+            + Sync,
+    >;
+    type AsyncStateRootVerify = BoxedAsyncStateVerifyProcess<Self::SignatureCollectionType>;
+
+    type RouterScheduler = Box<
+        dyn RouterScheduler<
+                NodeIdPublicKey = CertificateSignaturePubKey<Self::SignatureType>,
+                TransportMessage = Self::TransportMessage,
+                InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+                OutboundMessage = VerifiedMonadMessage<
+                    Self::SignatureType,
+                    Self::SignatureCollectionType,
+                >,
             > + Send
             + Sync,
     >;
@@ -215,6 +212,11 @@ impl SwarmRelation for NoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -224,12 +226,6 @@ impl SwarmRelation for NoSerSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
-
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -256,6 +252,11 @@ impl SwarmRelation for BytesSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -265,12 +266,6 @@ impl SwarmRelation for BytesSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
-
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -298,6 +293,11 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type Ledger = MockLedger<
+        Self::SignatureCollectionType,
+        Block<Self::SignatureCollectionType>,
+        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -307,12 +307,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
-
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline =

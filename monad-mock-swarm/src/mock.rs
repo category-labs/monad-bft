@@ -21,11 +21,8 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint,
-    ipc::MockIpcReceiver,
-    ledger::{MockLedger, MockableLedger},
-    loopback::LoopbackExecutor,
-    state_root_hash::MockableStateRootHash,
+    checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
+    loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
 };
 use priority_queue::PriorityQueue;
 
