@@ -25,11 +25,16 @@ use eth_txn_handlers::{
     monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
-use log::{debug, info};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
+use tracing::{debug, info};
+use tracing_subscriber::{
+    fmt::{format::FmtSpan, Layer as FmtLayer},
+    layer::SubscriberExt,
+    EnvFilter, Registry,
+};
 
 use crate::{
     call::monad_eth_call,
@@ -120,7 +125,7 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
         }
     };
 
-    info!("rpc_request/response: {body:?} => {response:?}");
+    info!(?body, ?response, "rpc_request/response");
     HttpResponse::Ok().json(&response)
 }
 
@@ -435,7 +440,19 @@ pub fn create_app<S: 'static>(
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    env_logger::try_init().expect("failed to initialize logger");
+    let subscriber = Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(
+            FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false),
+        );
+
+    tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
 
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender

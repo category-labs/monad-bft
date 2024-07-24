@@ -4,7 +4,6 @@ use alloy_primitives::{
     aliases::{B256, U128, U256, U64},
     Address, FixedBytes,
 };
-use log::{debug, trace};
 use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
@@ -14,6 +13,7 @@ use reth_rpc_types::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::{debug, trace};
 
 use crate::{
     block_handlers::block_receipts,
@@ -333,6 +333,7 @@ pub async fn monad_eth_sendRawTransaction(
     match TransactionSigned::decode_enveloped(&mut &p.hex_tx.0[..]) {
         Ok(txn) => {
             let hash = txn.hash();
+            debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
             match flume::Sender::send_async(&ipc, txn).await {
                 Ok(_) => Ok(Value::String(hash.to_string())),

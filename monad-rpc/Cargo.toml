@@ -41,6 +41,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { workspace = true, features = ["net", "macros"] }
+tracing = { workspace = true, features = ["log"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
 
