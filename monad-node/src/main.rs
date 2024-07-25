@@ -202,6 +202,9 @@ async fn run(
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let state_sync_bound: usize = 100;
+
+    _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
+    _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
