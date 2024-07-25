@@ -18,7 +18,8 @@ impl ReserveBalanceCacheTrait for ReserveBalanceCache {
     fn new(triedb_path: PathBuf, execution_delay: u64) -> Self {
         Self {
             cache: SortedVectorMap::new(),
-            handle: TriedbHandle::try_new(triedb_path.as_path()).unwrap(),
+            handle: TriedbHandle::try_new(triedb_path.as_path())
+                .expect("triedb should exist in path"),
             execution_delay,
         }
     }
