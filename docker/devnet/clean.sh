@@ -29,9 +29,7 @@ if [ -S "$controlpanel_sock" ]; then
     rm "$controlpanel_sock"
 fi
 
-if [ -f "$wal" ]; then
-    rm "$wal"
-fi
+rm ${wal}_* || true
 
 if [ -f "$forkpoint" ]; then
     rm "$forkpoint"

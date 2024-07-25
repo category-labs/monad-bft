@@ -78,6 +78,22 @@ impl NodeState {
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(&cli.forkpoint_config)?)?;
 
+        let wal_path = cli.wal_path.with_file_name(format!(
+            "{}_{}_{}_{}",
+            cli.wal_path
+                .file_name()
+                .expect("no wal file name")
+                .to_owned()
+                .into_string()
+                .expect("invalid wal path"),
+            forkpoint_config.root.round.0,
+            forkpoint_config.root.block_id.0,
+            std::time::UNIX_EPOCH
+                .elapsed()
+                .expect("time went backwards")
+                .as_millis()
+        ));
+
         let run_mode = cli.run_mode.unwrap_or_default();
 
         Ok(Self {
@@ -89,7 +105,7 @@ impl NodeState {
             bls12_381_identity: bls_key,
 
             forkpoint_path: cli.forkpoint_config,
-            wal_path: cli.wal_path,
+            wal_path,
             execution_ledger_path: cli.execution_ledger_path,
             blockdb_path: cli.blockdb_path,
             triedb_path: cli.triedb_path,

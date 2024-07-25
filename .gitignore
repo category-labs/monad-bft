@@ -3,7 +3,7 @@
 /docker/flexnet/logs
 /docker/devnet/monad/blockdb
 /docker/devnet/monad/ledger
-/docker/devnet/monad/wal
+/docker/devnet/monad/wal_*
 /docker/devnet/monad/triedb
 /docker/devnet/monad/config/forkpoint.toml
 
