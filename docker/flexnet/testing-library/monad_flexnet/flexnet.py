@@ -60,6 +60,11 @@ class Flexnet:
         )
         docker.build(
             '../..',
+            file='../rpc/Dockerfile',
+            tags='monad-rpc:latest'
+        )
+        docker.build(
+            '../..',
             file='./images/rpc/Dockerfile',
             tags='flexnet-rpc:latest'
         )
@@ -80,7 +85,8 @@ class Flexnet:
             tags='monad-execution-builder:latest',
             builder=insecure_builder,
             allow=['security.insecure'],
-            build_args={'GIT_COMMIT_HASH': execution_commit_hash}
+            build_args={'GIT_COMMIT_HASH': execution_commit_hash},
+            load=True
         )
 
         # Generate scripts for each node
