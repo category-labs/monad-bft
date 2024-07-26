@@ -12,7 +12,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
-    block_validator::BlockValidator,
+    block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::{
@@ -375,12 +375,6 @@ where
             return cmds;
         }
 
-        let Some(block) = self.block_validator.validate(p.block) else {
-            warn!("Transaction validation failed");
-            self.metrics.consensus_events.failed_txn_validation += 1;
-            return cmds;
-        };
-
         let author_pubkey = self
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
@@ -388,12 +382,23 @@ where
             .map
             .get(&author)
             .expect("proposal author exists in validator_mapping");
-        if !self.block_validator.other_validation(&block, author_pubkey) {
-            self.metrics
-                .consensus_events
-                .failed_verify_randao_reveal_sig += 1;
-            return cmds;
-        }
+
+        let block = match self.block_validator.all_validation(p.block, author_pubkey) {
+            Ok(b) => b,
+            Err(err) => match err {
+                BlockValidationError::TxnValidationError => {
+                    warn!("Transaction validation failed");
+                    self.metrics.consensus_events.failed_txn_validation += 1;
+                    return cmds;
+                }
+                BlockValidationError::RandaoRevealSigError => {
+                    self.metrics
+                        .consensus_events
+                        .failed_verify_randao_reveal_sig += 1;
+                    return cmds;
+                }
+            },
+        };
 
         if let Some(ts_delta) = self
             .block_timestamp
@@ -599,9 +604,18 @@ where
             .get_val_set(&current_epoch)
             .expect("current validator set should be in the map");
 
+        let author_cert_pubkey = self
+            .val_epoch_map
+            .get_cert_pubkeys(&current_epoch)
+            .expect("blocksync message was verified")
+            .map
+            .get(&author)
+            .expect("blocksync author exists in validator_mapping");
+
         let bid = msg.get_block_id();
         let block_sync_result = self.consensus.block_sync_requester.handle_response(
             &author,
+            author_cert_pubkey,
             msg,
             self.nodeid,
             val_set,

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use alloy_rlp::Decodable;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
-    block_validator::BlockValidator,
+    block_validator::{BlockValidationError, BlockValidator},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
@@ -91,7 +91,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait>
         &self,
         block: &<EthBlockPolicy as BlockPolicy<SCT, ReserveBalanceCache>>::ValidatedBlock,
         author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
+    ) -> Result<(), BlockValidationError> {
         if let Err(e) = block
             .block
             .payload
@@ -99,8 +99,8 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait>
             .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
         {
             warn!("Invalid randao_reveal signature, reason: {:?}", e);
-            return false;
+            return Err(BlockValidationError::RandaoRevealSigError);
         };
-        true
+        Ok(())
     }
 }

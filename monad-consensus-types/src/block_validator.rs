@@ -8,6 +8,11 @@ use crate::{
     signature_collection::SignatureCollection,
 };
 
+pub enum BlockValidationError {
+    TxnValidationError,
+    RandaoRevealSigError,
+}
+
 //pub trait BlockValidator<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BPT: BlockPolicy<SCT, RBCT>> {
 pub trait BlockValidator<SCT, RBCT, BPT>
 where
@@ -20,7 +25,18 @@ where
         &self,
         block: &BPT::ValidatedBlock,
         author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool;
+    ) -> Result<(), BlockValidationError>;
+    fn all_validation(
+        &self,
+        block: Block<SCT>,
+        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> Result<BPT::ValidatedBlock, BlockValidationError> {
+        let Some(validated_block) = self.validate(block) else {
+            return Err(BlockValidationError::TxnValidationError);
+        };
+        self.other_validation(&validated_block, author_pubkey)
+            .and(Ok(validated_block))
+    }
 }
 
 impl<
@@ -38,7 +54,7 @@ impl<
         &self,
         block: &BPT::ValidatedBlock,
         author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
+    ) -> Result<(), BlockValidationError> {
         (**self).other_validation(block, author_pubkey)
     }
 }
@@ -62,7 +78,7 @@ impl<SCT: SignatureCollection> BlockValidator<SCT, PassthruReserveBalanceCache, 
         &self,
         _block: &<PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
         _author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
-        true
+    ) -> Result<(), BlockValidationError> {
+        Ok(())
     }
 }

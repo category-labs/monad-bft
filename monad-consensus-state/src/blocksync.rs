@@ -17,7 +17,8 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_types::{BlockId, NodeId, SeqNum, TimeoutVariant};
@@ -251,6 +252,7 @@ where
     pub fn handle_response<VT, RBCT, BP, BV>(
         &mut self,
         author: &NodeId<SCT::NodeIdPubKey>,
+        author_cert_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
         msg: BlockSyncResponseMessage<SCT>,
         self_id: &NodeId<CertificateSignaturePubKey<ST>>,
         validator_set: &VT,
@@ -277,13 +279,12 @@ where
             let _enter = pending_req.span.enter();
             match msg {
                 BlockSyncResponseMessage::BlockFound(block) => {
-                    if let Some(block) = block_validator.validate(block) {
-                        return BlockSyncResult::Success(block);
-                    }
+                    if let Ok(b) = block_validator.all_validation(block, author_cert_pubkey) {
+                        return BlockSyncResult::Success(b);
+                    };
                 }
                 BlockSyncResponseMessage::NotAvailable(_) => {}
             };
-
             BlockSyncResult::Failed(self.request_helper(
                 &pending_req.qc,
                 self_id,
@@ -380,10 +381,10 @@ mod test {
     };
     use monad_crypto::{
         certificate_signature::{
-            CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+            CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
         },
         hasher::Hash,
-        NopSignature,
+        NopPubKey, NopSignature,
     };
     use monad_eth_reserve_balance::PassthruReserveBalanceCache;
     use monad_eth_types::EthAddress;
@@ -658,6 +659,7 @@ mod test {
         // arbitrary response should be rejected
         let BlockSyncResult::<ST, SC, RBCT, BP>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_no_block_1,
             &self_id,
             &valset,
@@ -671,6 +673,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::UnexpectedResponse = manager.handle_response(
             &NodeId::new(keypair.pubkey()),
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_with_block_2.clone(),
             &self_id,
             &valset,
@@ -682,6 +685,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
             &peer_2,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_no_block_2.clone(),
             &self_id,
             &valset,
@@ -701,6 +705,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
             &peer_1,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_with_block_1,
             &self_id,
             &valset,
@@ -712,6 +717,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
             &peer_3,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_no_block_3,
             &self_id,
             &valset,
@@ -733,6 +739,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
             peer_2,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_no_block_2,
             &self_id,
             &valset,
@@ -752,6 +759,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
             peer_3,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_with_block_3,
             &self_id,
             &valset,
@@ -765,6 +773,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
             peer_2,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_with_block_2,
             &self_id,
             &valset,
@@ -818,6 +827,7 @@ mod test {
                 let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager
                     .handle_response(
                         &peer,
+                        &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
                         msg_failed.clone(),
                         &my_id,
                         &valset,
@@ -937,6 +947,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Failed(retry_command) = manager.handle_response(
             &peer,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_failed,
             &my_id,
             &valset,
@@ -1005,6 +1016,7 @@ mod test {
 
         let BlockSyncResult::<ST, SC, RBCT, BP>::Success(b) = manager.handle_response(
             &peer,
+            &NopPubKey::from_bytes(&[0u8; 32]).unwrap(),
             msg_with_block,
             &my_id,
             &valset,
