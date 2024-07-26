@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::{BlockPolicy, BlockPolicyError, BlockType, CarriageCostValidationError},
     checkpoint::RootInfo,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -21,12 +21,16 @@ type Result<T> = StdResult<T, BlockTreeError>;
 #[non_exhaustive]
 pub enum BlockTreeError {
     BlockNotExist(BlockId),
+    BlockNotCoherent(BlockId),
+    CarriageCostError(CarriageCostValidationError),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BlockNotExist(bid) => write!(f, "Block not exist: {:?}", bid),
+            Self::BlockNotCoherent(bid) => write!(f, "Block not coherent {:?}", bid),
+            Self::CarriageCostError(err) => write!(f, "Carriage cost validation error: {:?}", err),
         }
     }
 }
@@ -287,11 +291,12 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
                         .is_coherent
                 })
                 .expect("new_block is not coherent (yet)");
+
             self.update_coherency(
                 incoherent_parent_or_self.get_id(),
                 block_policy,
                 reserve_balance_cache,
-            );
+            )?
         }
 
         inc_count!(blocktree.add.success);
@@ -304,7 +309,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
         block_id: BlockId,
         block_policy: &mut BP,
         reserve_balance_cache: &mut RBCT,
-    ) {
+    ) -> Result<()> {
         let mut block_ids_to_update: VecDeque<BlockId> = vec![block_id].into();
 
         while !block_ids_to_update.is_empty() {
@@ -324,7 +329,20 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
 
             // extending blocks are always coherent, because we only call
             // update_coherency on the first incoherent block in the chain
-            if block_policy.check_coherency(block, extending_blocks, reserve_balance_cache) {
+            if let Err(err) =
+                block_policy.check_coherency(block, extending_blocks, reserve_balance_cache)
+            {
+                trace!("check_coherency returned an error: {:?}", err);
+                match err {
+                    BlockPolicyError::CarriageCostError(cost_err) => {
+                        return Err(BlockTreeError::CarriageCostError(cost_err));
+                    }
+                    BlockPolicyError::BlockNotCoherent => {
+                        return Err(BlockTreeError::BlockNotCoherent(block.get_id()));
+                    }
+                    _ => {}
+                }
+            } else {
                 self.tree.entry(next_block).and_modify(|entry| {
                     entry.is_coherent = true;
                 });
@@ -340,6 +358,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait, BP: BlockPolicy<S
                 );
             }
         }
+        Ok(())
     }
 
     /// Iterate the block tree and return highest QC that have path to block tree

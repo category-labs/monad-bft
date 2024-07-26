@@ -40,6 +40,6 @@ impl ReserveBalanceCacheTrait for PassthruReserveBalanceCache {
         _address: &EthAddress,
     ) -> ReserveBalanceCacheResult {
         debug!("passthru cache get_reserve_balance");
-        ReserveBalanceCacheResult::Val(GENESIS_SEQ_NUM, 1000000)
+        ReserveBalanceCacheResult::Val(GENESIS_SEQ_NUM, u64::MAX.into())
     }
 }

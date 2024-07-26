@@ -93,7 +93,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },

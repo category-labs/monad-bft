@@ -3,7 +3,7 @@ use monad_eth_reserve_balance::{PassthruReserveBalanceCache, ReserveBalanceCache
 use monad_types::SeqNum;
 
 use crate::{
-    block::{BlockPolicy, PassthruBlockPolicy},
+    block::{BlockPolicy, CarriageCostValidationError, PassthruBlockPolicy},
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
 };
@@ -14,6 +14,7 @@ pub enum TxPoolInsertionError {
     NonceTooLow,
     FeeTooLow,
     InsufficientBalance,
+    CarriageCostError(CarriageCostValidationError),
 }
 
 /// This trait represents the storage of transactions that
@@ -50,7 +51,7 @@ pub trait TxPool<
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
         reserve_balance_cache: &mut RBCT,
-    ) -> FullTransactionList;
+    ) -> Result<FullTransactionList, CarriageCostValidationError>;
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
@@ -80,7 +81,7 @@ impl<
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
         reserve_balance_cache: &mut RBCT,
-    ) -> FullTransactionList {
+    ) -> Result<FullTransactionList, CarriageCostValidationError> {
         (**self).create_proposal(
             proposed_seq_num,
             tx_limit,
@@ -137,14 +138,14 @@ impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy, PassthruReserveB
             &<PassthruBlockPolicy as BlockPolicy<SCT, PassthruReserveBalanceCache>>::ValidatedBlock,
         >,
         _reserve_balance_cache: &mut PassthruReserveBalanceCache,
-    ) -> FullTransactionList {
+    ) -> Result<FullTransactionList, CarriageCostValidationError> {
         if tx_limit == 0 {
-            FullTransactionList::empty()
+            Ok(FullTransactionList::empty())
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
             let mut buf = vec![0; tx_limit * TXN_SIZE];
             self.rng.fill_bytes(buf.as_mut_slice());
-            FullTransactionList::new(buf.into())
+            Ok(FullTransactionList::new(buf.into()))
         }
     }
 

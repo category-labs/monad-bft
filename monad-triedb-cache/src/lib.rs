@@ -89,7 +89,8 @@ impl ReserveBalanceCache {
         }
 
         if divider.is_some() {
-            self.cache.split_off(&divider.unwrap());
+            // TODO: revisit once perf implications are understood
+            self.cache = self.cache.split_off(&divider.unwrap());
         }
     }
 

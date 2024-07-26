@@ -6,13 +6,14 @@ use std::{
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{
+    block::CarriageCostValidationError,
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
 use monad_eth_block_policy::{
-    compute_reserve_balance, compute_txn_carriage_cost, AccountNonceRetrievable,
-    ComputeReserveBalanceResult, EthBlockPolicy, EthValidatedBlock,
+    compute_reserve_balance, compute_txn_carriage_cost, AccountNonceRetrievable, EthBlockPolicy,
+    EthValidatedBlock,
 };
 use monad_eth_reserve_balance::ReserveBalanceCacheTrait;
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
@@ -119,95 +120,102 @@ pub struct EthTxPool {
 impl EthTxPool {
     /// Removes nonces that cannot extend the current block tree branch, as the
     /// txpool is transient and garbage collected after proposal creation
-    fn remove_invalid_nonces<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait>(
+    fn validate_nonces_and_carriage_fee<
+        SCT: SignatureCollection,
+        RBCT: ReserveBalanceCacheTrait,
+    >(
         &mut self,
         proposed_seq_num: SeqNum,
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         blocktree_nonce_deltas: BTreeMap<EthAddress, Nonce>,
-        reserve_balance_cache: &mut RBCT,
-    ) {
-        self.pool
-            .iter_mut()
-            .for_each(|(eth_address, transaction_group)| {
-                let lowest_valid_nonce =
-                    block_policy.get_account_nonce(eth_address, &blocktree_nonce_deltas);
+        account_balance_cache: &mut RBCT,
+    ) -> Result<(), CarriageCostValidationError> {
+        for (eth_address, transaction_group) in self.pool.iter_mut() {
+            let lowest_valid_nonce =
+                block_policy.get_account_nonce(eth_address, &blocktree_nonce_deltas);
 
-                // Remove transactions with nonces lower than the lowest valid nonce
-                transaction_group
-                    .transactions
-                    .retain(|&nonce, _| nonce >= lowest_valid_nonce);
+            // Remove transactions with nonces lower than the lowest valid nonce
+            transaction_group
+                .transactions
+                .retain(|&nonce, _| nonce >= lowest_valid_nonce);
 
-                let maybe_nonce_gap = transaction_group.find_nonce_gap(lowest_valid_nonce);
+            let maybe_nonce_gap = transaction_group.find_nonce_gap(lowest_valid_nonce);
 
-                if let Some(gap) = maybe_nonce_gap {
-                    // TODO: garbage collect
-                    let _ = transaction_group.transactions.split_off(&gap);
+            if let Some(gap) = maybe_nonce_gap {
+                // TODO: garbage collect
+                let _ = transaction_group.transactions.split_off(&gap);
+            }
+
+            let res = compute_reserve_balance::<SCT, RBCT>(
+                proposed_seq_num,
+                account_balance_cache,
+                block_policy,
+                Some(&extending_blocks),
+                eth_address,
+            );
+            let mut reserve_balance: u128;
+            match res {
+                Ok(res_balance) => {
+                    reserve_balance = res_balance;
                 }
-
-                let res = compute_reserve_balance::<SCT, RBCT>(
-                    proposed_seq_num,
-                    reserve_balance_cache,
-                    block_policy,
-                    Some(&extending_blocks),
-                    eth_address,
-                );
-                let mut reserve_balance = match res {
-                    ComputeReserveBalanceResult::Val(val) => val,
-                    ComputeReserveBalanceResult::TrieDBNone => {
-                        /* reserve balance is 0 */
-                        0
+                Err(err) => match err {
+                    CarriageCostValidationError::InsufficientReserveBalance => {
+                        reserve_balance = 0;
                     }
-                    ComputeReserveBalanceResult::NeedSync => 0,
-                    ComputeReserveBalanceResult::Spent => 0,
-                };
-                trace!(
-                    "ReserveBalance create_proposal 1 \
-                        balance is: {:?} \
-                        at block_id: {:?} \
-                        for address: {:?}",
-                    reserve_balance,
-                    proposed_seq_num,
-                    eth_address
-                );
-
-                let mut nonce_to_remove: Option<u64> = None;
-                for (nonce, txn) in &transaction_group.transactions {
-                    let txn_carriage_cost = compute_txn_carriage_cost(&txn.0);
-
-                    if reserve_balance >= txn_carriage_cost {
-                        reserve_balance -= txn_carriage_cost;
-                        trace!(
-                            "ReserveBalance create_proposal 2 \
-                                updated balance to: {:?} \
-                                at block_id: {:?} \
-                                at nonce: {:?} \
-                                for address: {:?}",
-                            reserve_balance,
-                            proposed_seq_num,
-                            nonce,
-                            eth_address
-                        );
-                    } else {
-                        nonce_to_remove = Some(*nonce);
-                        trace!(
-                            "ReserveBalance create_proposal 3 \
-                                insufficient balance at nonce: {:?} \
-                                for address: {:?}",
-                            nonce,
-                            eth_address
-                        );
-                        break;
+                    _ => {
+                        return Err(err);
                     }
+                },
+            }
+            trace!(
+                "ReserveBalance validate_nonces_and_carriage_fee 1 \
+                    balance is: {:?} \
+                    at block_id: {:?} \
+                    for address: {:?}",
+                reserve_balance,
+                proposed_seq_num,
+                eth_address
+            );
+
+            let mut nonce_to_remove: Option<u64> = None;
+            for (nonce, txn) in &transaction_group.transactions {
+                let txn_carriage_cost = compute_txn_carriage_cost(&txn.0);
+
+                if reserve_balance >= txn_carriage_cost {
+                    reserve_balance -= txn_carriage_cost;
+                    trace!(
+                        "ReserveBalance validate_nonces_and_carriage_fee 2 \
+                            updated balance to: {:?} \
+                            at block_id: {:?} \
+                            at nonce: {:?} \
+                            for address: {:?}",
+                        reserve_balance,
+                        proposed_seq_num,
+                        nonce,
+                        eth_address
+                    );
+                } else {
+                    nonce_to_remove = Some(*nonce);
+                    trace!(
+                        "ReserveBalance create_proposal 3 \
+                            insufficient balance at nonce: {:?} \
+                            for address: {:?}",
+                        nonce,
+                        eth_address
+                    );
+                    break;
                 }
-                if let Some(gap) = nonce_to_remove {
-                    // TODO: garbage collect
-                    let _ = transaction_group.transactions.split_off(&gap);
-                }
-            });
+            }
+            if let Some(gap) = nonce_to_remove {
+                // TODO: garbage collect
+                let _ = transaction_group.transactions.split_off(&gap);
+            }
+        }
         // TODO: garbage collect
         self.pool
-            .retain(|_, transaction_group| !transaction_group.transactions.is_empty())
+            .retain(|_, transaction_group| !transaction_group.transactions.is_empty());
+        Ok(())
     }
 
     fn total_txns(&self) -> usize {
@@ -260,7 +268,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         );
 
         let (inserted, reserve_balance) = match res {
-            ComputeReserveBalanceResult::Val(val) => {
+            Ok(val) => {
                 let txn_carriage_cost = compute_txn_carriage_cost(&eth_tx);
                 if val >= txn_carriage_cost {
                     // TODO(rene): should any transaction validation occur here before inserting into mempool
@@ -292,42 +300,29 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
                     (Err(TxPoolInsertionError::InsufficientBalance), val)
                 }
             }
-            ComputeReserveBalanceResult::TrieDBNone => {
-                /* reserve balance is 0 */
-                self.pool.entry(sender).or_default().add(eth_tx, ratio);
+            Err(CarriageCostValidationError::InsufficientReserveBalance) => {
                 trace!(
                     "ReserveBalance insert_tx 3 \
-                        TrieDBNone, but add txn to the pool. \
-                        block_seq_num: {:?} \
-                        for address: {:?}",
-                    block_seq_num,
-                    sender
-                );
-                (Ok(()), 0)
-            }
-            ComputeReserveBalanceResult::NeedSync => {
-                /* TODO implement waiting, reserve balance is 0 for now */
-                self.pool.entry(sender).or_default().add(eth_tx, ratio);
-                trace!(
-                    "ReserveBalance insert_tx 4 \
-                        NeedSync, but add txn to the pool. \
-                        block_seq_num: {:?} \
-                        for address: {:?}",
-                    block_seq_num,
-                    sender
-                );
-                (Ok(()), 0)
-            }
-            ComputeReserveBalanceResult::Spent => {
-                trace!(
-                    "ReserveBalance insert_tx 5 \
-                        do not add txn to the pool. insufficient balance - spent. \
+                        insufficient reserve balance error: \
                         block_seq_num: {:?} \
                         for address: {:?}",
                     block_seq_num,
                     sender
                 );
                 (Err(TxPoolInsertionError::InsufficientBalance), 0)
+            }
+            _ => {
+                let err = res.err().unwrap();
+                trace!(
+                    "ReserveBalance insert_tx 4 \
+                        reserve balance compute error: {:?} \
+                        block_seq_num: {:?} \
+                        for address: {:?}",
+                    err,
+                    block_seq_num,
+                    sender
+                );
+                (Err(TxPoolInsertionError::CarriageCostError(err)), 0)
             }
         };
 
@@ -345,16 +340,19 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         reserve_balance_cache: &mut RBCT,
-    ) -> FullTransactionList {
+    ) -> Result<FullTransactionList, CarriageCostValidationError> {
         // Get the latest nonce from txns in the extending blocks
         let extending_account_nonces = extending_blocks.get_account_nonces();
-        self.remove_invalid_nonces(
+        if let Err(err) = self.validate_nonces_and_carriage_fee(
             proposed_seq_num,
             block_policy,
             extending_blocks,
             extending_account_nonces,
             reserve_balance_cache,
-        );
+        ) {
+            trace!("ReserveBalance create_proposal returned error: {:?}", err);
+            return Err(err);
+        }
 
         let mut txs = Vec::new();
         let mut total_gas = 0;
@@ -441,7 +439,7 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         let old_pool = std::mem::take(&mut self.pool);
         self.garbage.push(old_pool);
 
-        FullTransactionList::new(full_tx_list)
+        Ok(FullTransactionList::new(full_tx_list))
     }
 
     fn clear(&mut self) {
@@ -475,7 +473,7 @@ mod test {
             account_nonces: BTreeMap::new(),
             last_commit: GENESIS_SEQ_NUM,
             execution_delay: 0,
-            max_reserve_balance: 0,
+            max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
         }
@@ -506,7 +504,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -539,7 +538,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
 
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![]);
@@ -592,7 +592,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -623,7 +624,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -654,7 +656,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -710,7 +713,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -761,7 +765,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -820,7 +825,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -878,7 +884,8 @@ mod test {
             &eth_block_policy,
             Default::default(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, expected_txs);
     }
@@ -964,7 +971,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(expected_txs, decoded_txns);
     }
@@ -996,7 +1004,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
         assert_eq!(decoded_txns, vec![txn_nonce_zero]);
     }
@@ -1047,7 +1056,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
         // only transactions with nonce 0 and 1 should be included
@@ -1068,7 +1078,7 @@ mod test {
             account_nonces: vec![(sender_1_address, 1)].into_iter().collect(),
             last_commit: GENESIS_SEQ_NUM,
             execution_delay: 0,
-            max_reserve_balance: 0,
+            max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
         };
@@ -1096,7 +1106,8 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
         assert_eq!(decoded_txns, vec![txn_nonce_one]);
@@ -1142,12 +1153,14 @@ mod test {
             &eth_block_policy,
             vec![&extending_block],
             &mut reserve_balance_cache,
-        );
+        )
+        .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
         assert_eq!(decoded_txns, vec![txn_nonce_one]);
     }
 
+    #[traced_test]
     #[test]
     fn test_combine_nonces_of_blocks() {
         // TxPool should combine the nonces of commited block and pending blocks to check nonce
@@ -1167,7 +1180,7 @@ mod test {
             account_nonces: vec![(sender_1_address, 1)].into_iter().collect(),
             last_commit: GENESIS_SEQ_NUM,
             execution_delay: 0,
-            max_reserve_balance: 0,
+            max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
         };
@@ -1201,14 +1214,16 @@ mod test {
         // create the extending block 2 with txn 2
         let extending_block_2 = generate_random_block_with_txns(vec![txn_nonce_two]);
 
-        let encoded_txns = eth_tx_pool.create_proposal(
-            SeqNum(0),
-            10_000,
-            50_000,
-            &eth_block_policy,
-            vec![&extending_block_1, &extending_block_2],
-            &mut reserve_balance_cache,
-        );
+        let encoded_txns = eth_tx_pool
+            .create_proposal(
+                SeqNum(0),
+                10_000,
+                50_000,
+                &eth_block_policy,
+                vec![&extending_block_1, &extending_block_2],
+                &mut reserve_balance_cache,
+            )
+            .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
         assert_eq!(decoded_txns, vec![txn_nonce_three]);

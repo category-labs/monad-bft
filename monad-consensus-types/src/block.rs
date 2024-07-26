@@ -202,6 +202,19 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum CarriageCostValidationError {
+    TrieDBNeedsSync,
+    InsufficientReserveBalance,
+    InternalError,
+}
+
+#[derive(Debug, PartialEq)]
+#[non_exhaustive]
+pub enum BlockPolicyError {
+    BlockNotCoherent,
+    CarriageCostError(CarriageCostValidationError),
+}
 /// Trait that represents how inner contents of a block should be validated
 pub trait BlockPolicy<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> {
     type ValidatedBlock: Sized
@@ -218,7 +231,7 @@ pub trait BlockPolicy<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> 
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         reserve_balance_cache: &mut RBCT,
-    ) -> bool;
+    ) -> Result<(), BlockPolicyError>;
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock);
 }
@@ -236,7 +249,7 @@ impl<
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
         reserve_balance_cache: &mut RBCT,
-    ) -> bool {
+    ) -> Result<(), BlockPolicyError> {
         (**self).check_coherency(block, extending_blocks, reserve_balance_cache)
     }
 
@@ -259,8 +272,8 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> BlockPolicy<SCT, 
         _: &Self::ValidatedBlock,
         _: Vec<&Self::ValidatedBlock>,
         _: &mut RBCT,
-    ) -> bool {
-        true
+    ) -> Result<(), BlockPolicyError> {
+        Ok(())
     }
 
     fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}

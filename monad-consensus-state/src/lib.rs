@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, BlockTreeError};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -386,7 +386,13 @@ where
         }
 
         // at this point, block is valid and can be added to the blocktree
-        cmds.extend(self.try_add_and_commit_blocktree(&block, Some(state_root_action)));
+        if let Ok(res_cmds) = self.try_add_and_commit_blocktree(&block, Some(state_root_action)) {
+            cmds.extend(res_cmds);
+        } else {
+            warn!("Transaction validation failed");
+            self.metrics.consensus_events.failed_txn_validation += 1;
+            return cmds;
+        }
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
         // before R because of network conditions. The proposals are still valid
@@ -585,7 +591,13 @@ where
                 if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
                     cmds.extend(self.request_block_if_missing_ancestor(block.get_qc()));
 
-                    cmds.extend(self.try_add_and_commit_blocktree(&block, None));
+                    if let Ok(res_cmds) = self.try_add_and_commit_blocktree(&block, None) {
+                        cmds.extend(res_cmds);
+                    } else {
+                        // TODO: assert?
+                        warn!("Transaction validation in blocksync failed");
+                        return cmds;
+                    }
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
@@ -798,17 +810,29 @@ where
         cmds
     }
 
-    #[must_use]
     fn try_add_and_commit_blocktree(
         &mut self,
         block: &BPT::ValidatedBlock,
         state_root_action: Option<StateRootAction>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Result<Vec<ConsensusCommand<ST, SCT>>, BlockTreeError> {
         trace!(?block, "adding block to blocktree");
-        self.consensus
-            .pending_block_tree
-            .add(block.clone(), self.reserve_balance_cache, self.block_policy)
-            .expect("Failed to add block to blocktree");
+        if let Err(err) = self.consensus.pending_block_tree.add(
+            block.clone(),
+            self.reserve_balance_cache,
+            self.block_policy,
+        ) {
+            match err {
+                BlockTreeError::CarriageCostError(err) => {
+                    return Err(BlockTreeError::CarriageCostError(err));
+                }
+                BlockTreeError::BlockNotCoherent(bid) => {
+                    return Err(BlockTreeError::BlockNotCoherent(bid));
+                }
+                _ => {
+                    panic!("Failed to add block to blocktree");
+                }
+            }
+        }
 
         let mut cmds = Vec::new();
 
@@ -830,7 +854,7 @@ where
             cmds.extend(self.try_propose());
         }
 
-        cmds
+        Ok(cmds)
     }
 
     #[must_use]
@@ -1019,8 +1043,6 @@ where
                 let _create_proposal_span =
                     tracing::info_span!("create_proposal_span", ?round).entered();
 
-                self.metrics.consensus_events.creating_proposal += 1;
-
                 // Propose when there's a path to root
                 let pending_blocktree_blocks = self
                     .consensus
@@ -1037,15 +1059,26 @@ where
                     "Creating Proposal"
                 );
 
-                let prop_txns = self.tx_pool.create_proposal(
+                match self.tx_pool.create_proposal(
                     proposed_seq_num,
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
                     self.block_policy,
                     pending_blocktree_blocks,
                     self.reserve_balance_cache,
-                );
-                proposer_builder(prop_txns, h, last_round_tc)
+                ) {
+                    Ok(prop_txns) => {
+                        self.metrics.consensus_events.creating_proposal += 1;
+                        proposer_builder(prop_txns, h, last_round_tc)
+                    }
+                    Err(err) => {
+                        // TODO: add metrics for different carriage cost validation errors
+                        self.metrics.consensus_events.creating_empty_block_proposal += 1;
+                        let txns = FullTransactionList::empty();
+                        debug!(?err, "Creating Proposal error");
+                        proposer_builder(txns, INITIAL_DELAY_STATE_ROOT_HASH, last_round_tc)
+                    }
+                }
             }
             ConsensusAction::ProposeEmpty => {
                 tracing::info_span!("create_proposal_empty_span", ?round);
@@ -4351,7 +4384,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
@@ -4408,7 +4441,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
@@ -4444,6 +4477,7 @@ mod test {
         assert!(!block_1_blocktree_entry.is_coherent);
     }
 
+    #[traced_test]
     #[test]
     fn test_incoherent_block_duplicate_nonce() {
         let num_states = 2;
@@ -4465,7 +4499,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
@@ -4549,7 +4583,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
@@ -4656,7 +4690,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
@@ -4768,7 +4802,7 @@ mod test {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
                 execution_delay: 0,
-                max_reserve_balance: 0,
+                max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
             },
