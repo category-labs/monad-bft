@@ -6,7 +6,7 @@ use std::{
 
 use alloy_primitives::keccak256;
 use alloy_rlp::Decodable;
-use log::debug;
+use tracing::debug;
 
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));

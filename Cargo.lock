@@ -4268,8 +4268,8 @@ dependencies = [
  "alloy-rlp",
  "bindgen 0.69.4",
  "cmake",
- "log",
  "monad-eth-types",
+ "tracing",
 ]
 
 [[package]]
