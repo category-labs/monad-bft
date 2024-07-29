@@ -53,8 +53,9 @@ class Node:
             '> /monad/logs/client.log 2>&1'
         ]
 
-    def __init__(self, name: str, has_execution: bool = False, has_rpc: bool = False, upload_speed: int = 100, download_speed: int = 100):
+    def __init__(self, name: str, stake: int, has_execution: bool = False, has_rpc: bool = False, upload_speed: int = 100, download_speed: int = 100):
         self.name = name
+        self.stake = stake
         self.has_execution = has_execution
         self.has_rpc = has_rpc
         self.rpc_ip = None

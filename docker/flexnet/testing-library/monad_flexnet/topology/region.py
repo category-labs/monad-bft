@@ -9,8 +9,8 @@ class Region:
         self.intraregion_latency = intraregion_latency
         self.interregion_latencies = {}
 
-    def create_node(self, node_name: str, **kwargs):
-        new_node = Node(node_name, **kwargs)
+    def create_node(self, node_name: str, stake: int, **kwargs):
+        new_node = Node(node_name, stake, **kwargs)
         self.nodes.append(new_node)
         return new_node
 
