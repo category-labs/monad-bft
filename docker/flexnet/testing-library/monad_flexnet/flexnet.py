@@ -1,3 +1,5 @@
+from typing import Dict
+
 import git
 import itertools
 import json
@@ -208,3 +210,28 @@ class Flexnet:
 
     def get_block_ledger(self, node_name: str) -> Ledger:
         return BlockLedger(f"{self.root_dir}/{node_name}/ledger")
+
+    def get_write_ahead_log_as_json(self, node_name: str) -> Dict[str, json]:
+        res = {}
+        for file in os.listdir(f"{self.root_dir}/{node_name}"):
+            # less jank way of finding all the write ahead log files?
+            if file.startswith("wal"):
+                json_file = f"{file}.json"
+                docker.run(
+                    "wal:latest",
+                    volumes=[
+                        (f"{self.root_dir}/{node_name}", "/monad"),
+                    ],
+                    command=[
+                        "wal-tool",
+                        "--wal-path",
+                        f"/monad/{file}",
+                        "stat",
+                        "--output",
+                        f"/monad/{json_file}",
+                    ],
+                )
+
+                with open(f"{self.root_dir}/{node_name}/{json_file}", "r") as wal:
+                    res[file] = json.load(wal)
+        return res
