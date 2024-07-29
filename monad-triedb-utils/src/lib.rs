@@ -253,6 +253,30 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_receipt")
     }
 
+    pub async fn get_call_frame(&self, tx_hash: [u8; 32], block_num: u64) -> TriedbResult {
+        let triedb_path = self.triedb_path.clone();
+        let (send, recv) = tokio::sync::oneshot::channel();
+        rayon::spawn(move || {
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+
+                // TODO: should we reuse the same function?
+                let (triedb_key, key_len_nibbles) = TriedbEnv::create_call_frame_key(&tx_hash);
+
+                let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
+                let Some(result) = result else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
+
+                let _ = send.send(TriedbResult::Receipt(result));
+            });
+        });
+        recv.await.expect("rayon panic get_call_frame")
+    }
+
     fn new_conn(triedb_path: &Path) -> Option<Handle> {
         Handle::try_new(triedb_path)
     }
@@ -346,5 +370,9 @@ impl TriedbEnv {
             .collect();
 
         (key, num_nibbles)
+    }
+
+    fn create_call_frame_key(code_hash: &[u8; 32]) -> (Vec<u8>, u8) {
+        return TriedbEnv::create_code_key(code_hash);
     }
 }

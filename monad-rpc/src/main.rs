@@ -29,6 +29,7 @@ use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
+use trace_handlers::monad_eth_debugTraceTransaction;
 use tracing::{debug, info};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -61,6 +62,7 @@ mod hex;
 mod jsonrpc;
 mod mempool_tx;
 mod receipt;
+mod trace_handlers;
 mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
@@ -163,6 +165,17 @@ async fn rpc_select(
             let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
             monad_debug_getRawTransaction(reader, params).await
+        }
+        // TODO: clash in debug_ prefix??
+        "debug_traceTransaction" => {
+            let Some(reader) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(triedb_env) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+            monad_eth_debugTraceTransaction(reader, triedb_env, params).await
         }
         "eth_call" => {
             let Some(reader) = &app_state.blockdb_reader else {
