@@ -228,6 +228,17 @@ impl JsonRpcError {
             data: None,
         }
     }
+
+    pub fn code_size_too_large(size: usize) -> Self {
+        Self {
+            code: -32000,
+            message: format!(
+                "Contract code size is {} bytes and exceeds 24576 bytes",
+                size
+            ),
+            data: None,
+        }
+    }
 }
 
 #[cfg(test)]

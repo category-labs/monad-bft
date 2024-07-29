@@ -193,6 +193,13 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                         to: if let Some(to) = call_request.to {
                             reth_primitives::TransactionKind::Call(to)
                         } else {
+                            // EIP-170
+                            if let Some(code) = call_request.input.data.as_ref() {
+                                if code.len() > 0x6000 {
+                                    return Err(JsonRpcError::code_size_too_large(code.len()));
+                                }
+                            }
+
                             reth_primitives::TransactionKind::Create
                         },
                         value: reth_primitives::TxValue::from(
