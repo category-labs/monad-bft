@@ -4,7 +4,7 @@ use reth_primitives::{Header, ReceiptWithBloom};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    eth_json_types::{BlockTags, EthHash, MonadU256},
+    eth_json_types::{BlockTags, EthHash},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
@@ -87,26 +87,6 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByHash")]
-#[allow(non_snake_case)]
-/// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
-pub async fn monad_debug_traceBlockByHash<T: Triedb>(
-    triedb_env: &T,
-    params: EthHash,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}
-
-#[rpc(method = "debug_traceBlockByNumber")]
-#[allow(non_snake_case)]
-/// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
-pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
-    triedb_env: &T,
-    params: MonadU256,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}
-
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct DebugTraceCallParams {
     pub call: Vec<TraceCallObject>,
@@ -120,22 +100,6 @@ pub struct DebugTraceCallParams {
 pub async fn monad_debug_traceCall<T: Triedb>(
     triedb_env: &T,
     params: DebugTraceCallParams,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}
-
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
-pub struct DebugTraceTransactionParams {
-    pub tx: EthHash,
-    pub tracer: TracerObject,
-}
-
-#[rpc(method = "debug_traceTransaction")]
-#[allow(non_snake_case)]
-/// Returns all traces of a given transaction.
-pub async fn monad_debug_traceTransaction<T: Triedb>(
-    triedb_env: &T,
-    params: DebugTraceTransactionParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }

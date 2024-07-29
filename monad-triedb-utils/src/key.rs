@@ -9,6 +9,7 @@ const TRANSACTION_NIBBLE: u8 = 3;
 const BLOCK_HEADER_NIBBLE: u8 = 4;
 const TRANSACTION_HASH_NIBBLE: u8 = 7;
 const BLOCK_HASH_NIBBLE: u8 = 8;
+const CALL_FRAME_NIBBLE: u8 = 9;
 
 pub enum KeyInput<'a> {
     Address(&'a [u8; 20]),
@@ -19,6 +20,7 @@ pub enum KeyInput<'a> {
     BlockHeader,
     TxHash(&'a [u8; 32]),
     BlockHash(&'a [u8; 32]),
+    CallFrame(u64),
 }
 
 pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
@@ -93,6 +95,17 @@ pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
             key_nibbles.push(BLOCK_HASH_NIBBLE);
 
             for byte in block_hash {
+                key_nibbles.push(byte >> 4);
+                key_nibbles.push(byte & 0xF);
+            }
+        }
+        KeyInput::CallFrame(tx_index) => {
+            key_nibbles.push(CALL_FRAME_NIBBLE);
+
+            let mut rlp_buf = vec![];
+            tx_index.encode(&mut rlp_buf);
+
+            for byte in rlp_buf {
                 key_nibbles.push(byte >> 4);
                 key_nibbles.push(byte & 0xF);
             }

@@ -199,6 +199,12 @@ pub trait Triedb {
         &self,
         block_hash: EthBlockHash,
     ) -> impl std::future::Future<Output = Result<Option<u64>, JsonRpcError>> + Send;
+
+    fn get_call_frame(
+        &self,
+        txn_index: u64,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, JsonRpcError>> + Send;
 }
 
 pub trait TriedbPath {
@@ -809,6 +815,50 @@ impl Triedb for TriedbEnv {
                         }),
                     None => Ok(None),
                 }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(JsonRpcError::internal_error("error reading from db".into()))
+            }
+        }
+    }
+
+    async fn get_call_frame(
+        &self,
+        txn_index: u64,
+        block_num: u64,
+    ) -> Result<Option<Vec<u8>>, JsonRpcError> {
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(txn_index));
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(Quantity(block_num)),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return Err(JsonRpcError::internal_error(
+                "error reading from db due to rate limit".into(),
+            ));
+        }
+
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                }
+
+                Ok(result)
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");

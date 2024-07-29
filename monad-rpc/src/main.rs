@@ -7,6 +7,7 @@ use actix_web::{
     web, App, Error, HttpResponse, HttpServer,
 };
 use clap::Parser;
+use eth_json_types::serialize_result;
 use futures::SinkExt;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
@@ -33,10 +34,8 @@ use crate::{
     cli::Cli,
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
-        monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
-        monad_debug_traceBlockByNumber, monad_debug_traceCall, monad_debug_traceTransaction,
+        monad_debug_getRawTransaction, monad_debug_traceCall,
     },
-    eth_json_types::serialize_result,
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -51,6 +50,9 @@ use crate::{
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
+    },
+    trace_handlers::{
+        monad_debugTraceBlockByHash, monad_debugTraceBlockByNumber, monad_debugTraceTransaction,
     },
     triedb::TriedbEnv,
     txpool::{
@@ -75,6 +77,7 @@ mod jsonrpc;
 mod mempool_tx;
 mod metrics;
 mod trace;
+mod trace_handlers;
 mod triedb;
 mod txpool;
 mod websocket;
@@ -192,14 +195,14 @@ async fn rpc_select(
         "debug_traceBlockByHash" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByHash(triedb_env, params)
+            monad_debugTraceBlockByHash(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_traceBlockByNumber" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(triedb_env, params)
+            monad_debugTraceBlockByNumber(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
@@ -213,7 +216,7 @@ async fn rpc_select(
         "debug_traceTransaction" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceTransaction(triedb_env, params)
+            monad_debugTraceTransaction(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }

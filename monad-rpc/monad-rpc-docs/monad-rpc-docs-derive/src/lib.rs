@@ -189,19 +189,15 @@ fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2
                         // Check if inner_ty is Option<T>
                         if let Type::Path(inner_path) = inner_ty {
                             if let Some(last_segment) = inner_path.path.segments.last() {
-                                if last_segment.ident == "Option" {
+                                if last_segment.ident == "Option" || last_segment.ident == "Vec" {
                                     if let PathArguments::AngleBracketed(inner_args) =
                                         &last_segment.arguments
                                     {
-                                        if let Some(GenericArgument::Type(option_inner_ty)) =
+                                        if let Some(GenericArgument::Type(inner_ty)) =
                                             inner_args.args.first()
                                         {
-                                            let schema_expr = generate_schema_expr(option_inner_ty);
-                                            return Some((
-                                                name,
-                                                (*option_inner_ty).clone(),
-                                                schema_expr,
-                                            ));
+                                            let schema_expr = generate_schema_expr(inner_ty);
+                                            return Some((name, (*inner_ty).clone(), schema_expr));
                                         }
                                     }
                                 }

@@ -221,6 +221,12 @@ impl schemars::JsonSchema for EthHash {
 #[derive(Debug, PartialEq, Eq)]
 pub struct UnformattedData(pub Vec<u8>);
 
+impl UnformattedData {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl schemars::JsonSchema for UnformattedData {
     fn schema_name() -> String {
         "UnformattedData".to_string()
@@ -245,6 +251,20 @@ impl FromStr for UnformattedData {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         decode(s).map(UnformattedData)
+    }
+}
+impl From<reth_primitives::Bytes> for UnformattedData {
+    fn from(data: reth_primitives::Bytes) -> Self {
+        UnformattedData(data.to_vec())
+    }
+}
+
+impl Serialize for UnformattedData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
     }
 }
 
@@ -321,6 +341,12 @@ impl<'de> Deserialize<'de> for Quantity {
 #[derive(Debug, PartialEq, Eq)]
 pub struct FixedData<const N: usize>(pub [u8; N]);
 
+impl<const N: usize> std::fmt::Display for FixedData<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x{}", hex::encode(&self.0))
+    }
+}
+
 impl<const N: usize> FromStr for FixedData<N> {
     type Err = DecodeHexError;
 
@@ -329,6 +355,21 @@ impl<const N: usize> FromStr for FixedData<N> {
             Ok(a) => Ok(FixedData(a)),
             Err(_) => Err(DecodeHexError::InvalidLen),
         })?
+    }
+}
+
+impl<const N: usize> Serialize for FixedData<N> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
+    }
+}
+
+impl From<FixedBytes<32>> for FixedData<32> {
+    fn from(bytes: FixedBytes<32>) -> Self {
+        Self(bytes.0)
     }
 }
 
@@ -359,15 +400,6 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
         let buf = String::deserialize(deserializer)?;
         FixedData::from_str(&buf)
             .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
-    }
-}
-
-impl Serialize for EthHash {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(&self.0))
     }
 }
 
