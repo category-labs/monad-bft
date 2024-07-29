@@ -90,7 +90,7 @@ CMD monad-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
     --node-config /monad/config/node.toml \
-    --forkpoint-config /monad/config/forkpoint.toml \
+    --forkpoint-config /monad/config/forkpoint.genesis.toml \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
     --control-panel-ipc-path /monad/controlpanel.sock \
