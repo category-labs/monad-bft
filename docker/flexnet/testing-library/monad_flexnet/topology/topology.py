@@ -23,6 +23,7 @@ class Topology:
             for node_dict in region_dict['nodes']:
                 region.create_node(
                     node_dict['name'],
+                    stake=node_dict.get('stake', 1),
                     has_execution=node_dict['execution'],
                     has_rpc=node_dict['rpc'],
                     upload_speed=node_dict['up_Mbps'],

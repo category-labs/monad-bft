@@ -57,7 +57,7 @@ class Node:
             '> /monad/logs/client.log 2>&1'
         ]
 
-    def __init__(self, name: str, has_execution: bool = False, has_rpc: bool = False, upload_speed: int = 100, download_speed: int = 100):
+    def __init__(self, name: str, has_execution: bool = False, has_rpc: bool = False, upload_speed: int = 100, download_speed: int = 100, stake: int = 1):
         self.name = name
         self.has_execution = has_execution
         self.has_rpc = has_rpc
@@ -70,6 +70,7 @@ class Node:
         self.is_byzantine = False
         self.node_root = None
         self.test_mode = False
+        self.stake = stake
 
     def set_byzantine(self, is_byzantine: bool = True):
         self.test_mode = True

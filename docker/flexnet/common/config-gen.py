@@ -63,6 +63,7 @@ class Peer:
     service: str = None
     secp_pubkey: str = None
     bls_pubkey: str = None
+    stake: int = None
 
 
 # volume name -> Peer
@@ -189,6 +190,7 @@ if __name__ == "__main__":
             volume = node.name
             service_name = node.name
             peers[volume].service = service_name
+            peers[volume].stake = node.stake
 
     volume_list = [Path(vol) for vol in peers.keys()]
     if node_count != len(volume_list):
@@ -287,7 +289,7 @@ if __name__ == "__main__":
             {
                 "node_id": peers[volume].secp_pubkey,
                 "cert_pubkey": peers[volume].bls_pubkey,
-                "stake": 1,
+                "stake": peers[volume].stake,
             }
         )
 
