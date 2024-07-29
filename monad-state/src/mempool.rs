@@ -4,12 +4,8 @@ use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
-    block_validator::BlockValidator,
-    metrics::Metrics,
-    payload::StateRootValidator,
-    signature_collection::SignatureCollection,
-    txpool::TxPool,
+    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -50,7 +46,7 @@ where
 
     metrics: &'a mut Metrics,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus: &'a ConsensusState<ST, SCT, BPT, SBT, RBCT>,
+    consensus: &'a ConsensusState<SCT, BPT, SBT, RBCT>,
     leader_election: &'a LT,
     epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
@@ -158,7 +154,7 @@ where
 }
 
 impl<ST, SCT> From<MempoolCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

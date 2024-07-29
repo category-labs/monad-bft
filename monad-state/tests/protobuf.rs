@@ -1,11 +1,7 @@
-use bytes::Bytes;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{
-            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-            VoteMessage,
-        },
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Validated, Verified},
 };
@@ -437,121 +433,6 @@ test_all_combination!(test_proposal_tc, |num_keys| {
             .unwrap()
             .into_inner();
         assert_eq!(proposal_msg, rx_prop);
-    } else {
-        unreachable!()
-    }
-});
-
-test_all_combination!(test_block_sync_request, |_| {
-    let bid = BlockId(Hash([0x01_u8; 32]));
-    let block_sync_msg = RequestBlockSyncMessage { block_id: bid };
-
-    let verified_monad_message =
-        VerifiedMonadMessage::<ST, SCT>::BlockSyncRequest(Validated::new(block_sync_msg.clone()));
-    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
-
-    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
-    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
-
-    assert_eq!(rx_msg, monad_message);
-    assert!(matches!(rx_msg, MonadMessage::BlockSyncRequest(_)));
-
-    if let MonadMessage::BlockSyncRequest(request) = rx_msg {
-        assert_eq!(request.validate().unwrap().into_inner(), block_sync_msg);
-    } else {
-        unreachable!()
-    }
-});
-
-test_all_combination!(test_block_sync_response_not_available, |num_keys| {
-    let (_keypairs, _cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    val_epoch_map.insert(
-        Epoch(1),
-        validators
-            .get_members()
-            .iter()
-            .map(|(a, b)| (*a, *b))
-            .collect(),
-        validator_mapping,
-    );
-
-    let bid = BlockId(Hash([0x01_u8; 32]));
-    let block_sync_msg = BlockSyncResponseMessage::NotAvailable(bid);
-
-    let verified_monad_message =
-        VerifiedMonadMessage::<ST, SCT>::BlockSyncResponse(Validated::new(block_sync_msg.clone()));
-    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
-
-    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
-    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
-
-    assert_eq!(rx_msg, monad_message);
-    assert!(matches!(rx_msg, MonadMessage::BlockSyncResponse(_)));
-
-    if let MonadMessage::BlockSyncResponse(resp) = rx_msg {
-        let validated = resp
-            .validate(&epoch_manager, &val_epoch_map)
-            .unwrap()
-            .into_inner();
-
-        assert_eq!(block_sync_msg, validated);
-    } else {
-        unreachable!()
-    }
-});
-
-test_all_combination!(test_block_sync_response_found, |num_keys| {
-    let (keypairs, cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
-    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
-    val_epoch_map.insert(
-        Epoch(1),
-        validators
-            .get_members()
-            .iter()
-            .map(|(a, b)| (*a, *b))
-            .collect(),
-        validator_mapping,
-    );
-    let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
-
-    let author_keypair = &keypairs[0];
-    let blk = setup_block::<ST, SCT>(
-        NodeId::new(author_keypair.pubkey()),
-        Round(233),
-        Round(232),
-        BlockId(Hash([43_u8; 32])),
-        FullTransactionList::new(Bytes::from_static(&[1, 2, 3, 4])),
-        ExecutionArtifacts::zero(),
-        cert_keys.as_slice(),
-        validator_mapping,
-    );
-
-    let full_blk = blk;
-
-    let block_sync_msg = BlockSyncResponseMessage::BlockFound(full_blk);
-
-    let verified_monad_message =
-        VerifiedMonadMessage::<ST, SCT>::BlockSyncResponse(Validated::new(block_sync_msg.clone()));
-    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
-
-    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
-    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
-
-    assert_eq!(rx_msg, monad_message);
-    assert!(matches!(rx_msg, MonadMessage::BlockSyncResponse(_)));
-
-    if let MonadMessage::BlockSyncResponse(rx_blk) = rx_msg {
-        let validated = rx_blk
-            .validate(&epoch_manager, &val_epoch_map)
-            .unwrap()
-            .into_inner();
-
-        assert_eq!(block_sync_msg, validated);
     } else {
         unreachable!()
     }

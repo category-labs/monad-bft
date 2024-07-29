@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-blockdb = { path = "../monad-blockdb" }
+monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
@@ -20,12 +21,14 @@ monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+futures = { workspace = true }
 prost = { workspace = true }
 reth-primitives = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
     "rt",
+    "sync",
 ]}
 tracing = { workspace = true }
 

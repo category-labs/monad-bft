@@ -4,15 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-futures.workspace = true
+monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { version = "0.1.0", path = "../monad-consensus-types" }
 monad-crypto = { version = "0.1.0", path = "../monad-crypto" }
 monad-eth-block-policy = { version = "0.1.0", path = "../monad-eth-block-policy" }
-monad-eth-block-validator = { version = "0.1.0", path = "../monad-eth-block-validator" }
 monad-eth-reserve-balance = { version = "0.1.0", path = "../monad-eth-reserve-balance" }
+monad-eth-tx = { version = "0.1.0", path = "../monad-eth-tx" }
+monad-eth-types = { version = "0.1.0", path = "../monad-eth-types" }
 monad-executor = { version = "0.1.0", path = "../monad-executor" }
 monad-executor-glue = { version = "0.1.0", path = "../monad-executor-glue" }
-monad-triedb-cache = { version = "0.1.0", path = "../monad-triedb-cache" }
 monad-types = { version = "0.1.0", path = "../monad-types" }
 monad-updaters = { version = "0.1.0", path = "../monad-updaters" }
-tracing.workspace = true
+
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }

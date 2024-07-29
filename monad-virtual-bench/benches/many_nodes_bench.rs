@@ -7,9 +7,7 @@ use bytes::Bytes;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::{Block, PassthruBlockPolicy},
-    block_validator::MockValidator,
-    payload::StateRoot,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
 };
 use monad_crypto::{
@@ -19,7 +17,6 @@ use monad_crypto::{
 use monad_eth_reserve_balance::{
     state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
 };
-use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -60,11 +57,7 @@ impl SwarmRelation for NopSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -99,11 +92,7 @@ impl SwarmRelation for BlsSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -142,7 +131,6 @@ fn many_nodes_nop_timeout() -> u128 {
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
         majority_threshold,        // state root quorum threshold
-        5,                         // max_blocksync_retries
         SeqNum(100),               // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
@@ -221,7 +209,6 @@ fn many_nodes_bls_timeout() -> u128 {
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
         majority_threshold,        // state root quorum threshold
-        5,                         // max_blocksync_retries
         SeqNum(100),               // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

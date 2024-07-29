@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use monad_async_state_verify::{AsyncStateVerifyCommand, AsyncStateVerifyProcess};
 use monad_consensus::{messages::message::PeerStateRootMessage, validation::signing::Validated};
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
+    block::BlockPolicy,
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
@@ -155,7 +155,7 @@ pub(super) struct WrappedAsyncStateVerifyCommand<SCT: SignatureCollection>(
 );
 
 impl<ST, SCT> From<WrappedAsyncStateVerifyCommand<SCT>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

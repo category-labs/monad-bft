@@ -60,18 +60,9 @@ pub enum TimerCommand<E> {
     ScheduleReset(TimeoutVariant),
 }
 
-pub enum LedgerCommand<PT: PubKey, B, E> {
-    LedgerCommit(Vec<B>),
-    // LedgerFetch should not be replayed
-    LedgerFetch(
-        NodeId<PT>,
-        BlockId,
-        Box<dyn (FnOnce(Option<B>) -> E) + Send + Sync>,
-    ),
-}
-
-pub enum ExecutionLedgerCommand<SCT: SignatureCollection> {
+pub enum LedgerCommand<SCT: SignatureCollection> {
     LedgerCommit(Vec<Block<SCT>>),
+    LedgerFetch(BlockId),
 }
 
 pub enum CheckpointCommand<SCT: SignatureCollection> {
@@ -139,12 +130,11 @@ pub enum TimestampCommand {
     AdjustDelta(TimestampAdjustment),
 }
 
-pub enum Command<E, OM, B, SCT: SignatureCollection> {
+pub enum Command<E, OM, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
 
-    LedgerCommand(LedgerCommand<SCT::NodeIdPubKey, B, E>),
-    ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
+    LedgerCommand(LedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand),
     LoopbackCommand(LoopbackCommand<E>),
@@ -152,14 +142,13 @@ pub enum Command<E, OM, B, SCT: SignatureCollection> {
     TimestampCommand(TimestampCommand),
 }
 
-impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
+impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
         Vec<RouterCommand<SCT::NodeIdPubKey, OM>>,
         Vec<TimerCommand<E>>,
-        Vec<LedgerCommand<SCT::NodeIdPubKey, B, E>>,
-        Vec<ExecutionLedgerCommand<SCT>>,
+        Vec<LedgerCommand<SCT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand>,
         Vec<LoopbackCommand<E>>,
@@ -169,7 +158,6 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
-        let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
@@ -181,7 +169,6 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
-                Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
@@ -193,7 +180,6 @@ impl<E, OM, B, SCT: SignatureCollection> Command<E, OM, B, SCT> {
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
@@ -209,11 +195,10 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
-    Timeout(TimeoutVariant),
-    BlockSyncResponse {
-        sender: NodeId<SCT::NodeIdPubKey>,
-        unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
-    },
+    Timeout,
+    /// a block that was previously requested
+    /// this is an invariant
+    BlockSync(Block<SCT>),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -227,62 +212,69 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("sender", &sender)
                 .field("msg", &unverified_message)
                 .finish(),
-            ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::BlockSyncResponse {
-                sender,
-                unvalidated_response,
-            } => f
-                .debug_struct("BlockSyncResponse")
-                .field("sender", &sender)
-                .field("response", &unvalidated_response)
-                .finish(),
+            ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
+            ConsensusEvent::BlockSync(block) => {
+                f.debug_struct("BlockSync").field("block", block).finish()
+            }
         }
     }
-}
-
-/// FetchedBlock is a consensus block fetched from the consensus ledger. It's
-/// used to respond to a block sync request
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedBlock<SCT: SignatureCollection> {
-    /// The node that requested this block
-    pub requester: NodeId<SCT::NodeIdPubKey>,
-
-    /// id of the requested block
-    pub block_id: BlockId,
-
-    /// FetchedBlock results should only be used to send block data to nodes
-    /// over the network so we should unverify it before sending to consensus
-    /// to prevent it from being used for anything else
-    pub unverified_block: Option<Block<SCT>>,
 }
 
 /// BlockSync related events
 #[derive(Clone, PartialEq, Eq)]
 pub enum BlockSyncEvent<SCT: SignatureCollection> {
-    /// A peer requesting for a missing block
-    BlockSyncRequest {
+    /// A peer (not self) requesting for a missing block
+    Request {
         sender: NodeId<SCT::NodeIdPubKey>,
-        unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
+        request: RequestBlockSyncMessage,
     },
-    /// Fetched full block from the consensus ledger
-    ///
-    /// BlockSyncResponder issues a fetch to consensus ledger if the block is
-    /// not found in the block tree
-    FetchedBlock(FetchedBlock<SCT>),
+    /// Outbound request timed out
+    Timeout(RequestBlockSyncMessage),
+    /// self requesting for a missing block
+    /// this request must be retried if necessary
+    SelfRequest { request: RequestBlockSyncMessage },
+    /// cancel request for block
+    SelfCancelRequest { request: RequestBlockSyncMessage },
+    /// A peer (not self) sending us a block
+    Response {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        response: BlockSyncResponseMessage<SCT>,
+    },
+    /// self sending us missing block (from ledger)
+    SelfResponse {
+        response: BlockSyncResponseMessage<SCT>,
+    },
 }
 
 impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BlockSyncRequest {
-                sender,
-                unvalidated_request,
-            } => f
+            Self::Request { sender, request } => f
                 .debug_struct("BlockSyncRequest")
                 .field("sender", &sender)
-                .field("unvalidated_request", &unvalidated_request)
+                .field("request", &request)
                 .finish(),
-            Self::FetchedBlock(fetched_block) => fetched_block.fmt(f),
+            Self::SelfRequest { request } => f
+                .debug_struct("BlockSyncSelfRequest")
+                .field("request", &request)
+                .finish(),
+            Self::SelfCancelRequest { request } => f
+                .debug_struct("BlockSyncSelfCancelRequest")
+                .field("request", &request)
+                .finish(),
+            Self::Response { sender, response } => f
+                .debug_struct("BlockSyncResponse")
+                .field("sender", &sender)
+                .field("response", &response)
+                .finish(),
+            Self::SelfResponse { response } => f
+                .debug_struct("BlockSyncSelfResponse")
+                .field("response", &response)
+                .finish(),
+            Self::Timeout(request) => f
+                .debug_struct("Timeout")
+                .field("request", &request)
+                .finish(),
         }
     }
 }
@@ -404,7 +396,7 @@ where
             }) => {
                 format!("ConsensusEvent::Message from {sender}")
             }
-            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(TimeoutVariant::Pacemaker)) => {
+            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout) => {
                 format!("ConsensusEvent::Timeout Pacemaker local timeout")
             }
             MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),

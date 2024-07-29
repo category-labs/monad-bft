@@ -251,4 +251,11 @@ impl BlockDb {
             .expect("bft_ledger_table put failed");
         block_txn.commit().expect("block_dbi commit failed");
     }
+
+    pub fn read_bft_block(&self, bft_block_id: monad_types::BlockId) -> Option<Vec<u8>> {
+        let block_txn = self.env.read_txn().expect("block txn create failed");
+        self.bft_ledger_dbi
+            .get(&block_txn, &bft_block_id)
+            .expect("bft_ledger_table put failed")
+    }
 }

@@ -1,14 +1,11 @@
 use bytes::Bytes;
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
-    block::{Block, PassthruBlockPolicy},
-    block_validator::MockValidator,
-    payload::StateRoot,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
     txpool::MockTxPool,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_eth_reserve_balance::{state_backend::NopStateBackend, PassthruReserveBalanceCache};
-use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_multi_sig::MultiSig;
@@ -48,11 +45,7 @@ impl SwarmRelation for QuicSwarm {
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
-    type Ledger = MockLedger<
-        Self::SignatureCollectionType,
-        Block<Self::SignatureCollectionType>,
-        MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+    type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
 
     type Pipeline = BytesTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
 

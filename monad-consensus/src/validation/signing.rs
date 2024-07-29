@@ -18,8 +18,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::message::{
-    proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
-    ProtoPeerStateRootMessage, ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
+    proto_unverified_consensus_message, ProtoPeerStateRootMessage, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
@@ -32,10 +31,7 @@ use crate::{
     convert::message::UnverifiedConsensusMessage,
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{
-            BlockSyncResponseMessage, PeerStateRootMessage, ProposalMessage,
-            RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
-        },
+        message::{PeerStateRootMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::{message::well_formed, safety::consecutive},
 };
@@ -428,31 +424,6 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
     }
 }
 
-impl Unvalidated<RequestBlockSyncMessage> {
-    pub fn validate(self) -> Result<Validated<RequestBlockSyncMessage>, Error> {
-        Ok(Validated { message: self })
-    }
-}
-
-impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
-    /// If the block sync response message carries a full block, the certificates on it need to be valid
-    pub fn validate<VTF, VT>(
-        self,
-        epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error>
-    where
-        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-    {
-        if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates(epoch_manager, val_epoch_map, &(None), b.get_qc())?;
-        }
-
-        Ok(Validated { message: self })
-    }
-}
-
 impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
     pub fn validate<VTF, VT>(
         self,
@@ -673,31 +644,6 @@ impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsens
             author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
             oneof_message: Some(oneof_message),
             version: value.obj.obj.version.clone(),
-        }
-    }
-}
-
-impl From<&Unvalidated<RequestBlockSyncMessage>> for ProtoRequestBlockSyncMessage {
-    fn from(value: &Unvalidated<RequestBlockSyncMessage>) -> Self {
-        ProtoRequestBlockSyncMessage {
-            block_id: Some((&value.obj.block_id).into()),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> From<&Unvalidated<BlockSyncResponseMessage<SCT>>>
-    for ProtoBlockSyncMessage
-{
-    fn from(value: &Unvalidated<BlockSyncResponseMessage<SCT>>) -> Self {
-        Self {
-            oneof_message: Some(match &value.obj {
-                BlockSyncResponseMessage::BlockFound(blk) => {
-                    proto_block_sync_message::OneofMessage::BlockFound(blk.into())
-                }
-                BlockSyncResponseMessage::NotAvailable(bid) => {
-                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
-                }
-            }),
         }
     }
 }

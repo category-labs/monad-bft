@@ -3,12 +3,8 @@ use std::{marker::PhantomData, time::Duration};
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::{Block, PassthruBlockPolicy},
-    block_validator::MockValidator,
-    payload::NopStateRoot,
-    signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::NopStateRoot,
+    signature_collection::SignatureCollection, state_root_hash::StateRootHash, txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -19,10 +15,7 @@ use monad_eth_reserve_balance::{
     state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
 };
 use monad_eth_types::EthAddress;
-use monad_executor::{BoxExecutor, Executor};
-use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
-};
+use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
 use monad_gossip::{
     gossipsub::UnsafeGossipsubConfig,
     mock::MockGossipConfig,
@@ -30,7 +23,6 @@ use monad_gossip::{
     Gossip,
 };
 use monad_ipc::{generate_uds_path, IpcReceiver};
-use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
     Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
@@ -67,7 +59,7 @@ where
     },
 }
 
-pub enum ExecutionLedgerConfig {
+pub enum LedgerConfig {
     Mock,
 }
 
@@ -87,7 +79,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub router_config: RouterConfig<ST, SCT>,
-    pub execution_ledger_config: ExecutionLedgerConfig,
+    pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
 }
@@ -101,8 +93,7 @@ pub fn make_monad_executor<ST, SCT>(
         MonadEvent<ST, SCT>,
     >,
     TokioTimer<MonadEvent<ST, SCT>>,
-    MockLedger<SCT, Block<SCT>, MonadEvent<ST, SCT>>,
-    BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
+    MockLedger<ST, SCT>,
     MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,
     IpcReceiver<ST, SCT>,
@@ -135,9 +126,8 @@ where
             RouterConfig::Local(router) => Updater::boxed(router),
         },
         timer: TokioTimer::default(),
-        ledger: MockLedger::default(),
-        execution_ledger: match config.execution_ledger_config {
-            ExecutionLedgerConfig::Mock => Executor::boxed(MockExecutionLedger::default()),
+        ledger: match config.ledger_config {
+            LedgerConfig::Mock => MockLedger::default(),
         },
         checkpoint: MockCheckpoint::default(),
         state_root_hash: match config.state_root_hash_config {
@@ -196,7 +186,7 @@ pub fn make_monad_state<ST, SCT>(
     config: StateConfig<ST, SCT>,
 ) -> (
     MonadStateType<ST, SCT>,
-    Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>,
+    Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
 )
 where
     ST: CertificateSignatureRecoverable,

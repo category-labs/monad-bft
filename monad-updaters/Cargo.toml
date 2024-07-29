@@ -11,6 +11,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
@@ -37,8 +38,4 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil" }
-monad-multi-sig = { path = "../monad-multi-sig" }
-
 ntest = { workspace = true }
-test-case = { workspace = true }

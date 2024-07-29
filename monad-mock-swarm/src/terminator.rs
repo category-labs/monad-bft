@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
-use monad_types::Round;
+use monad_types::{Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
@@ -160,8 +160,15 @@ where
                 .executor
                 .ledger()
                 .get_blocks();
-            for i in 0..(*expected_len) {
-                assert!(block_ref[i] == blocks[i]);
+            for i in 1..=(*expected_len) {
+                assert!(
+                    block_ref
+                        .get(&SeqNum(i as u64))
+                        .unwrap_or_else(|| panic!("block {} doesn't exist", i))
+                        == blocks
+                            .get(&SeqNum(i as u64))
+                            .unwrap_or_else(|| panic!("block {} doesn't exist", i))
+                );
             }
         }
 

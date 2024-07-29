@@ -3,10 +3,9 @@ use std::collections::BTreeMap;
 use alloy_rlp::Decodable;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockType},
-    block_validator::BlockValidator,
-    signature_collection::SignatureCollection,
+    block_validator::{BlockValidationError, BlockValidator},
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
@@ -36,22 +35,28 @@ impl EthValidator {
 }
 
 // FIXME: add specific error returns for the different failures
-impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>
-    BlockValidator<SCT, EthBlockPolicy, SBT, RBCT> for EthValidator
+impl<SCT, SBT, RBCT> BlockValidator<SCT, EthBlockPolicy, SBT, RBCT> for EthValidator
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
 {
     fn validate(
         &self,
         block: Block<SCT>,
-    ) -> Option<<EthBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock> {
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock, BlockValidationError>
+    {
         // RLP decodes the txns
         let Ok(eth_txns) =
             Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
         else {
-            return None;
+            return Err(BlockValidationError::TxnError);
         };
 
         // recovering the signers verifies that these are valid signatures
-        let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())?;
+        let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
+            .ok_or(BlockValidationError::TxnError)?;
 
         // recover the account nonces in this block
         let mut nonces = BTreeMap::new();
@@ -61,7 +66,8 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
             eth_txn
                 .chain_id()
-                .and_then(|cid| (cid == self.chain_id).then_some(()))?;
+                .and_then(|cid| (cid == self.chain_id).then_some(()))
+                .ok_or(BlockValidationError::TxnError)?;
 
             let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
             // txn iteration is following the same order as they are in the
@@ -69,44 +75,36 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
             // after the first
             if let Some(old_nonce) = maybe_old_nonce {
                 if old_nonce >= eth_txn.nonce() {
-                    return None;
+                    return Err(BlockValidationError::TxnError);
                 }
             }
             validated_txns.push(eth_txn.with_signer(signer));
         }
 
         if validated_txns.len() > self.tx_limit {
-            return None;
+            return Err(BlockValidationError::TxnError);
         }
 
         let total_gas = validated_txns
             .iter()
             .fold(0, |acc, tx| acc + tx.gas_limit());
         if total_gas > self.block_gas_limit {
-            return None;
+            return Err(BlockValidationError::TxnError);
         }
 
-        Some(EthValidatedBlock {
-            block,
-            validated_txns,
-            nonces, // (address -> highest txn nonce) in the block
-        })
-    }
-
-    fn other_validation(
-        &self,
-        block: &<EthBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock,
-        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
         if let Err(e) = block
-            .block
             .payload
             .randao_reveal
             .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
         {
             warn!("Invalid randao_reveal signature, reason: {:?}", e);
-            return false;
+            return Err(BlockValidationError::RandaoError);
         };
-        true
+
+        Ok(EthValidatedBlock {
+            block,
+            validated_txns,
+            nonces, // (address -> highest txn nonce) in the block
+        })
     }
 }

@@ -100,35 +100,33 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
     }
 }
 
-impl From<&Validated<RequestBlockSyncMessage>> for ProtoRequestBlockSyncMessage {
-    fn from(value: &Validated<RequestBlockSyncMessage>) -> Self {
+impl From<&RequestBlockSyncMessage> for ProtoRequestBlockSyncMessage {
+    fn from(value: &RequestBlockSyncMessage) -> Self {
         ProtoRequestBlockSyncMessage {
             block_id: Some((&value.block_id).into()),
         }
     }
 }
 
-impl TryFrom<ProtoRequestBlockSyncMessage> for Unvalidated<RequestBlockSyncMessage> {
+impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
     type Error = ProtoError;
 
     fn try_from(value: ProtoRequestBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(Unvalidated::new(RequestBlockSyncMessage {
+        Ok(RequestBlockSyncMessage {
             block_id: value
                 .block_id
                 .ok_or(Self::Error::MissingRequiredField(
                     "RequestBlockSyncMessage.block_id".to_owned(),
                 ))?
                 .try_into()?,
-        }))
+        })
     }
 }
 
-impl<SCT: SignatureCollection> From<&Validated<BlockSyncResponseMessage<SCT>>>
-    for ProtoBlockSyncMessage
-{
-    fn from(value: &Validated<BlockSyncResponseMessage<SCT>>) -> Self {
+impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlockSyncMessage {
+    fn from(response: &BlockSyncResponseMessage<SCT>) -> Self {
         Self {
-            oneof_message: Some(match value.deref() {
+            oneof_message: Some(match response {
                 BlockSyncResponseMessage::BlockFound(b) => {
                     proto_block_sync_message::OneofMessage::BlockFound(b.into())
                 }
@@ -140,9 +138,7 @@ impl<SCT: SignatureCollection> From<&Validated<BlockSyncResponseMessage<SCT>>>
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage>
-    for Unvalidated<BlockSyncResponseMessage<SCT>>
-{
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncResponseMessage<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
@@ -158,7 +154,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage>
             ))?,
         };
 
-        Ok(Unvalidated::new(msg))
+        Ok(msg)
     }
 }
 

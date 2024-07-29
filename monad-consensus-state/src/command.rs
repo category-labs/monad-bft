@@ -18,7 +18,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, Epoch, Round, RouterTarget};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -38,17 +38,18 @@ where
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
         duration: Duration,
-        on_timeout: TimeoutVariant,
     },
     /// Cancel scheduled (if exists) timeout event
-    ScheduleReset(TimeoutVariant),
+    ScheduleReset,
     /// Commit blocks to ledger
     LedgerCommit(Vec<Block<SCT>>),
-    /// Requests BlockSync from given peer
-    /// Gets converted to a RouterCommand::Publish
-    /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
+    /// Requests BlockSync
+    /// Serviced by block_sync in MonadState
     RequestSync {
-        peer: NodeId<SCT::NodeIdPubKey>,
+        block_id: BlockId,
+    },
+    /// Cancels BlockSync request
+    CancelSync {
         block_id: BlockId,
     },
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
@@ -84,13 +85,8 @@ where
                 }
                 .sign(keypair),
             },
-            PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
-                duration,
-                on_timeout: TimeoutVariant::Pacemaker,
-            },
-            PacemakerCommand::ScheduleReset => {
-                ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
-            }
+            PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule { duration },
+            PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
         }
     }
 }

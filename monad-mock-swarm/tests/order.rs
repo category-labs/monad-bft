@@ -86,13 +86,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             )
         },
         PeerAsyncStateVerify::new,
-        delta,                 // delta
-        10,                    // proposal_tx_limit
-        SeqNum(2000),          // val_set_update_interval
-        Round(50),             // epoch_start_delay
-        majority_threshold,    // state root quorum threshold
-        max_blocksync_retries, // max_blocksync_retries
-        SeqNum(100),           // state_sync_threshold
+        delta,              // delta
+        10,                 // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
+        SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

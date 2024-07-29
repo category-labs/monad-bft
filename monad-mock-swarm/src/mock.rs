@@ -2,7 +2,7 @@ use std::{
     cmp::Reverse,
     collections::VecDeque,
     hash::{Hash, Hasher},
-    marker::{PhantomData, Unpin},
+    marker::Unpin,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -11,14 +11,11 @@ use std::{
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use monad_consensus_types::{
-    block::Block, checkpoint::Checkpoint, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, Message, MonadEvent, RouterCommand, TimerCommand,
-    TimestampCommand,
+    Command, Message, MonadEvent, RouterCommand, TimerCommand, TimestampCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
@@ -34,7 +31,6 @@ use crate::swarm_relation::SwarmRelation;
 
 pub struct MockExecutor<S: SwarmRelation> {
     ledger: S::Ledger,
-    execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<S::SignatureCollectionType>,
     state_root_hash: S::StateRootHashExecutor,
     loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
@@ -170,7 +166,6 @@ impl<S: SwarmRelation> MockExecutor<S> {
         Self {
             checkpoint: Default::default(),
             ledger,
-            execution_ledger: Default::default(),
             state_root_hash,
             ipc: Default::default(),
             loopback: Default::default(),
@@ -255,7 +250,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
     type Command = Command<
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
         VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>,
-        Block<S::SignatureCollectionType>,
         S::SignatureCollectionType,
     >;
 
@@ -264,7 +258,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
@@ -297,7 +290,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         }
 
         self.ledger.exec(ledger_cmds);
-        self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
@@ -465,27 +457,6 @@ where
         } else {
             this.waker = Some(cx.waker().clone());
             Poll::Pending
-        }
-    }
-}
-
-pub struct MockExecutionLedger<SCT> {
-    phantom: PhantomData<SCT>,
-}
-
-impl<SCT: SignatureCollection> Executor for MockExecutionLedger<SCT> {
-    type Command = ExecutionLedgerCommand<SCT>;
-
-    fn exec(&mut self, _: Vec<Self::Command>) {}
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
-    }
-}
-
-impl<O> Default for MockExecutionLedger<O> {
-    fn default() -> Self {
-        Self {
-            phantom: Default::default(),
         }
     }
 }

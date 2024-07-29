@@ -1,8 +1,8 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::BlockType, signature_collection::SignatureCollection, state_root_hash::StateRootHash,
+    block::Block, signature_collection::SignatureCollection, state_root_hash::StateRootHash,
     validator_data::ValidatorSetData,
 };
 use monad_eth_types::EthAddress;
@@ -31,7 +31,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
     state_root_quorum_threshold: fn(Stake) -> Stake,
-    max_blocksync_retries: usize,
     state_sync_threshold: SeqNum,
 ) -> Vec<
     MonadStateBuilder<
@@ -93,7 +92,6 @@ pub fn make_state_configs<S: SwarmRelation>(
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
                 delta,
-                max_blocksync_retries,
                 state_sync_threshold,
                 timestamp_latency_estimate_ms: 10,
             },
@@ -103,7 +101,7 @@ pub fn make_state_configs<S: SwarmRelation>(
 }
 
 pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_len: usize) {
-    let ledgers: Vec<Vec<_>> = swarm
+    let ledgers: Vec<_> = swarm
         .states()
         .values()
         .map(|node| node.executor.ledger().get_blocks().clone())
@@ -111,13 +109,13 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
     ledger_verification(&ledgers, min_ledger_len)
 }
 
-pub fn ledger_verification<SCT: SignatureCollection, B: BlockType<SCT> + PartialEq>(
-    ledgers: &Vec<Vec<B>>,
+pub fn ledger_verification<SCT: SignatureCollection>(
+    ledgers: &Vec<BTreeMap<SeqNum, Block<SCT>>>,
     min_ledger_len: usize,
 ) {
     let (max_ledger_idx, max_b) = ledgers
         .iter()
-        .map(Vec::len)
+        .map(BTreeMap::len)
         .enumerate()
         .max_by_key(|(_idx, num_b)| *num_b)
         .unwrap();

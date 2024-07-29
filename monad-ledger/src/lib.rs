@@ -4,20 +4,27 @@ use std::{
     marker::PhantomData,
     ops::Deref,
     path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 use alloy_primitives::{Bloom, Bytes, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
+use futures::Stream;
 use monad_blockdb::BlockDb;
+use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
     payload::{ExecutionArtifacts, FullTransactionList},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    hasher::{Hasher, HasherType},
+};
 use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::ExecutionLedgerCommand;
+use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_proto::proto::block::ProtoBlock;
 use monad_types::SeqNum;
 use prost::Message;
@@ -32,21 +39,32 @@ pub struct EthHeaderParam {
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
 /// number
-pub struct MonadBlockFileLedger<SCT> {
+pub struct MonadBlockFileLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     dir_path: PathBuf,
     blockdb: BlockDb,
     header_param: EthHeaderParam,
+
     metrics: ExecutorMetrics,
-    phantom: PhantomData<SCT>,
+    last_commit: Option<SeqNum>,
+
+    fetches_tx: tokio::sync::mpsc::UnboundedSender<BlockSyncResponseMessage<SCT>>,
+    fetches: tokio::sync::mpsc::UnboundedReceiver<BlockSyncResponseMessage<SCT>>,
+
+    phantom: PhantomData<ST>,
 }
 
 const GAUGE_EXECUTION_LEDGER_NUM_COMMITS: &str = "monad.execution_ledger.num_commits";
 const GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS: &str = "monad.execution_ledger.num_tx_commits";
 const GAUGE_EXECUTION_LEDGER_BLOCK_NUM: &str = "monad.execution_ledger.block_num";
 
-impl<SCT> MonadBlockFileLedger<SCT>
+impl<ST, SCT> MonadBlockFileLedger<ST, SCT>
 where
-    SCT: SignatureCollection + Clone,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(dir_path: PathBuf, blockdb: BlockDb, header_param: EthHeaderParam) -> Self {
         match fs::create_dir(&dir_path) {
@@ -54,13 +72,24 @@ where
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
             Err(e) => panic!("{}", e),
         }
+        let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
             dir_path,
             blockdb,
             header_param,
+
             metrics: Default::default(),
+            last_commit: Default::default(),
+
+            fetches_tx,
+            fetches,
+
             phantom: PhantomData,
         }
+    }
+
+    pub fn last_commit(&self) -> Option<SeqNum> {
+        self.last_commit
     }
 
     fn write_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
@@ -87,16 +116,17 @@ where
     }
 }
 
-impl<SCT> Executor for MonadBlockFileLedger<SCT>
+impl<ST, SCT> Executor for MonadBlockFileLedger<ST, SCT>
 where
-    SCT: SignatureCollection + Clone,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Command = ExecutionLedgerCommand<SCT>;
+    type Command = LedgerCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
+                LedgerCommand::LedgerCommit(full_blocks) => {
                     let eth_blocks: Vec<Block> = full_blocks
                         .iter()
                         .map(|b| self.create_eth_block(b))
@@ -136,7 +166,30 @@ where
 
                     for (seqnum, b) in encoded_blocks {
                         self.write_block(seqnum, &b).unwrap();
+                        self.last_commit = Some(seqnum);
                     }
+                }
+                LedgerCommand::LedgerFetch(block_id) => {
+                    // TODO cap max concurrent LedgerFetch? DOS vector
+                    let env = self.blockdb.clone();
+                    let fetches_tx = self.fetches_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let maybe_bft_block_bytes = env.read_bft_block(block_id);
+                        let response = match maybe_bft_block_bytes {
+                            Some(bft_block_serialized) => {
+                                let pblock = ProtoBlock::decode(bft_block_serialized.as_slice())
+                                    .expect("local bft block is not valid block");
+                                let block = pblock
+                                    .try_into()
+                                    .expect("pbblock from blockdb is invalid block");
+                                BlockSyncResponseMessage::BlockFound(block)
+                            }
+                            None => BlockSyncResponseMessage::NotAvailable(block_id),
+                        };
+                        fetches_tx
+                            .send(response)
+                            .expect("failed to write to fetches_tx");
+                    });
                 }
             }
         }
@@ -144,6 +197,23 @@ where
 
     fn metrics(&self) -> ExecutorMetricsChain {
         self.metrics.as_ref().into()
+    }
+}
+
+impl<ST, SCT> Stream for MonadBlockFileLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type Item = MonadEvent<ST, SCT>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.fetches.poll_recv(cx).map(|response| {
+            let response = response.expect("fetches_tx never dropped");
+            Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
+                response,
+            }))
+        })
     }
 }
 

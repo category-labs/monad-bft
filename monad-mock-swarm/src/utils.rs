@@ -3,15 +3,12 @@
 pub mod test_tool {
     use std::time::Duration;
 
-    use monad_consensus::{
-        messages::{
-            consensus_message::{ConsensusMessage, ProtocolMessage},
-            message::{
-                BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-                VoteMessage,
-            },
+    use monad_consensus::messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::{
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
-        validation::signing::Validated,
     };
     use monad_consensus_types::{
         block::Block,
@@ -142,11 +139,11 @@ pub mod test_tool {
         let internal_msg = RequestBlockSyncMessage {
             block_id: BlockId(Hash([0x00_u8; 32])),
         };
-        VerifiedMonadMessage::BlockSyncRequest(Validated::new(internal_msg))
+        VerifiedMonadMessage::BlockSyncRequest(internal_msg)
     }
 
     pub fn fake_block_sync() -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = BlockSyncResponseMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
-        VerifiedMonadMessage::BlockSyncResponse(Validated::new(internal_msg))
+        VerifiedMonadMessage::BlockSyncResponse(internal_msg)
     }
 }

@@ -42,9 +42,8 @@ use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::ReserveBalanceCache;
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
 use monad_updaters::{
-    checkpoint::FileCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
-    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
-    tokio_timestamp::TokioTimestamp,
+    checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
+    state_root_hash::MockStateRootHashNop, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -214,8 +213,7 @@ async fn run(
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        ledger: BoundedLedger::new(state_sync_bound),
-        execution_ledger: MonadBlockFileLedger::new(
+        ledger: MonadBlockFileLedger::new(
             node_state.execution_ledger_path,
             blockdb.clone(),
             EthHeaderParam {
@@ -291,7 +289,6 @@ async fn run(
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
-            max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),
             timestamp_latency_estimate_ms: 20,
         },

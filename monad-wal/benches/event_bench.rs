@@ -29,7 +29,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Serializable, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Serializable};
 use monad_validator::validator_set::ValidatorSetFactory;
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
@@ -269,7 +269,7 @@ fn bench_timeout(c: &mut Criterion) {
 
 fn bench_local_timeout(c: &mut Criterion) {
     let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
-        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(TimeoutVariant::Pacemaker));
+        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout);
 
     let mut bencher = MonadEventBencher::new(event);
 

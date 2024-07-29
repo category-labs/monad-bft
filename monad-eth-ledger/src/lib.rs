@@ -1,147 +1,164 @@
 use std::{
-    collections::HashMap,
-    marker::Unpin,
+    collections::{BTreeMap, HashMap, VecDeque},
+    marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
+use alloy_rlp::Decodable;
 use futures::Stream;
+use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{Block, BlockType},
-    block_validator::BlockValidator,
     signature_collection::SignatureCollection,
 };
-use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
-use monad_eth_block_validator::EthValidator;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::LedgerCommand;
-use monad_triedb_cache::ReserveBalanceCache;
-use monad_types::{BlockId, NodeId};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_eth_block_policy::nonce::InMemoryState;
+use monad_eth_tx::EthTransaction;
+use monad_eth_types::EthAddress;
+use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
-use tracing::warn;
 
 /// A ledger for commited Monad Blocks
 /// Purpose of the ledger is to have retrievable committed blocks to
 /// respond the BlockSync requests
 /// MockEthLedger stores the ledger in memory and is only expected to be used in testing
-pub struct MockEthLedger<SCT: SignatureCollection, E> {
-    blockchain: Vec<Block<SCT>>,
-    block_index: HashMap<BlockId, usize>,
-    ledger_fetches: HashMap<
-        (NodeId<SCT::NodeIdPubKey>, BlockId),
-        Box<dyn (FnOnce(Option<Block<SCT>>) -> E) + Send + Sync>,
-    >,
-    waker: Option<Waker>,
-    metrics: ExecutorMetrics,
-    state: Arc<Mutex<InMemoryState>>,
-}
-const GAUGE_LEDGER_NUM_COMMITS: &str = "monad.ledger.num_commits";
+pub struct MockEthLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    blocks: BTreeMap<SeqNum, Block<SCT>>,
+    block_ids: HashMap<BlockId, SeqNum>,
+    events: VecDeque<BlockSyncEvent<SCT>>,
 
-impl<SCT: SignatureCollection, E> MockEthLedger<SCT, E> {
+    state: Arc<Mutex<InMemoryState>>,
+
+    waker: Option<Waker>,
+    _phantom: PhantomData<ST>,
+}
+
+impl<ST, SCT> MockEthLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub fn new(state: Arc<Mutex<InMemoryState>>) -> Self {
         MockEthLedger {
-            blockchain: Vec::new(),
-            block_index: HashMap::new(),
-            ledger_fetches: HashMap::default(),
-            waker: None,
-            metrics: Default::default(),
+            blocks: Default::default(),
+            block_ids: Default::default(),
+            events: Default::default(),
+
             state,
+
+            waker: Default::default(),
+            _phantom: Default::default(),
         }
     }
 }
 
-impl<SCT: SignatureCollection, E> Executor for MockEthLedger<SCT, E> {
-    type Command = LedgerCommand<SCT::NodeIdPubKey, Block<SCT>, E>;
+impl<ST, SCT> Executor for MockEthLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type Command = LedgerCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
                     for block in blocks {
-                        self.metrics[GAUGE_LEDGER_NUM_COMMITS] += 1;
-                        self.block_index
-                            .insert(block.get_id(), self.blockchain.len());
-                        self.blockchain.push(block.clone());
+                        match self.blocks.entry(block.get_seq_num()) {
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                let block_id = block.get_id();
+                                let seq_num = block.get_seq_num();
+                                entry.insert(block.clone());
+                                self.block_ids.insert(block_id, seq_num);
+                            }
+                            std::collections::btree_map::Entry::Occupied(entry) => {
+                                assert_eq!(entry.get(), &block, "two conflicting blocks committed")
+                            }
+                        }
                         // generate eth block and update the state backend with committed nonces
-                        let eth_block = <EthValidator as BlockValidator<
-                            SCT,
-                            EthBlockPolicy,
-                            InMemoryState,
-                            ReserveBalanceCache<InMemoryState>,
-                        >>::validate(
-                            &EthValidator {
-                                tx_limit: usize::MAX,
-                                block_gas_limit: u64::MAX,
-                                chain_id: 1337,
-                            },
-                            block,
-                        )
-                        .expect("committed block is valid with max limits");
-
+                        let new_account_nonces =
+                            Vec::<EthTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
+                                .expect("invalid eth tx in block")
+                                .into_iter()
+                                .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
+                                // collecting into a map will handle a sender sending multiple
+                                // transactions gracefully
+                                //
+                                // this is because nonces are always increasing per account
+                                .collect();
                         let mut state = self.state.lock().unwrap();
-                        state.update_committed_nonces(eth_block);
+                        state.update_committed_nonces(block.get_seq_num(), new_account_nonces);
                     }
                 }
-                LedgerCommand::LedgerFetch(node_id, block_id, cb) => {
-                    if self
-                        .ledger_fetches
-                        .insert((node_id, block_id), cb)
-                        .is_some()
-                    {
-                        warn!(
-                            "MockEthLedger received duplicate fetch from {:?} for block {:?}",
-                            node_id, block_id
-                        );
+                LedgerCommand::LedgerFetch(block_id) => {
+                    self.events.push_back(BlockSyncEvent::SelfResponse {
+                        response: match self.block_ids.get(&block_id) {
+                            Some(seq_num) => BlockSyncResponseMessage::BlockFound(
+                                self.blocks
+                                    .get(seq_num)
+                                    .expect("block_id mapping inconsistent")
+                                    .clone(),
+                            ),
+                            None => BlockSyncResponseMessage::NotAvailable(block_id),
+                        },
+                    });
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake()
                     }
                 }
             }
         }
-        if self.ready() {
-            if let Some(waker) = self.waker.take() {
-                waker.wake()
-            };
-        }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+        Default::default()
     }
 }
 
-impl<SCT: SignatureCollection, E> Stream for MockEthLedger<SCT, E>
+impl<ST, SCT> Stream for MockEthLedger<ST, SCT>
 where
-    Self: Unpin,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Item = E;
-
+    type Item = MonadEvent<ST, SCT>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Some((node_id, block_id)) = this.ledger_fetches.keys().next().cloned() {
-            let cb = this.ledger_fetches.remove(&(node_id, block_id)).unwrap();
-
-            return Poll::Ready(Some(cb({
-                this.block_index
-                    .get(&block_id)
-                    .map(|idx| this.blockchain[*idx].clone())
-            })));
+        if let Some(event) = this.events.pop_front() {
+            return Poll::Ready(Some(MonadEvent::BlockSyncEvent(event)));
         }
 
-        self.waker = Some(cx.waker().clone());
+        if this.waker.is_none() {
+            this.waker = Some(cx.waker().clone());
+        }
         Poll::Pending
     }
 }
 
-impl<SCT: SignatureCollection, E> MockableLedger<Block<SCT>> for MockEthLedger<SCT, E> {
+impl<ST, SCT> MockableLedger for MockEthLedger<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     type SignatureCollection = SCT;
-    type Event = E;
+    type Event = MonadEvent<ST, SCT>;
 
     fn ready(&self) -> bool {
-        !self.ledger_fetches.is_empty()
+        !self.events.is_empty()
     }
-    fn get_blocks(&self) -> &Vec<Block<SCT>> {
-        &self.blockchain
+
+    fn get_blocks(&self) -> &BTreeMap<SeqNum, Block<SCT>> {
+        &self.blocks
     }
 }

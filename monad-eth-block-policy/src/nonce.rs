@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
-use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
-use monad_types::GENESIS_SEQ_NUM;
+use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use tracing::trace;
 
-use crate::{AccountNonceRetrievable, StateBackend};
+use crate::StateBackend;
 
 #[derive(Debug, Clone)]
 pub struct InMemoryState {
@@ -40,16 +39,18 @@ impl InMemoryState {
         }
     }
 
-    pub fn update_committed_nonces<SCT: SignatureCollection>(
+    // new_account_nonces is the changeset of nonces from a given block
+    // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
+    // this is because N+1 is the next valid nonce for A
+    pub fn update_committed_nonces(
         &mut self,
-        block: impl AccountNonceRetrievable + BlockType<SCT>,
+        seq_num: SeqNum,
+        new_account_nonces: BTreeMap<EthAddress, Nonce>,
     ) {
-        let nonces = block.get_account_nonces();
-
-        for (address, account_nonce) in nonces {
+        for (address, account_nonce) in new_account_nonces {
             self.account_nonces.insert(address, account_nonce);
         }
-        self.last_state = block.get_seq_num().0;
+        self.last_state = seq_num.0;
     }
 }
 

@@ -6,48 +6,9 @@ use monad_proto::{
 };
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, FetchedBlock, MempoolEvent,
-    MonadEvent, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
+    ValidatorEvent,
 };
-
-impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
-    fn from(value: &FetchedBlock<SCT>) -> Self {
-        ProtoFetchedBlock {
-            requester: Some((&value.requester).into()),
-            block_id: Some((&value.block_id).into()),
-            unverified_block: value.unverified_block.as_ref().map(|b| b.into()),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoFetchedBlock> for FetchedBlock<SCT> {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoFetchedBlock) -> Result<Self, Self::Error> {
-        Ok(FetchedBlock {
-            requester: value
-                .requester
-                .ok_or(ProtoError::MissingRequiredField(
-                    "FetchedBlock.requester".to_owned(),
-                ))?
-                .try_into()?,
-            block_id: value
-                .block_id
-                .ok_or(ProtoError::MissingRequiredField(
-                    "FetchedBlock.requester".to_owned(),
-                ))?
-                .try_into()?,
-            unverified_block: Some(
-                value
-                    .unverified_block
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "FetchedBlock.unverified_block".to_owned(),
-                    ))?
-                    .try_into()?,
-            ),
-        })
-    }
-}
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
     for ProtoMonadEvent
@@ -133,15 +94,29 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
 impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEvent {
     fn from(value: &BlockSyncEvent<SCT>) -> Self {
         let event = match value {
-            BlockSyncEvent::BlockSyncRequest {
-                sender,
-                unvalidated_request,
-            } => proto_block_sync_event::Event::BlockSyncReq(ProtoBlockSyncRequestWithSender {
-                sender: Some(sender.into()),
-                request: Some(unvalidated_request.into()),
-            }),
-            BlockSyncEvent::FetchedBlock(fetched_block) => {
-                proto_block_sync_event::Event::FetchedBlock(fetched_block.into())
+            BlockSyncEvent::Request { sender, request } => {
+                proto_block_sync_event::Event::Request(ProtoBlockSyncRequestWithSender {
+                    sender: Some(sender.into()),
+                    request: Some(request.into()),
+                })
+            }
+            BlockSyncEvent::SelfRequest { request } => {
+                proto_block_sync_event::Event::SelfRequest(request.into())
+            }
+            BlockSyncEvent::SelfCancelRequest { request } => {
+                proto_block_sync_event::Event::SelfCancelRequest(request.into())
+            }
+            BlockSyncEvent::Response { sender, response } => {
+                proto_block_sync_event::Event::Response(ProtoBlockSyncResponseWithSender {
+                    sender: Some(sender.into()),
+                    response: Some(response.into()),
+                })
+            }
+            BlockSyncEvent::SelfResponse { response } => {
+                proto_block_sync_event::Event::SelfResponse(response.into())
+            }
+            BlockSyncEvent::Timeout(request) => {
+                proto_block_sync_event::Event::Timeout(request.into())
             }
         };
         Self { event: Some(event) }
@@ -154,26 +129,53 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
     fn try_from(value: ProtoBlockSyncEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(event) => match event {
-                proto_block_sync_event::Event::BlockSyncReq(event) => {
+                proto_block_sync_event::Event::Request(event) => {
                     let sender = event
                         .sender
                         .ok_or(ProtoError::MissingRequiredField(
-                            "BlockSyncEvent.block_sync_req.sender".to_owned(),
+                            "BlockSyncRequest.sender".to_owned(),
                         ))?
                         .try_into()?;
-                    let unvalidated_request = event
+                    let request = event
                         .request
                         .ok_or(ProtoError::MissingRequiredField(
-                            "BlockSyncEvent.block_sync_req.req".to_owned(),
+                            "BlockSyncRequest.request".to_owned(),
                         ))?
                         .try_into()?;
-                    BlockSyncEvent::BlockSyncRequest {
-                        sender,
-                        unvalidated_request,
+                    BlockSyncEvent::Request { sender, request }
+                }
+                proto_block_sync_event::Event::SelfRequest(request) => {
+                    BlockSyncEvent::SelfRequest {
+                        request: request.try_into()?,
                     }
                 }
-                proto_block_sync_event::Event::FetchedBlock(event) => {
-                    BlockSyncEvent::FetchedBlock(event.try_into()?)
+                proto_block_sync_event::Event::SelfCancelRequest(request) => {
+                    BlockSyncEvent::SelfCancelRequest {
+                        request: request.try_into()?,
+                    }
+                }
+                proto_block_sync_event::Event::Response(event) => {
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockSyncResponse.sender".to_owned(),
+                        ))?
+                        .try_into()?;
+                    let response = event
+                        .response
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "BlockSyncResponse.response".to_owned(),
+                        ))?
+                        .try_into()?;
+                    BlockSyncEvent::Response { sender, response }
+                }
+                proto_block_sync_event::Event::SelfResponse(response) => {
+                    BlockSyncEvent::SelfResponse {
+                        response: response.try_into()?,
+                    }
+                }
+                proto_block_sync_event::Event::Timeout(request) => {
+                    BlockSyncEvent::Timeout(request.try_into()?)
                 }
             },
             None => Err(ProtoError::MissingRequiredField(

@@ -18,9 +18,6 @@ jobs:
       - run: rustup toolchain install nightly-2024-07-21 --profile minimal --component rustfmt
       - name: Format
         run: cargo +nightly-2024-07-21 fmt --all --check
-      - run: cargo install cargo-udeps --locked
-      - name: Lint unused deps
-        run: cargo +nightly-2024-07-21 udeps --all-targets --all-features
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --
@@ -54,3 +51,6 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger
+      - run: cargo install cargo-udeps --locked
+      - name: Lint unused deps
+        run: cargo +nightly-2024-07-21 udeps --all-targets --all-features

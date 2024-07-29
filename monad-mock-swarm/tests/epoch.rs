@@ -9,11 +9,8 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::{Block, PassthruBlockPolicy},
-        block_validator::MockValidator,
-        metrics::Metrics,
-        payload::StateRoot,
-        txpool::MockTxPool,
+        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+        payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -22,7 +19,6 @@ mod test {
     use monad_eth_reserve_balance::{
         state_backend::NopStateBackend, PassthruReserveBalanceCache, ReserveBalanceCacheTrait,
     };
-    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -67,11 +63,7 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
-        type Ledger = MockLedger<
-            Self::SignatureCollectionType,
-            Block<Self::SignatureCollectionType>,
-            MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        >;
+        type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -118,8 +110,7 @@ mod test {
                 .executor
                 .ledger()
                 .get_blocks()
-                .iter()
-                .find(|b| b.payload.seq_num == update_block_num)
+                .get(&update_block_num)
                 .unwrap();
             let update_block_round = update_block.round;
             let epoch_manager = node.state.epoch_manager();
@@ -185,7 +176,6 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
             majority_threshold,      // state root quorum threshold
-            5,                       // max_blocksync_retries
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -281,7 +271,6 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
             majority_threshold,      // state root quorum threshold
-            5,                       // max_blocksync_retries
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -445,7 +434,6 @@ mod test {
             val_set_update_interval,      // val_set_update_interval
             Round(20),                    // epoch_start_delay
             majority_threshold,           // state root quorum threshold
-            5,                            // max_blocksync_retries
             SeqNum(100),                  // state_sync_threshold
         );
 
@@ -561,7 +549,14 @@ mod test {
         let ledgers = nodes
             .states()
             .values()
-            .map(|node| node.executor.ledger().get_blocks().clone())
+            .map(|node| {
+                node.executor
+                    .ledger()
+                    .get_blocks()
+                    .values()
+                    .cloned()
+                    .collect_vec()
+            })
             .collect_vec();
         let max_ledger_blocks = ledgers.iter().map(|ledger| ledger.len()).max().unwrap();
 
@@ -634,7 +629,6 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             epoch_start_delay,       // epoch_start_delay
             majority_threshold,      // state root quorum threshold
-            5,                       // max_blocksync_retries
             SeqNum(100),             // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

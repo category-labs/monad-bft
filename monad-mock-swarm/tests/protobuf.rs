@@ -40,9 +40,7 @@ type SignatureCollectionType = MultiSig<SignatureType>;
 #[test]
 fn test_consensus_timeout_event() {
     let event = MonadEvent::ConsensusEvent(
-        ConsensusEvent::<SignatureType, SignatureCollectionType>::Timeout(
-            monad_types::TimeoutVariant::Pacemaker,
-        ),
+        ConsensusEvent::<SignatureType, SignatureCollectionType>::Timeout,
     );
 
     let buf = serialize_event(&event);

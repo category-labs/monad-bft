@@ -273,7 +273,7 @@ where
 
 /// BlockId uniquely identifies a block
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub Hash);
 
 impl std::fmt::Debug for BlockId {

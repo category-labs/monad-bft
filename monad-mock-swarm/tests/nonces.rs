@@ -11,7 +11,7 @@ mod test {
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::{block::BlockType, payload::StateRoot};
+    use monad_consensus_types::payload::StateRoot;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -24,7 +24,6 @@ mod test {
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
     use monad_eth_types::{Balance, EthAddress};
-    use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -67,10 +66,7 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = EthTxPool;
-        type Ledger = MockEthLedger<
-            Self::SignatureCollectionType,
-            MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        >;
+        type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -128,7 +124,6 @@ mod test {
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
-            5,                  // max_blocksync_retries
             SeqNum(100),        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -172,7 +167,7 @@ mod test {
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for block in state.executor.ledger().get_blocks() {
+            for (seq_num, block) in state.executor.ledger().get_blocks() {
                 let decoded_txns =
                     Vec::<EthSignedTransaction>::decode(&mut block.payload.txns.as_ref()).unwrap();
                 let decoded_txn_hashes: HashSet<_> =
@@ -183,9 +178,7 @@ mod test {
                     } else {
                         println!(
                             "Unexpected transaction in block {}. NodeID: {}, TxnHash: {}",
-                            block.get_seq_num().0,
-                            node_id,
-                            txn_hash
+                            seq_num.0, node_id, txn_hash
                         );
                         return false;
                     }

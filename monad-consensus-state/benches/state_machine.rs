@@ -3,7 +3,7 @@ use std::{ops::Deref, time::Duration};
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus::{
-    messages::message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
     validation::signing::Verified,
 };
 use monad_consensus_state::{
@@ -178,7 +178,6 @@ where
         + Default,
 {
     consensus_state: ConsensusState<
-        ST,
         SCT,
         EthBlockPolicy,
         NopStateBackend,
@@ -280,12 +279,8 @@ where
         self.wrapped_state().handle_vote_message(author, p)
     }
 
-    fn handle_block_sync(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
-        p: BlockSyncResponseMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
-        self.wrapped_state().handle_block_sync(author, p)
+    fn handle_block_sync(&mut self, p: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
+        self.wrapped_state().handle_block_sync(p)
     }
 }
 
@@ -343,7 +338,6 @@ fn setup<
                 proposal_txn_limit: 5000,
                 proposal_gas_limit: 8_000_000,
                 delta: Duration::from_secs(1),
-                max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
                 timestamp_latency_estimate_ms: 10,
             };
@@ -423,11 +417,7 @@ type ReserveBalanceCacheType = PassthruReserveBalanceCache<StateBackendType>;
 
 use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::{
-    block::{Block, BlockType},
-    ledger::CommitResult,
-    payload::Payload,
-    quorum_certificate::QuorumCertificate,
-    voting::{Vote, VoteInfo},
+    block::Block, payload::Payload, quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::PubKey, hasher::Hash};
 use monad_eth_block_validator::EthValidator;
@@ -587,7 +577,7 @@ where
 {
     cmds.into_iter()
         .filter_map(|c| match c {
-            ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+            ConsensusCommand::RequestSync { block_id } => Some(block_id),
             _ => None,
         })
         .collect()
@@ -727,44 +717,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let (author, _, message) = tc.clone().destructure();
                     let cmds = node.handle_timeout_message(author, message);
                 }
-            },
-            BatchSize::SmallInput,
-        );
-    });
-    group.bench_function("handle_blocksync", |b| {
-        b.iter_batched_ref(
-            || {
-                let (_txns, env, mut ctx, author, proposal_message) = init(false);
-                let (n1, remaining) = ctx.split_first_mut().unwrap();
-                for (index, peer) in remaining.iter().enumerate() {
-                    let peer_id = peer.nodeid;
-                    let cmds = n1.handle_vote_message(
-                        peer_id,
-                        VoteMessage::new(
-                            Vote {
-                                vote_info: VoteInfo {
-                                    id: proposal_message.block.get_id(),
-                                    epoch: proposal_message.block.epoch,
-                                    round: proposal_message.block.round,
-                                    parent_id: BlockId(Hash([0u8; 32])),
-                                    parent_round: Round(0),
-                                    seq_num: SeqNum(0),
-                                    timestamp: 0,
-                                },
-                                ledger_commit_info: CommitResult::Commit,
-                            },
-                            &env.cert_keys[index + 1],
-                        ),
-                    );
-                }
-                (_txns, env, ctx, author, proposal_message)
-            },
-            |(_txns, env, ctx, author, proposal_message)| {
-                let (n1, remaining) = ctx.split_first_mut().unwrap();
-                let res = n1.handle_block_sync(
-                    remaining[0].nodeid,
-                    BlockSyncResponseMessage::BlockFound(proposal_message.block.clone()),
-                );
             },
             BatchSize::SmallInput,
         );

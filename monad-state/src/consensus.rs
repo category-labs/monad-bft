@@ -1,14 +1,13 @@
 use std::marker::PhantomData;
 
-use monad_consensus::{
-    messages::{consensus_message::ProtocolMessage, message::RequestBlockSyncMessage},
-    validation::signing::Validated,
+use monad_consensus::messages::{
+    consensus_message::ProtocolMessage, message::RequestBlockSyncMessage,
 };
 use monad_consensus_state::{
     command::ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
 };
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
+    block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
@@ -21,11 +20,10 @@ use monad_crypto::certificate_signature::{
 use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
-    LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
-    TimestampCommand,
+    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand, TimestampCommand,
 };
-use monad_types::{NodeId, RouterTarget, SeqNum, TimeoutVariant};
+use monad_types::{NodeId, SeqNum, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -48,7 +46,7 @@ where
     BVT: BlockValidator<SCT, BPT, SBT, RBCT>,
     SVT: StateRootValidator,
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BPT, SBT, RBCT>,
+    consensus: &'a mut ConsensusState<SCT, BPT, SBT, RBCT>,
 
     metrics: &'a mut Metrics,
     txpool: &'a mut TT,
@@ -188,40 +186,19 @@ where
                     ProtocolMessage::Timeout(msg) => consensus.handle_timeout_message(author, msg),
                 }
             }
-            ConsensusEvent::Timeout(tmo_event) => match tmo_event {
-                TimeoutVariant::Pacemaker => consensus
-                    .handle_timeout_expiry()
-                    .into_iter()
-                    .map(|cmd| {
-                        ConsensusCommand::from_pacemaker_command(
-                            consensus.keypair,
-                            consensus.cert_keypair,
-                            consensus.version,
-                            cmd,
-                        )
-                    })
-                    .collect(),
-                TimeoutVariant::BlockSync(bid) => consensus.handle_block_sync_tmo(bid),
-            },
-
-            ConsensusEvent::BlockSyncResponse {
-                sender,
-                unvalidated_response,
-            } => {
-                let validated_response = match unvalidated_response
-                    .validate(consensus.epoch_manager, consensus.val_epoch_map)
-                {
-                    Ok(req) => req,
-                    Err(e) => {
-                        handle_validation_error(e, consensus.metrics);
-                        // TODO-2: collect evidence
-                        let evidence_cmds = vec![];
-                        return evidence_cmds;
-                    }
-                }
-                .into_inner();
-                consensus.handle_block_sync(sender, validated_response)
-            }
+            ConsensusEvent::Timeout => consensus
+                .handle_timeout_expiry()
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        consensus.keypair,
+                        consensus.cert_keypair,
+                        consensus.version,
+                        cmd,
+                    )
+                })
+                .collect(),
+            ConsensusEvent::BlockSync(block) => consensus.handle_block_sync(block),
         };
         let consensus_cmds = vec;
         consensus_cmds
@@ -244,13 +221,13 @@ where
 }
 
 impl<ST, SCT> From<WrappedConsensusCommand<ST, SCT>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn from(wrapped: WrappedConsensusCommand<ST, SCT>) -> Self {
-        let mut parent_cmds: Vec<Command<_, _, _, _>> = Vec::new();
+        let mut parent_cmds: Vec<Command<_, _, _>> = Vec::new();
 
         match wrapped.command {
             ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
@@ -262,24 +239,29 @@ where
                     message: VerifiedMonadMessage::Consensus(message),
                 }))
             }
-            ConsensusCommand::Schedule {
-                duration,
-                on_timeout,
-            } => parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
-                duration,
-                variant: on_timeout,
-                on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(on_timeout)),
-            })),
-            ConsensusCommand::ScheduleReset(on_timeout) => parent_cmds.push(Command::TimerCommand(
-                TimerCommand::ScheduleReset(on_timeout),
+            ConsensusCommand::Schedule { duration } => {
+                parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                    duration,
+                    variant: TimeoutVariant::Pacemaker,
+                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout),
+                }))
+            }
+            ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(
+                TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             )),
-            ConsensusCommand::RequestSync { peer, block_id } => {
-                parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::PointToPoint(peer),
-                    message: VerifiedMonadMessage::BlockSyncRequest(Validated::new(
-                        RequestBlockSyncMessage { block_id },
-                    )),
-                }));
+            ConsensusCommand::RequestSync { block_id } => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
+                        request: RequestBlockSyncMessage { block_id },
+                    }),
+                )));
+            }
+            ConsensusCommand::CancelSync { block_id } => {
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
+                        request: RequestBlockSyncMessage { block_id },
+                    }),
+                )));
             }
             ConsensusCommand::LedgerCommit(blocks) => {
                 let last_block = blocks.iter().last().expect("LedgerCommit no blocks");
@@ -299,12 +281,7 @@ where
                             - wrapped.state_root_delay,
                     ),
                 ));
-                parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                    blocks.clone(),
-                )));
-                parent_cmds.push(Command::ExecutionLedgerCommand(
-                    ExecutionLedgerCommand::LedgerCommit(blocks),
-                ));
+                parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(blocks)));
             }
             ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(
                 Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),

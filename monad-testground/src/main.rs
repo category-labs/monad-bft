@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use executor::{MonadP2PGossipConfig, StateRootHashConfig};
+use executor::{LedgerConfig, MonadP2PGossipConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -34,8 +34,7 @@ use tracing_subscriber::{
 };
 
 use crate::executor::{
-    make_monad_executor, make_monad_state, ExecutionLedgerConfig, ExecutorConfig, RouterConfig,
-    StateConfig,
+    make_monad_executor, make_monad_state, ExecutorConfig, RouterConfig, StateConfig,
 };
 
 mod executor;
@@ -69,7 +68,7 @@ struct TestgroundArgs {
     epoch_start_delay: u64,       // default 50
 
     router: RouterArgs,
-    execution_ledger: ExecutionLedgerArgs,
+    ledger: LedgerArgs,
 }
 
 enum RouterArgs {
@@ -95,7 +94,7 @@ enum GossipArgs {
     },
 }
 
-pub enum ExecutionLedgerArgs {
+pub enum LedgerArgs {
     Mock,
 }
 
@@ -157,7 +156,7 @@ async fn main() {
                 up_bandwidth_Mbps: 1_000,
             },
         },
-        execution_ledger: ExecutionLedgerArgs::Mock,
+        ledger: LedgerArgs::Mock,
     };
 
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
@@ -330,8 +329,8 @@ where
                             },
                         },
                     },
-                    execution_ledger_config: match args.execution_ledger {
-                        ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,
+                    ledger_config: match args.ledger {
+                        LedgerArgs::Mock => LedgerConfig::Mock,
                     },
                     state_root_hash_config: StateRootHashConfig::Mock {
                         genesis_validator_data: validators.clone(),
@@ -349,7 +348,6 @@ where
                         proposal_txn_limit: args.proposal_size,
                         proposal_gas_limit: 800_000_000,
                         delta: Duration::from_millis(args.delta_ms),
-                        max_blocksync_retries: 5,
                         state_sync_threshold: SeqNum(100),
                         timestamp_latency_estimate_ms: 10,
                     },

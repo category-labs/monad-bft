@@ -8,18 +8,17 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    CheckpointCommand, Command, ControlPanelCommand, ExecutionLedgerCommand, LedgerCommand,
-    LoopbackCommand, RouterCommand, StateRootHashCommand, TimerCommand, TimestampCommand,
+    CheckpointCommand, Command, ControlPanelCommand, LedgerCommand, LoopbackCommand, RouterCommand,
+    StateRootHashCommand, TimerCommand, TimestampCommand,
 };
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, TS> {
+pub struct ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
-    pub execution_ledger: EL,
     pub checkpoint: C,
     pub state_root_hash: S,
     pub timestamp: TS,
@@ -30,29 +29,27 @@ pub struct ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, TS> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, TSE, E, OM, B, SCT: SignatureCollection> Executor
-    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE, CPE, LOE, TSE>
+impl<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE, E, OM, SCT: SignatureCollection> Executor
+    for ParentExecutor<RE, TE, LE, CE, SE, IPCE, CPE, LOE, TSE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
 
     CE: Executor<Command = CheckpointCommand<SCT>>,
-    LE: Executor<Command = LedgerCommand<SCT::NodeIdPubKey, B, E>>,
-    EL: Executor<Command = ExecutionLedgerCommand<SCT>>,
+    LE: Executor<Command = LedgerCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     TSE: Executor<Command = TimestampCommand>,
 {
-    type Command = Command<E, OM, B, SCT>;
+    type Command = Command<E, OM, SCT>;
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, B, SCT>>) {
+    fn exec(&mut self, commands: Vec<Command<E, OM, SCT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
             timer_cmds,
             ledger_cmds,
-            execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
@@ -63,7 +60,6 @@ where
         self.router.exec(router_cmds);
         self.timer.exec(timer_cmds);
         self.ledger.exec(ledger_cmds);
-        self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
         self.timestamp.exec(timestamp_cmds);
@@ -76,7 +72,6 @@ where
             .chain(self.router.metrics())
             .chain(self.timer.metrics())
             .chain(self.ledger.metrics())
-            .chain(self.execution_ledger.metrics())
             .chain(self.checkpoint.metrics())
             .chain(self.state_root_hash.metrics())
             .chain(self.loopback.metrics())
@@ -84,8 +79,7 @@ where
     }
 }
 
-impl<E, R, T, L, EL, C, S, IPC, CP, LO, TS> Stream
-    for ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, TS>
+impl<E, R, T, L, C, S, IPC, CP, LO, TS> Stream for ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
@@ -116,7 +110,7 @@ where
     }
 }
 
-impl<R, T, L, EL, C, S, IPC, CP, LO, TS> ParentExecutor<R, T, L, EL, C, S, IPC, CP, LO, TS> {
+impl<R, T, L, C, S, IPC, CP, LO, TS> ParentExecutor<R, T, L, C, S, IPC, CP, LO, TS> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

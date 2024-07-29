@@ -1,9 +1,7 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
-    block_validator::BlockValidator,
-    signature_collection::SignatureCollection,
+    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -80,7 +78,7 @@ where
 }
 
 impl<ST, SCT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
-    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>
+    for Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

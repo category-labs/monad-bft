@@ -26,6 +26,8 @@ monad-eth-reserve-balance = { path = "../monad-eth-reserve-balance" }
 bytes = { workspace = true }
 itertools = { workspace = true }
 prost = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -36,8 +38,6 @@ monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-testutil = { path = "../monad-testutil" }
 
 
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 test-case = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

@@ -17,7 +17,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
+    block::BlockPolicy,
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
@@ -40,7 +40,7 @@ use monad_executor_glue::{
     ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MempoolEvent, Message, MonadEvent,
     ReadCommand, StateRootHashCommand, ValidatorEvent, WriteCommand,
 };
-use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -48,7 +48,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::blocksync::BlockSyncResponder;
+use crate::blocksync::BlockSync;
 
 mod async_state_verify;
 mod blocksync;
@@ -404,9 +404,9 @@ where
     consensus_config: ConsensusConfig,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<ST, SCT, BPT, SBT, RBCT>,
-    /// Handle responses to block sync requests from other nodes
-    block_sync_responder: BlockSyncResponder,
+    consensus: ConsensusState<SCT, BPT, SBT, RBCT>,
+    /// Handles blocksync servicing
+    block_sync: BlockSync<ST>,
 
     /// Algorithm for choosing leaders for the consensus algorithm
     leader_election: LT,
@@ -450,7 +450,7 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BPT, SBT, RBCT> {
+    pub fn consensus(&self) -> &ConsensusState<SCT, BPT, SBT, RBCT> {
         &self.consensus
     }
 
@@ -486,8 +486,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
-    BlockSyncRequest(Validated<RequestBlockSyncMessage>),
-    BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
+    BlockSyncRequest(RequestBlockSyncMessage),
+    BlockSyncResponse(BlockSyncResponseMessage<SCT>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
 }
@@ -512,10 +512,10 @@ where
     Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
 
     /// Request a missing block given BlockId
-    BlockSyncRequest(Unvalidated<RequestBlockSyncMessage>),
+    BlockSyncRequest(RequestBlockSyncMessage),
 
     /// Block sync response
-    BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
+    BlockSyncResponse(BlockSyncResponseMessage<SCT>),
 
     /// Async state verification msgs
     PeerStateRoot(Unvalidated<PeerStateRootMessage<SCT>>),
@@ -542,12 +542,8 @@ where
     fn serialize(&self) -> MonadMessage<ST, SCT> {
         match self.clone() {
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
-            VerifiedMonadMessage::BlockSyncRequest(msg) => {
-                MonadMessage::BlockSyncRequest(msg.into())
-            }
-            VerifiedMonadMessage::BlockSyncResponse(msg) => {
-                MonadMessage::BlockSyncResponse(msg.into())
-            }
+            VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
+            VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
@@ -576,12 +572,8 @@ where
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         match value {
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
-            VerifiedMonadMessage::BlockSyncRequest(msg) => {
-                MonadMessage::BlockSyncRequest(msg.into())
-            }
-            VerifiedMonadMessage::BlockSyncResponse(msg) => {
-                MonadMessage::BlockSyncResponse(msg.into())
-            }
+            VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
+            VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::PeerStateRootMessage(msg) => {
                 MonadMessage::PeerStateRoot(msg.into())
             }
@@ -611,16 +603,16 @@ where
                 unverified_message: msg,
             }),
 
-            MonadMessage::BlockSyncRequest(msg) => {
-                MonadEvent::BlockSyncEvent(BlockSyncEvent::BlockSyncRequest {
+            MonadMessage::BlockSyncRequest(request) => {
+                MonadEvent::BlockSyncEvent(BlockSyncEvent::Request {
                     sender: from,
-                    unvalidated_request: msg,
+                    request,
                 })
             }
-            MonadMessage::BlockSyncResponse(msg) => {
-                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncResponse {
+            MonadMessage::BlockSyncResponse(response) => {
+                MonadEvent::BlockSyncEvent(BlockSyncEvent::Response {
                     sender: from,
-                    unvalidated_response: msg,
+                    response,
                 })
             }
             MonadMessage::PeerStateRoot(msg) => {
@@ -700,7 +692,7 @@ where
         self,
     ) -> (
         MonadState<ST, SCT, BPT, SBT, RBCT, VTF, LT, TT, BVT, SVT, ASVT>,
-        Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>>,
+        Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
     ) {
         assert_eq!(
             self.forkpoint.validate(
@@ -749,7 +741,7 @@ where
 
             consensus_config: self.consensus_config,
             consensus,
-            block_sync_responder: BlockSyncResponder {},
+            block_sync: BlockSync::default(),
 
             leader_election: self.leader_election,
             epoch_manager,
@@ -791,11 +783,7 @@ where
             Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
         }));
 
-        init_cmds.extend(
-            monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-                TimeoutVariant::Pacemaker,
-            ))),
-        );
+        init_cmds.extend(monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
 
         (monad_state, init_cmds)
     }
@@ -823,7 +811,7 @@ where
     pub fn update(
         &mut self,
         event: MonadEvent<ST, SCT>,
-    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, SCT>> {
+    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>> {
         let _event_span = tracing::debug_span!("event_span", ?event).entered();
 
         match event {
@@ -832,7 +820,7 @@ where
 
                 consensus_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -841,7 +829,7 @@ where
 
                 block_sync_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -850,7 +838,7 @@ where
 
                 validator_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
 
@@ -859,7 +847,7 @@ where
 
                 mempool_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
             MonadEvent::StateRootEvent(info) => {
@@ -879,7 +867,7 @@ where
 
                 async_state_verify_cmds
                     .into_iter()
-                    .flat_map(Into::<Vec<Command<_, _, _, _>>>::into)
+                    .flat_map(Into::<Vec<Command<_, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {

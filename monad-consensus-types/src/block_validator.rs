@@ -1,12 +1,19 @@
 use core::fmt::Debug;
 
-use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 use monad_eth_reserve_balance::{state_backend::StateBackend, ReserveBalanceCacheTrait};
 
 use crate::{
     block::{Block, BlockPolicy, PassthruBlockPolicy},
-    signature_collection::SignatureCollection,
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
+
+// TODO these are eth-specific types... we could make these an associated type of BlockValidator if
+// we care enough
+#[derive(Debug)]
+pub enum BlockValidationError {
+    TxnError,
+    RandaoError,
+}
 
 pub trait BlockValidator<SCT, BPT, SBT, RBCT>
 where
@@ -15,32 +22,27 @@ where
     SBT: StateBackend,
     RBCT: ReserveBalanceCacheTrait<SBT>,
 {
-    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock>;
-    fn other_validation(
+    fn validate(
         &self,
-        block: &BPT::ValidatedBlock,
-        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool;
+        block: Block<SCT>,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
-impl<
-        SCT: SignatureCollection,
-        BPT: BlockPolicy<SCT, SBT, RBCT>,
-        SBT: StateBackend,
-        RBCT: ReserveBalanceCacheTrait<SBT>,
-        T: BlockValidator<SCT, BPT, SBT, RBCT> + ?Sized,
-    > BlockValidator<SCT, BPT, SBT, RBCT> for Box<T>
+impl<SCT, BPT, SBT, RBCT, T> BlockValidator<SCT, BPT, SBT, RBCT> for Box<T>
+where
+    SCT: SignatureCollection,
+    BPT: BlockPolicy<SCT, SBT, RBCT>,
+    SBT: StateBackend,
+    RBCT: ReserveBalanceCacheTrait<SBT>,
+    T: BlockValidator<SCT, BPT, SBT, RBCT> + ?Sized,
 {
-    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock> {
-        (**self).validate(block)
-    }
-
-    fn other_validation(
+    fn validate(
         &self,
-        block: &BPT::ValidatedBlock,
-        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
-        (**self).other_validation(block, author_pubkey)
+        block: Block<SCT>,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<BPT::ValidatedBlock, BlockValidationError> {
+        (**self).validate(block, author_pubkey)
     }
 }
 
@@ -53,15 +55,11 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
     fn validate(
         &self,
         block: Block<SCT>,
-    ) -> Option<<PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock> {
-        Some(block)
-    }
-
-    fn other_validation(
-        &self,
-        _block: &<PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock,
-        _author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-    ) -> bool {
-        true
+        _author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<
+        <PassthruBlockPolicy as BlockPolicy<SCT, SBT, RBCT>>::ValidatedBlock,
+        BlockValidationError,
+    > {
+        Ok(block)
     }
 }
