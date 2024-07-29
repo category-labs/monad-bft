@@ -94,6 +94,16 @@ class Flexnet:
                 "ETH_CALL_TARGET": ethcall_driver,
             },
         )
+        docker.build(
+            './images/control-panel',
+            file='./images/control-panel/Dockerfile',
+            tags='control-panel:latest'
+        )
+        docker.build(
+            './images/wal',
+            file='./images/wal/Dockerfile',
+            tags='wal:latest'
+        )
 
         try:
             insecure_builder = docker.buildx.inspect("insecure")
