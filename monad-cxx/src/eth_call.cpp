@@ -1,5 +1,6 @@
 #include "eth_call.hpp"
 
+#include <monad/chain/monad_devnet.hpp>
 #include <monad/core/block.hpp>
 #include <monad/core/rlp/address_rlp.hpp>
 #include <monad/core/rlp/block_rlp.hpp>
@@ -26,25 +27,28 @@ using namespace monad;
 
 namespace
 {
-    Result<evmc::Result> eth_call_helper(
+    Result<evmc::Result> eth_call_impl(
         Transaction const &txn, BlockHeader const &header,
         uint64_t const block_number, Address const &sender,
         BlockHashBuffer const &buffer,
         std::vector<std::filesystem::path> const &dbname_paths)
     {
-        // TODO: Hardset rev to be Shanghai at the moment
-        static constexpr auto rev = EVMC_SHANGHAI;
+        constexpr evmc_revision rev = EVMC_SHANGHAI; // TODO
+        MonadDevnet chain;
+        MONAD_ASSERT(rev == chain.get_revision(header));
+
         Transaction enriched_txn{txn};
 
         // SignatureAndChain validation hacks
-        enriched_txn.sc.chain_id = 1;
+        enriched_txn.sc.chain_id = chain.get_chain_id();
         enriched_txn.sc.r = 1;
         enriched_txn.sc.s = 1;
 
         BOOST_OUTCOME_TRY(static_validate_transaction<rev>(
-            enriched_txn, header.base_fee_per_gas))
+            enriched_txn, header.base_fee_per_gas, chain.get_chain_id()))
 
-        TrieDb ro{mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = dbname_paths}};
+        mpt::Db db{mpt::ReadOnlyOnDiskDbConfig{.dbname_paths = dbname_paths}};
+        TrieDb ro{db};
         ro.set_block_number(block_number);
         BlockState block_state{ro};
         Incarnation incarnation{block_number, Incarnation::LAST_TX};
@@ -55,8 +59,8 @@ namespace
         enriched_txn.nonce = acct.has_value() ? acct.value().nonce : 0;
 
         BOOST_OUTCOME_TRY(validate_transaction(enriched_txn, acct));
-        auto const tx_context =
-            get_tx_context<rev>(enriched_txn, sender, header);
+        auto const tx_context = get_tx_context<rev>(
+            enriched_txn, sender, header, chain.get_chain_id());
         EvmcHost<rev> host{tx_context, buffer, state};
         return execute_impl_no_validation<rev>(
             state,
@@ -66,6 +70,7 @@ namespace
             header.base_fee_per_gas.value_or(0),
             header.beneficiary);
     }
+
 }
 
 namespace monad
@@ -152,7 +157,7 @@ monad_evmc_result eth_call(
         }
     }
     auto const result =
-        eth_call_helper(txn, block_header, block_number, sender, buffer, paths);
+        eth_call_impl(txn, block_header, block_number, sender, buffer, paths);
     monad_evmc_result ret;
     if (MONAD_UNLIKELY(result.has_error())) {
         ret.status_code = INT_MAX;

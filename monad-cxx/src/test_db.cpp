@@ -11,7 +11,16 @@ using namespace monad;
 struct TestDb
 {
     std::filesystem::path path;
-    TrieDb db;
+    OnDiskMachine machine;
+    mpt::Db db;
+    TrieDb tdb;
+
+    TestDb(std::filesystem::path const &dir)
+        : path{dir}
+        , db{machine, mpt::OnDiskDbConfig{.dbname_paths = {dir / "test.db"}}}
+        , tdb{db}
+    {
+    }
 };
 
 TestDb *make_testdb()
@@ -19,9 +28,7 @@ TestDb *make_testdb()
     auto const dir =
         std::filesystem::temp_directory_path() / std::to_string(rand());
     std::filesystem::create_directory(dir);
-    return new TestDb{
-        .path = dir,
-        .db = TrieDb{mpt::OnDiskDbConfig{.dbname_paths = {dir / "test.db"}}}};
+    return new TestDb{dir};
 }
 
 void testdb_load_callenv(TestDb *const db)
@@ -44,7 +51,7 @@ void testdb_load_callenv(TestDb *const db)
                     .code_hash =
                         0x8e0388ecf64cfa76b3a6af159f77451519a7f9bb862e4cce24175c791fdcb0df_bytes32,
                     .nonce = 1}}});
-    db->db.commit(state_deltas, code);
+    db->tdb.commit(state_deltas, code);
 }
 
 void testdb_load_callcontract(TestDb *const db)
@@ -68,7 +75,7 @@ void testdb_load_callcontract(TestDb *const db)
                     .code_hash =
                         0x975f732458c1f6c2dd22b866b031cc509c6d4f788b1f020e351c1cdba48dacca_bytes32,
                     .nonce = 1}}});
-    db->db.commit(state_deltas, code);
+    db->tdb.commit(state_deltas, code);
 }
 
 std::string testdb_path(TestDb const *const db)
