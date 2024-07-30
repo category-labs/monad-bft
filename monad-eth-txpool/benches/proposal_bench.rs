@@ -61,6 +61,7 @@ fn create_pool_and_transactions() -> BenchController {
         max_reserve_balance: 0,
         txn_cache: SortedVectorMap::new(),
         reserve_balance_check_mode: 0,
+        chain_id: 1337,
     };
     let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
 

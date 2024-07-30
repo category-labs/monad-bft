@@ -252,6 +252,7 @@ async fn run(
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
+            chain_id: node_state.node_config.chain_id,
         },
         block_policy: EthBlockPolicy {
             account_nonces: BTreeMap::new(),
@@ -260,6 +261,7 @@ async fn run(
             txn_cache: SortedVectorMap::new(),
             max_reserve_balance: node_state.node_config.consensus.max_reserve_balance.into(),
             execution_delay: node_state.node_config.consensus.execution_delay,
+            chain_id: node_state.node_config.chain_id,
             reserve_balance_check_mode: node_state.node_config.consensus.reserve_balance_check_mode,
         },
         reserve_balance_cache: ReserveBalanceCache::new(

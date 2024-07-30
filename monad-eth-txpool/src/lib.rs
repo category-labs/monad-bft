@@ -243,6 +243,15 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait> TxPool<SCT, EthBl
         let sender = EthAddress(eth_tx.signer());
         let txn_hash = eth_tx.hash();
 
+        // Do not add transaction with incorrect or missing chain id
+        if let Some(tx_chain_id) = eth_tx.chain_id() {
+            if tx_chain_id != block_policy.chain_id {
+                return Err(TxPoolInsertionError::NotWellFormed);
+            }
+        } else {
+            return Err(TxPoolInsertionError::NotWellFormed);
+        }
+
         // TODO(rene): should any transaction validation occur here before inserting into mempool
         // TODO we should definitely return out early here if the nonce is invalid so that we don't
         //      forward txs that are known to be invalid
@@ -476,6 +485,7 @@ mod test {
             max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
+            chain_id: 1337,
         }
     }
 
@@ -1081,6 +1091,7 @@ mod test {
             max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
+            chain_id: 1337,
         };
         let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
         Pool::insert_tx(
@@ -1183,6 +1194,7 @@ mod test {
             max_reserve_balance: u64::MAX.into(),
             txn_cache: SortedVectorMap::new(),
             reserve_balance_check_mode: 0,
+            chain_id: 1337,
         };
         //let mut reserve_balance_cache = PassthruReserveBalanceCache::new("".into(), 100);
         let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
@@ -1227,5 +1239,36 @@ mod test {
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
 
         assert_eq!(decoded_txns, vec![txn_nonce_three]);
+    }
+
+    #[test]
+    fn test_invalid_chain_id() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+
+        // eth block policy has a different chain id than the transaction
+        let eth_block_policy = EthBlockPolicy {
+            account_nonces: vec![(sender_1_address, 1)].into_iter().collect(),
+            last_commit: GENESIS_SEQ_NUM,
+            execution_delay: 0,
+            max_reserve_balance: u64::MAX.into(),
+            txn_cache: SortedVectorMap::new(),
+            reserve_balance_check_mode: 0,
+            chain_id: 1,
+        };
+        let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
+
+        let result = Pool::insert_tx(
+            &mut eth_tx_pool,
+            txn_nonce_one.envelope_encoded().into(),
+            &eth_block_policy,
+            &mut reserve_balance_cache,
+        );
+
+        // transaction should not be inserted into the pool
+        assert!(matches!(result, Err(TxPoolInsertionError::NotWellFormed)));
     }
 }

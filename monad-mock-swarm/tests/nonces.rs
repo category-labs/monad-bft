@@ -89,7 +89,7 @@ mod test {
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default,
-            || EthValidator::new(10_000, 1_000_000),
+            || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy {
                 account_nonces: BTreeMap::new(),
                 last_commit: GENESIS_SEQ_NUM,
@@ -97,6 +97,7 @@ mod test {
                 max_reserve_balance: u64::MAX.into(),
                 txn_cache: SortedVectorMap::new(),
                 reserve_balance_check_mode: 0,
+                chain_id: 1337,
             },
             || PassthruReserveBalanceCache,
             || {

@@ -27,6 +27,7 @@ pub type SignatureCollectionType =
 pub struct NodeConfig {
     pub name: Option<String>,
     pub network_name: Option<String>,
+    pub chain_id: u64,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: EthAddress,

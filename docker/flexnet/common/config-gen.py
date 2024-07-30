@@ -220,6 +220,7 @@ if __name__ == "__main__":
         # use the first 20 bytes of the secp_pubkey as the beneficiary address
         # 42 = 2 ("0x") + 40 (20 bytes of hex string)
         toml["beneficiary"] = peers[this_volume].secp_pubkey[:42]
+        toml["chain_id"] = 41454
 
         local_peers = []
         for volume, peer in peers.items():

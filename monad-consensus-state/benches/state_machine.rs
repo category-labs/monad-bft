@@ -362,7 +362,7 @@ fn setup<
                 version: "TEST",
 
                 state_root_validator: state_root(),
-                block_validator: EthValidator::new(10_000, u64::MAX),
+                block_validator: EthValidator::new(10_000, u64::MAX, 1337),
                 block_policy: EthBlockPolicy {
                     account_nonces: BTreeMap::new(),
                     last_commit: GENESIS_SEQ_NUM,
@@ -370,6 +370,7 @@ fn setup<
                     max_reserve_balance: 0,
                     txn_cache: SortedVectorMap::new(),
                     reserve_balance_check_mode: 0,
+                    chain_id: 1337,
                 },
                 reserve_balahce_cache: PassthruReserveBalanceCache::default(),
                 block_timestamp: BlockTimestamp::new(
@@ -692,6 +693,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     max_reserve_balance: 0,
                     txn_cache: SortedVectorMap::new(),
                     reserve_balance_check_mode: 0,
+                    chain_id: 1337,
                 };
                 let mut reserve_balance_cache = PassthruReserveBalanceCache::default();
                 for txn in raw_txns.iter() {

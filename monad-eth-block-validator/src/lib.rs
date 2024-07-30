@@ -22,13 +22,16 @@ pub struct EthValidator {
     pub tx_limit: usize,
     /// limit on cumulative gas from transactions in a block
     pub block_gas_limit: u64,
+    /// chain id
+    pub chain_id: u64,
 }
 
 impl EthValidator {
-    pub fn new(tx_limit: usize, block_gas_limit: u64) -> Self {
+    pub fn new(tx_limit: usize, block_gas_limit: u64, chain_id: u64) -> Self {
         Self {
             tx_limit,
             block_gas_limit,
+            chain_id,
         }
     }
 }
@@ -57,6 +60,14 @@ impl<SCT: SignatureCollection, RBCT: ReserveBalanceCacheTrait>
         let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
         for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
+            if let Some(tx_chain_id) = eth_txn.chain_id() {
+                if tx_chain_id != self.chain_id {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+
             let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
             // txn iteration is following the same order as they are in the
             // block. A block is invalid if we see a smaller or equal nonce

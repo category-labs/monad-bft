@@ -299,6 +299,9 @@ pub struct EthBlockPolicy {
     /// Cost for including transaction in the consensus
     pub execution_delay: u64,
 
+    /// Chain ID
+    pub chain_id: u64,
+
     /// lowest-order bit 0 set: enable check for insert_tx
     /// lowest-order bit 1 set: enable check for create_proposal
     /// lowest-order bit 2 set: enable check for validation
