@@ -13,6 +13,8 @@ use tracing::debug;
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];
 
+use tracing::debug;
+
 #[derive(Clone)]
 pub struct TriedbEnv {
     triedb_path: PathBuf,
@@ -27,6 +29,7 @@ pub enum TriedbResult {
     Storage([u8; 32]),
     Code(Vec<u8>),
     Receipt(Vec<u8>),
+    CallFrame(Vec<u8>),
     BlockNum(u64),
 }
 
@@ -262,16 +265,15 @@ impl TriedbEnv {
                     TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
                 });
 
-                // TODO: should we reuse the same function?
                 let (triedb_key, key_len_nibbles) = TriedbEnv::create_call_frame_key(&tx_hash);
-
+        
                 let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
                 let Some(result) = result else {
                     let _ = send.send(TriedbResult::Null);
                     return;
                 };
 
-                let _ = send.send(TriedbResult::Receipt(result));
+                let _ = send.send(TriedbResult::CallFrame(result));
             });
         });
         recv.await.expect("rayon panic get_call_frame")
@@ -372,7 +374,27 @@ impl TriedbEnv {
         (key, num_nibbles)
     }
 
-    fn create_call_frame_key(code_hash: &[u8; 32]) -> (Vec<u8>, u8) {
-        return TriedbEnv::create_code_key(code_hash);
+    fn create_call_frame_key(tx_hash: &[u8; 32]) -> (Vec<u8>, u8) {
+        let mut key_nibbles: Vec<u8> = vec![];
+
+        let call_frame_nibble = 3_u8;
+        key_nibbles.push(call_frame_nibble);
+
+        for byte in tx_hash {
+            key_nibbles.push(*byte >> 4);
+            key_nibbles.push(*byte & 0xF);
+        }
+
+        let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+        if num_nibbles % 2 != 0 {
+            key_nibbles.push(0);
+        }
+
+        let key: Vec<_> = key_nibbles
+            .chunks(2)
+            .map(|chunk| (chunk[0] << 4) | chunk[1])
+            .collect();
+
+        (key, num_nibbles)
     }
 }

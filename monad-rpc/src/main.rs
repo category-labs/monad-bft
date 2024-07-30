@@ -29,8 +29,8 @@ use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use trace_handlers::monad_eth_debugTraceTransaction;
-use tracing::{debug, info};
+use trace_handlers::monad_debugTraceTransaction;
+use tracing::debug;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -175,7 +175,7 @@ async fn rpc_select(
             let Some(triedb_env) = &app_state.triedb_reader else {
                 return Err(JsonRpcError::method_not_supported());
             };
-            monad_eth_debugTraceTransaction(reader, triedb_env, params).await
+            monad_debugTraceTransaction(reader, triedb_env, params).await
         }
         "eth_call" => {
             let Some(reader) = &app_state.blockdb_reader else {
