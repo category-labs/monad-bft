@@ -222,7 +222,7 @@ async fn run(
             validators.validators.clone(),
             val_set_update_interval,
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::new(Duration::from_millis(25), 100, 10001),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(node_state.control_panel_ipc_path, 1000)
             .expect("uds bind failed"),
@@ -278,7 +278,7 @@ async fn run(
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
             max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),
-            timestamp_latency_estimate_ms: 20,
+            timestamp_latency_estimate_ms: 50,
         },
         _pd: PhantomData,
     };
