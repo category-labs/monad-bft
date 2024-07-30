@@ -51,7 +51,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
-                MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
                 message.clone(),
                 2, // redundancy,
                 0, // epoch_no
@@ -92,7 +91,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let messages = build_messages::<SecpSignature>(
             &keys[0],
-            MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
             message.clone(),
             2, // redundancy,
             0, // epoch_no

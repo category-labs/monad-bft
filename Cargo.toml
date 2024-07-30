@@ -37,6 +37,7 @@ members = [
     "monad-proto",
     "monad-quic",
     "monad-randomized-tests",
+    "monad-raptor",
     "monad-raptorcast",
     "monad-router-scheduler",
     "monad-rpc",

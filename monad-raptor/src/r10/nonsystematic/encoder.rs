@@ -1,0 +1,240 @@
+// Encoder for a non-systematic variant of the Raptor code described in RFC 5053.
+
+use std::{
+    io::{Error, ErrorKind},
+    iter,
+};
+
+use rayon::prelude::*;
+
+use crate::{
+    r10::{CodeParameters, MAX_DEGREE, SOURCE_SYMBOLS_MAX, SOURCE_SYMBOLS_MIN},
+    xor_eq,
+    xor_eq::xor_eq,
+};
+
+#[derive(Debug)]
+pub struct Encoder<'a, const SYMBOL_LEN: usize> {
+    // Reference to the provided source data.
+    src: &'a [u8],
+
+    // R10 parameters for K = ceil(src.len() / SYMBOL_LEN).max(SOURCE_SYMBOLS_MIN).
+    params: CodeParameters,
+
+    // Intermediate symbols i < num_full_source_symbols are taken from `src`.  This
+    // corresponds to the data contained in the initial part of `src` that is an integer
+    // multiple of SYMBOL_LEN bytes long.
+    //
+    // Intermediate symbols i >= num_full_source_symbols are taken from `derived_symbols`.
+    // This includes, in this order:
+    // - The last partial source symbol in `src`, if `src` is not an integer multiple
+    //   of SYMBOL_LEN bytes long, padded to SYMBOL_LEN bytes.
+    // - A sufficient number of NUL-filled symbols to bring the number of source symbols
+    //   up to SOURCE_SYMBOLS_MIN, if there are fewer than that number of symbols in the
+    //   (padded) source data.
+    // - The computed LDPC symbols.
+    // - The computed Half symbols.
+    num_full_source_symbols: usize,
+    derived_symbols: Vec<Box<[u8; SYMBOL_LEN]>>,
+}
+
+impl<'a, const SYMBOL_LEN: usize> Encoder<'a, SYMBOL_LEN> {
+    pub fn new(src: &[u8]) -> Result<Encoder<SYMBOL_LEN>, Error> {
+        if SYMBOL_LEN == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "SYMBOL_LEN == 0".to_string(),
+            ));
+        }
+
+        // The number of full source symbols in `src`.  Within this function, we use this
+        // as a pivot to decide when to grab source symbol data from `src` and when to use
+        // `shadowed_source_symbols`.
+        let num_full_source_symbols = src.len() / SYMBOL_LEN;
+
+        let mut num_source_symbols = num_full_source_symbols;
+
+        let mut shadowed_source_symbols: Vec<Box<[u8; SYMBOL_LEN]>> = Vec::new();
+
+        // If `src` is not an integer multiple of SYMBOL_LEN bytes long, we stuff a NUL-padded
+        // version of the last partial symbol in `src` into `shadowed_source_symbols`.
+        {
+            let last_source_symbol_len = src.len() % SYMBOL_LEN;
+
+            if last_source_symbol_len != 0 {
+                let mut symbol = Box::new([0; SYMBOL_LEN]);
+
+                symbol[0..last_source_symbol_len]
+                    .copy_from_slice(&src[num_full_source_symbols * SYMBOL_LEN..]);
+
+                shadowed_source_symbols.push(symbol);
+                num_source_symbols += 1;
+            }
+        }
+
+        // If there are fewer than the R10 minimum number of source symbols in `src`, we stuff
+        // `shadowed_source_symbols` with a sufficient number of NUL-filled symbols to reach
+        // that lower bound.
+        if num_source_symbols < SOURCE_SYMBOLS_MIN {
+            for _ in num_source_symbols..SOURCE_SYMBOLS_MIN {
+                shadowed_source_symbols.push(Box::new([0; SYMBOL_LEN]));
+            }
+
+            num_source_symbols = SOURCE_SYMBOLS_MIN;
+        }
+
+        if !(SOURCE_SYMBOLS_MIN..=SOURCE_SYMBOLS_MAX).contains(&num_source_symbols) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "number of source symbols {} not in range {}..={}",
+                    num_source_symbols, SOURCE_SYMBOLS_MIN, SOURCE_SYMBOLS_MAX
+                ),
+            ));
+        }
+
+        let params = CodeParameters::new(num_source_symbols).map_err(|err| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "error creating CodeParameters for {} source symbols: {}",
+                    num_source_symbols, err
+                ),
+            )
+        })?;
+
+        // Create the G_LDPC and G_Half sub-matrices of the A matrix:
+        //
+        //               K               S       H
+        //   +-----------------------+-------+-------+
+        //   |                       |       |       |
+        // S |        G_LDPC         |  I_S  | 0_SxH |
+        //   |                       |       |       |
+        //   + - - - - - - - - - - - +-------+-------+
+        //   |                       :       |       |
+        // H |        G_Half         :       |  I_H  |
+        //   |                       :       |       |
+        //   +-------------------------------+-------+
+        //
+        // We store the K leftmost columns of G_LPDC and G_Half in the same matrix
+        // (g_ldpc_half), and the S rightmost columns of G_Half in a separate matrix
+        // (g_half_right).
+        let mut g_ldpc_half: Vec<Vec<u16>> = iter::repeat_with(|| {
+            Vec::<u16>::with_capacity(params.num_source_symbols() + params.num_ldpc_symbols())
+        })
+        .take(params.num_ldpc_symbols() + params.num_half_symbols())
+        .collect();
+
+        let mut g_half_right: Vec<Vec<u16>> =
+            iter::repeat_with(|| Vec::<u16>::with_capacity(params.num_ldpc_symbols()))
+                .take(params.num_half_symbols())
+                .collect();
+
+        params.g_ldpc(|i, j| g_ldpc_half[i].push(j as u16));
+
+        params.g_half(|i, j| {
+            if j < params.num_source_symbols() {
+                g_ldpc_half[params.num_ldpc_symbols() + i].push(j as u16);
+            } else {
+                g_half_right[i].push((j - params.num_source_symbols()) as u16);
+            }
+        });
+
+        // We first multiply by g_ldpc_half, which we do in parallel if num_source_symbols is
+        // large enough for parallelization to be a win, or serially otherwise.
+        let make_redundant_symbol = |source_set: &Vec<u16>| {
+            let mut symbol = Box::new([0; SYMBOL_LEN]);
+
+            for chunk in source_set
+                .iter()
+                .map(|index| {
+                    let index = usize::from(*index);
+
+                    if index < num_full_source_symbols {
+                        <&[u8; SYMBOL_LEN]>::try_from(
+                            &src[index * SYMBOL_LEN..(index + 1) * SYMBOL_LEN],
+                        )
+                        .unwrap()
+                    } else {
+                        &shadowed_source_symbols[index - num_full_source_symbols]
+                    }
+                })
+                .collect::<Vec<&[u8; SYMBOL_LEN]>>()
+                .chunks(xor_eq::MAX_SOURCES)
+            {
+                xor_eq::<SYMBOL_LEN>(&mut symbol, chunk);
+            }
+
+            symbol
+        };
+
+        let mut ldpc_half_symbols: Vec<Box<[u8; SYMBOL_LEN]>> = if num_source_symbols >= 1024 {
+            g_ldpc_half.par_iter().map(make_redundant_symbol).collect()
+        } else {
+            g_ldpc_half.iter().map(make_redundant_symbol).collect()
+        };
+
+        // Now we multiply by g_half_right, which is a sufficiently small computation for
+        // parallelization to not ever be a win, so we do this serially.
+        {
+            let (ldpc_symbols, half_symbols) =
+                ldpc_half_symbols.split_at_mut(params.num_ldpc_symbols());
+
+            (0..params.num_half_symbols()).for_each(|i| {
+                for chunk in g_half_right[i]
+                    .iter()
+                    .map(|index| &*ldpc_symbols[usize::from(*index)])
+                    .collect::<Vec<&[u8; SYMBOL_LEN]>>()
+                    .chunks(xor_eq::MAX_SOURCES)
+                {
+                    xor_eq::<SYMBOL_LEN>(&mut half_symbols[i], chunk);
+                }
+            });
+        }
+
+        // Prepend any shadowed source symbols to the LDPC/Half symbols.
+        let derived_symbols = if shadowed_source_symbols.is_empty() {
+            ldpc_half_symbols
+        } else {
+            shadowed_source_symbols.append(&mut ldpc_half_symbols);
+            shadowed_source_symbols
+        };
+
+        Ok(Encoder {
+            src,
+            params,
+            num_full_source_symbols,
+            derived_symbols,
+        })
+    }
+
+    pub fn num_source_symbols(&self) -> usize {
+        self.params.num_source_symbols()
+    }
+
+    fn buffer(&self, index: usize) -> &[u8; SYMBOL_LEN] {
+        if index < self.num_full_source_symbols {
+            <&[u8; SYMBOL_LEN]>::try_from(&self.src[index * SYMBOL_LEN..(index + 1) * SYMBOL_LEN])
+                .unwrap()
+        } else {
+            &self.derived_symbols[index - self.num_full_source_symbols]
+        }
+    }
+
+    // Expects the output buffer to be filled with NUL bytes on entry.
+    pub fn encode_symbol(&self, dst: &mut [u8; SYMBOL_LEN], encoding_symbol_id: usize) {
+        let mut indices = Vec::<usize>::with_capacity(MAX_DEGREE);
+
+        self.params
+            .lt_sequence_op(encoding_symbol_id, |el| indices.push(el));
+
+        for chunk in indices
+            .into_iter()
+            .map(|index| self.buffer(index))
+            .collect::<Vec<&[u8; SYMBOL_LEN]>>()
+            .chunks(xor_eq::MAX_SOURCES)
+        {
+            xor_eq::<SYMBOL_LEN>(dst, chunk);
+        }
+    }
+}
