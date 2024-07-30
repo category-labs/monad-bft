@@ -100,7 +100,7 @@ trap cleanup EXIT
 
 # make sure RPC server is still running
 CHAIN_ID=$(curl -X POST --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' http://localhost:8080 | jq -r '.result')
-EXPECTED_CHAIN_ID="0x1"
+EXPECTED_CHAIN_ID="0xA1EE"
 echo "Received chain ID: $CHAIN_ID"
 
 # Assertion

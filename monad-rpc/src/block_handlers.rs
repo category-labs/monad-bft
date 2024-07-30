@@ -105,12 +105,11 @@ pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> Result<Value, Json
     }
 }
 
-// TODO: does chainId come from a config file?
 #[allow(non_snake_case)]
-pub async fn monad_eth_chainId() -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_chainId(chain_id: u64) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_chainId");
 
-    serialize_result(format!("0x{:x}", 1))
+    serialize_result(format!("0x{:x}", chain_id))
 }
 
 #[derive(Deserialize, Debug)]

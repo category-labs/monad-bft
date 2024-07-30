@@ -174,6 +174,7 @@ async fn rpc_select(
                 reader,
                 &triedb_env.path(),
                 execution_ledger_path.as_path(),
+                app_state.chain_id,
                 params,
             )
             .await
@@ -276,7 +277,7 @@ async fn rpc_select(
                 Err(JsonRpcError::method_not_supported())
             }
         }
-        "eth_chainId" => monad_eth_chainId().await,
+        "eth_chainId" => monad_eth_chainId(app_state.chain_id).await,
         "eth_syncing" => {
             if let Some(reader) = &app_state.triedb_reader {
                 monad_eth_syncing(reader).await
@@ -316,6 +317,7 @@ async fn rpc_select(
                 reader,
                 &triedb_env.path(),
                 execution_ledger_path.as_path(),
+                app_state.chain_id,
                 params,
             )
             .await
@@ -382,6 +384,7 @@ struct MonadRpcResources {
     blockdb_reader: Option<BlockDbEnv>,
     triedb_reader: Option<TriedbEnv>,
     execution_ledger_path: ExecutionLedgerPath,
+    chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
 }
@@ -400,6 +403,7 @@ impl MonadRpcResources {
         blockdb_reader: Option<BlockDbEnv>,
         triedb_reader: Option<TriedbEnv>,
         execution_ledger_path: Option<PathBuf>,
+        chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
     ) -> Self {
@@ -408,6 +412,7 @@ impl MonadRpcResources {
             blockdb_reader,
             triedb_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
+            chain_id,
             batch_request_limit,
             max_response_size,
         }
@@ -491,6 +496,7 @@ async fn main() -> std::io::Result<()> {
         blockdb_env,
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
         args.execution_ledger_path,
+        args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
     );
@@ -557,6 +563,7 @@ mod tests {
             blockdb_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
+            chain_id: 41454,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
         }))

@@ -228,7 +228,7 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let mut input = vec![0; input_len];
     rand::thread_rng().fill_bytes(&mut input);
     let transaction = Transaction::Legacy(TxLegacy {
-        chain_id: Some(1),
+        chain_id: Some(41454),
         nonce: 0,
         gas_price: 1,
         gas_limit: 100_000,

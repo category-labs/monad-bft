@@ -1,10 +1,11 @@
 use std::{ops::Sub, path::Path};
 
+use alloy_primitives::{U256, U64};
 use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
-use reth_primitives::{Transaction, TransactionKind, U256};
+use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
@@ -47,6 +48,7 @@ pub async fn monad_eth_estimateGas(
     blockdb_env: &BlockDbEnv,
     triedb_path: &Path,
     execution_ledger_path: &Path,
+    chain_id: u64,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_estimateGas: {params:?}");
@@ -98,6 +100,10 @@ pub async fn monad_eth_estimateGas(
     if allowance.is_some() {
         params.tx.gas = allowance.map(U256::from);
     };
+
+    if params.tx.chain_id.is_none() {
+        params.tx.chain_id = Some(U64::from(chain_id));
+    }
 
     let sender = params.tx.from.unwrap_or_default();
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;

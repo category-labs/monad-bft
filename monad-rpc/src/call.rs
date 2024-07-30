@@ -133,7 +133,11 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                 // Legacy
                 Ok(reth_primitives::transaction::Transaction::Legacy(
                     reth_primitives::TxLegacy {
-                        chain_id: Some(1),
+                        chain_id: call_request
+                            .chain_id
+                            .map(|id| id.try_into())
+                            .transpose()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
                         nonce: call_request
                             .nonce
                             .unwrap_or_default()
@@ -170,7 +174,11 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                 // EIP-1559
                 Ok(reth_primitives::transaction::Transaction::Eip1559(
                     reth_primitives::TxEip1559 {
-                        chain_id: 1,
+                        chain_id: call_request
+                            .chain_id
+                            .unwrap_or_default()
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
                         nonce: call_request
                             .nonce
                             .unwrap_or_default()
@@ -271,6 +279,7 @@ pub async fn monad_eth_call(
     blockdb_env: &BlockDbEnv,
     triedb_path: &Path,
     execution_ledger_path: &Path,
+    chain_id: u64,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     let mut params: MonadEthCallParams = match serde_json::from_value(params) {
@@ -320,6 +329,10 @@ pub async fn monad_eth_call(
     if allowance.is_some() {
         params.transaction.gas = allowance.map(U256::from);
     };
+
+    if params.transaction.chain_id.is_none() {
+        params.transaction.chain_id = Some(U64::from(chain_id));
+    }
 
     let sender = params.transaction.from.unwrap_or_default();
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
