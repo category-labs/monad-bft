@@ -31,15 +31,13 @@ pip install -r testing-library/requirements.txt
 pip install ./testing-library
 
 rm -rf logs && mkdir -p logs
-python nets/net0/scripts/net-run.py
+python tests/net0.py
 nets/devnet-integration/scripts/net-run.sh test --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../..
-python nets/net1/scripts/net-run.py
-python nets/devnet-integration/scripts/net-run.py devnet test
-python nets/full-nodes/scripts/net-run.py
-nets/consensus-nodes-nonce-test-1/scripts/net-run.sh --output-dir logs --net-dir nets/consensus-nodes-nonce-test-1/ --flexnet-root . --monad-bft-root ../..
-nets/full-nodes-nonce-test-1/scripts/net-run.sh --output-dir logs --net-dir nets/full-nodes-nonce-test-1/ --flexnet-root . --monad-bft-root ../..
-nets/full-nodes-nonce-test-2/scripts/net-run.sh --output-dir logs --net-dir nets/full-nodes-nonce-test-2/ --flexnet-root . --monad-bft-root ../..
-nets/full-nodes-nonce-test-3/scripts/net-run.sh --output-dir logs --net-dir nets/full-nodes-nonce-test-3/ --flexnet-root . --monad-bft-root ../..
+python tests/net1.py
+python tests/devnet-integration.py
+python tests/full-nodes-1.py
+python tests/full-nodes-2.py
+python tests/reserve-balance.py
 
 # remove artifacts if test succeeds
 rm -rf logs

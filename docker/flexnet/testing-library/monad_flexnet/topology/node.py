@@ -3,6 +3,8 @@ import pathlib
 import python_on_whales
 import tomllib
 
+import time
+
 from python_on_whales import docker
 
 class Node:
@@ -40,6 +42,8 @@ class Node:
             'bash', '-c',
             '/monad/scripts/tc.sh; '
             'mkdir /monad/logs; '
+            'export RUST_BACKTRACE=1; '
+            'export RUST_LOG=debug; '
             'monad-node --secp-identity /monad/config/id-secp '
             '--bls-identity /monad/config/id-bls '
             '--node-config /monad/config/node.toml '
@@ -77,16 +81,16 @@ class Node:
     def start(self, root_dir: str | os.PathLike, network_name: str, run_id: str):
         self.node_root = pathlib.Path(f'{root_dir}/{self.name}')
         Node._create_empty_triedb(self.node_root / 'triedb' / 'test.db')
+        docker.run(
+            image='monad-execution-builder:latest',
+            remove=True,
+            name=f'{self.name}-{run_id}-execution',
+            volumes=[(f'{root_dir}/{self.name}', '/monad')],
+            command=['monad_mpt', '--storage', '/monad/triedb/test.db', '--create'],
+            networks=[network_name],
+            security_options=[f'seccomp={root_dir}/{self.name}/config/profile.json']
+        )
         if self.has_execution:
-            docker.run(
-                image='monad-execution-builder:latest',
-                remove=True,
-                name=f'{self.name}-{run_id}-execution',
-                volumes=[(f'{root_dir}/{self.name}', '/monad')],
-                command=['monad_mpt', '--storage', '/monad/triedb/test.db', '--create'],
-                networks=[network_name],
-                security_options=[f'seccomp={root_dir}/{self.name}/config/profile.json']
-            )
             self.execution_container = docker.run(
                 image='monad-execution-builder:latest',
                 remove=True,

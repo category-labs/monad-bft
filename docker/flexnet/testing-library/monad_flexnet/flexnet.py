@@ -26,37 +26,44 @@ class Flexnet:
         self.root_dir = pathlib.Path(f'{os.getcwd()}/logs/{self.run_name}')
 
     @contextmanager
-    def start_topology(self, gen_config: bool = True):
-        self.run(gen_config=gen_config)
+    def start_topology(self, **kwargs):
+        self.run(**kwargs)
         try:
             yield self
         finally:
             self.stop()
 
-    def run(self, runtime: int | None = None, blocking: bool = False, gen_config: bool = True):
+    def run(self, runtime: int | None = None, blocking: bool = False, gen_config: bool = True, mock_drivers: bool = False):
         # Create output directory
         shutil.copytree(self.topology_path.parent, self.root_dir)
 
+        triedb_driver = 'triedb_driver_mock' if mock_drivers else 'triedb_driver'
+        ethcall_driver = 'mock_eth_call' if mock_drivers else 'monad_shared'
         # Build the containers that will be needed
         docker.build(
             '.',
             file='./images/dev/Dockerfile',
-            tags='monad-python-dev'
+            tags='monad-python-dev',
+            output={'type': 'docker'}
         )
         docker.build(
             '../..',
             file='./images/monad-bft-builder/Dockerfile',
-            tags='monad-bft-builder:latest'
+            tags='monad-bft-builder:latest',
+            output={'type': 'docker'},
+            build_args={'TRIEDB_TARGET': triedb_driver, 'ETH_CALL_TARGET': ethcall_driver}
         )
         docker.build(
             '../..',
             file='./images/image0/Dockerfile',
-            tags='image0:latest'
+            tags='image0:latest',
+            output={'type': 'docker'}
         )
         docker.build(
             '../..',
             file='../devnet/Dockerfile',
-            tags='monad-node:latest'
+            tags='monad-node:latest',
+            output={'type': 'docker'}
         )
         docker.build(
             '../..',
@@ -66,7 +73,10 @@ class Flexnet:
         docker.build(
             '../..',
             file='./images/rpc/Dockerfile',
-            tags='flexnet-rpc:latest'
+            tags='monad-rpc:latest',
+            output={'type': 'docker'},
+            build_args={'TRIEDB_TARGET': 'triedb_driver', 'ETH_CALL_TARGET': ethcall_driver},
+            cache=False
         )
 
         try:
@@ -86,7 +96,7 @@ class Flexnet:
             builder=insecure_builder,
             allow=['security.insecure'],
             build_args={'GIT_COMMIT_HASH': execution_commit_hash},
-            load=True
+            output={'type': 'docker'}
         )
 
         # Generate scripts for each node
@@ -96,7 +106,7 @@ class Flexnet:
                 image='monad-python-dev:latest',
                 remove=True,
                 volumes=[('.', '/monad')],
-                command=['bash', '-c', f'cd /monad/logs/{self.root_dir.name} && python3 /monad/common/config-gen.py -c {self.topology.get_total_node_count()} -s \'\' -i {self.run_id}']
+                command=['bash', '-c', f'cd /monad/logs/{self.root_dir.name} && python3 /monad/common/config-gen.py -c {self.topology.get_total_node_count()} -s \'\' -i {self.run_id} -t {self.topology_path.name}']
             )
             # Still need the default security profile and genesis files, so copy them in
             def copy_profile(node: Node):

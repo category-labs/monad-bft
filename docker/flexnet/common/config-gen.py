@@ -173,6 +173,7 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument('-i', '--id', help="run ID to append to node names", required=False)
+    parser.add_argument('-t', '--topology', help="The name of the topology file", default='topology.json')
 
     args = parser.parse_args()
     node_count = args.count
@@ -181,7 +182,7 @@ if __name__ == "__main__":
     else:
         seed = None
 
-    topology = Topology.from_json(Path(os.getcwd()) / 'topology.json')
+    topology = Topology.from_json(Path(os.getcwd()) / args.topology)
 
     for _, region in topology.regions.items():
         for node in region.nodes:

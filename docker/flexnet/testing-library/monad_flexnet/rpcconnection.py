@@ -29,14 +29,21 @@ class RpcConnection:
             return eth_account.Account.from_key(key)
         return eth_account.Account.create()
 
-    def create_transaction(self, transaction: Transaction) -> HexBytes:
-        sender_tx_count = self.get_transaction_count(transaction.sender) # self.transaction_count[transaction.sender.address]
-        self.transaction_count[transaction.sender.address] = sender_tx_count + 1
+    def get_next_valid_nonce(self, sender):
+        return self.get_transaction_count(sender)
+
+    def create_transaction(self, transaction: Transaction, nonce: int | None = None) -> HexBytes:
+        valid_nonce = self.get_next_valid_nonce(transaction.sender)
+        if nonce is None:
+            nonce = valid_nonce
+        if nonce == valid_nonce:
+            self.transaction_count[transaction.sender.address] += 1
+
         transfer_tx = {
             'from': transaction.sender.address,
             'to': transaction.recipient.address,
             'value': transaction.amount,
-            'nonce': sender_tx_count,
+            'nonce': nonce,
             'gas': transaction.gas,
             'maxFeePerGas': transaction.maxFeePerGas,
             'maxPriorityFeePerGas': 0,
@@ -45,6 +52,10 @@ class RpcConnection:
 
         signed_transfer = transaction.sender.sign_transaction(transfer_tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed_transfer.raw_transaction)
+
+        if tx_hash != signed_transfer.hash:
+            print(f'incorrect transaction hash ({signed_transfer.hash.hex()} != {tx_hash.hex()}')
+
         self.transactions.append({'hash': tx_hash.hex(), 'submitted': True})
         return tx_hash
 
