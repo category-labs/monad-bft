@@ -86,16 +86,6 @@ class Flexnet:
             output={"type": "docker"},
         )
         docker.build(
-            "../..",
-            file="./images/rpc/Dockerfile",
-            tags="flexnet-rpc:latest",
-            output={"type": "docker"},
-            build_args={
-                "TRIEDB_TARGET": "triedb_driver",
-                "ETH_CALL_TARGET": ethcall_driver,
-            },
-        )
-        docker.build(
             './images/control-panel',
             file='./images/control-panel/Dockerfile',
             tags='control-panel:latest'
