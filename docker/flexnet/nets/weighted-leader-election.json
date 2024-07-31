@@ -1,0 +1,61 @@
+{
+    "regions": [
+        {
+            "name": "us",
+            "intraregion_latency": {
+                "ms": 10
+            },
+            "nodes": [
+                {
+                    "name": "node0",
+                    "stake": 1,
+                    "up_Mbps": 100,
+                    "down_Mbps": 100,
+                    "execution": false,
+                    "rpc": false
+                },
+                {
+                    "name": "node1",
+                    "stake": 2,
+                    "up_Mbps": 100,
+                    "down_Mbps": 100,
+                    "execution": false,
+                    "rpc": false
+                }
+            ]
+        },
+        {
+            "name": "europe",
+            "intraregion_latency": {
+                "ms": 10
+            },
+            "nodes": [
+                {
+                    "name": "node2",
+                    "stake": 3,
+                    "up_Mbps": 100,
+                    "down_Mbps": 100,
+                    "execution": false,
+                    "rpc": false
+                },
+                {
+                    "name": "node3",
+                    "stake": 4,
+                    "up_Mbps": 100,
+                    "down_Mbps": 100,
+                    "execution": false,
+                    "rpc": false
+                }
+            ]
+        }
+    ],
+    "latencies": [
+        {
+            "region1": "us",
+            "region2": "europe",
+            "latency": {
+                "ms": 50
+            }
+        }
+    ]
+}
