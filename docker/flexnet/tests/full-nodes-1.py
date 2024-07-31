@@ -41,10 +41,7 @@ def main():
             print(f'receiver balance {client.get_account_balance(receiver_account)}')
 
             for client_name, client in clients.items():
-                try:
-                    client.wait_for_transaction_receipt(tx_hash)
-                except Exception as e:
-                    print(f'{client_name}: wait_for_transaction_receipt exception {e}')
+                client.wait_for_transaction_receipt(tx_hash)
                 sender_tx_count = client.get_transaction_count(sender_account)
                 if sender_tx_count != i + 1:
                     print(f'{client_name}: incorrect sender_tx_count ({sender_tx_count} != {i + 1})')
@@ -57,15 +54,11 @@ def main():
             print(f'receiver account address {receiver_account.address}')
             tx_hash = send_client.create_transaction(Transaction(sender_account, receiver_account, TRANSACTION_AMOUNT, GAS_AMOUNT), nonce=i)
 
-            time.sleep(5)
+            time.sleep(2)
             print(f'sender balance {client.get_account_balance(sender_account)}')
             print(f'receiver balance {client.get_account_balance(receiver_account)}')
 
             for other_client_name, other_client in clients.items():
-                try:
-                    other_client.wait_for_transaction_receipt(tx_hash)
-                except Exception as e:
-                    print(f'{other_client_name}: wait_for_transaction_receipt exception {e}')
                 sender_tx_count = other_client.get_transaction_count(sender_account)
                 if sender_tx_count != NUM_VALID_TX:
                     print(f'{other_client_name}: incorrect sender_tx_count ({sender_tx_count} != {NUM_VALID_TX})')
@@ -78,15 +71,11 @@ def main():
             print(f'receiver account address {receiver_account.address}')
             tx_hash = send_client.create_transaction(Transaction(sender_account, receiver_account, TRANSACTION_AMOUNT, GAS_AMOUNT), nonce=NUM_VALID_TX-1)
 
-            time.sleep(5)
+            time.sleep(2)
             print(f'sender balance {client.get_account_balance(sender_account)}')
             print(f'receiver balance {client.get_account_balance(receiver_account)}')
 
             for other_client_name, other_client in clients.items():
-                try:
-                    other_client.wait_for_transaction_receipt(tx_hash)
-                except Exception as e:
-                    print(f'{other_client_name}: wait_for_transaction_receipt exception {e}')
                 sender_tx_count = other_client.get_transaction_count(sender_account)
                 if sender_tx_count != NUM_VALID_TX:
                     print(f'{other_client_name}: incorrect sender_tx_count ({sender_tx_count} != {NUM_VALID_TX})')
