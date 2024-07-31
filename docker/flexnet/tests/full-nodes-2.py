@@ -3,16 +3,16 @@ from monad_flexnet import Flexnet, RpcConnection, Transaction
 import random
 import time
 
-INITIAL_ACCOUNT_BAL = 200000000000000000000
+INITIAL_ACCOUNT_BAL = 10000000000000000000000
 TRANSACTION_AMOUNT = 1000
 GAS_AMOUNT = 21000
 MAX_FEE_PER_GAS = 1000
 
 nodes_keys = [
-    ('node0', '0x5c2339f6ac56b12fb5fd14af1d355ca3cad72f8549055f4a8523a8422c992c27'),
-    ('node1', '0x92ceb2600fdf4c6f920e96f4caf76fe693260891ff8e8ac2aa25e6f434870838'),
-    ('node2', '0xcd6c19a04d14c851b7efaca8b38e29f134936fb351e614848a4d86a00a50d1c8'),
-    ('node3', '0x4b2e5266f9c93366539fa15bfb5c303c1f1a2dbbc29c08af4688fbf9f7f9db15')
+    ('node0', '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'),
+    ('node1', '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'),
+    ('node2', '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a'),
+    ('node3', '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6')
 ]
 
 def main():

@@ -9,9 +9,9 @@ from urllib3.util.retry import Retry
 import json
 import sys
 
-sender_privkey = "0x5c2339f6ac56b12fb5fd14af1d355ca3cad72f8549055f4a8523a8422c992c27"
+sender_privkey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
-INITIAL_ACCOUNT_BAL = 200000000000000000000
+INITIAL_ACCOUNT_BAL = 10000000000000000000000
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="e2e", description="End-to-end transfer test")
