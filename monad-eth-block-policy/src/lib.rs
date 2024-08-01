@@ -318,7 +318,7 @@ impl EthBlockPolicy {
         eth_address: &EthAddress,
         pending_block_nonces: &BTreeMap<EthAddress, Nonce>,
         reserve_balance_cache: &mut RBCT,
-    ) -> Nonce {
+    ) -> Result<Nonce, CarriageCostValidationError> {
         // Layers of access
         // 1. pending_block_nonces: coherent blocks in the blocks tree
         // 2. committed_block_nonces: always buffers the nonce of last `delay`
@@ -326,9 +326,9 @@ impl EthBlockPolicy {
         // 2. LRU cache of triedb nonces
         // 3. triedb query
         if let Some(&coherent_block_nonce) = pending_block_nonces.get(eth_address) {
-            coherent_block_nonce
+            Ok(coherent_block_nonce)
         } else if let Some(committed_nonce) = self.committed_cache.get_nonce(eth_address) {
-            committed_nonce
+            Ok(committed_nonce)
         } else {
             // the cached account nonce must overlap with latest triedb, i.e.
             // account_nonces must keep nonces for last delay blocks in cache
@@ -342,9 +342,11 @@ impl EthBlockPolicy {
                 ),
                 eth_address,
             ) {
-                ReserveBalanceCacheResult::Val(_, nonce) => nonce,
-                ReserveBalanceCacheResult::None => 0,
-                ReserveBalanceCacheResult::NeedSync => panic!("last commit {:?}", self.last_commit),
+                ReserveBalanceCacheResult::Val(_, nonce) => Ok(nonce),
+                ReserveBalanceCacheResult::None => Err(CarriageCostValidationError::AccountNoExist),
+                ReserveBalanceCacheResult::NeedSync => {
+                    Err(CarriageCostValidationError::TrieDBNeedsSync)
+                }
             }
         }
     }
@@ -520,11 +522,15 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
             let eth_address = EthAddress(txn.signer());
             let txn_nonce = txn.nonce();
 
-            let expected_nonce = self.get_account_nonce(
-                &eth_address,
-                &pending_account_nonces,
-                account_balance_cache,
-            );
+            let expected_nonce = self
+                .get_account_nonce(&eth_address, &pending_account_nonces, account_balance_cache)
+                .map_err(|err| match err {
+                    // FIXME: restructure error types
+                    CarriageCostValidationError::AccountNoExist => {
+                        BlockPolicyError::BlockNotCoherent
+                    }
+                    _ => BlockPolicyError::CarriageCostError(err),
+                })?;
 
             if txn_nonce != expected_nonce {
                 return Err(BlockPolicyError::BlockNotCoherent);
@@ -558,7 +564,12 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
                         block.get_seq_num(),
                         eth_address
                     );
-                    return Err(BlockPolicyError::CarriageCostError(err));
+                    return Err(match err {
+                        CarriageCostValidationError::AccountNoExist => {
+                            BlockPolicyError::BlockNotCoherent
+                        }
+                        _ => BlockPolicyError::CarriageCostError(err),
+                    });
                 }
             };
 

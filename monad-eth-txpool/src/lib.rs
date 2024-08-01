@@ -136,7 +136,7 @@ impl EthTxPool {
                 eth_address,
                 &blocktree_nonce_deltas,
                 account_balance_cache,
-            );
+            )?;
 
             // Remove transactions with nonces lower than the lowest valid nonce
             transaction_group

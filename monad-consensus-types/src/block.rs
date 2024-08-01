@@ -214,6 +214,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     }
 }
 
+// TODO: rename & restructure
 #[derive(Debug, PartialEq)]
 pub enum CarriageCostValidationError {
     TrieDBNeedsSync,
@@ -226,8 +227,10 @@ pub enum CarriageCostValidationError {
 #[non_exhaustive]
 pub enum BlockPolicyError {
     BlockNotCoherent,
+    // TODO: rename general to account fetch
     CarriageCostError(CarriageCostValidationError),
 }
+
 /// Trait that represents how inner contents of a block should be validated
 pub trait BlockPolicy<
     SCT: SignatureCollection,

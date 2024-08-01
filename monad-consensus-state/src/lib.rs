@@ -4854,11 +4854,13 @@ mod test {
 
         // block policy should be updated with latest account nonces from block 1
         assert_eq!(
-            n1.block_policy.get_account_nonce(
-                &sender_1_address,
-                &Default::default(),
-                &mut n1.reserve_balance_cache
-            ),
+            n1.block_policy
+                .get_account_nonce(
+                    &sender_1_address,
+                    &Default::default(),
+                    &mut n1.reserve_balance_cache
+                )
+                .unwrap(),
             1
         );
     }
