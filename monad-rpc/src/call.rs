@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
 use log::debug;
@@ -73,7 +73,7 @@ impl CallRequest {
                             ));
                         }
 
-                        std::cmp::min(
+                        min(
                             max_fee_per_gas,
                             base_fee
                                 .checked_add(max_priority_fee_per_gas.unwrap_or_default())
@@ -252,7 +252,10 @@ pub async fn sender_gas_allowance(
             .checked_div(gas_price)
             .ok_or_else(JsonRpcError::internal_error)?;
 
-        gas_limit.try_into().or_else(|_| Ok(block.gas_limit))
+        Ok(min(
+            gas_limit.try_into().unwrap_or(block.gas_limit),
+            block.gas_limit,
+        ))
     } else {
         Ok(block.gas_limit)
     }
@@ -303,7 +306,7 @@ pub async fn monad_eth_call(
                 debug!("blockdb did not have latest block number");
                 return Err(JsonRpcError::internal_error());
             };
-            std::cmp::min(triedb_block_number, blockdb_block_number.0)
+            min(triedb_block_number, blockdb_block_number.0)
         }
         BlockTags::Number(block_number) => block_number.0,
     };

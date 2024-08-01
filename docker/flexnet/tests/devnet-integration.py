@@ -12,7 +12,7 @@ def main():
         sender_privkey = (
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         )
-        INITIAL_ACCOUNT_BAL = 1000000000000000000000
+        INITIAL_ACCOUNT_BAL = 10000000000000000000000
         TRANSACTION_AMOUNT = 1000
         GAS_AMOUNT = 21000
         MAX_FEE_PER_GAS = 1000
