@@ -533,6 +533,7 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         // Get the account nonce from coherent blocks to extend
         let mut pending_account_nonces = extending_blocks.get_account_nonces();
 
+        let mut reserve_balance_remaining = BTreeMap::new();
         for txn in block.validated_txns.iter() {
             let eth_address = EthAddress(txn.signer());
             let txn_nonce = txn.nonce();
@@ -550,47 +551,56 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
             if txn_nonce != expected_nonce {
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
-            let res = self.compute_reserve_balance::<SCT, SBT, RBCT>(
-                block.get_seq_num(),
-                account_balance_cache,
-                Some(&extending_blocks),
-                &eth_address,
-            );
-            let reserve_balance = match res {
-                Ok(val) => {
-                    trace!(
-                        "ReserveBalance - check_coherency 1: \
-                                reserve balance {:?} \
-                                consensus block:seq num {:?} \
-                                for address: {:?}",
-                        val,
-                        block.get_seq_num(),
-                        eth_address
-                    );
-                    val
-                }
-                Err(err) => {
-                    trace!(
-                        "ReserveBalance - check_coherency 2: \
-                                        Carriage Cost Error:  {:?} \
-                                        consensus block:seq num {:?} \
-                                        for address: {:?}",
-                        err,
-                        block.get_seq_num(),
-                        eth_address
-                    );
-                    return Err(match err {
-                        CarriageCostValidationError::AccountNoExist => {
-                            BlockPolicyError::BlockNotCoherent
-                        }
-                        _ => BlockPolicyError::CarriageCostError(err),
-                    });
-                }
-            };
+
+            if !reserve_balance_remaining.contains_key(&eth_address) {
+                let res = self.compute_reserve_balance::<SCT, SBT, RBCT>(
+                    block.get_seq_num(),
+                    account_balance_cache,
+                    Some(&extending_blocks),
+                    &eth_address,
+                );
+                let base_reserve_balance = match res {
+                    Ok(val) => {
+                        trace!(
+                            "ReserveBalance - check_coherency 1: \
+                                    reserve balance {:?} \
+                                    consensus block:seq num {:?} \
+                                    for address: {:?}",
+                            val,
+                            block.get_seq_num(),
+                            eth_address
+                        );
+                        val
+                    }
+                    Err(err) => {
+                        trace!(
+                            "ReserveBalance - check_coherency 2: \
+                                            Carriage Cost Error:  {:?} \
+                                            consensus block:seq num {:?} \
+                                            for address: {:?}",
+                            err,
+                            block.get_seq_num(),
+                            eth_address
+                        );
+                        return Err(match err {
+                            CarriageCostValidationError::AccountNoExist => {
+                                BlockPolicyError::BlockNotCoherent
+                            }
+                            _ => BlockPolicyError::CarriageCostError(err),
+                        });
+                    }
+                };
+                reserve_balance_remaining.insert(eth_address, base_reserve_balance);
+            }
+
+            let reserve_balance = reserve_balance_remaining
+                .get_mut(&eth_address)
+                .expect("fetched");
 
             let txn_carriage_cost = compute_txn_carriage_cost(txn);
 
-            if reserve_balance >= txn_carriage_cost {
+            if *reserve_balance >= txn_carriage_cost {
+                *reserve_balance -= txn_carriage_cost;
                 pending_account_nonces.insert(eth_address, txn_nonce + 1);
             } else {
                 trace!(
@@ -615,4 +625,9 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
         self.last_commit = block.get_seq_num();
         self.committed_cache.update_committed_block(block);
     }
+}
+
+#[cfg(test)]
+mod test {
+    // TODO: reserve balance check accounts for previous transactions in the block
 }
