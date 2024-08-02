@@ -185,6 +185,8 @@ struct CommittedTxnBuffer {
     // TODO: create a reserve balance map for transactions when validating
     // Block, and store it in EthValidatedBlock
     txns: SortedVectorMap<SeqNum, (Vec<EthTransaction>, BlockAccountNonce)>,
+    /// cache carriage cost usage by each account in each block
+    carriage_costs: SortedVectorMap<SeqNum, BTreeMap<EthAddress, Balance>>,
     size: usize, // should be execution delay
 }
 
@@ -197,6 +199,7 @@ impl CommittedTxnBuffer {
     fn new(size: usize) -> Self {
         Self {
             txns: Default::default(),
+            carriage_costs: Default::default(),
             size,
         }
     }
@@ -221,15 +224,14 @@ impl CommittedTxnBuffer {
         eth_address: &EthAddress,
     ) -> CommittedCarriageCostResult {
         let mut carriage_cost: u128 = 0;
-
         let mut next_validate = base_seq_num + SeqNum(1);
-        for (&cache_seq_num, (txns, _)) in self.txns.iter() {
+
+        // TODO: start iteration from base_seq_num
+        for (&cache_seq_num, block_carriage_costs) in self.carriage_costs.iter() {
             if cache_seq_num > base_seq_num {
                 assert_eq!(next_validate, cache_seq_num);
-                for txn in txns {
-                    if EthAddress(txn.signer()) == *eth_address {
-                        carriage_cost += compute_txn_carriage_cost(txn);
-                    }
+                if let Some(account_carriage_cost) = block_carriage_costs.get(eth_address) {
+                    carriage_cost += account_carriage_cost;
                 }
                 next_validate += SeqNum(1);
             }
@@ -247,6 +249,7 @@ impl CommittedTxnBuffer {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
+        // FIXME: overflow if self.size == usize::MAX
         if self.txns.len() >= self.size * 2 {
             let (&first_block_num, _) = self.txns.first_key_value().expect("txns non-empty");
             let divider = first_block_num + SeqNum(self.size as u64);
@@ -258,16 +261,34 @@ impl CommittedTxnBuffer {
                 block_number
             );
             assert_eq!(self.txns.len(), self.size);
+            self.carriage_costs = self.carriage_costs.split_off(&divider);
+            assert_eq!(self.carriage_costs.len(), self.size);
         }
-        self.txns.insert(
-            block_number,
-            (
-                block.validated_txns.clone(),
-                BlockAccountNonce {
-                    nonces: block.get_account_nonces(),
-                },
-            ),
-        );
+
+        assert!(self
+            .txns
+            .insert(
+                block_number,
+                (
+                    block.validated_txns.clone(),
+                    BlockAccountNonce {
+                        nonces: block.get_account_nonces(),
+                    },
+                ),
+            )
+            .is_none());
+        // compute carriage cost usage in the block
+        let mut block_carriage_cost = BTreeMap::new();
+        for txn in block.validated_txns.iter() {
+            let entry = block_carriage_cost
+                .entry(EthAddress(txn.signer()))
+                .or_insert(0_u128);
+            *entry += compute_txn_carriage_cost(txn);
+        }
+        assert!(self
+            .carriage_costs
+            .insert(block_number, block_carriage_cost)
+            .is_none());
     }
 }
 
@@ -630,4 +651,5 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
 #[cfg(test)]
 mod test {
     // TODO: reserve balance check accounts for previous transactions in the block
+    // TODO: unit test for CommittedTxnBuffer.compute_carriage_cost
 }
