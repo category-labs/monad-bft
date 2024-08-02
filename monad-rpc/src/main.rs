@@ -29,7 +29,7 @@ use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::debug;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -125,7 +125,7 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
         }
     };
 
-    info!(?body, ?response, "rpc_request/response");
+    debug!(?body, ?response, "rpc_request/response");
     HttpResponse::Ok().json(&response)
 }
 
