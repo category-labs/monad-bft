@@ -336,6 +336,7 @@ impl EthBlockPolicy {
 
     pub fn get_account_nonce<SBT: StateBackend, RBCT: ReserveBalanceCacheTrait<SBT>>(
         &self,
+        consensus_block_seq_num: SeqNum,
         eth_address: &EthAddress,
         pending_block_nonces: &BTreeMap<EthAddress, Nonce>,
         reserve_balance_cache: &mut RBCT,
@@ -356,13 +357,10 @@ impl EthBlockPolicy {
             // the cache should keep track of block number for the nonce state
             // when purging, we never purge nonces newer than last_commit - delay
 
-            match reserve_balance_cache.get_account(
-                SeqNum(
-                    self.last_commit.0.max(self.committed_cache.size as u64)
-                        - self.committed_cache.size as u64,
-                ),
-                eth_address,
-            ) {
+            let base_seq_num =
+                consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
+
+            match reserve_balance_cache.get_account(base_seq_num, eth_address) {
                 ReserveBalanceCacheResult::Val(_, nonce) => Ok(nonce),
                 ReserveBalanceCacheResult::None => Err(CarriageCostValidationError::AccountNoExist),
                 ReserveBalanceCacheResult::NeedSync => {
@@ -560,7 +558,12 @@ impl<SCT: SignatureCollection, SBT: StateBackend, RBCT: ReserveBalanceCacheTrait
             let txn_nonce = txn.nonce();
 
             let expected_nonce = self
-                .get_account_nonce(&eth_address, &pending_account_nonces, account_balance_cache)
+                .get_account_nonce(
+                    block.get_seq_num(),
+                    &eth_address,
+                    &pending_account_nonces,
+                    account_balance_cache,
+                )
                 .map_err(|err| match err {
                     // FIXME: restructure error types
                     CarriageCostValidationError::AccountNoExist => {

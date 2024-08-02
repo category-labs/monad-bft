@@ -4740,6 +4740,7 @@ mod test {
         assert_eq!(
             n1.block_policy
                 .get_account_nonce(
+                    SeqNum(4),
                     &sender_1_address,
                     &Default::default(),
                     &mut n1.reserve_balance_cache

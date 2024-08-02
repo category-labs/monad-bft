@@ -134,6 +134,7 @@ impl EthTxPool {
     ) -> Result<(), CarriageCostValidationError> {
         for (eth_address, transaction_group) in self.pool.iter_mut() {
             let lowest_valid_nonce = block_policy.get_account_nonce(
+                proposed_seq_num,
                 eth_address,
                 &blocktree_nonce_deltas,
                 account_balance_cache,
