@@ -7,7 +7,7 @@ use std::{
 };
 
 use alloy_primitives::{Bloom, Bytes, FixedBytes, U256};
-use alloy_rlp::Encodable;
+use alloy_rlp::{Decodable, Encodable};
 use monad_blockdb::BlockDb;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
@@ -15,7 +15,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::hasher::{Hasher, HasherType};
-use monad_eth_tx::EthFullTransactionList;
+use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::ExecutionLedgerCommand;
 use monad_proto::proto::block::ProtoBlock;
@@ -155,12 +155,8 @@ fn encode_eth_block(block: &Block) -> Vec<u8> {
 
 /// Produce the body of an Ethereum Block from a list of full transactions
 fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
-    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.bytes().clone())
-        .unwrap()
-        .0
-        .into_iter()
-        .map(|tx| tx.into_signed())
-        .collect();
+    let transactions =
+        Vec::<EthSignedTransaction>::decode(&mut monad_full_txs.bytes().as_ref()).unwrap();
 
     BlockBody {
         transactions,
