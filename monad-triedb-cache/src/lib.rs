@@ -16,6 +16,26 @@ pub struct ReserveBalanceCache<SBT> {
     execution_delay: u64,
 }
 
+impl<SBT: StateBackend> ReserveBalanceCache<SBT> {
+    fn seq_num_cached(&self, base_seq_num: SeqNum) -> bool {
+        if let Some((highest_seq_num, _)) = self.cache.last_key_value() {
+            if *highest_seq_num >= base_seq_num {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn seq_num_not_cached(&self, base_seq_num: SeqNum) -> bool {
+        !self.seq_num_cached(base_seq_num)
+    }
+
+    fn seq_num_not_in_state(&self, seq_num: SeqNum) -> bool {
+        !self.state_backend.is_available(seq_num.0)
+    }
+}
+
 impl<SBT: StateBackend> ReserveBalanceCacheTrait<SBT> for ReserveBalanceCache<SBT> {
     fn new(state_backend: SBT, execution_delay: u64) -> Self {
         Self {
@@ -38,7 +58,7 @@ impl<SBT: StateBackend> ReserveBalanceCacheTrait<SBT> for ReserveBalanceCache<SB
             address
         );
 
-        if !self.state_backend.is_available(base_seq_num.0) {
+        if self.seq_num_not_cached(base_seq_num) && self.seq_num_not_in_state(base_seq_num) {
             trace!(
                 "ReserveBalance get_account 2 \
                     TrieDB needs sync"
