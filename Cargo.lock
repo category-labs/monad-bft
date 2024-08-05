@@ -4114,7 +4114,6 @@ dependencies = [
  "monad-raptor",
  "monad-secp",
  "monad-types",
- "raptor-code",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5224,12 +5223,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "primes"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a61082d8bceecd71a3870e9162002bb75f7ba9c7aa8b76227e887782fef9c8"
-
-[[package]]
 name = "primitive-types"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5522,16 +5515,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
 dependencies = [
  "rand_core",
-]
-
-[[package]]
-name = "raptor-code"
-version = "1.0.6"
-source = "git+https://github.com/omegablitz/raptor?rev=8cdd8fcc#8cdd8fcc44f135aebe0d6b6e7782c6840ac6d3c5"
-dependencies = [
- "bytes",
- "log",
- "primes",
 ]
 
 [[package]]

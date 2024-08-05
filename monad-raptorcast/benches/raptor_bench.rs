@@ -8,10 +8,10 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use itertools::Itertools;
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::network::MONAD_GSO_SIZE;
+use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{build_messages, parse_message, BuildTarget, EpochValidators, Validator};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
-use raptor_code::SourceBlockDecoder;
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -113,9 +113,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |messages| {
                 let mut signature_cache = HashMap::new();
                 let mut decoder = {
+                    let symbol_len = example_chunk.chunk.len();
+
                     // data_size is always greater than zero, so this division is safe
-                    let num_source_symbols = message_size.div_ceil(example_chunk.chunk.len());
-                    SourceBlockDecoder::new(num_source_symbols)
+                    let num_source_symbols = message_size.div_ceil(symbol_len);
+
+                    ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
                 };
                 let mut decode_success = false;
                 for mut message in messages {
@@ -125,11 +128,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                             message.split_to(MONAD_GSO_SIZE),
                         )
                         .expect("valid message");
-                        decoder.push_encoding_symbol(
-                            parsed_message.chunk,
+                        decoder.received_encoded_symbol(
+                            &parsed_message.chunk,
                             parsed_message.chunk_id.into(),
                         );
-                        if let Some(decoded) = decoder.decode(message_size) {
+                        if decoder.try_decode() {
                             decode_success = true;
                             break;
                         }

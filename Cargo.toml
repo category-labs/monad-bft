@@ -139,7 +139,6 @@ quinn-proto = { git = "https://github.com/omegablitz/quinn.git", rev = "0780497b
 
 rand = "0.8"
 rand_chacha = "0.3"
-raptor-code = { git = "https://github.com/omegablitz/raptor", rev = "8cdd8fcc" }
 raptorq = "1.8"
 rayon = "1.7"
 rcgen = "0.11"

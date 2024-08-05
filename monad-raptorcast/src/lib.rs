@@ -20,8 +20,8 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
+use monad_raptor::ManagedDecoder;
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
-use raptor_code::SourceBlockDecoder;
 
 pub struct RaptorCastConfig<ST>
 where
@@ -59,7 +59,7 @@ where
     // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
     // TODO GC these based on time elapsed since first chunk? Right now we do no GC - we can't do
     // this by round because some node may be trying to sync to us with a much older round.
-    message_cache: BTreeMap<MessageCacheKey<CertificateSignaturePubKey<ST>>, SourceBlockDecoder>,
+    message_cache: BTreeMap<MessageCacheKey<CertificateSignaturePubKey<ST>>, ManagedDecoder>,
     signature_cache:
         HashMap<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
 
@@ -437,20 +437,31 @@ where
                         app_message_len,
                     })
                     .or_insert_with(|| {
+                        let symbol_len = parsed_message.chunk.len();
+
                         // data_size is always greater than zero, so this division is safe
-                        let num_source_symbols =
-                            app_message_len.div_ceil(parsed_message.chunk.len());
-                        SourceBlockDecoder::new(num_source_symbols)
+                        let num_source_symbols = app_message_len.div_ceil(symbol_len);
+
+                        // TODO: verify unwrap
+                        ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
                     });
 
-                if entry.fully_specified() {
+                if entry.decoding_done() {
                     // already decoded
                     continue;
                 }
 
-                entry.push_encoding_symbol(parsed_message.chunk, parsed_message.chunk_id.into());
-                if let Some(decoded) = entry.decode(app_message_len) {
-                    let Ok(message) = M::deserialize(&decoded) else {
+                entry
+                    .received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into());
+
+                if entry.try_decode() {
+                    let Some(mut decoded) = entry.reconstruct_source_data() else {
+                        tracing::error!("failed to reconstruct source data");
+                        continue;
+                    };
+                    decoded.truncate(app_message_len);
+
+                    let Ok(message) = M::deserialize(&Bytes::from(decoded)) else {
                         tracing::error!("failed to deserialize message");
                         continue;
                     };

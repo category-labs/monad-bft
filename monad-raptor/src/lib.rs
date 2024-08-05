@@ -2,7 +2,14 @@
 
 mod binary_search;
 
+mod matrix;
+
+mod ordered_set;
+
 pub mod r10;
-pub use r10::nonsystematic::encoder::Encoder;
+pub use r10::nonsystematic::{
+    decoder::{BufferId, Decoder, ManagedDecoder},
+    encoder::Encoder,
+};
 
 pub mod xor_eq;
