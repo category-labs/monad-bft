@@ -7,7 +7,9 @@ use monad_consensus_types::{
     payload::TransactionPayload,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_eth_block_policy::{static_validate_transaction, EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{
+    compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+};
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_state_backend::StateBackend;
@@ -60,8 +62,9 @@ where
                 let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
                     .ok_or(BlockValidationError::TxnError)?;
 
-                // recover the account nonces in this block
+                // recover the account nonces and carriage cost usage in this block
                 let mut nonces = BTreeMap::new();
+                let mut carriage_costs = BTreeMap::new();
 
                 let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
@@ -85,6 +88,9 @@ where
                             return Err(BlockValidationError::TxnError);
                         }
                     }
+
+                    let carriage_cost_entry = carriage_costs.entry(EthAddress(signer)).or_insert(0);
+                    *carriage_cost_entry += compute_txn_carriage_cost(&eth_txn);
                     validated_txns.push(eth_txn.with_signer(signer));
                 }
 
@@ -111,7 +117,8 @@ where
                 Ok(EthValidatedBlock {
                     block,
                     validated_txns,
-                    nonces, // (address -> highest txn nonce) in the block
+                    nonces,         // (address -> highest txn nonce) in the block
+                    carriage_costs, // (address -> carriage cost) in the block
                 })
             }
             TransactionPayload::Empty => {
@@ -127,6 +134,7 @@ where
                     block,
                     validated_txns: Default::default(),
                     nonces: Default::default(), // (address -> highest txn nonce) in the block
+                    carriage_costs: Default::default(), // (address -> carriage cost) in the block
                 })
             }
         }

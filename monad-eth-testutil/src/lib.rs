@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use monad_consensus_types::{
     block::Block,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::EthValidatedBlock;
+use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
@@ -88,10 +90,19 @@ pub fn generate_random_block_with_txns(
         .map(|t| (EthAddress(t.signer()), t.nonce()))
         .collect();
 
+    let carriage_costs = validated_txns
+        .iter()
+        .map(|t| (EthAddress(t.signer()), compute_txn_carriage_cost(t)))
+        .fold(BTreeMap::new(), |mut costs, (address, cost)| {
+            *costs.entry(address).or_insert(0) += cost;
+            costs
+        });
+
     EthValidatedBlock {
         block,
         validated_txns,
         nonces,
+        carriage_costs,
     }
 }
 

@@ -59,7 +59,7 @@ fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
     intrinsic_gas
 }
 
-pub fn compute_txn_carriage_cost(txn: &EthTransaction) -> u128 {
+pub fn compute_txn_carriage_cost(txn: &EthSignedTransaction) -> u128 {
     let max_fee_per_gas = txn.max_fee_per_gas();
     let intrinsic_gas = compute_intrinsic_gas(txn);
     (intrinsic_gas as u128) * max_fee_per_gas
@@ -113,6 +113,7 @@ pub struct EthValidatedBlock<SCT: SignatureCollection> {
     pub block: Block<SCT>,
     pub validated_txns: Vec<EthTransaction>,
     pub nonces: BTreeMap<EthAddress, Nonce>,
+    pub carriage_costs: BTreeMap<EthAddress, Balance>,
 }
 
 impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
@@ -248,12 +249,19 @@ impl BlockAccountNonce {
 }
 
 #[derive(Debug)]
-struct CommittedTxnBuffer {
-    // TODO: create a reserve balance map for transactions when validating
-    // Block, and store it in EthValidatedBlock
-    txns: SortedVectorMap<SeqNum, (Vec<EthTransaction>, BlockAccountNonce)>,
-    /// cache carriage cost usage by each account in each block
-    carriage_costs: SortedVectorMap<SeqNum, BTreeMap<EthAddress, Balance>>,
+struct BlockCarriageCosts {
+    carriage_costs: BTreeMap<EthAddress, Balance>,
+}
+
+impl BlockCarriageCosts {
+    fn get(&self, eth_address: &EthAddress) -> Option<Balance> {
+        self.carriage_costs.get(eth_address).cloned()
+    }
+}
+
+#[derive(Debug)]
+struct CommittedBlkBuffer {
+    blocks: SortedVectorMap<SeqNum, (BlockAccountNonce, BlockCarriageCosts)>,
     size: usize, // should be execution delay
 }
 
@@ -262,11 +270,10 @@ struct CommittedCarriageCostResult {
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
-impl CommittedTxnBuffer {
+impl CommittedBlkBuffer {
     fn new(size: usize) -> Self {
         Self {
-            txns: Default::default(),
-            carriage_costs: Default::default(),
+            blocks: Default::default(),
             size,
         }
     }
@@ -274,7 +281,7 @@ impl CommittedTxnBuffer {
     fn get_nonce(&self, eth_address: &EthAddress) -> Option<Nonce> {
         let mut maybe_account_nonce = None;
 
-        for (_, (_, account_nonces)) in self.txns.iter() {
+        for (_, (account_nonces, _)) in self.blocks.iter() {
             if let Some(nonce) = account_nonces.get(eth_address) {
                 if let Some(old_account_nonce) = maybe_account_nonce {
                     assert!(nonce > old_account_nonce);
@@ -294,7 +301,7 @@ impl CommittedTxnBuffer {
         let mut next_validate = base_seq_num + SeqNum(1);
 
         // TODO: start iteration from base_seq_num
-        for (&cache_seq_num, block_carriage_costs) in self.carriage_costs.iter() {
+        for (&cache_seq_num, (_nonce, block_carriage_costs)) in self.blocks.iter() {
             if cache_seq_num > base_seq_num {
                 assert_eq!(next_validate, cache_seq_num);
                 if let Some(account_carriage_cost) = block_carriage_costs.get(eth_address) {
@@ -312,48 +319,36 @@ impl CommittedTxnBuffer {
 
     fn update_committed_block<SCT: SignatureCollection>(&mut self, block: &EthValidatedBlock<SCT>) {
         let block_number = block.get_seq_num();
-        if let Some((&last_block_num, _)) = self.txns.last_key_value() {
+        if let Some((&last_block_num, _)) = self.blocks.last_key_value() {
             assert_eq!(last_block_num + SeqNum(1), block_number);
         }
 
-        if self.txns.len() >= self.size * 2 {
-            let (&first_block_num, _) = self.txns.first_key_value().expect("txns non-empty");
+        if self.blocks.len() >= self.size * 2 {
+            let (&first_block_num, _) = self.blocks.first_key_value().expect("txns non-empty");
             let divider = first_block_num + SeqNum(self.size as u64);
 
             // TODO: revisit once perf implications are understood
-            self.txns = self.txns.split_off(&divider);
+            self.blocks = self.blocks.split_off(&divider);
             assert_eq!(
-                *self.txns.last_key_value().expect("non-empty").0 + SeqNum(1),
+                *self.blocks.last_key_value().expect("non-empty").0 + SeqNum(1),
                 block_number
             );
-            assert_eq!(self.txns.len(), self.size);
-            self.carriage_costs = self.carriage_costs.split_off(&divider);
-            assert_eq!(self.carriage_costs.len(), self.size);
+            assert_eq!(self.blocks.len(), self.size);
         }
 
         assert!(self
-            .txns
+            .blocks
             .insert(
                 block_number,
                 (
-                    block.validated_txns.clone(),
                     BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
+                    BlockCarriageCosts {
+                        carriage_costs: block.carriage_costs.clone()
+                    }
                 ),
             )
-            .is_none());
-        // compute carriage cost usage in the block
-        let mut block_carriage_cost = BTreeMap::new();
-        for txn in block.validated_txns.iter() {
-            let entry = block_carriage_cost
-                .entry(EthAddress(txn.signer()))
-                .or_insert(0_u128);
-            *entry += compute_txn_carriage_cost(txn);
-        }
-        assert!(self
-            .carriage_costs
-            .insert(block_number, block_carriage_cost)
             .is_none());
     }
 }
@@ -364,7 +359,7 @@ pub struct EthBlockPolicy {
     last_commit: SeqNum,
 
     // last execution-delay committed transactions
-    committed_cache: CommittedTxnBuffer,
+    committed_cache: CommittedBlkBuffer,
 
     /// Maximum reserve balance enforced by execution
     max_reserve_balance: u128,
@@ -378,7 +373,7 @@ pub struct EthBlockPolicy {
     /// lowest-order bit 0 set: enable check for insert_tx
     /// lowest-order bit 1 set: enable check for create_proposal
     /// lowest-order bit 2 set: enable check for validation
-    /// i.e. 0b00000111 all reserve balance checks are ehabled
+    /// i.e. 0b00000111 all reserve balance checks are enabled
     reserve_balance_check_mode: u8,
 }
 
@@ -391,7 +386,7 @@ impl EthBlockPolicy {
         chain_id: u64,
     ) -> Self {
         Self {
-            committed_cache: CommittedTxnBuffer::new(execution_delay as usize),
+            committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
             last_commit,
             max_reserve_balance,
             execution_delay: SeqNum(execution_delay),
@@ -550,11 +545,8 @@ impl EthBlockPolicy {
                     }
 
                     for extending_block in blocks {
-                        // FIXME this is n^2, we can cache these (similar to compute_carriage_cost)
-                        for txn in &extending_block.validated_txns {
-                            if &EthAddress(txn.signer()) == address {
-                                carriage_cost_pending += compute_txn_carriage_cost(txn);
-                            }
+                        if let Some(carriage_cost) = extending_block.carriage_costs.get(address) {
+                            carriage_cost_pending += *carriage_cost;
                         }
                     }
                 }
@@ -692,7 +684,7 @@ where
     }
 
     fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
-        self.committed_cache = CommittedTxnBuffer::new(self.committed_cache.size);
+        self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
         // TODO this is error-prone, easy to forget
         // TODO write tests that fail if this doesn't exist
         let blocks = last_delay_committed_blocks
