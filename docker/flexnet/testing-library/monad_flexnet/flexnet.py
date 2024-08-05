@@ -139,8 +139,8 @@ class Flexnet:
                     self.root_dir / node.name / "config" / "genesis.json",
                 )
                 shutil.copy(
-                    pathlib.Path(f"{os.getcwd()}/../devnet/monad/config/genesis.toml"),
-                    self.root_dir / node.name / "config" / "genesis.toml",
+                    pathlib.Path(f"{os.getcwd()}/../devnet/monad/config/forkpoint.genesis.toml"),
+                    self.root_dir / node.name / "config" / "forkpoint.genesis.toml",
                 )
 
             self.topology.for_all_nodes(copy_profile)
