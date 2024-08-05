@@ -49,7 +49,7 @@ pub fn eth_call(
     // TODO: move the buffer copying into C++ for the reserve/push idiom
     let rlp_encoded_tx: Bytes = {
         let mut buf = BytesMut::new();
-        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, true);
+        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
         buf.freeze().into()
     };
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
