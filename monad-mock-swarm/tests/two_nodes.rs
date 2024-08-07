@@ -28,7 +28,7 @@ use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_tracing_counter::counter::{counter_get, CounterLayer, MetricFilter};
+use monad_tracing_counter::counter::{counter_get, CounterLayer};
 use monad_transformer::{
     BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer, ID,
 };
@@ -37,8 +37,7 @@ use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use tracing_core::LevelFilter;
-use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
+use tracing_subscriber::{prelude::*, Registry};
 
 #[test]
 fn two_nodes_noser() {
@@ -238,17 +237,10 @@ fn two_nodes_quic_latency() {
 
 #[test]
 fn two_nodes_quic_bw() {
-    let fmt_layer = tracing_subscriber::fmt::layer();
     let counter = Arc::new(RwLock::new(HashMap::new()));
     let counter_layer = CounterLayer::new(Arc::clone(&counter));
 
-    let subscriber = Registry::default()
-        .with(
-            fmt_layer
-                .with_filter(MetricFilter {})
-                .with_filter(Targets::new().with_default(LevelFilter::INFO)),
-        )
-        .with(counter_layer);
+    let subscriber = Registry::default().with(counter_layer);
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
     let zero_instant = Instant::now();
