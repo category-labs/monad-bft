@@ -311,7 +311,7 @@ pub async fn monad_eth_call(
         BlockTags::Number(block_number) => block_number.0,
     };
 
-    let Some(block_header) = blockdb_env
+    let Some(mut block_header) = blockdb_env
         .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_number))
         .await
     else {
@@ -319,25 +319,38 @@ pub async fn monad_eth_call(
         return Err(JsonRpcError::internal_error());
     };
 
-    params.transaction.fill_gas_prices(U256::from(
-        block_header.block.base_fee_per_gas.unwrap_or_default(),
-    ))?;
+    let sender = params.transaction.from.unwrap_or_default();
+    match sender {
+        Address::ZERO => {
+            // for eth_call from a zero address, we want to override the block base fee to be zero
+            // so that reading from the smart contract does not require the zero address
+            // to have any gas balance
+            block_header.block.header.base_fee_per_gas = Some(0);
+            params.transaction.fill_gas_prices(U256::from(0))?;
 
-    let allowance: Option<u64> = if params.transaction.gas.is_none() {
-        Some(sender_gas_allowance(&triedb_env, &block_header.block, &params.transaction).await?)
-    } else {
-        None
-    };
+            if params.transaction.gas.is_none() {
+                // eth_call from a zero address will default gas limit as block gas limit
+                params.transaction.gas = Some(U256::from(block_header.block.header.gas_limit));
+            }
+        }
+        _ => {
+            params.transaction.fill_gas_prices(U256::from(
+                block_header.block.base_fee_per_gas.unwrap_or_default(),
+            ))?;
 
-    if allowance.is_some() {
-        params.transaction.gas = allowance.map(U256::from);
-    };
+            if params.transaction.gas.is_none() {
+                let allowance =
+                    sender_gas_allowance(&triedb_env, &block_header.block, &params.transaction)
+                        .await?;
+                params.transaction.gas = Some(U256::from(allowance));
+            }
+        }
+    }
 
     if params.transaction.chain_id.is_none() {
         params.transaction.chain_id = Some(U64::from(chain_id));
     }
 
-    let sender = params.transaction.from.unwrap_or_default();
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
     let block_number = block_header.block.header.number;
     match monad_cxx::eth_call(
