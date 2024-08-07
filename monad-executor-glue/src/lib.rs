@@ -453,7 +453,19 @@ where
     type ReadError = monad_proto::error::ProtoError;
 
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
+        convert::interface::deserialize_event(data)
+    }
+}
+
+impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadLogEntry<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type ReadError = monad_proto::error::ProtoError;
+
+    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
+        convert::interface::deserialize_entry(data)
     }
 }
 
@@ -463,7 +475,17 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_event(self)
+        convert::interface::serialize_event(self)
+    }
+}
+
+impl<ST, SCT> monad_types::Serializable<Bytes> for MonadLogEntry<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn serialize(&self) -> Bytes {
+        convert::interface::serialize_entry(self)
     }
 }
 

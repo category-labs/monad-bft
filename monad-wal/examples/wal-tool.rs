@@ -20,7 +20,7 @@ use monad_bls::BlsSignatureCollection;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent};
+use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent, MonadLogEntry};
 use monad_secp::SecpSignature;
 use monad_types::Epoch;
 use monad_wal::wal::WALoggerConfig;
@@ -271,7 +271,10 @@ impl EventCountsWidget {
         let monad_events: Vec<WalEvent> = self
             .wrapped_events
             .iter()
-            .map(|a| a.event.clone())
+            .filter_map(|a| match &a.entry {
+                MonadLogEntry::Event(event) => Some(event.clone()),
+                MonadLogEntry::EventMetadata(_) => None,
+            })
             .collect();
         self.counts = counter(&monad_events);
     }
@@ -435,39 +438,44 @@ impl EventListWidget {
 
 impl Widget for &EventListWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let events = self.wrapped_events[self.start_index..].iter().map(|e| {
-            let header_str: String = match e.event {
-                MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
-                MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
-                MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
-                MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
-                MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
-                MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
-                MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
-                MonadEvent::TimestampUpdateEvent(_) => "TIMESTAMP".to_string(),
-                MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
-            };
+        let events = self.wrapped_events[self.start_index..]
+            .iter()
+            .filter_map(|e| {
+                let MonadLogEntry::Event(ref event) = e.entry else {
+                    return None;
+                };
 
-            let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
-            let header = Line::from(vec![
-                s,
-                " ".repeat(9).into(),
-                //e.timestamp.to_string().into(),
-                Span::styled(
-                    format!("{}", e.timestamp.to_string()),
-                    Style::default().yellow(),
-                ),
-            ]);
+                let header_str: String = match event {
+                    MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
+                    MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
+                    MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
+                    MonadEvent::MempoolEvent(_) => "MEMPOOL".to_string(),
+                    MonadEvent::StateRootEvent(_) => "STATEROOT".to_string(),
+                    MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
+                    MonadEvent::ControlPanelEvent(_) => "CONTROLPANEL".to_string(),
+                    MonadEvent::TimestampUpdateEvent(_) => "TIMESTAMP".to_string(),
+                    MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+                };
 
-            let log = Line::from(e.event.to_string());
+                let s = Span::styled(format!("{header_str:<20}"), Style::default().blue());
+                let header = Line::from(vec![
+                    s,
+                    " ".repeat(9).into(),
+                    Span::styled(
+                        format!("{}", e.timestamp.to_string()),
+                        Style::default().yellow(),
+                    ),
+                ]);
 
-            ListItem::new(vec![
-                Line::from("-".repeat(area.width as usize)),
-                header,
-                Line::from(""),
-                log,
-            ])
-        });
+                let log = Line::from(event.to_string());
+
+                Some(ListItem::new(vec![
+                    Line::from("-".repeat(area.width as usize)),
+                    header,
+                    Line::from(""),
+                    log,
+                ]))
+            });
 
         ratatui::widgets::Widget::render(
             List::new(events)
@@ -509,11 +517,14 @@ impl StatExtractor {
     fn extract(&self) -> EventStat {
         let mut stat = EventStat::default();
         for event in &self.events {
-            match &event.event {
-                MonadEvent::ConsensusEvent(monad_executor_glue::ConsensusEvent::Message {
-                    sender: _,
-                    unverified_message,
-                }) => {
+            let timestamp = event.timestamp;
+            match &event.entry {
+                MonadLogEntry::Event(MonadEvent::ConsensusEvent(
+                    monad_executor_glue::ConsensusEvent::Message {
+                        sender: _,
+                        unverified_message,
+                    },
+                )) => {
                     let msg = unverified_message.get_obj_unsafe();
                     match &msg.message {
                         ProtocolMessage::Proposal(p) => {
@@ -522,7 +533,7 @@ impl StatExtractor {
                                 p.block.get_round(),
                                 p.block.epoch,
                             );
-                            stat.block_time.insert(round.0, event.timestamp);
+                            stat.block_time.insert(round.0, timestamp);
                             stat.leader.insert(round.0, BlockInfo { author, epoch });
                         }
                         _ => continue,
@@ -595,7 +606,10 @@ fn time_between_events_ms<F: Fn(&WalEvent) -> bool>(
 ) -> Vec<i64> {
     let asyncs: Vec<_> = events
         .iter()
-        .filter(|&e| event_matcher(&e.event))
+        .filter(|&e| match &e.entry {
+            MonadLogEntry::Event(event) => event_matcher(event),
+            MonadLogEntry::EventMetadata(_) => false,
+        })
         .tuple_windows()
         .map(|(x, y)| y.timestamp - x.timestamp)
         .collect();

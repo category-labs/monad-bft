@@ -5,9 +5,60 @@ use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
-    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    ValidatorEvent,
+    MonadEvent, MonadEventMetadata, MonadLogEntry, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, ValidatorEvent,
 };
+
+impl From<&MonadEventMetadata> for ProtoMonadEventMetadata {
+    fn from(_value: &MonadEventMetadata) -> Self {
+        Self {
+            // TODO(rene) 
+        }
+    }
+}
+
+impl TryFrom<ProtoMonadEventMetadata> for MonadEventMetadata {
+    type Error = ProtoError;
+
+    fn try_from(_value: ProtoMonadEventMetadata) -> Result<Self, Self::Error> {
+        Ok(MonadEventMetadata {
+            // TODO(rene)
+        })
+    }
+}
+
+impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadLogEntry<S, SCT>>
+    for ProtoMonadLogEntry
+{
+    fn from(entry: &MonadLogEntry<S, SCT>) -> Self {
+        let entry = match entry {
+            MonadLogEntry::Event(e) => proto_monad_log_entry::Entry::Event(e.into()),
+            MonadLogEntry::EventMetadata(m) => proto_monad_log_entry::Entry::Metadata(m.into()),
+        };
+        Self { entry: Some(entry) }
+    }
+}
+
+impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<ProtoMonadLogEntry>
+    for MonadLogEntry<S, SCT>
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoMonadLogEntry) -> Result<Self, Self::Error> {
+        let entry: MonadLogEntry<S, SCT> = match value.entry {
+            Some(proto_monad_log_entry::Entry::Event(event)) => {
+                MonadLogEntry::Event(event.try_into()?)
+            }
+            Some(proto_monad_log_entry::Entry::Metadata(metadata)) => {
+                MonadLogEntry::EventMetadata(metadata.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "MonadLogEntry.entry".to_owned(),
+            ))?,
+        };
+        Ok(entry)
+    }
+}
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
     for ProtoMonadEvent

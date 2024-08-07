@@ -22,7 +22,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEventMetadata, MonadLogEntry};
 use monad_gossip::{
     mock::MockGossipConfig,
     seeder::{Raptor, SeederConfig},
