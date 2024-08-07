@@ -390,7 +390,7 @@ async fn run(
 
                 let event = LogFriendlyMonadEvent {
                     timestamp: Utc::now(),
-                    event,
+                    entry: MonadLogEntry::Event(event),
                 };
 
                 {
@@ -403,15 +403,39 @@ async fn run(
                 };
 
                 let commands = {
-                    let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
-                    state.update(event.event)
+                    match event.entry {
+                        MonadLogEntry::Event(event) => {
+                            let _ledger_span = ledger_span.enter();
+                            let _event_span = tracing::trace_span!("event_span", ?event).entered();
+                            state.update(event)
+                        }
+                        MonadLogEntry::EventMetadata(_) => {
+                            unreachable!()
+                        }
+                    }
                 };
 
                 if !commands.is_empty() {
                     let _ledger_span = ledger_span.enter();
                     let _exec_span = tracing::trace_span!("exec_span", num_commands = commands.len()).entered();
                     executor.exec(commands);
+                }
+
+                {
+                    let event_metadata = LogFriendlyMonadEvent {
+                        // use timestamp from event to easily associate event with metadata
+                        timestamp: event.timestamp,
+                        entry: MonadLogEntry::EventMetadata(MonadEventMetadata {
+                            // TODO
+                        }),
+                    };
+                    let _ledger_span = ledger_span.enter();
+                    let _wal_event_span = tracing::trace_span!("wal_event_metadata_span").entered();
+                    if let Err(err) = wal.push(&event_metadata) {
+                        event!(Level::ERROR, ?err, "failed to push to wal",);
+                        return Err(());
+                    }
+
                 }
 
                 let ledger_tip = executor.ledger.last_commit().unwrap_or(last_ledger_tip);

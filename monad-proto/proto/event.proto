@@ -185,3 +185,12 @@ message ProtoMonadEvent{
     ProtoStateSyncEvent state_sync_event = 9;
   }
 }
+
+message ProtoMonadEventMetadata {}
+
+message ProtoMonadLogEntry {
+  oneof entry {
+    ProtoMonadEvent event = 1;
+    ProtoMonadEventMetadata metadata = 2;
+  }
+}

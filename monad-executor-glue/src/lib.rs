@@ -515,6 +515,19 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonadEventMetadata {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonadLogEntry<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
+    Event(MonadEvent<ST, SCT>),
+    EventMetadata(MonadEventMetadata),
+}
+
 /// Wrapper around MonadEvent to capture more information that is useful in logs for
 /// retrospection
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,7 +537,7 @@ where
     SCT: SignatureCollection,
 {
     pub timestamp: DateTime<Utc>,
-    pub event: MonadEvent<ST, SCT>,
+    pub entry: MonadLogEntry<ST, SCT>,
 }
 
 type EventHeaderType = u32;
@@ -545,11 +558,11 @@ where
         let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
         offset += ts_size;
 
-        let event = crate::convert::interface::deserialize_event(&data[offset..])?;
+        let entry = crate::convert::interface::deserialize_entry(&data[offset..])?;
 
         Ok(LogFriendlyMonadEvent {
             timestamp: ts,
-            event,
+            entry,
         })
     }
 }
@@ -568,8 +581,8 @@ where
         b.put(&len[..]);
         b.put(&ts[..]);
 
-        let ev = crate::convert::interface::serialize_event(&self.event);
-        b.put(&ev[..]);
+        let entry = crate::convert::interface::serialize_entry(&self.entry);
+        b.put(&entry[..]);
 
         b.into()
     }
