@@ -483,7 +483,7 @@ mod test {
     use bytes::Bytes;
     use monad_consensus_types::txpool::TxPool;
     use monad_crypto::NopSignature;
-    use monad_eth_block_policy::nonce::InMemoryState;
+    use monad_eth_block_policy::nonce::{InMemoryAccount, InMemoryState};
     use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_types::{Balance, EthAddress};
@@ -505,10 +505,10 @@ mod test {
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 1, 0, 10);
-        let acc = vec![(EthAddress(tx.recover_signer().unwrap()), 0)];
+        let acc = vec![(EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0})];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         assert!(!Pool::insert_tx(
             &mut pool,
             vec![tx.envelope_encoded().into()],
@@ -539,10 +539,10 @@ mod test {
     #[traced_test]
     fn test_create_proposal_with_insufficient_gas_limit() {
         let tx = make_tx(B256::repeat_byte(0xAu8), 1, 6400, 0, 10);
-        let acc = vec![(EthAddress(tx.recover_signer().unwrap()), 0)];
+        let acc = vec![(EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0})];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         assert!(!Pool::insert_tx(
             &mut pool,
             vec![tx.envelope_encoded().into()],
@@ -579,10 +579,10 @@ mod test {
             make_tx(B256::repeat_byte(0xAu8), 1, 6400, 0, 10),
             make_tx(B256::repeat_byte(0xAu8), 1, 6400, 1, 10),
         ];
-        let acc = vec![(EthAddress(t1.recover_signer().unwrap()), 0)];
+        let acc = vec![(EthAddress(t1.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0})];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
 
         let txns = vec![
             t1.envelope_encoded().into(),
@@ -620,7 +620,7 @@ mod test {
         let expected_txs = vec![make_tx(s2, 2, 2, 0, 10), make_tx(s1, 1, 1, 0, 10)];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(vec![(a1, 0), (a2, 0)], Balance::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(a1, InMemoryAccount{balance: Balance::MAX, nonce: 0}), (a2, InMemoryAccount{balance: Balance::MAX, nonce: 0})], 0, EXECUTION_DELAY);
 
         let txns: Vec<Bytes> = txs
             .iter()
@@ -652,7 +652,7 @@ mod test {
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(vec![(a1, 0)], Balance::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(a1, InMemoryAccount{balance: Balance::MAX, nonce: 0})], 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -705,10 +705,10 @@ mod test {
         ];
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -756,10 +756,10 @@ mod test {
 
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -815,10 +815,10 @@ mod test {
 
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -873,10 +873,10 @@ mod test {
 
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -904,10 +904,10 @@ mod test {
         let txs = vec![make_tx(s1, 1, 0, 0, 10)];
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -969,10 +969,10 @@ mod test {
 
         let acc = txs
             .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         let txns: Vec<Bytes> = txs
             .iter()
             .map(|t| t.clone().envelope_encoded().into())
@@ -999,10 +999,10 @@ mod test {
         let sender_1_key = B256::random();
         let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
 
-        let acc = vec![(EthAddress(txn_nonce_zero.recover_signer().unwrap()), 0)];
+        let acc = vec![(EthAddress(txn_nonce_zero.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0})];
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
 
         let txns = vec![txn_nonce_zero.envelope_encoded().into()];
 
@@ -1039,7 +1039,7 @@ mod test {
 
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(vec![(sender_1_address, 0)], Balance::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: Balance::MAX, nonce: 0})], 0, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_zero.envelope_encoded().into(),
@@ -1078,7 +1078,7 @@ mod test {
 
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 1})], 1, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_zero.envelope_encoded().into(),
@@ -1113,10 +1113,10 @@ mod test {
         let txn_2_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 1000);
         let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
 
-        let acc = vec![(EthAddress(txn_1_nonce_zero.recover_signer().unwrap()), 0)];
+        let acc = vec![(EthAddress(txn_1_nonce_zero.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0})];
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        let state_backend = InMemoryState::new(acc, 0, EXECUTION_DELAY);
         // create the extending block with txn 1
         let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
 
@@ -1161,7 +1161,7 @@ mod test {
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
         let eth_block_policy = make_test_block_policy();
-        let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], Balance::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: Balance::MAX, nonce: 0})], 1, EXECUTION_DELAY);
 
         let txns = vec![
             txn_nonce_one.envelope_encoded().into(),
@@ -1203,12 +1203,49 @@ mod test {
 
         // eth block policy has a different chain id than the transaction
         let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 0, 1);
-        let state_backend = InMemoryState::new(vec![(sender_1_address, 1)], u128::MAX, 0);
+        let state_backend = InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 1, EXECUTION_DELAY);
 
         let txns = vec![txn_nonce_one.envelope_encoded().into()];
         let result = Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend);
 
         // transaction should not be inserted into the pool
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_sufficient_reserve_balance_included() {
+        // A transaction should only be included if the account has a sufficient reserve balance
+
+        let sender_1_key = B256::random();
+        let txn_sufficient = make_tx(sender_1_key, 10, 10, 0, 10);
+        let txn_insufficient = make_tx(sender_1_key, 10, 10, 1, 10);
+        let sender_1_address = EthAddress(txn_sufficient.recover_signer().unwrap());
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let eth_block_policy = make_test_block_policy();
+        // Give a starting balance which is sufficient for only one transaction - the first will go through, the second does not
+        let state_backend = InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: (21000 + 32000) * 10, nonce: 0})], 0, EXECUTION_DELAY);
+
+        let txns = vec![
+            txn_sufficient.envelope_encoded().into(),
+            txn_insufficient.envelope_encoded().into(),
+        ];
+        assert!(
+            !Pool::insert_tx(&mut eth_tx_pool, txns, &eth_block_policy, &state_backend,).is_empty()
+        );
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0),
+            10_000,
+            50_000,
+            &eth_block_policy,
+            Vec::new(),
+            &state_backend,
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert_eq!(decoded_txns, vec![txn_sufficient]);
     }
 }

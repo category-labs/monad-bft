@@ -6,60 +6,97 @@ use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use crate::StateBackend;
 
 #[derive(Debug, Clone)]
+pub struct InMemoryAccount {
+    pub nonce: Nonce,
+    pub balance: Balance
+}
+
+impl Default for InMemoryAccount {
+    fn default() -> Self {
+        Self {
+            nonce: 0,
+            balance: Balance::MAX
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviousTxn {
+    pub seq_num: SeqNum,
+    pub address: EthAddress,
+    pub reserve_balance: Balance 
+}
+
+#[derive(Debug, Clone)]
 pub struct InMemoryState {
-    account_nonces: BTreeMap<EthAddress, Nonce>,
-    /// InMemoryState doesn't have access to an execution engine. It returns
-    /// `max_reserve_balance` as the balance every time so txn reserve balance
-    /// will pass if the sum doesn't exceed the max reserve
-    max_reserve_balance: Balance,
+    accounts: BTreeMap<EthAddress, InMemoryAccount>,
     last_state: SeqNum,
+    execution_delay: u64,
+    previous_txns: Vec<PreviousTxn>
 }
 
 impl Default for InMemoryState {
     fn default() -> Self {
         Self {
-            account_nonces: Default::default(),
-            max_reserve_balance: Balance::MAX,
+            accounts: Default::default(),
             last_state: GENESIS_SEQ_NUM,
+            execution_delay: 4,
+            previous_txns: Vec::new()
         }
     }
 }
 
 impl InMemoryState {
     pub fn new(
-        existing_nonces: impl IntoIterator<Item = (EthAddress, Nonce)>,
-        max_reserve_balance: Balance,
+        existing_accounts: impl IntoIterator<Item = (EthAddress, InMemoryAccount)>,
         last_state: u64,
+        execution_delay: u64
     ) -> Self {
         Self {
-            account_nonces: existing_nonces.into_iter().collect(),
-            max_reserve_balance,
+            accounts: existing_accounts.into_iter().collect(),
             last_state: SeqNum(last_state),
+            execution_delay,
+            previous_txns: Vec::new()
         }
     }
 
     // new_account_nonces is the changeset of nonces from a given block
     // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
     // this is because N+1 is the next valid nonce for A
-    pub fn update_committed_nonces(
+    pub fn update_committed_accounts(
         &mut self,
         seq_num: SeqNum,
-        new_account_nonces: BTreeMap<EthAddress, Nonce>,
+        new_accounts_txns: BTreeMap<EthAddress, (InMemoryAccount, PreviousTxn)>,
     ) {
-        for (address, account_nonce) in new_account_nonces {
-            self.account_nonces.insert(address, account_nonce);
+        for (address, acc_txn) in new_accounts_txns {
+            self.accounts.insert(address, acc_txn.0);
+            self.previous_txns.push(acc_txn.1);
         }
         self.last_state = seq_num;
+
+        while !self.previous_txns.is_empty() && self.previous_txns[0].seq_num.0 <= self.last_state.0 - self.execution_delay {
+            let tx = &self.previous_txns[0];
+            if let Some(acc) = self.accounts.get_mut(&tx.address) {
+                acc.balance += tx.reserve_balance;
+            }
+            self.previous_txns.pop();
+        }
+    }
+
+    pub fn get_previous_txns(
+        &mut self
+    ) -> &mut Vec<PreviousTxn> {
+        self.previous_txns.as_mut()
     }
 }
 
 impl StateBackend for InMemoryState {
     fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
-        assert!(block <= self.last_state);
-        let nonce = self.account_nonces.get(address)?;
+        assert!(block <= self.last_state, "block = {}, last_state = {}", block.0, self.last_state.0);
+        let account = self.accounts.get(address)?;
         Some(EthAccount {
-            nonce: *nonce,
-            balance: self.max_reserve_balance,
+            nonce: account.nonce,
+            balance: account.balance,
             code_hash: None,
         })
     }

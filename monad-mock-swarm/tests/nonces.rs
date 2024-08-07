@@ -16,7 +16,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
-    use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
+    use monad_eth_block_policy::{nonce::{InMemoryAccount, InMemoryState}, EthBlockPolicy};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
@@ -93,10 +93,10 @@ mod test {
     ) -> Nodes<EthSwarm> {
         let execution_delay = SeqNum(4);
 
-        let existing_nonces = existing_accounts
+        let existing_mem_accounts = existing_accounts
             .into_iter()
-            .map(|acc| (acc, 0))
-            .collect_vec();
+            .map(|acc| (acc, InMemoryAccount{balance: Balance::MAX, nonce: 0}))
+            .collect_vec(); 
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,
@@ -107,9 +107,9 @@ mod test {
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
             || {
                 Arc::new(Mutex::new(InMemoryState::new(
-                    existing_nonces.clone(),
-                    Balance::MAX,
+                    existing_mem_accounts.clone(),
                     0,
+                    4
                 )))
             },
             || StateRoot::new(execution_delay),

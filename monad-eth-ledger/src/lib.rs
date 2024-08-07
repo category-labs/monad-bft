@@ -17,11 +17,12 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::nonce::InMemoryState;
+use monad_eth_block_policy::{compute_txn_carriage_cost, nonce::{InMemoryAccount, InMemoryState, PreviousTxn}};
 use monad_eth_tx::EthTransaction;
 use monad_eth_types::EthAddress;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_state_backend::StateBackend;
 use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 
@@ -87,18 +88,34 @@ where
                             }
                         }
                         // generate eth block and update the state backend with committed nonces
-                        let new_account_nonces =
+                        let mut state = self.state.lock().unwrap();
+                        let new_accounts =
                             Vec::<EthTransaction>::decode(&mut block.payload.txns.bytes().as_ref())
                                 .expect("invalid eth tx in block")
                                 .into_iter()
-                                .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
+                                .map(|tx| {
+                                    let original_balance = state.raw_read_account(SeqNum(block.get_seq_num().0 - 1), &EthAddress(tx.signer())).map_or_else(|| 0, |a| a.balance);
+                                    (
+                                        EthAddress(tx.signer()),
+                                        (
+                                            InMemoryAccount {
+                                                balance: original_balance - compute_txn_carriage_cost(&tx),
+                                                nonce: tx.nonce() + 1
+                                            },
+                                            PreviousTxn {
+                                                seq_num: block.get_seq_num(),
+                                                address: EthAddress(tx.signer()),
+                                                reserve_balance: compute_txn_carriage_cost(&tx)
+                                            }
+                                        )
+                                    )
+                                })
                                 // collecting into a map will handle a sender sending multiple
                                 // transactions gracefully
                                 //
                                 // this is because nonces are always increasing per account
                                 .collect();
-                        let mut state = self.state.lock().unwrap();
-                        state.update_committed_nonces(block.get_seq_num(), new_account_nonces);
+                        state.update_committed_accounts(block.get_seq_num(), new_accounts);
                     }
                 }
                 LedgerCommand::LedgerFetch(block_id) => {

@@ -1250,7 +1250,7 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
-    use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy, EthValidatedBlock};
+    use monad_eth_block_policy::{nonce::{InMemoryAccount, InMemoryState}, EthBlockPolicy, EthValidatedBlock};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
@@ -1288,6 +1288,8 @@ mod test {
     type StateBackendType = NopStateBackend;
     type BlockValidatorType = MockValidator;
     type StateRootValidatorType = NopStateRoot;
+
+    const EXECUTION_DELAY: u64 = 4;
 
     struct NodeContext<ST, SCT, BPT, SBT, BVT, VTF, SVT, LT, TT>
     where
@@ -4378,7 +4380,7 @@ mod test {
                     1337,
                 )
             },
-            || InMemoryState::new(vec![(sender_1_address, 0)], u128::MAX, 0),
+            || InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 0, EXECUTION_DELAY),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4439,7 +4441,7 @@ mod test {
                     1337,
                 )
             },
-            || InMemoryState::new(vec![(sender_1_address, 0)], u128::MAX, 0),
+            || InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 0, EXECUTION_DELAY),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4501,7 +4503,7 @@ mod test {
                     1337,
                 )
             },
-            || InMemoryState::new(vec![(sender_1_address, 0)], u128::MAX, 0),
+            || InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 0, EXECUTION_DELAY),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4586,7 +4588,7 @@ mod test {
                     1337,
                 )
             },
-            || InMemoryState::new(vec![(sender_1_address, 0)], u128::MAX, 0),
+            || InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 0, EXECUTION_DELAY),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
             || NopStateRoot,
@@ -4704,7 +4706,7 @@ mod test {
                     1337,
                 )
             },
-            || InMemoryState::new(vec![(sender_1_address, 0)], u128::MAX, 0),
+            || InMemoryState::new(vec![(sender_1_address, InMemoryAccount{balance: u128::MAX, nonce: 0})], 0, EXECUTION_DELAY),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
             || NopStateRoot,

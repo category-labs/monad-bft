@@ -3,7 +3,7 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::{nonce::InMemoryState, EthBlockPolicy};
+use monad_eth_block_policy::{nonce::{InMemoryAccount, InMemoryState}, EthBlockPolicy};
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_multi_sig::MultiSig;
@@ -65,8 +65,8 @@ fn create_pool_and_transactions() -> BenchController {
         .collect::<Vec<_>>();
     let acc = txns
         .iter()
-        .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
-    let state_backend = InMemoryState::new(acc, Balance::MAX, 0);
+        .map(|tx| (EthAddress(tx.recover_signer().unwrap()), InMemoryAccount{balance: Balance::MAX, nonce: 0}));
+    let state_backend = InMemoryState::new(acc, 0, 4);
 
     let proposal_gas_limit: u64 = txns
         .iter()
