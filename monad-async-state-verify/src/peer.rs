@@ -16,7 +16,7 @@ use monad_crypto::{
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     AsyncStateVerifyCommand, AsyncStateVerifyProcess, AsyncStateVerifyUpdateConfig,
@@ -56,7 +56,6 @@ impl<SCT: SignatureCollection> Default for ExecutionStateRootRecord<SCT> {
     }
 }
 
-// TODO: garbage clean old state roots
 #[derive(Debug, Clone)]
 pub struct PeerAsyncStateVerify<SCT, VT>
 where
@@ -73,6 +72,9 @@ where
     quorum_threshold: fn(Stake) -> Stake,
     /// Control when consensus update is emitted
     consensus_update_config: AsyncStateVerifyUpdateConfig,
+    /// Minimum number of ExecutionStateRootRecord to keep in memory
+    /// TODO: commit execution state root quorum to disk?
+    min_lookback: usize,
     _phantom: PhantomData<(SCT, VT)>,
 }
 
@@ -87,6 +89,7 @@ where
             latest_certified: SeqNum(0),
             quorum_threshold: majority_threshold,
             consensus_update_config: AsyncStateVerifyUpdateConfig::Local,
+            min_lookback: u32::MAX as usize,
             _phantom: Default::default(),
         }
     }
@@ -97,9 +100,10 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
-    pub fn new(quorum_threshold: fn(Stake) -> Stake) -> Self {
+    pub fn new(quorum_threshold: fn(Stake) -> Stake, min_lookback: usize) -> Self {
         Self {
             quorum_threshold,
+            min_lookback,
             ..Default::default()
         }
     }
@@ -195,6 +199,9 @@ where
             epoch,
             round,
         });
+
+        self.try_purge_old_entries();
+
         cmds
     }
 
@@ -303,7 +310,34 @@ where
                 }
             }
         }
+
+        self.try_purge_old_entries();
+
         cmds
+    }
+}
+
+impl<SCT, VT> PeerAsyncStateVerify<SCT, VT>
+where
+    SCT: SignatureCollection,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    fn try_purge_old_entries(&mut self) {
+        if self.state_roots.len() > self.min_lookback * 2 {
+            let (&last_block_num, _) = self
+                .state_roots
+                .last_key_value()
+                .expect("state roots non-empty");
+            let divider = last_block_num - SeqNum(self.min_lookback as u64);
+            // TODO: revisit for perf
+            self.state_roots = self.state_roots.split_off(&divider);
+            debug!(
+                ?last_block_num,
+                ?divider,
+                new_size = self.state_roots.len(),
+                "prune state roots cached to size"
+            );
+        }
     }
 }
 

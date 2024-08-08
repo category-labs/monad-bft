@@ -24,7 +24,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
     state_root_validator: impl Fn() -> S::StateRootValidator,
-    async_state_verify: impl Fn(fn(Stake) -> Stake) -> S::AsyncStateRootVerify,
+    async_state_verify: impl Fn(fn(Stake) -> Stake, usize) -> S::AsyncStateRootVerify,
 
     delta: Duration,
     proposal_txn_limit: usize,
@@ -77,7 +77,10 @@ pub fn make_state_configs<S: SwarmRelation>(
             block_policy: block_policy(),
             state_backend: state_backend(),
             state_root_validator: state_root_validator(),
-            async_state_verify: async_state_verify(state_root_quorum_threshold),
+            async_state_verify: async_state_verify(
+                state_root_quorum_threshold,
+                state_sync_threshold.0 as usize,
+            ),
             forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
             key,
