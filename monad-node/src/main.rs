@@ -23,14 +23,11 @@ use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
-use monad_gossip::{
-    mock::MockGossipConfig,
-    seeder::{Raptor, SeederConfig},
-    Gossip,
-};
+use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
+use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb::Handle as TriedbHandle;
@@ -39,7 +36,7 @@ use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_S
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
     timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll,
+    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -137,36 +134,25 @@ async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
 ) -> Result<(), ()> {
-    let gossip = if node_state.forkpoint_config.validator_sets[0]
+    let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
         .validators
         .0
         .len()
         > 1
     {
-        SeederConfig::<Raptor<SignatureType>> {
-            all_peers: node_state.forkpoint_config.validator_sets[0]
-                .validators
-                .0
-                .iter()
-                .map(|peer| NodeId::new(peer.node_id.pubkey()))
-                .collect(),
-            key: {
-                // TODO make this less jank
-                //
-                // This is required right now because Service::new requires a 'static
-                // future for spawning the helper task.
-                let identity = Box::leak(Box::new(node_state.gossip_identity));
-                assert_eq!(identity.pubkey(), node_state.secp256k1_identity.pubkey());
-                identity
-            },
-            timeout: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
-            up_bandwidth_Mbps: node_state.node_config.network.max_mbps,
-            chunker_poll_interval: Duration::from_millis(10),
-        }
-        .build()
-        .boxed()
+        <_ as Updater<_>>::boxed(
+            build_raptorcast_router::<
+                MonadMessage<SignatureType, SignatureCollectionType>,
+                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+            >(
+                node_state.node_config.network.clone(),
+                node_state.router_identity,
+                &node_state.node_config.bootstrap.peers,
+            )
+            .await,
+        )
     } else {
-        MockGossipConfig {
+        let gossip = MockGossipConfig {
             all_peers: node_state.forkpoint_config.validator_sets[0]
                 .validators
                 .0
@@ -177,20 +163,22 @@ async fn run(
             message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
         }
         .build()
-        .boxed()
-    };
+        .boxed();
 
-    let router = build_router::<
-        MonadMessage<SignatureType, SignatureCollectionType>,
-        VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-        _,
-    >(
-        node_state.node_config.network.clone(),
-        &node_state.secp256k1_identity,
-        &node_state.node_config.bootstrap.peers,
-        gossip,
-    )
-    .await;
+        <_ as Updater<_>>::boxed(
+            build_mockgossip_router::<
+                MonadMessage<SignatureType, SignatureCollectionType>,
+                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+                _,
+            >(
+                node_state.node_config.network.clone(),
+                &node_state.router_identity,
+                &node_state.node_config.bootstrap.peers,
+                gossip,
+            )
+            .await,
+        )
+    };
 
     let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
@@ -442,7 +430,47 @@ async fn run(
     Ok(())
 }
 
-async fn build_router<M, OM, G>(
+async fn build_raptorcast_router<M, OM>(
+    network_config: NodeNetworkConfig,
+    identity: <SignatureType as CertificateSignature>::KeyPairType,
+    peers: &[NodeBootstrapPeerConfig],
+) -> RaptorCast<SignatureType, M, OM>
+where
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
+        + Deserializable<Bytes>
+        + From<OM>
+        + Send
+        + Sync
+        + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
+{
+    RaptorCast::new(RaptorCastConfig {
+        key: identity,
+        known_addresses: peers
+            .iter()
+            .map(|peer| {
+                let address = peer
+                    .address
+                    .to_socket_addrs()
+                    .unwrap_or_else(|err| {
+                        panic!("unable to resolve address={}, err={:?}", peer.address, err)
+                    })
+                    .next()
+                    .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
+                (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
+            })
+            .collect(),
+        redundancy: 3,
+        local_addr: SocketAddr::V4(SocketAddrV4::new(
+            network_config.bind_address_host,
+            network_config.bind_address_port,
+        ))
+        .to_string(),
+    })
+}
+
+async fn build_mockgossip_router<M, OM, G>(
     network_config: NodeNetworkConfig,
     identity: &<SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],

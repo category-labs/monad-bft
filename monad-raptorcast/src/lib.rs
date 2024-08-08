@@ -20,7 +20,7 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
-use monad_raptor::ManagedDecoder;
+use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 
 pub struct RaptorCastConfig<ST>
@@ -361,6 +361,12 @@ where
             return Poll::Ready(Some(event));
         }
 
+        while this.message_cache.len() > 1_000 {
+            // FIXME this is a super jank way of bounding size of message_cache
+            // should switch this to LRU eviction
+            this.message_cache.first_entry().unwrap().remove();
+        }
+
         let self_id = NodeId::new(this.key.pubkey());
 
         while let Poll::Ready(Some(message)) = this.dataplane.poll_next_unpin(cx) {
@@ -440,7 +446,8 @@ where
                         let symbol_len = parsed_message.chunk.len();
 
                         // data_size is always greater than zero, so this division is safe
-                        let num_source_symbols = app_message_len.div_ceil(symbol_len);
+                        let num_source_symbols =
+                            app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
 
                         // TODO: verify unwrap
                         ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
@@ -604,7 +611,9 @@ where
     let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
 
     let num_packets: u16 = {
-        let mut num_packets: u16 = (app_message_len.div_ceil(DATA_SIZE.into())
+        let mut num_packets: u16 = (app_message_len
+            .div_ceil(u32::from(DATA_SIZE))
+            .max(SOURCE_SYMBOLS_MIN.try_into().unwrap())
             * u32::from(redundancy))
         .try_into()
         .expect("is redundancy too high? doesn't fit in u16");

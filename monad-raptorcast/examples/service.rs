@@ -156,7 +156,7 @@ fn service(
             .expect("reader should never be dropped");
         expected_message_ids.insert(message.id, num_peers);
     }
-    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(1)) {
+    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(100)) {
         if &tx == tx_peer {
             let num_left = expected_message_ids
                 .get_mut(&msg_id)

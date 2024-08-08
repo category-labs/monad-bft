@@ -11,7 +11,11 @@ use log::debug;
 pub const MAX_UDP_PKT: usize = 65535;
 const MAX_IPV4_HDR: usize = 20;
 const MAX_UDP_HDR: usize = 8;
-pub const MONAD_GSO_SIZE: usize = 1490;
+
+// TODO: When running in docker with vpnkit, we seem to occasionally get ICMP frag-neededs
+// for 20 bytes less than the expected MTU -- investigate what's causing this.
+const MONAD_MTU: usize = 1480;
+pub const MONAD_GSO_SIZE: usize = MONAD_MTU - MAX_IPV4_HDR - MAX_UDP_HDR;
 
 const BUF_SIZE: usize = MAX_UDP_PKT;
 const NUM_RX_MSGHDR: usize = 128;
@@ -381,12 +385,19 @@ impl<'a> NetworkSocket<'a> {
 
         if r == -1 {
             let e = std::io::Error::last_os_error();
-            panic!("sendmmsg error {}", e);
+
+            // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
+            // IP_MTU and include the returned value in the log message.
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                debug!("sendmmsg error {}", e);
+            } else {
+                panic!("sendmmsg error {}", e);
+            }
         }
 
         // TODO try sending the stuff that wasn't sent
         if r != num_msgs as i32 {
-            panic!("only sent {} out of {} msgs", r, num_msgs);
+            debug!("only sent {} out of {} msgs", r, num_msgs);
         }
 
         Some(())

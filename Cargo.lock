@@ -4022,6 +4022,7 @@ dependencies = [
  "monad-keystore",
  "monad-ledger",
  "monad-quic",
+ "monad-raptorcast",
  "monad-secp",
  "monad-state",
  "monad-state-backend",

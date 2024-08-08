@@ -7,7 +7,7 @@ use zeroize::Zeroize;
 pub struct PubKey(secp256k1::PublicKey);
 /// secp256k1 keypair
 pub struct KeyPair(secp256k1::KeyPair);
-/// secp256k1 ecsda recoverable signature
+/// secp256k1 ecdsa recoverable signature
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 

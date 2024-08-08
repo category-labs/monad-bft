@@ -31,8 +31,9 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
-monad-quic = { path = "../monad-quic" }
 monad-ledger = { path = "../monad-ledger" }
+monad-quic = { path = "../monad-quic" }
+monad-raptorcast = { path = "../monad-raptorcast" }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-statesync = { path = "../monad-statesync" }

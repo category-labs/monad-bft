@@ -20,7 +20,7 @@ pub struct NodeState {
     pub forkpoint_config: ForkpointConfig,
 
     pub secp256k1_identity: KeyPair,
-    pub gossip_identity: KeyPair,
+    pub router_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
 
     pub forkpoint_path: PathBuf,
@@ -52,11 +52,11 @@ impl NodeState {
             hex::encode(secp_pubkey.bytes_compressed())
         );
         // FIXME this is somewhat jank.. is there a better way?
-        let gossip_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
+        let router_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
         info!(
-            "Loaded gossip key from {:?}, pubkey=0x{}",
+            "Loaded router key from {:?}, pubkey=0x{}",
             &cli.secp_identity,
-            hex::encode(gossip_key.pubkey().bytes_compressed())
+            hex::encode(router_key.pubkey().bytes_compressed())
         );
         let bls_key = load_bls12_381_keypair(&cli.bls_identity, keystore_password)?;
         info!(
@@ -98,7 +98,7 @@ impl NodeState {
             forkpoint_config,
 
             secp256k1_identity: secp_key,
-            gossip_identity: gossip_key,
+            router_identity: router_key,
             bls12_381_identity: bls_key,
 
             forkpoint_path: cli.forkpoint_config,

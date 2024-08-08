@@ -230,7 +230,7 @@ impl DataplaneEventLoop {
             match self.ingress_sender.producer.push(rx) {
                 Err(e) => {
                     debug!("send failed on ingress sender {e}");
-                    panic!("consider resizing queue for ingress");
+                    // panic!("consider resizing queue for ingress");
                 }
                 Ok(()) => {
                     debug!("sent bytes on ingress sender");
