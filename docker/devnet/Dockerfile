@@ -2,7 +2,7 @@ FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
 RUN apt-get update && apt-get upgrade -y
-RUN apt-get update && apt-get install -y clang curl make ca-certificates pkg-config gnupg software-properties-common wget
+RUN apt-get update && apt-get install -y clang curl make ca-certificates pkg-config gnupg software-properties-common wget cgroup-tools
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest

@@ -4,7 +4,7 @@ FROM ubuntu:24.04 AS base
 RUN apt update
 RUN apt upgrade -y
 RUN apt-get update
-RUN apt install -y ca-certificates curl pkg-config gnupg software-properties-common wget
+RUN apt install -y ca-certificates curl pkg-config gnupg software-properties-common wget cgroup-tools
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest
@@ -68,8 +68,8 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 
 WORKDIR /usr/src/monad-bft
 COPY . .
-    
-ARG ETH_CALL_TARGET=monad_shared 
+
+ARG ETH_CALL_TARGET=monad_shared
 ARG TRIEDB_TARGET=triedb_driver
 
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
