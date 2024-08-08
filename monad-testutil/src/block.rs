@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use monad_consensus_types::{
     block::{Block, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -126,7 +126,7 @@ pub fn setup_block<ST, SCT>(
     qc_round: Round,
     parent_id: BlockId,
     txns: TransactionPayload,
-    execution_header: ExecutionArtifacts,
+    execution_header: ExecutionProtocol,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
     validator_mapping: &ValidatorMapping<
         CertificateSignaturePubKey<ST>,

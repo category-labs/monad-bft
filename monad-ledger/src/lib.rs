@@ -16,7 +16,7 @@ use monad_blockdb::BlockDb;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -295,14 +295,7 @@ fn generate_header<SCT: SignatureCollection>(
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
-    let ExecutionArtifacts {
-        parent_hash: _,
-        state_root,
-        transactions_root,
-        receipts_root,
-        logs_bloom,
-        gas_used,
-    } = monad_block.payload.header;
+    let ExecutionProtocol { state_root } = monad_block.payload.header;
 
     let mut randao_reveal_hasher = HasherType::new();
 
@@ -313,14 +306,14 @@ fn generate_header<SCT: SignatureCollection>(
         ommers_hash: block_body.calculate_ommers_root(),
         beneficiary: monad_block.payload.beneficiary.0,
         state_root: FixedBytes(*state_root.deref()),
-        transactions_root: FixedBytes(transactions_root.0),
-        receipts_root: FixedBytes(receipts_root.0),
+        transactions_root: FixedBytes::default(),
+        receipts_root: FixedBytes::default(),
         withdrawals_root: block_body.calculate_withdrawals_root(),
-        logs_bloom: Bloom(FixedBytes(logs_bloom.0)),
+        logs_bloom: Bloom(FixedBytes::default()),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num.0,
         gas_limit: header_param.gas_limit,
-        gas_used: gas_used.0,
+        gas_used: 0,
         timestamp: monad_block.get_timestamp(),
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,

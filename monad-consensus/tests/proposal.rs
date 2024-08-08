@@ -8,7 +8,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
     voting::{ValidatorMapping, Vote, VoteInfo},
@@ -69,7 +69,7 @@ fn setup_block(
         block_round,
         &Payload {
             txns,
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),

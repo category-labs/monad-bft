@@ -1,7 +1,7 @@
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     voting::{Vote, VoteInfo},
 };
@@ -40,7 +40,7 @@ fn block_hash_id() {
         round,
         &Payload {
             txns,
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),

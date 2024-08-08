@@ -2,7 +2,7 @@ use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMe
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -207,7 +207,7 @@ fn proposal_msg_hash() {
         round,
         &Payload {
             txns,
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),

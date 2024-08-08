@@ -7,7 +7,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -79,7 +79,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         txns: TransactionPayload,
-        execution_header: ExecutionArtifacts,
+        execution_header: ExecutionProtocol,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {

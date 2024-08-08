@@ -8,7 +8,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -116,7 +116,7 @@ fn test_consensus_message_event_proposal_bls() {
         &val_epoch_map,
         &election,
         TransactionPayload::List(FullTransactionList::empty()),
-        ExecutionArtifacts::zero(),
+        ExecutionProtocol::zero(),
     );
 
     let consensus_proposal_msg = ProtocolMessage::Proposal((*proposal).clone());

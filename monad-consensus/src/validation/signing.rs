@@ -689,7 +689,7 @@ mod test {
         block::Block,
         ledger::CommitResult,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1149,7 +1149,7 @@ mod test {
             Round(1),
             &Payload {
                 txns: TransactionPayload::List(FullTransactionList::empty()),
-                header: ExecutionArtifacts::zero(),
+                header: ExecutionProtocol::zero(),
                 seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),

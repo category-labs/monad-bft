@@ -11,7 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -86,7 +86,7 @@ fn bench_proposal(c: &mut Criterion) {
         Round(9),
         BlockId(Hash([43_u8; 32])),
         txns,
-        ExecutionArtifacts::zero(),
+        ExecutionProtocol::zero(),
         &keypairs,
         &validator_mapping,
     );

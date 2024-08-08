@@ -3,7 +3,7 @@ use monad_bls::BlsSignatureCollection;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::{ConsensusMessage, ProtocolMessage};
 use monad_consensus_types::{
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     voting::ValidatorMapping,
 };
 use monad_secp::SecpSignature;
@@ -53,7 +53,7 @@ fn main() {
             &val_epoch_map,
             &election,
             TransactionPayload::List(FullTransactionList::new(transactions.to_vec().into())),
-            ExecutionArtifacts::zero(),
+            ExecutionProtocol::zero(),
         )
         .destructure()
         .2;

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use monad_consensus_types::{
     block::Block,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
@@ -74,7 +74,7 @@ pub fn generate_random_block_with_txns(
         Round(1),
         &Payload {
             txns: TransactionPayload::List(full_txn_list),
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),

@@ -14,7 +14,7 @@ use monad_consensus_types::{
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
+        Bloom, ExecutionProtocol, FullTransactionList, NopStateRoot, StateRootValidator,
         TransactionPayload,
     },
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -105,14 +105,14 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::Empty,
-            ExecutionArtifacts::zero(),
+            ExecutionProtocol::zero(),
         )
     }
 
     fn next_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionArtifacts,
+        execution_hdr: ExecutionProtocol,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.proposal_gen.next_proposal(
             &self.keys,
@@ -134,7 +134,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(FullTransactionList::new(vec![5].into())),
-            ExecutionArtifacts::zero(),
+            ExecutionProtocol::zero(),
         )
     }
 
@@ -142,7 +142,7 @@ where
     fn branch_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionArtifacts,
+        execution_hdr: ExecutionProtocol,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.malicious_proposal_gen.next_proposal(
             &self.keys,
@@ -477,17 +477,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
         );
     }
     let (author, _, proposal_message) = env
-        .next_proposal(
-            encoded_txns.clone(),
-            ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: Default::default(),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Default::default(),
-            },
-        )
+        .next_proposal(encoded_txns.clone(), ExecutionProtocol::zero())
         .destructure();
     assert_eq!(author, leader);
     (encoded_txns, env, ctx, author, proposal_message)
@@ -511,14 +501,7 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
         Round(1),
         &Payload {
             txns,
-            header: ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: Default::default(),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Default::default(),
-            },
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(0),
             beneficiary: Default::default(),
             randao_reveal: Default::default(),
@@ -618,14 +601,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (author, _, proposal_message) = env
                     .next_proposal(
                         encoded_txns,
-                        ExecutionArtifacts {
-                            parent_hash: Default::default(),
-                            state_root: Default::default(),
-                            transactions_root: Default::default(),
-                            receipts_root: Default::default(),
-                            logs_bloom: Bloom::zero(),
-                            gas_used: Default::default(),
-                        },
+                        ExecutionProtocol::zero(),
                     )
                     .destructure();
                 assert_eq!(&author, &leader);

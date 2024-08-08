@@ -44,36 +44,21 @@ impl AsRef<[u8]> for Gas {
 /// proposals. The values are populated from the results of executing the
 /// previous block
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExecutionArtifacts {
-    pub parent_hash: StateRootHash,
+pub struct ExecutionProtocol {
     pub state_root: StateRootHash,
-    pub transactions_root: Hash,
-    pub receipts_root: Hash,
-    pub logs_bloom: Bloom,
-    pub gas_used: Gas,
 }
 
-impl ExecutionArtifacts {
+impl ExecutionProtocol {
     pub fn zero() -> Self {
-        ExecutionArtifacts {
-            parent_hash: Default::default(),
+        ExecutionProtocol {
             state_root: Default::default(),
-            transactions_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Bloom::zero(),
-            gas_used: Gas(0),
         }
     }
 }
 
-impl Hashable for ExecutionArtifacts {
+impl Hashable for ExecutionProtocol {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.parent_hash);
         state.update(self.state_root);
-        state.update(self.transactions_root);
-        state.update(self.receipts_root);
-        state.update(self.logs_bloom);
-        state.update(self.gas_used);
     }
 }
 
@@ -160,7 +145,7 @@ impl Hashable for TransactionPayload {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionPayload,
-    pub header: ExecutionArtifacts,
+    pub header: ExecutionProtocol,
     pub seq_num: SeqNum,
     pub beneficiary: EthAddress,
     pub randao_reveal: RandaoReveal,
@@ -180,7 +165,7 @@ impl DontCare for Payload {
     fn dont_care() -> Self {
         Self {
             txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),

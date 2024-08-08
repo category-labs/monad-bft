@@ -116,12 +116,7 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
                 hasher.update(2_i32.to_le_bytes());
             }
         }
-        hasher.update(b.payload.header.parent_hash);
         hasher.update(b.payload.header.state_root);
-        hasher.update(b.payload.header.transactions_root);
-        hasher.update(b.payload.header.receipts_root);
-        hasher.update(b.payload.header.logs_bloom);
-        hasher.update(b.payload.header.gas_used);
         hasher.update(b.payload.seq_num.as_bytes());
         hasher.update(b.qc.get_block_id().0);
         hasher.update(b.payload.beneficiary.0.as_bytes());

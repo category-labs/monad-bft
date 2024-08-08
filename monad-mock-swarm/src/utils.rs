@@ -14,7 +14,7 @@ pub mod test_tool {
         block::Block,
         ledger::CommitResult,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         timeout::{Timeout, TimeoutInfo},
@@ -74,7 +74,7 @@ pub mod test_tool {
     pub fn fake_block(round: Round) -> Block<SC> {
         let payload = Payload {
             txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionArtifacts::zero(),
+            header: ExecutionProtocol::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),

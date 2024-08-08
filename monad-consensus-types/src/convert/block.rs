@@ -10,7 +10,7 @@ use monad_proto::{
 use crate::{
     block::Block,
     payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
+        Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, RandaoReveal,
         TransactionPayload,
     },
     signature_collection::SignatureCollection,
@@ -99,57 +99,22 @@ impl TryFrom<ProtoBloom> for Bloom {
     }
 }
 
-impl From<&ExecutionArtifacts> for ProtoExecutionArtifacts {
-    fn from(value: &ExecutionArtifacts) -> Self {
+impl From<&ExecutionProtocol> for ProtoExecutionProtocol {
+    fn from(value: &ExecutionProtocol) -> Self {
         Self {
-            parent_hash: Some((&(value.parent_hash)).into()),
             state_root: Some((&(value.state_root)).into()),
-            transactions_root: Some((&(value.transactions_root)).into()),
-            receipts_root: Some((&(value.receipts_root)).into()),
-            logs_bloom: Some((&(value.logs_bloom)).into()),
-            gas_used: Some((&(value.gas_used)).into()),
         }
     }
 }
 
-impl TryFrom<ProtoExecutionArtifacts> for ExecutionArtifacts {
+impl TryFrom<ProtoExecutionProtocol> for ExecutionProtocol {
     type Error = ProtoError;
-    fn try_from(value: ProtoExecutionArtifacts) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoExecutionProtocol) -> Result<Self, Self::Error> {
         Ok(Self {
-            parent_hash: value
-                .parent_hash
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.parent_hash".to_owned(),
-                ))?
-                .try_into()?,
             state_root: value
                 .state_root
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.state_root".to_owned(),
-                ))?
-                .try_into()?,
-            transactions_root: value
-                .transactions_root
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.transactions_root".to_owned(),
-                ))?
-                .try_into()?,
-            receipts_root: value
-                .receipts_root
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.receipts_root".to_owned(),
-                ))?
-                .try_into()?,
-            logs_bloom: value
-                .logs_bloom
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.logs_bloom".to_owned(),
-                ))?
-                .try_into()?,
-            gas_used: value
-                .gas_used
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.gas_used".to_owned(),
+                    "ExecutionProtocol.state_root".to_owned(),
                 ))?
                 .try_into()?,
         })
