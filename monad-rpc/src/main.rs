@@ -29,7 +29,7 @@ use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, info};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -125,7 +125,15 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
         }
     };
 
-    debug!(?body, ?response, "rpc_request/response");
+    // log the request and response based on the response content
+    match &response {
+        ResponseWrapper::Single(resp) => match resp.error {
+            Some(_) => info!(?body, ?response, "rpc_request/response error"),
+            None => debug!(?body, ?response, "rpc_request/response successful"),
+        },
+        _ => debug!(?body, ?response, "rpc_batch_request/response"),
+    }
+
     HttpResponse::Ok().json(&response)
 }
 
@@ -369,7 +377,7 @@ async fn rpc_select(
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_sign" => Err(JsonRpcError::method_not_supported()),
         "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
-        "net_version" => serialize_result("1"), // TODO: decide on a chain id
+        "net_version" => serialize_result(format!("0x{:x}", app_state.chain_id)),
         "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }

@@ -4,7 +4,7 @@ use actix::prelude::*;
 use actix_http::ws::{Message as WebsocketMessage, ProtocolError};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
-use log::debug;
+use tracing::debug;
 
 use crate::MonadRpcResources;
 

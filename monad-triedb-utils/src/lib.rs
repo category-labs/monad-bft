@@ -5,10 +5,10 @@ use std::{
 
 use alloy_primitives::{keccak256, U256};
 use alloy_rlp::{Decodable, Encodable};
-use log::debug;
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockTags;
 use monad_triedb::{key::create_addr_key, Handle};
+use tracing::debug;
 
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];

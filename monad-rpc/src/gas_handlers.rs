@@ -1,7 +1,6 @@
 use std::{ops::Sub, path::Path};
 
 use alloy_primitives::{U256, U64};
-use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
@@ -9,6 +8,7 @@ use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::{debug, trace};
 
 use crate::{
     call::{sender_gas_allowance, CallRequest},

@@ -13,7 +13,6 @@ monad-triedb = { path = "../monad-triedb" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-log = { workspace = true }
 rayon = { workspace = true }
-tokio.workspace = true
-
+tokio = { workspace = true }
+tracing = { workspace = true, features = ["log"] }

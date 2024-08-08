@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
-use log::debug;
 use monad_blockdb::BlockTagKey;
 use reth_primitives::{Address, U256};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use tracing::debug;
 
 use crate::{
     hex::{decode, decode_quantity, DecodeHexError},

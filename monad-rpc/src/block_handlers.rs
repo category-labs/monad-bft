@@ -1,13 +1,13 @@
 use std::ops::Div;
 
 use alloy_primitives::aliases::{U256, U64};
-use log::{debug, trace};
 use monad_blockdb::BlockValue;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::{debug, trace};
 
 use crate::{
     eth_json_types::{

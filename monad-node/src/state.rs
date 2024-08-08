@@ -4,10 +4,10 @@ use std::{
 };
 
 use clap::{error::ErrorKind, FromArgMatches};
-use log::info;
 use monad_bls::BlsKeyPair;
 use monad_keystore::keystore::Keystore;
 use monad_secp::KeyPair;
+use tracing::info;
 
 use crate::{
     cli::Cli,

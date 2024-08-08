@@ -7,12 +7,12 @@ use std::{
 };
 
 use futures::{executor::block_on, ready, Future, FutureExt, Sink, SinkExt};
-use log::debug;
 use notify::{Event, RecursiveMode, Watcher};
 use pin_project::pin_project;
 use reth_primitives::TransactionSigned;
 use tokio::{net::UnixStream, pin};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
+use tracing::debug;
 
 const MEMPOOL_TX_IPC_FILE: &str = "mempool.sock";
 

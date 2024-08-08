@@ -1,9 +1,9 @@
 use alloy_primitives::aliases::{B160, U256};
-use log::{debug, trace};
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::{debug, trace};
 
 use crate::{
     eth_json_types::{

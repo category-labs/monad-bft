@@ -4377,12 +4377,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "log",
  "monad-blockdb",
  "monad-blockdb-utils",
  "monad-triedb",
  "rayon",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

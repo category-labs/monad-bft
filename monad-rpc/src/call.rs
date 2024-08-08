@@ -1,12 +1,12 @@
 use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
-use log::debug;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::debug;
 
 use crate::{
     eth_json_types::{deserialize_block_tags, BlockTags},
