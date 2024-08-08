@@ -121,7 +121,7 @@ where
                     carriage_costs, // (address -> carriage cost) in the block
                 })
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 if let Err(e) = block
                     .payload
                     .randao_reveal

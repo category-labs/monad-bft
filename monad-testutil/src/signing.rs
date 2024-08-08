@@ -111,7 +111,7 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
                 hasher.update(1_i32.to_le_bytes());
                 hasher.update(rlp.bytes())
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 // EnumDiscriminant(2)
                 hasher.update(2_i32.to_le_bytes());
             }

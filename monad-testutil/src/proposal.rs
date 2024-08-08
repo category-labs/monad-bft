@@ -109,7 +109,7 @@ where
 
         let seq_num = match txns {
             TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
-            TransactionPayload::Empty => qc.get_seq_num(),
+            TransactionPayload::Null => qc.get_seq_num(),
         };
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),

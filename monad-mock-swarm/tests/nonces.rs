@@ -180,7 +180,7 @@ mod test {
                     TransactionPayload::List(rlp) => {
                         Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
                     }
-                    TransactionPayload::Empty => Vec::new(),
+                    TransactionPayload::Null => Vec::new(),
                 };
 
                 let decoded_txn_hashes: HashSet<_> =

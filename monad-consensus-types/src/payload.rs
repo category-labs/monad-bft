@@ -138,7 +138,7 @@ impl AsRef<[u8]> for RandaoReveal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionPayload {
     List(FullTransactionList),
-    Empty,
+    Null,
 }
 
 impl Hashable for TransactionPayload {
@@ -148,7 +148,7 @@ impl Hashable for TransactionPayload {
                 EnumDiscriminant(1).hash(state);
                 state.update(txns);
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 EnumDiscriminant(2).hash(state);
             }
         }

@@ -108,7 +108,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
                     TransactionPayload::List(txns) => {
                         format!("{:?}", txns.bytes().len())
                     }
-                    TransactionPayload::Empty => "empty".to_owned(),
+                    TransactionPayload::Null => "null".to_owned(),
                 },
             )
             .field("seq_num", &self.payload.seq_num)
@@ -161,7 +161,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
     /// `TransactionPayload::List(FullTransactionList::empty())` and a consensus
     /// protocol empty block `TransactionPayload::Empty`
     pub fn is_empty_block(&self) -> bool {
-        matches!(self.payload.txns, TransactionPayload::Empty)
+        matches!(self.payload.txns, TransactionPayload::Null)
     }
 }
 
@@ -208,14 +208,14 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     fn is_empty_block(&self) -> bool {
         match &self.payload.txns {
             TransactionPayload::List(_) => false,
-            TransactionPayload::Empty => true,
+            TransactionPayload::Null => true,
         }
     }
 
     fn get_txn_list_len(&self) -> usize {
         match &self.payload.txns {
             TransactionPayload::List(list) => list.bytes().len(),
-            TransactionPayload::Empty => 0,
+            TransactionPayload::Null => 0,
         }
     }
 

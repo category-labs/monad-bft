@@ -162,7 +162,7 @@ impl From<&TransactionPayload> for ProtoTransactionPayload {
             TransactionPayload::List(txns) => {
                 proto_transaction_payload::Txns::List(txns.bytes().clone())
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 proto_transaction_payload::Txns::Empty(ProtoEmptyBlockTransactionList {})
             }
         });
@@ -181,7 +181,7 @@ impl TryFrom<ProtoTransactionPayload> for TransactionPayload {
             proto_transaction_payload::Txns::List(txns) => {
                 TransactionPayload::List(FullTransactionList::new(txns))
             }
-            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Empty,
+            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Null,
         };
         Ok(txn_payload)
     }

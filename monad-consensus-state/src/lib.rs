@@ -177,7 +177,7 @@ pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash
     Propose(StateRootHash),
     /// Create an empty block proposal
-    ProposeEmpty,
+    ProposeNull,
 }
 
 /// Actions after state root validation
@@ -1213,7 +1213,7 @@ where
                             .get_block_state_root(&high_qc.get_block_id())
                             .expect("parent block is coherent");
                         proposer_builder(
-                            TransactionPayload::Empty,
+                            TransactionPayload::Null,
                             srh_qc,
                             seq_num_qc,
                             last_round_tc,
@@ -1221,7 +1221,7 @@ where
                     }
                 }
             }
-            ConsensusAction::ProposeEmpty => {
+            ConsensusAction::ProposeNull => {
                 tracing::info_span!("create_proposal_empty_span", ?round);
                 // Don't have the necessary state root hash ready so propose
                 // a NULL block
@@ -1242,7 +1242,7 @@ where
                     .pending_block_tree
                     .get_block_state_root(&high_qc.get_block_id())
                     .expect("parent block is coherent");
-                proposer_builder(TransactionPayload::Empty, srh_qc, seq_num_qc, last_round_tc)
+                proposer_builder(TransactionPayload::Null, srh_qc, seq_num_qc, last_round_tc)
             }
         }
     }
@@ -1255,7 +1255,7 @@ where
             .get_next_state_root(proposed_seq_num)
         else {
             // propose empty also needs a state root hash with it
-            return ConsensusAction::ProposeEmpty;
+            return ConsensusAction::ProposeNull;
         };
 
         ConsensusAction::Propose(h)
@@ -1581,7 +1581,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                TransactionPayload::Empty,
+                TransactionPayload::Null,
                 ExecutionArtifacts::zero(),
             )
         }
@@ -2802,7 +2802,7 @@ mod test {
             // after 2f + 1 votes, we expect that an empty proposal is created
             if i == 2 {
                 let p = extract_proposal_broadcast(cmds);
-                assert_eq!(p.block.payload.txns, TransactionPayload::Empty);
+                assert_eq!(p.block.payload.txns, TransactionPayload::Null);
                 assert_eq!(
                     next_leader
                         .metrics
