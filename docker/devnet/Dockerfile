@@ -76,9 +76,9 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     mv target/release/monad-node node && \
     cp `ls -lt $(find target/release | grep -e "libmonad_statesync.so") | head -1 | awk '{print $9}'` . && \
     cp `ls -lt $(find target/release | grep -e "libtriedb_driver.so") | head -1 | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep -e "libevmone.so") | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep -e "libquill.so") | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep -e "libkeccak.so") | awk '{print $9}'` .
+    cp `ls -lt $(find target/release | grep -e "libevmone.so.0.11\$") | head -1 | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libquill.so") | head -1 | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libkeccak.so") | head -1 | awk '{print $9}'` .
 
 # Runner
 FROM base AS runner
