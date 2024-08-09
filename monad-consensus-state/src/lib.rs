@@ -1043,7 +1043,7 @@ where
                 target: RouterTarget::PointToPoint(next_leader),
                 message: msg,
             };
-            debug!(vote = ?v, ?next_leader, "created vote");
+            debug!(?round, vote = ?v, ?next_leader, "created vote");
             self.metrics.consensus_events.created_vote += 1;
             cmds.push(send_cmd);
         }

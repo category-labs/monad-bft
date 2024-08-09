@@ -452,7 +452,8 @@ where
         let full_tx_list = EthFullTransactionList(txs).rlp_encode();
 
         info!(
-            proposal_num_tx,
+            ?proposed_seq_num,
+            ?proposal_num_tx,
             proposal_total_gas = total_gas,
             proposal_tx_bytes = full_tx_list.len(),
             "created proposal"
