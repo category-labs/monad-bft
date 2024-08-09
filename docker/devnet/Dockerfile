@@ -74,8 +74,8 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node && \
     mv target/release/monad-node node && \
-    cp `ls -lt $(find target/release | grep -e "libmonad_statesync.so") | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep -e "libtriedb_driver.so") | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libmonad_statesync.so") | head -1 | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep -e "libtriedb_driver.so") | head -1 | awk '{print $9}'` . && \
     cp `ls -lt $(find target/release | grep -e "libevmone.so") | awk '{print $9}'` . && \
     cp `ls -lt $(find target/release | grep -e "libquill.so") | awk '{print $9}'` . && \
     cp `ls -lt $(find target/release | grep -e "libkeccak.so") | awk '{print $9}'` .
