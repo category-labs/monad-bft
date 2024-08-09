@@ -16,10 +16,12 @@ struct triedb
         : db_{monad::mpt::ReadOnlyOnDiskDbConfig{
               .disable_mismatching_storage_pool_check = true,
               .dbname_paths = std::move(dbname_paths)}}
+        , ctx_{monad::mpt::async_context_create(db_)}
     {
     }
 
     monad::mpt::Db db_;
+    monad::mpt::AsyncContextUniquePtr ctx_;
 };
 
 int triedb_open(char const *dbdirpath, triedb **db)
@@ -141,7 +143,7 @@ void triedb_async_read(
 
     auto *state = new auto(monad::async::connect(
         monad::mpt::make_get_sender(
-            db->db_,
+            db->ctx_.get(),
             monad::mpt::NibblesView{0, key_len_nibbles, key},
             block_id),
         receiver_t{completed, user}));
