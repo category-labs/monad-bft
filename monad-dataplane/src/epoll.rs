@@ -72,12 +72,14 @@ impl<const N: usize> EpollFd<N> {
     // don't use timeouts here, expect users to register timerfd if timeouts are desired
     pub fn wait(&mut self) -> std::io::Result<Vec<EpollEvent>> {
         let nfds = unsafe {
-            libc::epoll_wait(
-                self.fd,
-                self.events.as_mut_ptr() as *mut libc::epoll_event,
-                self.events.len() as i32,
-                -1,
-            )
+            super::retry_eintr(|| {
+                libc::epoll_wait(
+                    self.fd,
+                    self.events.as_mut_ptr() as *mut libc::epoll_event,
+                    self.events.len() as i32,
+                    -1,
+                )
+            })
         };
 
         if nfds == -1 {
@@ -107,7 +109,11 @@ impl EventFd {
     // the counter resets when the epoll event is handled (via read of the fd)
     pub fn trigger_event(&self, n: u64) -> std::io::Result<()> {
         let data = &n as *const u64;
-        let s = unsafe { libc::write(self.fd, data as *const libc::c_void, mem::size_of::<u64>()) };
+        let s = unsafe {
+            super::retry_eintr(|| {
+                libc::write(self.fd, data as *const libc::c_void, mem::size_of::<u64>())
+            })
+        };
         if s == -1 {
             return Err(std::io::Error::last_os_error());
         }
@@ -122,7 +128,11 @@ impl EventFd {
     pub fn handle_event(&self) -> (u64, isize) {
         let mut n: u64 = 0;
         let data = &mut n as *mut u64;
-        let s = unsafe { libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>()) };
+        let s = unsafe {
+            super::retry_eintr(|| {
+                libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>())
+            })
+        };
         debug!("got tx event");
 
         (n, s)

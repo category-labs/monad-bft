@@ -186,13 +186,15 @@ impl<'a> NetworkSocket<'a> {
         }
 
         let r = unsafe {
-            libc::recvmmsg(
-                self.socket.as_raw_fd(),
-                &mut self.recv_ctrl.msgs[0],
-                NUM_RX_MSGHDR as _,
-                libc::MSG_DONTWAIT,
-                &mut self.recv_ctrl.timeout as *mut libc::timespec,
-            )
+            super::retry_eintr(|| {
+                libc::recvmmsg(
+                    self.socket.as_raw_fd(),
+                    &mut self.recv_ctrl.msgs[0],
+                    NUM_RX_MSGHDR as _,
+                    libc::MSG_DONTWAIT,
+                    &mut self.recv_ctrl.timeout as *mut libc::timespec,
+                )
+            })
         };
 
         if r == -1 {
@@ -367,12 +369,14 @@ impl<'a> NetworkSocket<'a> {
         assert!(num_msgs as usize <= LINUX_SENDMMSG_VLEN_MAX);
 
         let r = unsafe {
-            libc::sendmmsg(
-                self.socket.as_raw_fd(),
-                self.send_ctrl.msgs.as_mut_ptr(),
-                num_msgs,
-                0,
-            )
+            super::retry_eintr(|| {
+                libc::sendmmsg(
+                    self.socket.as_raw_fd(),
+                    self.send_ctrl.msgs.as_mut_ptr(),
+                    num_msgs,
+                    0,
+                )
+            })
         };
 
         if r == -1 {
