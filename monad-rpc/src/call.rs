@@ -99,6 +99,16 @@ impl CallRequest {
     }
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CallInput {
+    /// Transaction data
+    pub input: Option<alloy_primitives::Bytes>,
+
+    /// This is the same as `input` but is used for backwards compatibility:
+    /// <https://github.com/ethereum/go-ethereum/issues/15628>
+    pub data: Option<alloy_primitives::Bytes>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum GasPriceDetails {
@@ -159,7 +169,7 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                         value: reth_primitives::TxValue::from(
                             call_request.value.unwrap_or_default(),
                         ),
-                        input: call_request.input.data.unwrap_or_default(),
+                        input: call_request.input.input.unwrap_or_default(),
                     },
                 ))
             }
@@ -213,7 +223,7 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                         value: reth_primitives::TxValue::from(
                             call_request.value.unwrap_or_default(),
                         ),
-                        input: call_request.input.data.unwrap_or_default(),
+                        input: call_request.input.input.unwrap_or_default(),
                     },
                 ))
             }
@@ -261,16 +271,6 @@ pub async fn sender_gas_allowance(
     }
 }
 
-#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CallInput {
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        alias = "data",
-        alias = "input"
-    )]
-    pub data: Option<alloy_primitives::Bytes>,
-}
-
 #[derive(Debug, Deserialize)]
 struct MonadEthCallParams {
     transaction: CallRequest,
@@ -291,6 +291,18 @@ pub async fn monad_eth_call(
             debug!("invalid params {e}");
             return Err(JsonRpcError::invalid_params());
         }
+    };
+    params.transaction.input.input = match (
+        params.transaction.input.input.take(),
+        params.transaction.input.data.take(),
+    ) {
+        (Some(input), Some(data)) => {
+            if input != data {
+                return Err(JsonRpcError::invalid_params());
+            }
+            Some(input)
+        }
+        (None, data) | (data, None) => data,
     };
 
     let triedb_env: TriedbEnv = TriedbEnv::new(triedb_path);

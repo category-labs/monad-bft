@@ -60,6 +60,15 @@ pub async fn monad_eth_estimateGas(
             return Err(JsonRpcError::invalid_params());
         }
     };
+    params.tx.input.input = match (params.tx.input.input.take(), params.tx.input.data.take()) {
+        (Some(input), Some(data)) => {
+            if input != data {
+                return Err(JsonRpcError::invalid_params());
+            }
+            Some(input)
+        }
+        (None, data) | (data, None) => data,
+    };
 
     let triedb_env = TriedbEnv::new(triedb_path);
 
