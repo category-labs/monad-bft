@@ -497,14 +497,14 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
 ///               with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
+/// - 1 bit => broadcast or not
+/// - 7 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Round #
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
 ///     for simplicity
 /// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 1 bit => broadcast or not
-/// - 7 bits => Merkle tree depth
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
 ///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
 ///
@@ -522,13 +522,13 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
 // pub struct M {
 //     signature: [u8; 65],
 //     version: u16,
+//     broadcast: bool,
+//     merkle_tree_depth: u8,
 //     epoch: u64,
 //     round: u64,
 //     app_message_id: [u8; 20],
 //     app_message_len: u32,
-//     broadcast: bool,
 //
-//     merkle_tree_depth: u8,
 //     merkle_proof: Vec<[u8; 20]>,
 //
 //     chunk_merkle_leaf_idx: u8,
@@ -540,11 +540,11 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
 // }
 const HEADER_LEN: u16 = 65  // Sender signature
             + 2  // Version
+            + 1  // Broadcast bit, 7 bits for Merkle Tree Depth
             + 8  // Epoch #
             + 8  // Round #
             + 20 // AppMessage hash
-            + 4 // AppMessage length
-            + 1; // Broadcast bit, 7 bits for Merkle Tree Depth
+            + 4; // AppMessage length
 const CHUNK_HEADER_LEN: u16 = 1 // Chunk's merkle leaf idx
             + 20 // Chunk recipient hash
             + 2 // Chunk idx
@@ -766,6 +766,8 @@ where
                 let (cursor_signature, cursor) = cursor.split_at_mut(65);
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
+                let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
+                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | TREE_DEPTH;
                 let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
                 cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
                 let (cursor_round_no, cursor) = cursor.split_at_mut(8);
@@ -774,17 +776,15 @@ where
                 cursor_app_message_hash.copy_from_slice(&app_message_hash);
                 let (cursor_app_message_len, cursor) = cursor.split_at_mut(4);
                 cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
-                let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
-                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | TREE_DEPTH;
 
                 cursor.copy_from_slice(merkle_tree.root());
                 // 65  // Sender signature
                 // 2  // Version
+                // 1 // Broadcast bit, 7 bits for Merkle Tree Depth
                 // 8  // Epoch #
                 // 8  // Round #
                 // 20 // AppMessage hash
                 // 4 // AppMessage length
-                // 1 // Broadcast bit, 7 bits for Merkle Tree Depth
                 // --
                 // 20 // Merkle root
 
@@ -845,14 +845,14 @@ pub enum MessageValidationError {
 /// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
 ///               with merkle root)
 /// - 2 bytes => Version: bumped on protocol updates
+/// - 1 bit => broadcast or not
+/// - 7 bits => Merkle tree depth
 /// - 8 bytes (u64) => Epoch #
 /// - 8 bytes (u64) => Round #
 /// - 20 bytes => first 20 bytes of hash of AppMessage
 ///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
 ///     for simplicity
 /// - 4 bytes (u32) => Serialized AppMessage length (bytes)
-/// - 1 bit => broadcast or not
-/// - 7 bits => Merkle tree depth
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
 ///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
 ///
@@ -891,6 +891,14 @@ where
         return Err(MessageValidationError::UnknownVersion);
     }
 
+    let cursor_broadcast_tree_depth = split_off(1)?[0];
+    let broadcast = (cursor_broadcast_tree_depth >> 7) != 0;
+    let tree_depth = cursor_broadcast_tree_depth & !(1 << 7);
+
+    if tree_depth < 1 {
+        return Err(MessageValidationError::InvalidTreeDepth);
+    }
+
     let cursor_epoch = split_off(8)?;
     let epoch = u64::from_le_bytes(cursor_epoch.as_ref().try_into().expect("u64 is 8 bytes"));
 
@@ -911,13 +919,6 @@ where
             .expect("u32 is 4 bytes"),
     );
 
-    let cursor_broadcast_tree_depth = split_off(1)?[0];
-    let broadcast = (cursor_broadcast_tree_depth >> 7) != 0;
-    let tree_depth = cursor_broadcast_tree_depth & !(1 << 7);
-
-    if tree_depth < 1 {
-        return Err(MessageValidationError::InvalidTreeDepth);
-    }
     let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
 
     let mut merkle_proof = Vec::new();
