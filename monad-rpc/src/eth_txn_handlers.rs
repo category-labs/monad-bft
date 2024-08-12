@@ -13,7 +13,7 @@ use reth_rpc_types::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::{
     block_handlers::block_receipts,
@@ -335,10 +335,10 @@ pub async fn monad_eth_sendRawTransaction(
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            match flume::Sender::send_async(&ipc, txn).await {
+            match ipc.try_send(txn) {
                 Ok(_) => Ok(Value::String(hash.to_string())),
-                Err(e) => {
-                    debug!("mempool ipc send error {:?}", e);
+                Err(err) => {
+                    warn!(?err, "mempool ipc send error");
                     Err(JsonRpcError::internal_error())
                 }
             }

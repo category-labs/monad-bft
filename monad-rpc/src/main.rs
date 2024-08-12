@@ -470,7 +470,10 @@ async fn main() -> std::io::Result<()> {
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
-    let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
+    let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(
+        // TODO configurable
+        10_000,
+    );
     tokio::spawn(async move {
         let ipc_path = args.ipc_path;
         let mut sender = retry(|| async { MempoolTxIpcSender::new(&ipc_path).await })
@@ -564,7 +567,7 @@ mod tests {
         impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
         MonadRpcResourcesState,
     ) {
-        let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
