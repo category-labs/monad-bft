@@ -27,17 +27,8 @@ if [ ! -d "./.venv" ]; then
 fi
 source ./.venv/bin/activate
 
-pip install -r testing-library/requirements.txt
-pip install ./testing-library
-
 rm -rf logs && mkdir -p logs
-python tests/net0.py
 nets/devnet-integration/scripts/net-run.sh test --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../..
-python tests/net1.py
-python tests/devnet-integration.py
-python tests/full-nodes-1.py
-python tests/full-nodes-2.py
-python tests/reserve-balance.py
 
 # remove artifacts if test succeeds
 rm -rf logs

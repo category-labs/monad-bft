@@ -43,7 +43,7 @@ if __name__ == "__main__":
             "gas": 21000,
             "maxFeePerGas": 1000,  # hardcoded in the eth block header as 1000
             "maxPriorityFeePerGas": 0,
-            "chainId": 1,
+            "chainId": 41454,
         }
 
         signed_transfer = sender_account.sign_transaction(transfer_tx)
