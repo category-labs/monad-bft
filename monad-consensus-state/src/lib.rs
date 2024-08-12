@@ -456,35 +456,7 @@ where
         }
         self.metrics.consensus_events.vote_received += 1;
 
-        let mut cmds = Vec::new();
-
-        let epoch = self
-            .epoch_manager
-            .get_epoch(vote_msg.vote.vote_info.round)
-            .expect("epoch verified");
-        let validator_set = self
-            .val_epoch_map
-            .get_val_set(&epoch)
-            .expect("vote message was verified");
-        let validator_mapping = self
-            .val_epoch_map
-            .get_cert_pubkeys(&epoch)
-            .expect("vote message was verified");
-        let (maybe_qc, vote_state_cmds) = self.consensus.vote_state.process_vote(
-            &author,
-            &vote_msg,
-            validator_set,
-            validator_mapping,
-        );
-        cmds.extend(vote_state_cmds.into_iter().map(Into::into));
-
-        if let Some(qc) = maybe_qc {
-            debug!(?qc, "Created QC");
-            self.metrics.consensus_events.created_qc += 1;
-
-            cmds.extend(self.process_certificate_qc(&qc));
-            cmds.extend(self.try_propose());
-        };
+        let cmds: Vec<ConsensusCommand<ST, SCT>> = Vec::new();
 
         cmds
     }
