@@ -10,24 +10,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ETH_CALL_TARGET");
     let target = env::var("ETH_CALL_TARGET").unwrap_or("mock_eth_call".to_owned());
     if target != "mock_eth_call" {
-        println!("cargo:rustc-cfg=triedb")
+        println!("cargo:rustc-cfg=triedb");
     }
     println!("cargo:warning=target {}", &target);
-    let includes = [
-        "include",
-        "src",
-        "monad-execution/include",
-        "monad-execution/third_party/intx/include",
-        "monad-execution/third_party/evmone/evmc/include",
-        "monad-execution/monad-core/c/include",
-        "monad-execution/monad-core/include",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect::<Vec<_>>();
+
+    let includes = [PathBuf::from("include")];
 
     // TODO(rene): find a better way of figuring out the vendor-specific standard version string
-    let std = "-std=c++20";
+    let std = "-std=c++23";
 
     // generate rust bindings for eth_call C++ API
     {
@@ -41,6 +31,8 @@ fn main() {
     let dst = Config::new(".")
         .define("CMAKE_BUILD_TARGET", &target)
         .always_configure(true)
+        .define("BUILD_SHARED_LIBS", "ON")
+        .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
         .build_target(&target)
         .very_verbose(true)
         .build();

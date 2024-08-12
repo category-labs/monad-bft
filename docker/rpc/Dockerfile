@@ -69,7 +69,7 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 WORKDIR /usr/src/monad-bft
 COPY . .
 
-ARG ETH_CALL_TARGET=monad_shared
+ARG ETH_CALL_TARGET=monad_rpc_test
 ARG TRIEDB_TARGET=triedb_driver
 
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
@@ -78,8 +78,13 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
-    cp `ls -lt $(find target/release | grep lib${ETH_CALL_TARGET}.so) | head -1 | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
+    cp `ls -Lt $(find target/release | grep -e "libevmone.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libsecp256k1.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libsilkpre.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "lib${TRIEDB_TARGET}.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "lib${ETH_CALL_TARGET}.so") | awk -F/ '!seen[$NF]++'` . 
 
 # Runner
 FROM base AS runner
@@ -89,6 +94,7 @@ ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 
 COPY --from=builder /usr/src/monad-bft/rpc /usr/local/bin/monad-rpc
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
+COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
 ENV RUST_LOG=info
 
