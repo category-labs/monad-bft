@@ -7,7 +7,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_tx::EthTransaction;
+use monad_eth_tx::EthSignedTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
 use rand::distributions::{Alphanumeric, DistString};
 use tokio::{
@@ -183,7 +183,7 @@ where
     }
 }
 fn validate_ethtx(bytes: &mut &[u8]) -> bool {
-    match EthTransaction::decode(bytes) {
+    match EthSignedTransaction::decode(bytes) {
         Ok(_) => true,
         Err(err) => {
             warn!("tx decoder error error={:?}", err);
