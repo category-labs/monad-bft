@@ -31,6 +31,8 @@ pub struct StateRootHashTriedbPoll<ST, SCT: SignatureCollection> {
     // TODO: where will we get this validator set updates
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
+    // validator set updates from control panel
+    last_val_data: Option<ValidatorSetUpdate<SCT>>,
     next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
 
@@ -88,6 +90,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
             cancel_below,
             seq_num_send,
             genesis_validator_data,
+            last_val_data: None,
             next_val_data: None,
             val_set_update_interval,
 
@@ -157,17 +160,42 @@ where
                             locked_epoch,
                             seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
                         );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
+                        let next_validator_data = self
+                            .last_val_data
+                            .as_ref()
+                            .and_then(|v| {
+                                if locked_epoch >= v.epoch {
+                                    debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch matched locked epoch");
+                                    Some(ValidatorSetUpdate {
+                                        epoch: locked_epoch,
+                                        validator_data: v.validator_data.clone(),
+                                    })
+                                } else {
+                                    debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch did not match matched locked epoch");
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                debug!(locked_epoch = %locked_epoch.0, num_validators = %self.genesis_validator_data.0.len(), "re-using genesis validator set");
+                                ValidatorSetUpdate {
+                                    epoch: locked_epoch,
+                                    validator_data: self.genesis_validator_data.clone(),
+                                }
+                            });
+
+                        self.next_val_data = Some(next_validator_data);
                     }
                     self.seq_num_send
                         .send(seq_num)
                         .expect("seq_num receiver should never be dropped");
                     wake = true;
                 }
-                StateRootHashCommand::UpdateValidators(_) => {
+                StateRootHashCommand::UpdateValidators((validator_data, epoch)) => {
+                    debug!(num_validators = ?validator_data.0.len(), epoch = %epoch.0, "UpdateValidators");
+                    self.last_val_data = Some(ValidatorSetUpdate {
+                        epoch,
+                        validator_data,
+                    });
                     wake = true;
                 }
             }
