@@ -1092,6 +1092,11 @@ where
                         WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
                     ))]
                 }
+                ControlPanelEvent::UpdateValidators((validators, epoch)) => {
+                    vec![Command::StateRootHashCommand(
+                        StateRootHashCommand::UpdateValidators((validators, epoch)),
+                    )]
+                }
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);

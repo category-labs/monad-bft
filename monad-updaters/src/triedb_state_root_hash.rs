@@ -137,7 +137,7 @@ impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
 where
     SCT: SignatureCollection,
 {
-    type Command = StateRootHashCommand;
+    type Command = StateRootHashCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -165,6 +165,9 @@ where
                     self.seq_num_send
                         .send(seq_num)
                         .expect("seq_num receiver should never be dropped");
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }

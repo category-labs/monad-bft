@@ -95,7 +95,7 @@ pub fn make_monad_executor<ST, SCT>(
     TokioTimer<MonadEvent<ST, SCT>>,
     MockLedger<ST, SCT>,
     MockCheckpoint<SCT>,
-    BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT>>,
+    BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT>>,
     IpcReceiver<ST, SCT>,
     ControlPanelIpcReceiver<ST, SCT>,
     LoopbackExecutor<MonadEvent<ST, SCT>>,

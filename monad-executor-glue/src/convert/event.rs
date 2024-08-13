@@ -390,8 +390,11 @@ impl<SCT: SignatureCollection> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStat
     }
 }
 
-impl From<&ControlPanelEvent> for ProtoControlPanelEvent {
-    fn from(value: &ControlPanelEvent) -> Self {
+impl<SCT> From<&ControlPanelEvent<SCT>> for ProtoControlPanelEvent
+where
+    SCT: SignatureCollection,
+{
+    fn from(value: &ControlPanelEvent<SCT>) -> Self {
         match value {
             ControlPanelEvent::GetValidatorSet => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::GetValidatorSetEvent(
@@ -403,11 +406,24 @@ impl From<&ControlPanelEvent> for ProtoControlPanelEvent {
                     ProtoClearMetricsEvent {},
                 )),
             },
+            ControlPanelEvent::UpdateValidators((validator_set_data, epoch)) => {
+                ProtoControlPanelEvent {
+                    event: Some(proto_control_panel_event::Event::UpdateValidatorsEvent(
+                        ProtoUpdateValidatorsEvent {
+                            validator_set_data: Some(validator_set_data.into()),
+                            epoch: Some(epoch.into()),
+                        },
+                    )),
+                }
+            }
         }
     }
 }
 
-impl TryFrom<ProtoControlPanelEvent> for ControlPanelEvent {
+impl<SCT> TryFrom<ProtoControlPanelEvent> for ControlPanelEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
     type Error = ProtoError;
 
     fn try_from(e: ProtoControlPanelEvent) -> Result<Self, Self::Error> {
@@ -421,6 +437,20 @@ impl TryFrom<ProtoControlPanelEvent> for ControlPanelEvent {
                 }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent
+                }
+                proto_control_panel_event::Event::UpdateValidatorsEvent(v) => {
+                    ControlPanelEvent::UpdateValidators((
+                        v.validator_set_data
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ControlPanel::UpdateValidatorsEvent.validator_set_data".to_owned(),
+                            ))?
+                            .try_into()?,
+                        v.epoch
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ControlPanel::UpdateValidatorsEvent.epoch".to_owned(),
+                            ))?
+                            .try_into()?,
+                    ))
                 }
             }
         })

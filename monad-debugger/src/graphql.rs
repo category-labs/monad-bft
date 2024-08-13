@@ -293,8 +293,7 @@ impl<'s> GraphQLAsyncStateVerifyEvent<'s> {
         format!("{:?}", self.0)
     }
 }
-
-struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent);
+struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureCollectionType>);
 
 #[Object]
 impl<'s> GraphQLControlPanelEvent<'s> {

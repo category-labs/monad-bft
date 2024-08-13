@@ -21,7 +21,9 @@ use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use tracing::{debug, error};
 
 pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
+    Executor<Command = StateRootHashCommand<Self::SignatureCollection>>
+    + Stream<Item = Self::Event>
+    + Unpin
 {
     type Event;
     type SignatureCollection: SignatureCollection;
@@ -143,7 +145,7 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand;
+    type Command = StateRootHashCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -179,6 +181,9 @@ where
                         });
                     }
 
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }
@@ -338,7 +343,7 @@ where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Command = StateRootHashCommand;
+    type Command = StateRootHashCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -379,6 +384,9 @@ where
                             })
                         };
                     }
+                    wake = true;
+                }
+                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }

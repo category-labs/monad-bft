@@ -38,7 +38,7 @@ where
 
     CE: Executor<Command = CheckpointCommand<SCT>>,
     LE: Executor<Command = LedgerCommand<SCT>>,
-    SE: Executor<Command = StateRootHashCommand>,
+    SE: Executor<Command = StateRootHashCommand<SCT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     TSE: Executor<Command = TimestampCommand>,

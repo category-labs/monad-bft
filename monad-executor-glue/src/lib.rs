@@ -83,9 +83,13 @@ pub enum CheckpointCommand<SCT: SignatureCollection> {
     Save(Checkpoint<SCT>),
 }
 
-pub enum StateRootHashCommand {
+pub enum StateRootHashCommand<SCT>
+where
+    SCT: SignatureCollection,
+{
     Request(SeqNum),
     CancelBelow(SeqNum),
+    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,7 +161,7 @@ pub enum Command<E, OM, SCT: SignatureCollection> {
 
     LedgerCommand(LedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<SCT>),
-    StateRootHashCommand(StateRootHashCommand),
+    StateRootHashCommand(StateRootHashCommand<SCT>),
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
@@ -172,7 +176,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<SCT>>,
         Vec<CheckpointCommand<SCT>>,
-        Vec<StateRootHashCommand>,
+        Vec<StateRootHashCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
@@ -413,9 +417,13 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ControlPanelEvent {
+pub enum ControlPanelEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
     GetValidatorSet,
     ClearMetricsEvent,
+    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -438,7 +446,7 @@ where
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
     /// Events for the debug control panel
-    ControlPanelEvent(ControlPanelEvent),
+    ControlPanelEvent(ControlPanelEvent<SCT>),
     /// Events to update the block timestamper
     TimestampUpdateEvent(u64),
     /// Events to state sync
