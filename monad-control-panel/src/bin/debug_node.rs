@@ -3,10 +3,13 @@ use std::{io::Error, path::PathBuf};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, validator_data::ParsedValidatorData,
+};
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, UpdateValidatorSet,
+    WriteCommand,
 };
 use monad_secp::SecpSignature;
 use tokio::net::{
@@ -135,7 +138,25 @@ fn main() -> Result<(), Error> {
             println!("{}", toml::to_string(&parsed_validator_set).unwrap());
         }
         Commands::UpdateValidators { path } => {
-            todo!("UpdateValidators not implemented");
+            let toml_choice = path;
+
+            let update_validator_set =
+                toml::from_str::<ParsedValidatorData<SignatureCollectionType>>(
+                    &std::fs::read_to_string(toml_choice).unwrap(),
+                )
+                .map_err(Error::other)?;
+            let request = Command::Write(WriteCommand::UpdateValidatorSet(
+                UpdateValidatorSet::Request(update_validator_set),
+            ));
+
+            rt.block_on(write.send(request))?;
+
+            rt.block_on(write.send(Command::Read(ReadCommand::GetValidatorSet(
+                GetValidatorSet::Request,
+            ))))?;
+
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            println!("{}", serde_json::to_string(&response).unwrap());
         }
         Commands::ClearMetrics => {
             rt.block_on(write.send(Command::Write(WriteCommand::ClearMetrics(
@@ -146,7 +167,7 @@ fn main() -> Result<(), Error> {
             println!("{}", serde_json::to_string(&response).unwrap());
         }
 
-        Commands::UpdateLogFilter(_) => todo!("UpdateValidators not implemented"),
+        Commands::UpdateLogFilter(_) => todo!("UpdateLogFilter not implemented"),
     }
 
     Ok(())

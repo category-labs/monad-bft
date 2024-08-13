@@ -5,14 +5,17 @@ use std::{
 };
 
 use futures::{SinkExt, Stream, StreamExt};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    signature_collection::SignatureCollection,
+    validator_data::{ParsedValidatorData, ValidatorSetData},
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetValidatorSet, MonadEvent, ReadCommand,
-    WriteCommand,
+    UpdateValidatorSet, ValidatorEvent, WriteCommand,
 };
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
@@ -146,6 +149,27 @@ where
                         }
                         m => error!("unhandled message {:?}", m),
                     },
+                    WriteCommand::UpdateValidatorSet(update_validator_set) => {
+                        match update_validator_set {
+                            UpdateValidatorSet::Request(parsed_validator_set) => {
+                                let ParsedValidatorData::<SCT> { epoch, validators } =
+                                    parsed_validator_set;
+                                let validators =
+                                    validators.into_iter().map(Into::into).collect::<Vec<_>>();
+                                let event = MonadEvent::<ST, SCT>::ValidatorEvent(
+                                    ValidatorEvent::<SCT>::UpdateValidators((
+                                        ValidatorSetData(validators),
+                                        epoch,
+                                    )),
+                                );
+                                let Ok(_) = event_channel.send(event.clone()).await else {
+                                    error!("failed to forward request {:?} to executor, closing connection", &event);
+                                    break;
+                                };
+                            }
+                            m => error!("unhandled message {:?}", m),
+                        }
+                    }
                     m => error!("unhandled message {:?}", m),
                 },
             }
