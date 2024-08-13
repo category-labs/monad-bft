@@ -79,10 +79,20 @@ where
                         temp_path.set_file_name(file_name);
                         temp_path
                     };
+                    std::fs::write(
+                        format!(
+                            "{}.{}.{}",
+                            self.out_path.to_string_lossy(),
+                            checkpoint.root.seq_num.0,
+                            checkpoint.high_qc.get_round().0
+                        ),
+                        &checkpoint_str,
+                    )
+                    .expect("failed to write checkpoint backup");
                     std::fs::write(&temp_path, &checkpoint_str)
                         .expect("failed to write checkpoint");
                     std::fs::rename(&temp_path, &self.out_path)
-                        .expect("failed to rename checkpoint")
+                        .expect("failed to rename checkpoint");
                 }
             }
         }
