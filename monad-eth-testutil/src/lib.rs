@@ -53,6 +53,7 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> EthAddress {
 
 pub fn generate_random_block_with_txns(
     eth_txn_list: Vec<EthSignedTransaction>,
+    seq_num: SeqNum
 ) -> EthValidatedBlock<MultiSig<NopSignature>> {
     let eth_full_tx_list = EthFullTransactionList(
         eth_txn_list
@@ -77,7 +78,7 @@ pub fn generate_random_block_with_txns(
         Round(1),
         &ExecutionProtocol {
             state_root: Default::default(),
-            seq_num: SeqNum(1),
+            seq_num: seq_num,
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },

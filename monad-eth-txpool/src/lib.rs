@@ -479,13 +479,14 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Arc};
+    use std::sync::Mutex;
 
     use alloy_primitives::{hex, B256};
     use alloy_rlp::Decodable;
     use bytes::Bytes;
     use itertools::Itertools;
-    use monad_consensus_types::txpool::TxPool;
+    use monad_consensus_types::{block::BlockPolicy, txpool::TxPool};
     use monad_crypto::NopSignature;
     use monad_eth_block_policy::compute_txn_carriage_cost;
     use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
@@ -1307,7 +1308,7 @@ mod test {
             InMemoryBlockState::genesis(acc.into_iter().collect()),
         );
         // create the extending block with txn 1
-        let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero]);
+        let extending_block = generate_random_block_with_txns(vec![txn_1_nonce_zero], SeqNum(1));
 
         let txns = vec![
             txn_2_nonce_zero.envelope_encoded().into(),
@@ -1370,9 +1371,9 @@ mod test {
         );
 
         // create the extending block 1 with txn 1
-        let extending_block_1 = generate_random_block_with_txns(vec![txn_nonce_one]);
+        let extending_block_1 = generate_random_block_with_txns(vec![txn_nonce_one], SeqNum(1));
         // create the extending block 2 with txn 2
-        let extending_block_2 = generate_random_block_with_txns(vec![txn_nonce_two]);
+        let extending_block_2 = generate_random_block_with_txns(vec![txn_nonce_two], SeqNum(1));
 
         let encoded_txns = eth_tx_pool
             .create_proposal(
@@ -1519,4 +1520,458 @@ mod test {
         assert_eq!(decoded_txns.len(), 1);
         assert_eq!(decoded_txns[0].nonce(), 0);
     }
+
+    #[test]
+    fn test_pending_reserve_balance() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_four = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
+
+        let txn_one_carriage_cost = compute_txn_carriage_cost(&txn_nonce_one.try_ecrecovered().unwrap());
+        let txn_two_carriage_cost = compute_txn_carriage_cost(&txn_nonce_two.try_ecrecovered().unwrap());
+        let txn_three_carriage_cost = compute_txn_carriage_cost(&txn_nonce_three.try_ecrecovered().unwrap());
+        let overall_cost = txn_one_carriage_cost + txn_two_carriage_cost + txn_three_carriage_cost;
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+
+        let execution_delay = SeqNum(5);
+
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    EthAccount::new(0, overall_cost, None)
+                ))
+                .collect()
+            ),
+        );
+
+        let txns = vec![
+            txn_nonce_three.envelope_encoded().into(),
+            txn_nonce_four.envelope_encoded().into(),
+        ];
+        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        assert!(result.len() == 2);
+
+        let pending_block = generate_random_block_with_txns(vec![
+            txn_nonce_one,
+            txn_nonce_two
+        ], SeqNum(1));
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0) + execution_delay,
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![&pending_block],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert!(decoded_txns.len() == 1);
+        assert!(decoded_txns[0].nonce() == 2);
+    }
+
+    #[test]
+    fn test_executed_reserve_balance() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_four = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
+
+        let txn_one_carriage_cost = compute_txn_carriage_cost(&txn_nonce_one.try_ecrecovered().unwrap());
+        let txn_two_carriage_cost = compute_txn_carriage_cost(&txn_nonce_two.try_ecrecovered().unwrap());
+        let overall_cost = txn_one_carriage_cost + txn_two_carriage_cost;
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+        let sender_1_account = EthAccount::new(0, overall_cost, None);
+
+        let execution_delay = SeqNum(5);
+
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    sender_1_account
+                ))
+                .collect()
+            ),
+        );
+
+        // Submit the first two transactions and wait for them to pass the execution delay
+        let txns = vec![
+            txn_nonce_one.envelope_encoded().into(),
+            txn_nonce_two.envelope_encoded().into(),
+        ];
+        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        assert!(result.len() == 2);
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert!(decoded_txns.len() == 2);
+        assert!(decoded_txns[0].nonce() == 0);
+
+        state_backend.lock().unwrap().ledger_commit(SeqNum(0),
+            std::iter::once((
+                sender_1_address,
+                EthAccountDelta::new(2, 0, None)
+            ))
+            .collect()
+        );
+
+        for seq_num in 1..6 {
+            state_backend.lock().unwrap().ledger_commit(SeqNum(seq_num), BTreeMap::new());
+        }
+
+        // Propose transactions three and four, and ensure they go through
+        let txns_2 = vec![
+            txn_nonce_three.envelope_encoded().into(),
+            txn_nonce_four.envelope_encoded().into(),
+        ];
+        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        assert!(result_2.len() == 2);
+
+        let encoded_txns_2 = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(6),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns_2 = Vec::<EthSignedTransaction>::decode(&mut encoded_txns_2.as_ref()).unwrap();
+
+        assert!(decoded_txns_2.len() == 2);
+        assert!(decoded_txns_2[0].nonce() == 2);
+    }
+
+    #[test]
+    fn test_committed_reserve_balance() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_four = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT,3, 10);
+
+        let txn_one_carriage_cost = compute_txn_carriage_cost(&txn_nonce_one.try_ecrecovered().unwrap());
+        let txn_two_carriage_cost = compute_txn_carriage_cost(&txn_nonce_two.try_ecrecovered().unwrap());
+        let txn_three_carriage_cost = compute_txn_carriage_cost(&txn_nonce_three.try_ecrecovered().unwrap());
+        let overall_cost = txn_one_carriage_cost + txn_two_carriage_cost + txn_three_carriage_cost;
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+        let sender_1_account = EthAccount::new(0, overall_cost, None);
+
+        let execution_delay = SeqNum(5);
+
+        let mut eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    sender_1_account
+                ))
+                .collect()
+            ),
+        );
+
+        let block = generate_random_block_with_txns(vec![txn_nonce_one, txn_nonce_two], SeqNum(1));
+        <EthBlockPolicy as BlockPolicy<MultiSig<NopSignature>, Arc<Mutex<InMemoryStateInner>>>>::update_committed_block(&mut eth_block_policy, &block);
+
+        // Propose transactions three and four, and ensure only the third goes through
+        let txns_2 = vec![
+            txn_nonce_three.envelope_encoded().into(),
+            txn_nonce_four.envelope_encoded().into(),
+        ];
+        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        assert!(result_2.len() == 2);
+
+        let encoded_txns_2 = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(1),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns_2 = Vec::<EthSignedTransaction>::decode(&mut encoded_txns_2.as_ref()).unwrap();
+
+        assert!(decoded_txns_2.len() == 1);
+        assert!(decoded_txns_2[0].nonce() == 2);
+    }
+
+    #[test]
+    fn test_executed_commited_reserve_balance() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_four = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
+        let txn_nonce_five = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10);
+        let txn_nonce_six = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10);
+
+        let txn_three_carriage_cost = compute_txn_carriage_cost(&txn_nonce_three.try_ecrecovered().unwrap());
+        let txn_four_carriage_cost = compute_txn_carriage_cost(&txn_nonce_four.try_ecrecovered().unwrap());
+        let txn_five_carriage_cost = compute_txn_carriage_cost(&txn_nonce_five.try_ecrecovered().unwrap());
+        let committed_cost = txn_three_carriage_cost + txn_four_carriage_cost;
+        let valid_proposal_cost = txn_five_carriage_cost;
+
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+        let sender_1_account = EthAccount::new(0, committed_cost + valid_proposal_cost, None);
+
+        let execution_delay = SeqNum(5);
+
+        let mut eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    sender_1_account
+                ))
+                .collect()
+            ),
+        );
+
+        // Submit the first two transactions and wait for them to pass the execution delay
+        let txns = vec![
+            txn_nonce_one.envelope_encoded().into(),
+            txn_nonce_two.envelope_encoded().into(),
+        ];
+        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        assert!(result.len() == 2);
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+        assert!(decoded_txns.len() == 2);
+        assert!(decoded_txns[0].nonce() == 0);
+
+        state_backend.lock().unwrap().ledger_commit(SeqNum(0),
+            std::iter::once((
+                sender_1_address,
+                EthAccountDelta::new(2, 0, None)
+            ))
+            .collect()
+        );
+
+        for seq_num in 1..6 {
+            state_backend.lock().unwrap().ledger_commit(SeqNum(seq_num), BTreeMap::new());
+            let block = generate_random_block_with_txns(vec![], SeqNum(seq_num));
+            <EthBlockPolicy as BlockPolicy<MultiSig<NopSignature>, Arc<Mutex<InMemoryStateInner>>>>::update_committed_block(&mut eth_block_policy, &block); 
+        }
+
+        // Commit transactions three and four
+        let block = generate_random_block_with_txns(vec![txn_nonce_three, txn_nonce_four], SeqNum(6));
+        <EthBlockPolicy as BlockPolicy<MultiSig<NopSignature>, Arc<Mutex<InMemoryStateInner>>>>::update_committed_block(&mut eth_block_policy, &block);
+
+        // Propose transactions five and six, and ensure only one goes through
+        let txns_2 = vec![
+            txn_nonce_five.envelope_encoded().into(),
+            txn_nonce_six.envelope_encoded().into(),
+        ];
+        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        assert!(result_2.len() == 2);
+
+        let encoded_txns_2 = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(7),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns_2 = Vec::<EthSignedTransaction>::decode(&mut encoded_txns_2.as_ref()).unwrap();
+
+        assert!(decoded_txns_2.len() == 1);
+        assert!(decoded_txns_2[0].nonce() == 4);
+    }
+
+    #[test]
+    fn test_committed_pending_reserve_balance() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_four = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
+        let txn_nonce_five = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10);
+        let txn_nonce_six = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10);
+
+        let txn_one_carriage_cost = compute_txn_carriage_cost(&txn_nonce_one.try_ecrecovered().unwrap());
+        let txn_two_carriage_cost = compute_txn_carriage_cost(&txn_nonce_two.try_ecrecovered().unwrap());
+        let txn_three_carriage_cost = compute_txn_carriage_cost(&txn_nonce_three.try_ecrecovered().unwrap());
+        let txn_four_carriage_cost = compute_txn_carriage_cost(&txn_nonce_four.try_ecrecovered().unwrap());
+        let txn_five_carriage_cost = compute_txn_carriage_cost(&txn_nonce_five.try_ecrecovered().unwrap());
+        let committed_cost = txn_one_carriage_cost + txn_two_carriage_cost;
+        let pending_cost = txn_three_carriage_cost + txn_four_carriage_cost;
+        let valid_proposal_cost = txn_five_carriage_cost;
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+        let sender_1_account = EthAccount::new(0, committed_cost + pending_cost + valid_proposal_cost, None);
+
+        let execution_delay = SeqNum(5);
+
+        let mut eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    sender_1_account
+                ))
+                .collect()
+            ),
+        );
+
+        // Commit transactions one and two
+        let block = generate_random_block_with_txns(vec![txn_nonce_one, txn_nonce_two], SeqNum(1));
+        <EthBlockPolicy as BlockPolicy<MultiSig<NopSignature>, Arc<Mutex<InMemoryStateInner>>>>::update_committed_block(&mut eth_block_policy, &block);
+
+        // Add transactions three and four to pending blocks
+        let pending_block = generate_random_block_with_txns(vec![
+            txn_nonce_three,
+            txn_nonce_four
+        ], SeqNum(2));
+
+        // Propose transactions five and six, and make sure only five goes through
+        let txns = vec![
+            txn_nonce_five.envelope_encoded().into(),
+            txn_nonce_six.envelope_encoded().into(),
+        ];
+        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        assert!(result.len() == 2);
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0) + execution_delay,
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![&pending_block],
+            &state_backend
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert!(decoded_txns.len() == 1);
+        assert!(decoded_txns[0].nonce() == 4);
+    }
+
+    #[test]
+    fn test_simultaneous_sufficient_insufficient_reserve() {
+        let sender_1_key = B256::random();
+        let sender_2_key = B256::random();
+        let txn_nonce_one_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_one_two = make_tx(sender_2_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two_two = make_tx(sender_2_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+
+        let sender_one_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_one_one.try_ecrecovered().unwrap());
+        let sender_two_carriage_cost = compute_txn_carriage_cost(&txn_nonce_one_two.try_ecrecovered().unwrap()) + compute_txn_carriage_cost(&txn_nonce_two_two.try_ecrecovered().unwrap());
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one_one.recover_signer().unwrap());
+        let sender_2_address = EthAddress(txn_nonce_one_two.recover_signer().unwrap());
+
+        let execution_delay = SeqNum(5);
+
+        let eth_block_policy =
+            EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            // No accounts initially
+            InMemoryBlockState::genesis(BTreeMap::new()),
+        );
+
+        let txns = vec![
+            txn_nonce_one_one.envelope_encoded().into(),
+            txn_nonce_two_one.envelope_encoded().into(),
+            txn_nonce_one_two.envelope_encoded().into(),
+            txn_nonce_two_two.envelope_encoded().into(),
+        ];
+        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        assert!(result.len() == 4);
+
+        // Commit 4 empty blocks
+        for seq_num in 1..5 {
+            state_backend
+                .lock()
+                .unwrap()
+                .ledger_commit(SeqNum(seq_num), BTreeMap::new());
+        }
+        // Commit an account state at SeqNum(5)
+        state_backend.lock().unwrap().ledger_commit(
+            SeqNum(5),
+            vec![(
+                sender_1_address,
+                EthAccountDelta::new(0, sender_one_carriage_cost as i128, None),
+            ), (
+                sender_2_address,
+                EthAccountDelta::new(0, sender_two_carriage_cost as i128, None)
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(5) + execution_delay, // proposed sequence number should fetch account state from SeqNum(5)
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend,
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        // Sender 1 only has sufficient balance for one transactions to go through, sender 2 has enough for both
+        assert!(decoded_txns.len() == 3);
+    }
+
 }
