@@ -130,7 +130,7 @@ pub struct Validator {
     pub stake: Stake,
 }
 
-#[derive(PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord)]
 struct MessageCacheKey<PT>
 where
     PT: PubKey,
@@ -371,7 +371,16 @@ where
         while this.message_cache.len() > 1_000 {
             // FIXME this is a super jank way of bounding size of message_cache
             // should switch this to LRU eviction
-            this.message_cache.first_entry().unwrap().remove();
+            let (key, decoder) = this.message_cache.first_entry().unwrap().remove_entry();
+            if !decoder.decoding_done() {
+                tracing::warn!(
+                    num_source_symbols = decoder.num_source_symbols(),
+                    num_encoded_symbols_received = decoder.num_encoded_symbols_received(),
+                    inactivation_symbol_threshold = decoder.inactivation_symbol_threshold(),
+                    ?key,
+                    "dropping unfinished ManagedDecoder"
+                );
+            }
         }
 
         let self_id = NodeId::new(this.key.pubkey());

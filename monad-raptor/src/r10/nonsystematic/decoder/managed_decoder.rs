@@ -103,19 +103,28 @@ impl ManagedDecoder {
             .received_encoded_symbol(encoding_symbol_id, |a, b| self.buffer_set.xor_buffers(a, b));
     }
 
-    pub fn try_decode(&mut self) -> bool {
-        let inactivation_symbol_threshold = (INACTIVATION_SYMBOL_THRESHOLD_MULTIPLIER
-            * self.num_source_symbols)
-            >> INACTIVATION_SYMBOL_THRESHOLD_SHIFT;
+    pub fn num_source_symbols(&self) -> usize {
+        self.num_source_symbols
+    }
 
+    pub fn inactivation_symbol_threshold(&self) -> usize {
+        (INACTIVATION_SYMBOL_THRESHOLD_MULTIPLIER * self.num_source_symbols)
+            >> INACTIVATION_SYMBOL_THRESHOLD_SHIFT
+    }
+
+    pub fn try_decode(&mut self) -> bool {
         self.decoder
-            .try_decode(inactivation_symbol_threshold, |a, b| {
+            .try_decode(self.inactivation_symbol_threshold(), |a, b| {
                 self.buffer_set.xor_buffers(a, b)
             })
     }
 
     pub fn decoding_done(&self) -> bool {
         self.decoder.decoding_done()
+    }
+
+    pub fn num_encoded_symbols_received(&self) -> usize {
+        self.decoder.num_encoded_symbols_received()
     }
 
     pub fn reconstruct_source_data(&self) -> Option<Vec<u8>> {
