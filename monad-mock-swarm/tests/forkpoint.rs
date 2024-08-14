@@ -377,7 +377,7 @@ fn forkpoint_restart_f(
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
-            .map(|b| b.execution.seq_num >= SeqNum(terminate_block as u64 - 2))
+            .map(|fb| fb.block.execution.seq_num >= SeqNum(terminate_block as u64 - 2))
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up

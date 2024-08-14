@@ -318,7 +318,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
-    let blk = setup_block::<ST, SCT>(
+    let (blk, payload) = setup_block::<ST, SCT>(
         NodeId::new(author_keypair.pubkey()),
         Round(233),
         Round(232),
@@ -330,6 +330,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     );
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: blk,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -379,7 +380,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
-    let blk = setup_block::<ST, SCT>(
+    let (blk, payload) = setup_block::<ST, SCT>(
         NodeId::new(author_keypair.pubkey()),
         Round(233),
         Round(231),
@@ -406,6 +407,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
 
     let proposal_msg = ProtocolMessage::Proposal(ProposalMessage {
         block: blk,
+        payload,
         last_round_tc: Some(tc),
     });
     let con_msg = ConsensusMessage {

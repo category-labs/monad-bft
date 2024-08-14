@@ -6,7 +6,7 @@ use monad_consensus::{
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockKind},
     ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -34,14 +34,14 @@ type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type SignatureCollectionType = MockSignatures<SignatureType>;
 
-fn setup_block(
+fn setup_block_and_payload(
     author: NodeId<PubKeyType>,
     block_epoch: Epoch,
     block_round: Round,
     qc_epoch: Epoch,
     qc_round: Round,
     signers: &[PubKeyType],
-) -> Block<MockSignatures<SignatureType>> {
+) -> (Block<MockSignatures<SignatureType>>, Payload) {
     let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
@@ -62,19 +62,25 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures<SignatureType>>::new(
-        author,
-        0,
-        block_epoch,
-        block_round,
-        &ExecutionProtocol {
-            state_root: Default::default(),
-            seq_num: SeqNum(1),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
-        &Payload { txns },
-        &qc,
+    let payload = Payload { txns };
+
+    (
+        Block::<MockSignatures<SignatureType>>::new(
+            author,
+            0,
+            block_epoch,
+            block_round,
+            &ExecutionProtocol {
+                state_root: Default::default(),
+                seq_num: SeqNum(1),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            payload.get_id(),
+            BlockKind::Executable,
+            &qc,
+        ),
+        payload,
     )
 }
 
@@ -95,19 +101,21 @@ fn test_proposal_hash() {
     );
     let author = NodeId::new(keypairs[0].pubkey());
 
+    let (block, payload) = setup_block_and_payload(
+        author,
+        epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+        Round(234),
+        epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+        Round(233),
+        keypairs
+            .iter()
+            .map(|kp| kp.pubkey())
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            keypairs
-                .iter()
-                .map(|kp| kp.pubkey())
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ),
+        block,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -137,19 +145,21 @@ fn test_proposal_missing_tc() {
     );
     let author = NodeId::new(keypairs[0].pubkey());
 
+    let (block, payload) = setup_block_and_payload(
+        author,
+        epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+        Round(234),
+        epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
+        Round(232),
+        keypairs
+            .iter()
+            .map(|kp| kp.pubkey())
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
     let proposal = Unvalidated::new(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(232)).expect("epoch exists"),
-            Round(232),
-            keypairs
-                .iter()
-                .map(|kp| kp.pubkey())
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ),
+        block,
+        payload,
         last_round_tc: None,
     });
 
@@ -179,19 +189,21 @@ fn test_proposal_author_not_sender() {
     let sender_keypair = &keypairs[1];
     let author = NodeId::new(author_keypair.pubkey());
 
+    let (block, payload) = setup_block_and_payload(
+        author,
+        epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+        Round(234),
+        epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+        Round(233),
+        keypairs
+            .iter()
+            .map(|keypair| keypair.pubkey())
+            .collect::<Vec<_>>()
+            .as_ref(),
+    );
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            keypairs
-                .iter()
-                .map(|keypair| keypair.pubkey())
-                .collect::<Vec<_>>()
-                .as_ref(),
-        ),
+        block,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -229,15 +241,17 @@ fn test_proposal_invalid_author() {
     );
 
     let author = NodeId::new(author_keypair.pubkey());
+    let (block, payload) = setup_block_and_payload(
+        author,
+        epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+        Round(234),
+        epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+        Round(233),
+        &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
+    );
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
-        ),
+        block,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -282,15 +296,17 @@ fn test_proposal_invalid_qc() {
     );
 
     let author = NodeId::new(non_staked_keypair.pubkey());
+    let (block, payload) = setup_block_and_payload(
+        author,
+        epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
+        Round(234),
+        epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
+        Round(233),
+        &[non_staked_keypair.pubkey()],
+    );
     let proposal = Unvalidated::new(ProposalMessage {
-        block: setup_block(
-            author,
-            epoch_manager.get_epoch(Round(234)).expect("epoch exists"),
-            Round(234),
-            epoch_manager.get_epoch(Round(233)).expect("epoch exists"),
-            Round(233),
-            &[non_staked_keypair.pubkey()],
-        ),
+        block,
+        payload,
         last_round_tc: None,
     });
 

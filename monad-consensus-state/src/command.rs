@@ -10,7 +10,7 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::FullBlock,
     checkpoint::{Checkpoint, RootInfo},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -42,7 +42,7 @@ where
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset,
     /// Commit blocks to ledger
-    LedgerCommit(Vec<Block<SCT>>),
+    LedgerCommit(Vec<FullBlock<SCT>>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync {

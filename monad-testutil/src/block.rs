@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockKind, BlockType},
     ledger::CommitResult,
     payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -111,6 +111,10 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
     fn get_qc(&self) -> &QuorumCertificate<SCT> {
         unimplemented!()
     }
+
+    fn get_full_block(self) -> monad_consensus_types::block::FullBlock<SCT> {
+        unimplemented!()
+    }
 }
 
 impl<PT: PubKey> std::fmt::Debug for MockBlock<PT> {
@@ -131,7 +135,7 @@ pub fn setup_block<ST, SCT>(
         CertificateSignaturePubKey<ST>,
         SignatureCollectionKeyPairType<SCT>,
     >,
-) -> Block<SCT>
+) -> (Block<SCT>, Payload)
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -167,16 +171,26 @@ where
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
     let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
 
-    Block::<SCT>::new(
-        author,
-        0,
-        Epoch(1),
-        block_round,
-        &ExecutionProtocol {
-            randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
-            ..execution
-        },
-        &Payload { txns },
-        &qc,
+    let block_kind = match txns {
+        TransactionPayload::List(_) => BlockKind::Executable,
+        TransactionPayload::Null => BlockKind::Null,
+    };
+    let payload = Payload { txns };
+
+    (
+        Block::<SCT>::new(
+            author,
+            0,
+            Epoch(1),
+            block_round,
+            &ExecutionProtocol {
+                randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
+                ..execution
+            },
+            payload.get_id(),
+            block_kind,
+            &qc,
+        ),
+        payload,
     )
 }

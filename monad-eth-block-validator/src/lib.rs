@@ -2,18 +2,22 @@ use std::collections::BTreeMap;
 
 use alloy_rlp::Decodable;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
+    block::{Block, BlockKind, BlockPolicy, BlockType},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::TransactionPayload,
+    payload::{Payload, TransactionPayload},
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_eth_block_policy::{
     compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, Nonce};
 use monad_state_backend::StateBackend;
 use tracing::warn;
+
+type NonceMap = BTreeMap<EthAddress, Nonce>;
+type CarriageCostMap = BTreeMap<EthAddress, u128>;
+type ValidatedTxns = Vec<EthTransaction>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
@@ -35,21 +39,16 @@ impl EthValidator {
             chain_id,
         }
     }
-}
 
-// FIXME: add specific error returns for the different failures
-impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
-where
-    SCT: SignatureCollection,
-    SBT: StateBackend,
-{
-    fn validate(
+    fn validate_payload(
         &self,
-        block: Block<SCT>,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
-    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
-    {
-        match &block.payload.txns {
+        payload: &Payload,
+    ) -> Result<(ValidatedTxns, NonceMap, CarriageCostMap), BlockValidationError> {
+        if matches!(payload.txns, TransactionPayload::Null) {
+            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+
+        match &payload.txns {
             TransactionPayload::List(txns_rlp) => {
                 // RLP decodes the txns
                 let Ok(eth_txns) =
@@ -105,37 +104,80 @@ where
                     return Err(BlockValidationError::TxnError);
                 }
 
-                if let Err(e) = block
-                    .execution
-                    .randao_reveal
-                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-                {
-                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
-                    return Err(BlockValidationError::RandaoError);
-                };
-
-                Ok(EthValidatedBlock {
-                    block,
-                    validated_txns,
-                    nonces,         // (address -> highest txn nonce) in the block
-                    carriage_costs, // (address -> carriage cost) in the block
-                })
+                Ok((validated_txns, nonces, carriage_costs))
             }
             TransactionPayload::Null => {
-                if let Err(e) = block
-                    .execution
-                    .randao_reveal
-                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+                unreachable!();
+            }
+        }
+    }
+
+    fn validate_block_header<SCT: SignatureCollection>(
+        &self,
+        block: &Block<SCT>,
+        payload: &Payload,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<(), BlockValidationError> {
+        if block.payload_id != payload.get_id() {
+            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+
+        if let Err(e) = block
+            .execution
+            .randao_reveal
+            .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+        {
+            warn!("Invalid randao_reveal signature, reason: {:?}", e);
+            return Err(BlockValidationError::RandaoError);
+        };
+        Ok(())
+    }
+}
+
+// FIXME: add specific error returns for the different failures
+impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+{
+    fn validate(
+        &self,
+        block: Block<SCT>,
+        payload: Payload,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
+    {
+        match block.block_kind {
+            BlockKind::Executable => {
+                self.validate_block_header(&block, &payload, author_pubkey)?;
+
+                if let Ok((validated_txns, nonces, carriage_costs)) =
+                    self.validate_payload(&payload)
                 {
-                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
-                    return Err(BlockValidationError::RandaoError);
-                };
-                Ok(EthValidatedBlock {
-                    block,
-                    validated_txns: Default::default(),
-                    nonces: Default::default(), // (address -> highest txn nonce) in the block
-                    carriage_costs: Default::default(), // (address -> carriage cost) in the block
-                })
+                    Ok(EthValidatedBlock {
+                        block,
+                        orig_payload: payload,
+                        validated_txns,
+                        nonces,
+                        carriage_costs,
+                    })
+                } else {
+                    Err(BlockValidationError::PayloadError)
+                }
+            }
+            BlockKind::Null => {
+                match self.validate_block_header(&block, &payload, author_pubkey) {
+                    Ok(_) => {
+                        Ok(EthValidatedBlock {
+                            block,
+                            orig_payload: payload,
+                            validated_txns: Default::default(),
+                            nonces: Default::default(), // (address -> highest txn nonce) in the block
+                            carriage_costs: Default::default(), // (address -> carriage cost) in the block
+                        })
+                    }
+                    Err(e) => Err(e),
+                }
             }
         }
     }

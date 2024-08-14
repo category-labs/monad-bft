@@ -2,19 +2,64 @@ use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
     proto::{
-        basic::{ProtoBloom, ProtoGas},
+        basic::{ProtoBloom, ProtoGas, ProtoPayloadId},
         block::*,
     },
 };
 
 use crate::{
-    block::Block,
+    block::{Block, BlockKind, FullBlock},
     payload::{
-        Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, RandaoReveal,
+        Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
         TransactionPayload,
     },
     signature_collection::SignatureCollection,
 };
+
+impl From<&BlockKind> for i32 {
+    fn from(kind: &BlockKind) -> Self {
+        match kind {
+            BlockKind::Executable => 0,
+            BlockKind::Null => 1,
+        }
+    }
+}
+
+impl TryFrom<i32> for BlockKind {
+    type Error = ProtoError;
+    fn try_from(kind: i32) -> Result<Self, Self::Error> {
+        match kind {
+            0 => Ok(BlockKind::Executable),
+            1 => Ok(BlockKind::Null),
+            _ => Err(ProtoError::DeserializeError(
+                "unknown block kind".to_owned(),
+            )),
+        }
+    }
+}
+
+impl From<&PayloadId> for ProtoPayloadId {
+    fn from(value: &PayloadId) -> Self {
+        Self {
+            pid: Some((&(value.0)).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoPayloadId> for PayloadId {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoPayloadId) -> Result<Self, Self::Error> {
+        Ok(Self(
+            value
+                .pid
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ProtoPayloadId.pid".to_owned(),
+                ))?
+                .try_into()?,
+        ))
+    }
+}
 
 impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {
@@ -23,7 +68,8 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
             execution: Some((&value.execution).into()),
-            payload: Some((&value.payload).into()),
+            payload_id: Some((&value.payload_id).into()),
+            block_kind: (&value.block_kind).into(),
             qc: Some((&value.qc).into()),
             timestamp: value.timestamp,
         }
@@ -60,12 +106,13 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                     "Block<AggregateSignatures>.execution".to_owned(),
                 ))?
                 .try_into()?,
-            &value
-                .payload
+            value
+                .payload_id
                 .ok_or(Self::Error::MissingRequiredField(
-                    "Block<AggregateSignatures>.payload".to_owned(),
+                    "Block<AggregateSignatures>.payload_id".to_owned(),
                 ))?
                 .try_into()?,
+            value.block_kind.try_into()?,
             &value
                 .qc
                 .ok_or(Self::Error::MissingRequiredField(
@@ -73,6 +120,36 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 ))?
                 .try_into()?,
         ))
+    }
+}
+
+impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoFullBlock {
+    fn from(value: &FullBlock<SCT>) -> Self {
+        Self {
+            block: Some((&value.block).into()),
+            payload: Some((&value.payload).into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoFullBlock> for FullBlock<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoFullBlock) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block: value
+                .block
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.block".to_owned(),
+                ))?
+                .try_into()?,
+            payload: value
+                .payload
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.payload".to_owned(),
+                ))?
+                .try_into()?,
+        })
     }
 }
 

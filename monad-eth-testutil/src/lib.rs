@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockKind},
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::QuorumCertificate,
 };
@@ -67,6 +67,9 @@ pub fn generate_random_block_with_txns(
     let full_txn_list = FullTransactionList::new(eth_full_tx_list.rlp_encode());
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
+    let payload = Payload {
+        txns: TransactionPayload::List(full_txn_list),
+    };
     let block = Block::new(
         NodeId::new(keypair.pubkey()),
         0,
@@ -78,9 +81,8 @@ pub fn generate_random_block_with_txns(
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },
-        &Payload {
-            txns: TransactionPayload::List(full_txn_list),
-        },
+        payload.get_id(),
+        BlockKind::Executable,
         &QuorumCertificate::genesis_qc(),
     );
     let validated_txns: Vec<_> = eth_txn_list
@@ -102,6 +104,7 @@ pub fn generate_random_block_with_txns(
 
     EthValidatedBlock {
         block,
+        orig_payload: payload,
         validated_txns,
         nonces,
         carriage_costs,

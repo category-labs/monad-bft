@@ -686,7 +686,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, BlockKind},
         ledger::CommitResult,
         payload::{
             ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
@@ -1143,6 +1143,9 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
+        let payload = Payload {
+            txns: TransactionPayload::List(FullTransactionList::empty()),
+        };
         let block = Block::<SignatureCollectionType>::new(
             NodeId::new(author.pubkey()),
             0,
@@ -1154,13 +1157,13 @@ mod test {
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
             },
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::empty()),
-            },
+            payload.get_id(),
+            BlockKind::Executable,
             &QuorumCertificate::genesis_qc(),
         );
         let proposal = ProposalMessage {
             block,
+            payload,
             last_round_tc: None,
         };
 

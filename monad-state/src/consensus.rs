@@ -190,7 +190,9 @@ where
                 }
             }
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
-            ConsensusEvent::BlockSync(block) => consensus.handle_block_sync(block),
+            ConsensusEvent::BlockSync { block, payload } => {
+                consensus.handle_block_sync(block, payload)
+            }
         };
         let consensus_cmds = vec;
         consensus_cmds

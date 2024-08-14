@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockPolicyError, BlockType},
+    block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
+    payload::Payload,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -111,6 +112,7 @@ pub fn static_validate_transaction(
 #[derive(Debug, Clone)]
 pub struct EthValidatedBlock<SCT: SignatureCollection> {
     pub block: Block<SCT>,
+    pub orig_payload: Payload,
     pub validated_txns: Vec<EthTransaction>,
     pub nonces: BTreeMap<EthAddress, Nonce>,
     pub carriage_costs: BTreeMap<EthAddress, Balance>,
@@ -207,6 +209,13 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
 
     fn is_empty_block(&self) -> bool {
         self.block.is_empty_block()
+    }
+
+    fn get_full_block(self) -> FullBlock<SCT> {
+        FullBlock {
+            block: self.block,
+            payload: self.orig_payload,
+        }
     }
 }
 

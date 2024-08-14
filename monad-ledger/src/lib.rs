@@ -15,7 +15,7 @@ use futures::Stream;
 use monad_blockdb::BlockDb;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::{Block as MonadBlock, BlockType},
+    block::{BlockType, FullBlock as MonadBlock},
     payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     signature_collection::SignatureCollection,
 };
@@ -26,7 +26,7 @@ use monad_crypto::{
 use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_proto::proto::block::ProtoBlock;
+use monad_proto::proto::block::ProtoFullBlock;
 use monad_types::{BlockId, Round, SeqNum};
 use prost::Message;
 use reth_primitives::{Block as EthBlock, BlockBody, Header};
@@ -195,7 +195,7 @@ where
                     tokio::task::spawn_blocking(move || {
                         for (_, maybe_eth_block, bft_block) in full_blocks {
                             let bft_id = bft_block.get_id();
-                            let pblock: ProtoBlock = (&bft_block).into();
+                            let pblock: ProtoFullBlock = (&bft_block).into();
                             let data = pblock.encode_to_vec();
                             // if eth block is present, it must be written with
                             // the matching bft block atomically
@@ -226,7 +226,7 @@ where
                             let response = match maybe_bft_block_bytes {
                                 Some(bft_block_serialized) => {
                                     let pblock =
-                                        ProtoBlock::decode(bft_block_serialized.as_slice())
+                                        ProtoFullBlock::decode(bft_block_serialized.as_slice())
                                             .expect("local bft block is not valid block");
                                     let block = pblock
                                         .try_into()
@@ -300,7 +300,7 @@ fn generate_header<SCT: SignatureCollection>(
         seq_num,
         beneficiary,
         randao_reveal,
-    } = monad_block.execution.clone();
+    } = monad_block.block.execution.clone();
 
     let mut randao_reveal_hasher = HasherType::new();
     randao_reveal_hasher.update(randao_reveal);

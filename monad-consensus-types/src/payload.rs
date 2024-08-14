@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{DontCare, EnumDiscriminant, Round, SeqNum};
+use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
 use crate::state_root_hash::StateRootHash;
@@ -151,9 +152,16 @@ impl Hashable for TransactionPayload {
 
 /// Contents of a proposal that are part of the Monad protocol
 /// but not in the core bft consensus protocol
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionPayload,
+}
+
+impl Payload {
+    pub fn get_id(&self) -> PayloadId {
+        let hash = HasherType::hash_object(self);
+        PayloadId(hash)
+    }
 }
 
 impl Hashable for Payload {
@@ -167,6 +175,20 @@ impl DontCare for Payload {
         Self {
             txns: TransactionPayload::List(FullTransactionList::empty()),
         }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PayloadId(pub Hash);
+
+impl std::fmt::Debug for PayloadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>02x}{:>02x}..{:>02x}{:>02x}",
+            self.0[0], self.0[1], self.0[30], self.0[31]
+        )
     }
 }
 

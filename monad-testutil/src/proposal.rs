@@ -5,7 +5,7 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockKind, BlockType},
     ledger::CommitResult,
     payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -112,6 +112,11 @@ where
             TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
             TransactionPayload::Null => qc.get_seq_num(),
         };
+        let block_kind = match txns {
+            TransactionPayload::List(_) => BlockKind::Executable,
+            TransactionPayload::Null => BlockKind::Null,
+        };
+        let payload = Payload { txns };
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),
             self.timestamp,
@@ -123,7 +128,8 @@ where
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
-            &Payload { txns },
+            payload.get_id(),
+            block_kind,
             qc,
         );
 
@@ -135,6 +141,7 @@ where
 
         let proposal = ProposalMessage {
             block,
+            payload,
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;

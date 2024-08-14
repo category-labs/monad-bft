@@ -3,7 +3,8 @@ use core::fmt::Debug;
 use monad_state_backend::{InMemoryState, StateBackend};
 
 use crate::{
-    block::{Block, BlockPolicy, PassthruBlockPolicy},
+    block::{Block, BlockPolicy, FullBlock, PassthruBlockPolicy},
+    payload::Payload,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 
@@ -13,6 +14,9 @@ use crate::{
 pub enum BlockValidationError {
     TxnError,
     RandaoError,
+    HeaderError,
+    PayloadError,
+    HeaderPayloadMismatchError,
 }
 
 pub trait BlockValidator<SCT, BPT, SBT>
@@ -24,6 +28,7 @@ where
     fn validate(
         &self,
         block: Block<SCT>,
+        payload: Payload,
         author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
@@ -38,9 +43,10 @@ where
     fn validate(
         &self,
         block: Block<SCT>,
+        payload: Payload,
         author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError> {
-        (**self).validate(block, author_pubkey)
+        (**self).validate(block, payload, author_pubkey)
     }
 }
 
@@ -54,11 +60,12 @@ where
     fn validate(
         &self,
         block: Block<SCT>,
+        payload: Payload,
         _author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,
     > {
-        Ok(block)
+        Ok(FullBlock { block, payload })
     }
 }

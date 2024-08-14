@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockKind},
     ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -34,6 +34,7 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
+    let payload = Payload { txns };
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
         0,
@@ -45,7 +46,8 @@ fn block_hash_id() {
             beneficiary: EthAddress::from_bytes([0x0a_u8; 20]),
             randao_reveal: RandaoReveal::default(),
         },
-        &Payload { txns },
+        payload.get_id(),
+        BlockKind::Executable,
         &qc,
     );
 

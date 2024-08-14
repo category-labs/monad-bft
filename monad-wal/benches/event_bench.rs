@@ -80,7 +80,7 @@ fn bench_proposal(c: &mut Criterion) {
         create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(1, validator_factory);
     let author_keypair = &keypairs[0];
 
-    let blk = setup_block::<SignatureType, SignatureCollectionType>(
+    let (block, payload) = setup_block::<SignatureType, SignatureCollectionType>(
         NodeId::new(author_keypair.pubkey()),
         Round(10),
         Round(9),
@@ -92,7 +92,8 @@ fn bench_proposal(c: &mut Criterion) {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: blk,
+        block,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {

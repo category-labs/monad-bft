@@ -79,6 +79,7 @@ impl<SCT: SignatureCollection> From<&ProposalMessage<SCT>> for ProtoProposalMess
     fn from(value: &ProposalMessage<SCT>) -> Self {
         Self {
             block: Some((&value.block).into()),
+            payload: Some((&value.payload).into()),
             last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
         }
     }
@@ -93,6 +94,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
                 .block
                 .ok_or(Self::Error::MissingRequiredField(
                     "ProposalMessage<AggregateSignatures>.block".to_owned(),
+                ))?
+                .try_into()?,
+            payload: value
+                .payload
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ProposalMessage<AggregateSignatures>.payload".to_owned(),
                 ))?
                 .try_into()?,
             last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,

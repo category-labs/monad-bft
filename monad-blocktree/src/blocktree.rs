@@ -532,7 +532,7 @@ where
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block as ConsensusBlock, BlockType, PassthruBlockPolicy},
+        block::{Block as ConsensusBlock, BlockKind, BlockType, FullBlock, PassthruBlockPolicy},
         ledger::CommitResult,
         payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
         quorum_certificate::{QcInfo, QuorumCertificate},
@@ -624,6 +624,13 @@ mod test {
         QC::new(QcInfo { vote }, MockSignatures::with_pubkeys(&[]))
     }
 
+    fn full_block_new(b: &Block, p: &Payload) -> FullBlock<MockSignatures<SignatureType>> {
+        FullBlock {
+            block: b.clone(),
+            payload: p.clone(),
+        }
+    }
+
     #[test]
     fn test_prune() {
         let payload = Payload::dont_care();
@@ -634,7 +641,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -650,7 +658,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -667,7 +676,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -684,7 +694,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -701,7 +712,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v4),
         );
 
@@ -718,7 +730,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v5),
         );
 
@@ -735,7 +748,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v6),
         );
 
@@ -752,7 +766,8 @@ mod test {
             Epoch(1),
             Round(7),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v7),
         );
 
@@ -775,26 +790,54 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b4, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b5.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b5, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b6.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b6, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         println!("{:?}", blocktree);
 
@@ -835,7 +878,13 @@ mod test {
         //  |
         //  b7
 
-        assert!(blocktree.add(b7, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b7, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
 
         let v8 = VoteInfo {
             id: b5.get_id(),
@@ -851,11 +900,18 @@ mod test {
             Epoch(1),
             Round(8),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v8),
         );
 
-        assert!(blocktree.add(b8, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b8, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
         println!("{:?}", blocktree);
     }
 
@@ -869,7 +925,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -887,7 +944,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -905,7 +963,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -920,10 +979,20 @@ mod test {
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
-        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(
@@ -933,7 +1002,11 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert_eq!(blocktree.tree.len(), 3);
         assert!(blocktree.is_coherent(&b1.get_id()));
@@ -951,13 +1024,15 @@ mod test {
     #[test]
     fn equal_level_branching() {
         let execution = ExecutionProtocol::dont_care();
+        let p0 = Payload::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
             &execution,
-            &Payload::dont_care(),
+            p0.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -969,27 +1044,31 @@ mod test {
             ..DontCare::dont_care()
         };
 
+        let p1 = Payload {
+            txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
+        };
         let b1 = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(2),
             &execution,
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
-            },
+            p1.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
+        let p2 = Payload {
+            txns: TransactionPayload::List(FullTransactionList::new(vec![2].into())),
+        };
         let b2 = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(2),
             &execution,
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::new(vec![2].into())),
-            },
+            p2.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1001,15 +1080,17 @@ mod test {
             ..DontCare::dont_care()
         };
 
+        let p3 = Payload {
+            txns: TransactionPayload::List(FullTransactionList::new(vec![3].into())),
+        };
         let b3 = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(3),
             &execution,
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::new(vec![3].into())),
-            },
+            p3.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1030,15 +1111,17 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(full_block_new(&g, &p0), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(full_block_new(&b1, &p1), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(full_block_new(&b2, &p2), &mut block_policy, &state_backend)
             .is_ok());
-        assert!(blocktree.add(b3, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(full_block_new(&b3, &p3), &mut block_policy, &state_backend)
+            .is_ok());
 
         assert_eq!(blocktree.size(), 4);
 
@@ -1060,13 +1143,15 @@ mod test {
     #[test]
     fn duplicate_blocks() {
         let execution = ExecutionProtocol::dont_care();
+        let p0 = Payload::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
             &execution,
-            &Payload::dont_care(),
+            p0.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1078,15 +1163,17 @@ mod test {
             ..DontCare::dont_care()
         };
 
+        let p1 = Payload {
+            txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
+        };
         let b1 = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(2),
             &execution,
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
-            },
+            p1.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1100,14 +1187,18 @@ mod test {
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
-        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(full_block_new(&g, &p0), &mut block_policy, &state_backend)
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(full_block_new(&b1, &p1), &mut block_policy, &state_backend)
             .is_ok());
-        assert!(blocktree.add(b1, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(full_block_new(&b1, &p1), &mut block_policy, &state_backend)
+            .is_ok());
+        assert!(blocktree
+            .add(full_block_new(&b1, &p1), &mut block_policy, &state_backend)
+            .is_ok());
 
         assert_eq!(blocktree.tree.len(), 2);
     }
@@ -1122,7 +1213,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1139,7 +1231,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1156,7 +1249,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1165,7 +1259,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b4 = Block::new(
@@ -1174,7 +1269,8 @@ mod test {
             Epoch(1),
             Round(5),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1189,28 +1285,48 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.is_coherent(&g.get_id()));
         assert!(!blocktree.is_coherent(&b1.get_id()));
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b4, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(!blocktree.is_coherent(&b4.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.is_coherent(&b1.get_id()));
         assert!(blocktree.is_coherent(&b2.get_id()));
@@ -1242,7 +1358,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1259,7 +1376,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1276,7 +1394,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1285,7 +1404,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b4 = Block::new(
@@ -1294,7 +1414,8 @@ mod test {
             Epoch(1),
             Round(5),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1309,27 +1430,47 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b4, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1365,7 +1506,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1382,7 +1524,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1399,7 +1542,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1414,10 +1558,18 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
 
         let b1_entry = blocktree.tree.get_mut(&b1.get_id()).unwrap();
@@ -1428,7 +1580,11 @@ mod test {
 
         // when b2 is added, b1 coherency should be updated
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
 
         // all blocks must be coherent
@@ -1456,7 +1612,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1473,7 +1630,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1490,7 +1648,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1505,12 +1664,20 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
@@ -1519,7 +1686,11 @@ mod test {
         assert!(!blocktree.is_coherent(&b2.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
 
@@ -1548,7 +1719,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1565,7 +1737,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1582,7 +1755,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1599,7 +1773,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -1614,12 +1789,20 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1629,7 +1812,11 @@ mod test {
 
         // add block 2
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b2.qc);
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
@@ -1641,7 +1828,11 @@ mod test {
 
         // add block 1
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1672,7 +1863,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1689,7 +1881,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1706,7 +1899,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1723,7 +1917,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v3),
         );
 
@@ -1738,12 +1933,20 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1753,7 +1956,11 @@ mod test {
 
         // add block 1
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1764,7 +1971,11 @@ mod test {
 
         // add block 2
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
@@ -1795,7 +2006,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1813,7 +2025,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1830,7 +2043,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
         let b3 = Block::new(
@@ -1839,7 +2053,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1854,17 +2069,29 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
@@ -1874,7 +2101,11 @@ mod test {
         assert!(!blocktree.is_coherent(&b3.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
@@ -1907,7 +2138,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -1925,7 +2157,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v1),
         );
 
@@ -1942,7 +2175,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1959,7 +2193,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v2),
         );
 
@@ -1976,7 +2211,8 @@ mod test {
             Epoch(1),
             Round(5),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v3),
         );
         let b5 = Block::new(
@@ -1985,7 +2221,8 @@ mod test {
             Epoch(1),
             Round(6),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v4),
         );
         let b6 = Block::new(
@@ -1994,7 +2231,8 @@ mod test {
             Epoch(1),
             Round(7),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc(v4),
         );
 
@@ -2009,32 +2247,56 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(g.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b3.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b4.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b4, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b2.qc);
 
         assert!(blocktree
-            .add(b5.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b5, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b5.qc).unwrap() == b3.qc);
 
         assert!(blocktree
-            .add(b6.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b6, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b6.qc).unwrap() == b3.qc);
 
@@ -2047,7 +2309,11 @@ mod test {
         assert!(!blocktree.is_coherent(&b6.get_id()));
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
         assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
@@ -2081,7 +2347,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
         let b2 = Block::new(
@@ -2090,7 +2357,8 @@ mod test {
             Epoch(1),
             Round(2),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b1),
         );
 
@@ -2105,12 +2373,20 @@ mod test {
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
         let mut block_policy = PassthruBlockPolicy;
         assert!(blocktree
-            .add(b2.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b2, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree.root.children_blocks.is_empty());
 
         assert!(blocktree
-            .add(b1.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b1, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert_eq!(blocktree.root.children_blocks, vec![b1.get_id()]);
         let b1_children = blocktree
@@ -2148,7 +2424,8 @@ mod test {
             Epoch(1),
             Round(1),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &QC::genesis_qc(),
         );
 
@@ -2158,7 +2435,8 @@ mod test {
             Epoch(1),
             Round(3),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&g),
         );
 
@@ -2168,7 +2446,8 @@ mod test {
             Epoch(1),
             Round(4),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b3),
         );
 
@@ -2178,7 +2457,8 @@ mod test {
             Epoch(1),
             Round(5),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b4),
         );
 
@@ -2188,7 +2468,8 @@ mod test {
             Epoch(1),
             Round(6),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b5),
         );
 
@@ -2198,7 +2479,8 @@ mod test {
             Epoch(1),
             Round(7),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b6),
         );
 
@@ -2208,7 +2490,8 @@ mod test {
             Epoch(1),
             Round(9),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b3),
         );
 
@@ -2218,7 +2501,8 @@ mod test {
             Epoch(1),
             Round(10),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b9),
         );
 
@@ -2228,7 +2512,8 @@ mod test {
             Epoch(1),
             Round(11),
             &execution,
-            &payload,
+            payload.get_id(),
+            BlockKind::Executable,
             &mock_qc_for_block(&b10),
         );
 
@@ -2244,20 +2529,70 @@ mod test {
         let mut block_policy = PassthruBlockPolicy;
 
         // insertion order: insert all blocks except b3, then b3
-        assert!(blocktree.add(g, &mut block_policy, &state_backend).is_ok());
-        assert!(blocktree.add(b4, &mut block_policy, &state_backend).is_ok());
-        assert!(blocktree.add(b5, &mut block_policy, &state_backend).is_ok());
-        assert!(blocktree.add(b6, &mut block_policy, &state_backend).is_ok());
-        assert!(blocktree.add(b7, &mut block_policy, &state_backend).is_ok());
-        assert!(blocktree.add(b9, &mut block_policy, &state_backend).is_ok());
         assert!(blocktree
-            .add(b10, &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&g, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
         assert!(blocktree
-            .add(b11.clone(), &mut block_policy, &state_backend)
+            .add(
+                full_block_new(&b4, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b5, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b6, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b7, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b9, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b10, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b11, &payload),
+                &mut block_policy,
+                &state_backend
+            )
             .is_ok());
 
-        assert!(blocktree.add(b3, &mut block_policy, &state_backend).is_ok());
+        assert!(blocktree
+            .add(
+                full_block_new(&b3, &payload),
+                &mut block_policy,
+                &state_backend
+            )
+            .is_ok());
 
         let high_commit_qc = blocktree.get_high_committable_qc();
         assert_eq!(high_commit_qc, Some(b11.get_qc().clone()));

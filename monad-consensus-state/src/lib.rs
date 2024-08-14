@@ -11,7 +11,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
+    block::{Block, BlockKind, BlockPolicy, BlockType, FullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
@@ -254,10 +254,10 @@ where
 
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
-    pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
+    pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<FullBlock<SCT>> {
         self.pending_block_tree
             .get_block(bid)
-            .map(|b| b.get_unvalidated_block_ref())
+            .map(|b| b.clone().get_full_block()) //TODO revisit
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT> {
@@ -385,7 +385,10 @@ where
             .map
             .get(&author)
             .expect("proposal author exists in validator_mapping");
-        let block = match self.block_validator.validate(p.block, author_pubkey) {
+        let block = match self
+            .block_validator
+            .validate(p.block, p.payload, author_pubkey)
+        {
             Ok(block) => block,
             Err(BlockValidationError::TxnError) => {
                 warn!("Transaction validation failed");
@@ -396,6 +399,16 @@ where
                 self.metrics
                     .consensus_events
                     .failed_verify_randao_reveal_sig += 1;
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderPayloadMismatchError) => {
+                // TODO: this is malicious behaviour?
+                return cmds;
+            }
+            Err(BlockValidationError::PayloadError) => {
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderError) => {
                 return cmds;
             }
         };
@@ -590,7 +603,11 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
-    pub fn handle_block_sync(&mut self, block: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
+    pub fn handle_block_sync(
+        &mut self,
+        block: Block<SCT>,
+        payload: Payload,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
 
         let author_pubkey = self
@@ -602,8 +619,10 @@ where
             .expect("blocksync'd block author should be in validator set");
         let block = self
             .block_validator
-            .validate(block, author_pubkey)
-            .expect("majority extended invalid block");
+            .validate(block, payload, author_pubkey)
+            .expect("majority extended invalid block"); //FIXME: header payload could mismatch if
+                                                        //they respond with incorrect thing. DONT
+                                                        //UNWRAP THIS
         if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
             let removed = self.consensus.block_sync_requests.remove(&block.get_id());
             if removed.is_none() {
@@ -769,7 +788,7 @@ where
 
                 let unvalidated_blocks = blocks_to_commit
                     .into_iter()
-                    .map(|b| b.get_unvalidated_block())
+                    .map(|b| b.get_full_block())
                     .collect();
                 cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
                     unvalidated_blocks,
@@ -1119,10 +1138,12 @@ where
         let try_propose_seq_num = seq_num_qc + SeqNum(1);
 
         let proposer_builder =
-            |txns: TransactionPayload,
+            |block_kind: BlockKind,
+             txns: TransactionPayload,
              hash: StateRootHash,
              seq_num: SeqNum,
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
+                let payload = Payload { txns };
                 let b = Block::new(
                     node_id,
                     self.block_timestamp
@@ -1138,12 +1159,14 @@ where
                             self.cert_keypair,
                         ),
                     },
-                    &Payload { txns },
+                    payload.get_id(),
+                    block_kind,
                     &high_qc,
                 );
 
                 let p = ProposalMessage {
                     block: b,
+                    payload,
                     last_round_tc,
                 };
                 let msg = ConsensusMessage {
@@ -1193,6 +1216,7 @@ where
                     Ok(prop_txns) => {
                         self.metrics.consensus_events.creating_proposal += 1;
                         proposer_builder(
+                            BlockKind::Executable,
                             TransactionPayload::List(prop_txns),
                             propose_state_root_hash,
                             try_propose_seq_num,
@@ -1211,6 +1235,7 @@ where
                             .get_block_state_root(&high_qc.get_block_id())
                             .expect("parent block is coherent");
                         proposer_builder(
+                            BlockKind::Null,
                             TransactionPayload::Null,
                             srh_qc,
                             seq_num_qc,
@@ -1240,7 +1265,13 @@ where
                     .pending_block_tree
                     .get_block_state_root(&high_qc.get_block_id())
                     .expect("parent block is coherent");
-                proposer_builder(TransactionPayload::Null, srh_qc, seq_num_qc, last_round_tc)
+                proposer_builder(
+                    BlockKind::Null,
+                    TransactionPayload::Null,
+                    srh_qc,
+                    seq_num_qc,
+                    last_round_tc,
+                )
             }
         }
     }
@@ -1378,14 +1409,14 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{Block, BlockPolicy, BlockType, PassthruBlockPolicy},
+        block::{Block, BlockKind, BlockPolicy, BlockType, PassthruBlockPolicy},
         block_validator::{BlockValidator, MockValidator},
         checkpoint::RootInfo,
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
-            FullTransactionList, MissingNextStateRoot, NopStateRoot, StateRoot, StateRootValidator,
-            TransactionPayload,
+            FullTransactionList, MissingNextStateRoot, NopStateRoot, Payload, StateRoot,
+            StateRootValidator, TransactionPayload,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1544,8 +1575,12 @@ mod test {
             self.wrapped_state().handle_vote_message(author, p)
         }
 
-        fn handle_block_sync(&mut self, p: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
-            self.wrapped_state().handle_block_sync(p)
+        fn handle_block_sync(
+            &mut self,
+            b: Block<SCT>,
+            p: Payload,
+        ) -> Vec<ConsensusCommand<ST, SCT>> {
+            self.wrapped_state().handle_block_sync(b, p)
         }
     }
 
@@ -2421,6 +2456,7 @@ mod test {
 
         let (author_1, _, proposal_message_1) = cp1.destructure();
         let block_1 = proposal_message_1.block.clone();
+        let payload_1 = proposal_message_1.payload.clone();
         let cmds1 = n1.handle_proposal_message(author_1, proposal_message_1.clone());
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
@@ -2469,6 +2505,7 @@ mod test {
         let cp2 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_2, _, proposal_message_2) = cp2.destructure();
         let block_2 = proposal_message_2.block.clone();
+        let payload_2 = proposal_message_2.payload.clone();
         let cmds2 = n2.handle_proposal_message(author_2, proposal_message_2.clone());
         // Blocksync already requested with the created QC
         assert!(find_blocksync_request(&cmds2).is_none());
@@ -2481,6 +2518,7 @@ mod test {
         let cp3 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_3, _, proposal_message_3) = cp3.destructure();
         let block_3 = proposal_message_3.block.clone();
+        let payload_3 = proposal_message_3.payload.clone();
 
         let cmds2 = n2.handle_proposal_message(author_3, proposal_message_3.clone());
         let cmds1 = n1.handle_proposal_message(author_3, proposal_message_3);
@@ -2495,7 +2533,7 @@ mod test {
         assert!(find_commit_cmd(&cmds1).is_some());
 
         // a block sync request arrived, helping second state to recover
-        let _ = n2.handle_block_sync(block_1);
+        let _ = n2.handle_block_sync(block_1, payload_1);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2526,7 +2564,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let cmds3 = n3.handle_block_sync(block_3.clone());
+        let cmds3 = n3.handle_block_sync(block_3.clone(), payload_3.clone());
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
         let res = find_blocksync_request(&cmds3);
@@ -2534,7 +2572,7 @@ mod test {
             panic!("request sync is not found")
         };
         // repeated handling of the requested block should be ignored
-        let cmds3 = n3.handle_block_sync(block_3);
+        let cmds3 = n3.handle_block_sync(block_3, payload_3);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
         assert!(find_blocksync_request(&cmds3).is_none());
@@ -2553,7 +2591,7 @@ mod test {
         }
 
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = n3.handle_block_sync(block_2);
+        let cmds3 = n3.handle_block_sync(block_2, payload_2);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
@@ -2797,7 +2835,7 @@ mod test {
             // after 2f + 1 votes, we expect that an empty proposal is created
             if i == 2 {
                 let p = extract_proposal_broadcast(cmds);
-                assert_eq!(p.block.payload.txns, TransactionPayload::Null);
+                assert_eq!(p.payload.txns, TransactionPayload::Null);
                 assert_eq!(
                     next_leader
                         .metrics
@@ -3348,11 +3386,13 @@ mod test {
             epoch,
             p2.block.round,
             &p2.block.execution,
-            &p2.block.payload,
+            p2.payload.get_id(),
+            BlockKind::Executable,
             &p2.block.qc,
         );
         let invalid_p2 = ProposalMessage {
             block: invalid_b2,
+            payload: p2.payload,
             last_round_tc: None,
         };
 
@@ -3814,7 +3854,7 @@ mod test {
             // state should not request blocksync
             assert!(extract_blocksync_requests(cmds).is_empty());
 
-            block_sync_blocks.push(verified_message.block);
+            block_sync_blocks.push((verified_message.block, verified_message.payload));
         }
         let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
 
@@ -3878,9 +3918,9 @@ mod test {
         let val_set = env.val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let nodeid_0 = ctx[0].nodeid;
         let state1 = &mut ctx[1];
-        for block in block_sync_blocks.into_iter().rev() {
+        for (block, payload) in block_sync_blocks.into_iter().rev() {
             // blocksync response for state 2
-            let _ = state1.handle_block_sync(block);
+            let _ = state1.handle_block_sync(block, payload);
         }
 
         // blocks are committed immediately after blocksync is finished
@@ -4055,7 +4095,7 @@ mod test {
         // there's no child block in the blocktree, so this must be ignored
         // (because invariant is broken)
         let mut wrapped_state = ctx[0].wrapped_state();
-        let cmds = wrapped_state.handle_block_sync(p1.block.clone());
+        let cmds = wrapped_state.handle_block_sync(p1.block.clone(), p1.payload.clone());
         assert!(cmds.is_empty());
 
         // assert that consensus state wasn't mutated by comparing it against an unchanged
@@ -4303,7 +4343,7 @@ mod test {
         // state receives block 2
         if through_blocksync {
             // blocksync response for state 2
-            let _ = n1.handle_block_sync(proposal_message_2.block);
+            let _ = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
         } else {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
@@ -4413,7 +4453,7 @@ mod test {
         // state receives block 3
         if through_blocksync {
             // blocksync response for state 3
-            let cmds = n1.handle_block_sync(proposal_message_3.block);
+            let cmds = n1.handle_block_sync(proposal_message_3.block, proposal_message_3.payload);
             // request blocksync for block 2
             assert!(find_blocksync_request(&cmds).is_some());
         } else {
@@ -4442,7 +4482,7 @@ mod test {
         // state receives block 2
         if through_blocksync {
             // blocksync response for state 2
-            let cmds = n1.handle_block_sync(proposal_message_2.block);
+            let cmds = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
             assert!(find_blocksync_request(&cmds).is_none());
             assert!(find_commit_cmd(&cmds).is_some());
             if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {

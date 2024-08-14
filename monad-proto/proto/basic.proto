@@ -41,3 +41,7 @@ message ProtoGas {
 message ProtoBloom {
   bytes bloom = 1;
 }
+
+message ProtoPayloadId {
+  ProtoHash pid = 1;
+}

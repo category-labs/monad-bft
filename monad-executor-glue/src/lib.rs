@@ -12,9 +12,10 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
+    payload::Payload,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
@@ -62,7 +63,7 @@ pub enum TimerCommand<E> {
 }
 
 pub enum LedgerCommand<SCT: SignatureCollection> {
-    LedgerCommit(Vec<Block<SCT>>),
+    LedgerCommit(Vec<FullBlock<SCT>>),
     LedgerFetch(BlockId),
 }
 
@@ -228,7 +229,10 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Timeout,
     /// a block that was previously requested
     /// this is an invariant
-    BlockSync(Block<SCT>),
+    BlockSync {
+        block: Block<SCT>,
+        payload: Payload,
+    },
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -243,9 +247,11 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
-            ConsensusEvent::BlockSync(block) => {
-                f.debug_struct("BlockSync").field("block", block).finish()
-            }
+            ConsensusEvent::BlockSync { block, payload } => f
+                .debug_struct("BlockSync")
+                .field("block", block)
+                .field("payload_id", &payload.get_id())
+                .finish(),
         }
     }
 }
@@ -417,7 +423,7 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     DoneSync(SeqNum),
 
     // Statesync-requested block
-    BlockSync(Block<SCT>),
+    BlockSync(FullBlock<SCT>),
 
     /// Consensus request sync
     RequestSync {

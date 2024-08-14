@@ -11,6 +11,7 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
+    block::BlockKind,
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{
@@ -263,8 +264,8 @@ where
         self.wrapped_state().handle_vote_message(author, p)
     }
 
-    fn handle_block_sync(&mut self, p: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
-        self.wrapped_state().handle_block_sync(p)
+    fn handle_block_sync(&mut self, b: Block<SCT>, p: Payload) -> Vec<ConsensusCommand<ST, SCT>> {
+        self.wrapped_state().handle_block_sync(b, p)
     }
 }
 
@@ -482,7 +483,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
     assert_eq!(author, leader);
     (encoded_txns, env, ctx, author, proposal_message)
 }
-fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT> {
+fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> (Block<SCT>, Payload) {
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
@@ -494,19 +495,24 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
         &txns_encoded,
     )));
 
-    Block::new(
-        NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
-        0,
-        Epoch(1),
-        Round(1),
-        &ExecutionProtocol {
-            state_root: StateRootHash::default(),
-            seq_num: SeqNum(0),
-            beneficiary: Default::default(),
-            randao_reveal: Default::default(),
-        },
-        &Payload { txns },
-        &QuorumCertificate::<SCT>::genesis_qc(),
+    let payload = Payload { txns };
+    (
+        Block::new(
+            NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
+            0,
+            Epoch(1),
+            Round(1),
+            &ExecutionProtocol {
+                state_root: StateRootHash::default(),
+                seq_num: SeqNum(0),
+                beneficiary: Default::default(),
+                randao_reveal: Default::default(),
+            },
+            payload.get_id(),
+            BlockKind::Executable,
+            &QuorumCertificate::<SCT>::genesis_qc(),
+        ),
+        payload,
     )
 }
 

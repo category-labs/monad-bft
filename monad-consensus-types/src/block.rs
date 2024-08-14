@@ -3,11 +3,11 @@ use monad_crypto::{
     hasher::{Hashable, Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, EnumDiscriminant, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    payload::{ExecutionProtocol, Payload, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, PayloadId, TransactionPayload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -58,6 +58,27 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     fn get_unvalidated_block(self) -> Block<SCT>;
 
     fn get_unvalidated_block_ref(&self) -> &Block<SCT>;
+
+    fn get_full_block(self) -> FullBlock<SCT>;
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BlockKind {
+    Executable,
+    Null,
+}
+
+impl Hashable for BlockKind {
+    fn hash(&self, state: &mut impl Hasher) {
+        match self {
+            BlockKind::Executable => {
+                EnumDiscriminant(1).hash(state);
+            }
+            BlockKind::Null => {
+                EnumDiscriminant(2).hash(state);
+            }
+        }
+    }
 }
 
 /// structure of the consensus block
@@ -77,8 +98,10 @@ pub struct Block<SCT: SignatureCollection> {
     /// data related to the execution side of the protocol
     pub execution: ExecutionProtocol,
 
-    /// protocol agnostic data for the blockchain
-    pub payload: Payload,
+    /// identifier for the transaction payload of this block
+    pub payload_id: PayloadId,
+
+    pub block_kind: BlockKind,
 
     /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
@@ -105,6 +128,9 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("timestamp", &self.timestamp)
             .field("qc", &self.qc)
             .field("id", &self.id)
+            .field("payload_id", &self.payload_id)
+            .field("block_kind", &self.block_kind)
+            /*
             .field(
                 "txn_payload_len",
                 &match &self.payload.txns {
@@ -114,6 +140,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
                     TransactionPayload::Null => "null".to_owned(),
                 },
             )
+            */
             .field("seq_num", &self.execution.seq_num)
             .field("execution_state_root", &self.execution.state_root)
             .finish_non_exhaustive()
@@ -134,7 +161,8 @@ impl<SCT: SignatureCollection> Block<SCT> {
         epoch: Epoch,
         round: Round,
         execution: &ExecutionProtocol,
-        payload: &Payload,
+        payload_id: PayloadId,
+        block_kind: BlockKind,
         qc: &QuorumCertificate<SCT>,
     ) -> Self {
         Self {
@@ -143,7 +171,8 @@ impl<SCT: SignatureCollection> Block<SCT> {
             epoch,
             round,
             execution: execution.clone(),
-            payload: payload.clone(),
+            payload_id,
+            block_kind,
             qc: qc.clone(),
             id: {
                 let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
@@ -153,7 +182,9 @@ impl<SCT: SignatureCollection> Block<SCT> {
                 state.update(epoch.as_bytes());
                 state.update(round.as_bytes());
                 execution.hash(&mut state);
-                payload.hash(&mut state);
+                //payload.hash(&mut state);
+                state.update(payload_id.0.as_bytes());
+                block_kind.hash(&mut state);
                 state.update(qc.get_block_id().0.as_bytes());
                 state.update(qc.get_hash().as_bytes());
 
@@ -167,10 +198,13 @@ impl<SCT: SignatureCollection> Block<SCT> {
     /// `TransactionPayload::List(FullTransactionList::empty())` and a consensus
     /// protocol empty block `TransactionPayload::Empty`
     pub fn is_empty_block(&self) -> bool {
-        matches!(self.payload.txns, TransactionPayload::Null)
+        matches!(self.block_kind, BlockKind::Null)
     }
 }
 
+// TODO, this should be removed, we don't need to implement BlockType for Block because we won't
+// use this as a validatedBlock type going forward in the passthru policy, FullBlock can be used
+// there
 impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     type NodeIdPubKey = SCT::NodeIdPubKey;
     type TxnHash = ();
@@ -212,17 +246,17 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     }
 
     fn is_empty_block(&self) -> bool {
-        match &self.payload.txns {
-            TransactionPayload::List(_) => false,
-            TransactionPayload::Null => true,
-        }
+        self.is_empty_block()
     }
 
     fn get_txn_list_len(&self) -> usize {
+        /*
         match &self.payload.txns {
             TransactionPayload::List(list) => list.bytes().len(),
             TransactionPayload::Null => 0,
         }
+        */
+        0
     }
 
     fn get_qc(&self) -> &QuorumCertificate<SCT> {
@@ -239,6 +273,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 
     fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
         self
+    }
+
+    fn get_full_block(self) -> FullBlock<SCT> {
+        todo!();
     }
 }
 
@@ -319,7 +357,7 @@ impl<SCT> BlockPolicy<SCT, InMemoryState> for PassthruBlockPolicy
 where
     SCT: SignatureCollection,
 {
-    type ValidatedBlock = Block<SCT>;
+    type ValidatedBlock = FullBlock<SCT>;
 
     fn check_coherency(
         &self,
@@ -332,4 +370,96 @@ where
 
     fn update_committed_block(&mut self, _: &Self::ValidatedBlock) {}
     fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct FullBlock<SCT: SignatureCollection> {
+    pub block: Block<SCT>,
+    pub payload: Payload,
+}
+
+impl<SCT: SignatureCollection> PartialEq for FullBlock<SCT> {
+    fn eq(&self, other: &Self) -> bool {
+        self.block.id == other.block.id
+    }
+}
+impl<SCT: SignatureCollection> Eq for FullBlock<SCT> {}
+
+impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
+    type NodeIdPubKey = SCT::NodeIdPubKey;
+    type TxnHash = ();
+
+    fn get_id(&self) -> BlockId {
+        self.block.id
+    }
+
+    fn get_round(&self) -> Round {
+        self.block.round
+    }
+
+    fn get_epoch(&self) -> Epoch {
+        self.block.epoch
+    }
+
+    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
+        self.block.author
+    }
+
+    fn get_parent_id(&self) -> BlockId {
+        self.block.qc.get_block_id()
+    }
+
+    fn get_parent_round(&self) -> Round {
+        self.block.qc.get_round()
+    }
+
+    fn get_seq_num(&self) -> SeqNum {
+        self.block.execution.seq_num
+    }
+
+    fn get_state_root(&self) -> StateRootHash {
+        self.block.execution.state_root
+    }
+
+    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
+        vec![]
+    }
+
+    fn is_empty_block(&self) -> bool {
+        self.block.is_empty_block()
+    }
+
+    fn get_txn_list_len(&self) -> usize {
+        match &self.payload.txns {
+            TransactionPayload::List(list) => list.bytes().len(),
+            TransactionPayload::Null => 0,
+        }
+    }
+
+    fn get_qc(&self) -> &QuorumCertificate<SCT> {
+        &self.block.qc
+    }
+
+    fn get_timestamp(&self) -> u64 {
+        self.block.timestamp
+    }
+
+    fn get_unvalidated_block(self) -> Block<SCT> {
+        self.block
+    }
+
+    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
+        &self.block
+    }
+
+    fn get_full_block(self) -> FullBlock<SCT> {
+        self
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for FullBlock<SCT> {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.block.id.hash(state);
+        self.payload.hash(state);
+    }
 }

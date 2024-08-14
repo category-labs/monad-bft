@@ -2,8 +2,7 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
-    block::Block,
-    payload::TransactionPayload,
+    block::{Block, BlockKind},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -109,13 +108,13 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.execution.seq_num.as_bytes());
         hasher.update(b.execution.beneficiary.0.as_bytes());
         hasher.update(b.execution.randao_reveal.0.as_bytes());
-        match &b.payload.txns {
-            TransactionPayload::List(rlp) => {
+        hasher.update(b.payload_id.0.as_bytes());
+        match &b.block_kind {
+            BlockKind::Executable => {
                 // EnumDiscriminant(1)
                 hasher.update(1_i32.to_le_bytes());
-                hasher.update(rlp.bytes())
             }
-            TransactionPayload::Null => {
+            BlockKind::Null => {
                 // EnumDiscriminant(2)
                 hasher.update(2_i32.to_le_bytes());
             }
