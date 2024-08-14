@@ -54,6 +54,19 @@ void testdb_load_callenv(TestDb *const db)
     db->tdb.commit(state_deltas, code);
 }
 
+void testdb_load_transfer(TestDb *const db)
+{
+    StateDeltas state_deltas;
+    Code code;
+    state_deltas.emplace(
+        0x0000000000000000000001000000000000000000_address,
+        StateDelta{
+            .account = {
+                std::nullopt, Account{.balance = 100'000u, .nonce = 1}}});
+
+    db->tdb.commit(state_deltas, code);
+}
+
 void testdb_load_callcontract(TestDb *const db)
 {
     StateDeltas state_deltas;

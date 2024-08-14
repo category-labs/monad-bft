@@ -15,6 +15,7 @@ autocxx::include_cpp! {
     generate!("make_testdb")
     generate!("testdb_load_callenv")
     generate!("testdb_load_callcontract")
+    generate!("testdb_load_transfer")
     generate!("testdb_path")
     generate!("destroy_testdb")
 }
@@ -168,7 +169,7 @@ mod test {
         };
         let result = eth_call(
             reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(1),
+                chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 1000000000,
@@ -194,10 +195,10 @@ mod test {
 
         match result {
             CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg);
+                panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a1ee00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
             }
         }
     }
@@ -207,18 +208,18 @@ mod test {
     fn test_transfer() {
         let db = ffi::make_testdb();
         let path = unsafe {
-            ffi::testdb_load_callenv(db);
+            ffi::testdb_load_transfer(db);
             let testdb_path = ffi::testdb_path(db).to_string();
             Path::new(&testdb_path).to_owned()
         };
         let result = eth_call(
             reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(1),
+                chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
-                gas_limit: 1000000000,
+                gas_limit: 30000,
                 to: reth_primitives::TransactionKind::Call(
-                    hex!("9344b07175800259691961298ca11c824e65032d").into(),
+                    hex!("0000000000000000000002000000000000000000").into(),
                 ),
                 value: TxValue::from(10),
                 input: Default::default(),
@@ -228,7 +229,7 @@ mod test {
                 beneficiary: hex!("0102030405010203040501020304050102030405").into(),
                 ..Default::default()
             },
-            hex!("0000000000000000000000000000000000000000").into(),
+            hex!("0000000000000000000001000000000000000000").into(),
             0,
             path.as_path(),
             Path::new(""),
@@ -239,10 +240,10 @@ mod test {
 
         match result {
             CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg);
+                panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+                assert_eq!(hex::encode(res.output_data), "");
                 assert_eq!(res.gas_used, 21000)
             }
         }
@@ -259,7 +260,7 @@ mod test {
         };
         let result = eth_call(
             reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(1),
+                chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 1000000000,
@@ -280,7 +281,7 @@ mod test {
         };
         match result {
             CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg);
+                panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
                 assert_eq!(hex::encode(res.output_data), "ffee")
