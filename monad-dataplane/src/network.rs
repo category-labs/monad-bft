@@ -372,33 +372,37 @@ impl<'a> NetworkSocket<'a> {
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {
         assert!(num_msgs as usize <= LINUX_SENDMMSG_VLEN_MAX);
 
-        let r = unsafe {
-            super::retry_eintr(|| {
-                libc::sendmmsg(
-                    self.socket.as_raw_fd(),
-                    self.send_ctrl.msgs.as_mut_ptr(),
-                    num_msgs,
-                    0,
-                )
-            })
-        };
+        unsafe {
+            for i in 0..num_msgs as usize {
+                // TODO instead of 1 sendmmsg per msg, we should create 1 sendmmsg per 65k of data
+                let r = super::retry_eintr(|| {
+                    libc::sendmmsg(
+                        self.socket.as_raw_fd(),
+                        (&mut self.send_ctrl.msgs[i]) as *mut _,
+                        1,
+                        0,
+                    )
+                });
 
-        if r == -1 {
-            let e = std::io::Error::last_os_error();
+                if r == -1 {
+                    let e = std::io::Error::last_os_error();
 
-            // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
-            // IP_MTU and include the returned value in the log message.
-            if e.kind() == std::io::ErrorKind::InvalidInput {
-                debug!("sendmmsg error {}", e);
-            } else {
-                panic!("sendmmsg error {}", e);
+                    // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
+                    // IP_MTU and include the returned value in the log message.
+                    if e.kind() == std::io::ErrorKind::InvalidInput {
+                        debug!("sendmmsg error {}", e);
+                    } else {
+                        panic!("sendmmsg error {}", e);
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_micros(750));
             }
         }
-
-        // TODO try sending the stuff that wasn't sent
-        if r != num_msgs as i32 {
-            debug!("only sent {} out of {} msgs", r, num_msgs);
-        }
+        // // TODO try sending the stuff that wasn't sent
+        // if r != num_msgs as i32 {
+        //     debug!("only sent {} out of {} msgs", r, num_msgs);
+        // }
 
         Some(())
     }
