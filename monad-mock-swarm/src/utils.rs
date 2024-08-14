@@ -17,6 +17,7 @@ pub mod test_tool {
             ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
+        state_root_hash::StateRootHash,
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
     };
@@ -72,15 +73,25 @@ pub mod test_tool {
     }
 
     pub fn fake_block(round: Round) -> Block<SC> {
-        let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionProtocol::zero(),
+        let execution = ExecutionProtocol {
+            state_root: StateRootHash::default(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
+        let payload = Payload {
+            txns: TransactionPayload::List(FullTransactionList::empty()),
+        };
 
-        Block::new(fake_node_id(), 0, Epoch(1), round, &payload, &fake_qc())
+        Block::new(
+            fake_node_id(),
+            0,
+            Epoch(1),
+            round,
+            &execution,
+            &payload,
+            &fake_qc(),
+        )
     }
 
     pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {

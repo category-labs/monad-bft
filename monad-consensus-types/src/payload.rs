@@ -43,15 +43,21 @@ impl AsRef<[u8]> for Gas {
 /// A subset of Ethereum block header fields that are included in consensus
 /// proposals. The values are populated from the results of executing the
 /// previous block
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionProtocol {
     pub state_root: StateRootHash,
+    pub seq_num: SeqNum,
+    pub beneficiary: EthAddress,
+    pub randao_reveal: RandaoReveal,
 }
 
-impl ExecutionProtocol {
-    pub fn zero() -> Self {
+impl DontCare for ExecutionProtocol {
+    fn dont_care() -> Self {
         ExecutionProtocol {
             state_root: Default::default(),
+            seq_num: SeqNum(1),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         }
     }
 }
@@ -59,6 +65,9 @@ impl ExecutionProtocol {
 impl Hashable for ExecutionProtocol {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(self.state_root);
+        state.update(self.seq_num);
+        state.update(self.beneficiary);
+        state.update(&self.randao_reveal);
     }
 }
 
@@ -95,7 +104,7 @@ impl AsRef<[u8]> for FullTransactionList {
 }
 
 /// randao_reveal uses a proposer's public key to contribute randomness
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RandaoReveal(pub Vec<u8>);
 
 impl RandaoReveal {
@@ -145,19 +154,11 @@ impl Hashable for TransactionPayload {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionPayload,
-    pub header: ExecutionProtocol,
-    pub seq_num: SeqNum,
-    pub beneficiary: EthAddress,
-    pub randao_reveal: RandaoReveal,
 }
 
 impl Hashable for Payload {
     fn hash(&self, state: &mut impl Hasher) {
         self.txns.hash(state);
-        self.header.hash(state);
-        state.update(self.seq_num);
-        state.update(self.beneficiary);
-        state.update(&self.randao_reveal);
     }
 }
 
@@ -165,10 +166,6 @@ impl DontCare for Payload {
     fn dont_care() -> Self {
         Self {
             txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionProtocol::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
         }
     }
 }

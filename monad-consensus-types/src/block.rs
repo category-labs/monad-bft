@@ -7,7 +7,7 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    payload::{Payload, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, TransactionPayload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -74,6 +74,9 @@ pub struct Block<SCT: SignatureCollection> {
     /// round this block was proposed in
     pub round: Round,
 
+    /// data related to the execution side of the protocol
+    pub execution: ExecutionProtocol,
+
     /// protocol agnostic data for the blockchain
     pub payload: Payload,
 
@@ -111,8 +114,8 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
                     TransactionPayload::Null => "null".to_owned(),
                 },
             )
-            .field("seq_num", &self.payload.seq_num)
-            .field("execution_state_root", &self.payload.header.state_root)
+            .field("seq_num", &self.execution.seq_num)
+            .field("execution_state_root", &self.execution.state_root)
             .finish_non_exhaustive()
     }
 }
@@ -130,6 +133,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
         timestamp: u64,
         epoch: Epoch,
         round: Round,
+        execution: &ExecutionProtocol,
         payload: &Payload,
         qc: &QuorumCertificate<SCT>,
     ) -> Self {
@@ -138,6 +142,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
             timestamp,
             epoch,
             round,
+            execution: execution.clone(),
             payload: payload.clone(),
             qc: qc.clone(),
             id: {
@@ -147,6 +152,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
                 state.update(timestamp.as_bytes());
                 state.update(epoch.as_bytes());
                 state.update(round.as_bytes());
+                execution.hash(&mut state);
                 payload.hash(&mut state);
                 state.update(qc.get_block_id().0.as_bytes());
                 state.update(qc.get_hash().as_bytes());
@@ -194,11 +200,11 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     }
 
     fn get_seq_num(&self) -> SeqNum {
-        self.payload.seq_num
+        self.execution.seq_num
     }
 
     fn get_state_root(&self) -> StateRootHash {
-        self.payload.header.state_root
+        self.execution.state_root
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {

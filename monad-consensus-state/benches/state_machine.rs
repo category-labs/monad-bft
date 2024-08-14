@@ -14,7 +14,7 @@ use monad_consensus_types::{
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{
-        Bloom, ExecutionProtocol, FullTransactionList, NopStateRoot, StateRootValidator,
+        ExecutionProtocol, FullTransactionList, NopStateRoot, StateRootValidator,
         TransactionPayload,
     },
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -104,15 +104,15 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            TransactionPayload::Empty,
-            ExecutionProtocol::zero(),
+            TransactionPayload::Null,
+            StateRootHash::default(),
         )
     }
 
     fn next_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionProtocol,
+        state_root: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.proposal_gen.next_proposal(
             &self.keys,
@@ -121,7 +121,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(txn_list),
-            execution_hdr,
+            state_root,
         )
     }
 
@@ -134,7 +134,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(FullTransactionList::new(vec![5].into())),
-            ExecutionProtocol::zero(),
+            StateRootHash::default(),
         )
     }
 
@@ -142,7 +142,7 @@ where
     fn branch_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionProtocol,
+        state_root: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.malicious_proposal_gen.next_proposal(
             &self.keys,
@@ -151,7 +151,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(txn_list),
-            execution_hdr,
+            state_root,
         )
     }
 
@@ -477,7 +477,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
         );
     }
     let (author, _, proposal_message) = env
-        .next_proposal(encoded_txns.clone(), ExecutionProtocol::zero())
+        .next_proposal(encoded_txns.clone(), StateRootHash::default())
         .destructure();
     assert_eq!(author, leader);
     (encoded_txns, env, ctx, author, proposal_message)
@@ -499,13 +499,13 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
         0,
         Epoch(1),
         Round(1),
-        &Payload {
-            txns,
-            header: ExecutionProtocol::zero(),
+        &ExecutionProtocol {
+            state_root: StateRootHash::default(),
             seq_num: SeqNum(0),
             beneficiary: Default::default(),
             randao_reveal: Default::default(),
         },
+        &Payload { txns },
         &QuorumCertificate::<SCT>::genesis_qc(),
     )
 }
@@ -601,7 +601,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (author, _, proposal_message) = env
                     .next_proposal(
                         encoded_txns,
-                        ExecutionProtocol::zero(),
+                        StateRootHash::default(),
                     )
                     .destructure();
                 assert_eq!(&author, &leader);

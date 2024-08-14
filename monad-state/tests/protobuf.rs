@@ -26,7 +26,7 @@ use monad_state::{
     MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetFactory, ValidatorSetType},
@@ -324,7 +324,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         Round(232),
         BlockId(Hash([43_u8; 32])),
         TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
-        ExecutionProtocol::zero(),
+        ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
     );
@@ -385,7 +385,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         Round(231),
         BlockId(Hash([43_u8; 32])),
         TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
-        ExecutionProtocol::zero(),
+        ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
     );

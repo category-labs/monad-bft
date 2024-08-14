@@ -22,6 +22,7 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             author: Some((&value.author).into()),
             epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
+            execution: Some((&value.execution).into()),
             payload: Some((&value.payload).into()),
             qc: Some((&value.qc).into()),
             timestamp: value.timestamp,
@@ -51,6 +52,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 .round
                 .ok_or(Self::Error::MissingRequiredField(
                     "Block<AggregateSignatures>.round".to_owned(),
+                ))?
+                .try_into()?,
+            &value
+                .execution
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.execution".to_owned(),
                 ))?
                 .try_into()?,
             &value
@@ -103,6 +110,9 @@ impl From<&ExecutionProtocol> for ProtoExecutionProtocol {
     fn from(value: &ExecutionProtocol) -> Self {
         Self {
             state_root: Some((&(value.state_root)).into()),
+            seq_num: Some((&(value.seq_num)).into()),
+            beneficiary: value.beneficiary.0.to_vec().into(),
+            randao_reveal: value.randao_reveal.0.to_vec().into(),
         }
     }
 }
@@ -117,6 +127,20 @@ impl TryFrom<ProtoExecutionProtocol> for ExecutionProtocol {
                     "ExecutionProtocol.state_root".to_owned(),
                 ))?
                 .try_into()?,
+            seq_num: value
+                .seq_num
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Payload.seq_num".to_owned(),
+                ))?
+                .try_into()?,
+            beneficiary: EthAddress::from_bytes(
+                value
+                    .beneficiary
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
+            ),
+            randao_reveal: RandaoReveal(value.randao_reveal.to_vec()),
         })
     }
 }
@@ -156,10 +180,6 @@ impl From<&Payload> for ProtoPayload {
     fn from(value: &Payload) -> Self {
         ProtoPayload {
             txns: Some((&(value.txns)).into()),
-            header: Some((&(value.header)).into()),
-            seq_num: Some((&(value.seq_num)).into()),
-            beneficiary: value.beneficiary.0.to_vec().into(),
-            randao_reveal: value.randao_reveal.0.to_vec().into(),
         }
     }
 }
@@ -172,26 +192,6 @@ impl TryFrom<ProtoPayload> for Payload {
                 .txns
                 .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
                 .try_into()?,
-            header: value
-                .header
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Payload.header".to_owned(),
-                ))?
-                .try_into()?,
-            seq_num: value
-                .seq_num
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Payload.seq_num".to_owned(),
-                ))?
-                .try_into()?,
-            beneficiary: EthAddress::from_bytes(
-                value
-                    .beneficiary
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
-            ),
-            randao_reveal: RandaoReveal(value.randao_reveal.to_vec()),
         })
     }
 }

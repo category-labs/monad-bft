@@ -72,12 +72,14 @@ pub fn generate_random_block_with_txns(
         0,
         Epoch(1),
         Round(1),
-        &Payload {
-            txns: TransactionPayload::List(full_txn_list),
-            header: ExecutionProtocol::zero(),
+        &ExecutionProtocol {
+            state_root: Default::default(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
+        },
+        &Payload {
+            txns: TransactionPayload::List(full_txn_list),
         },
         &QuorumCertificate::genesis_qc(),
     );

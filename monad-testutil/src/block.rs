@@ -16,7 +16,6 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
 // test utility if you only wish for simple block
@@ -126,7 +125,7 @@ pub fn setup_block<ST, SCT>(
     qc_round: Round,
     parent_id: BlockId,
     txns: TransactionPayload,
-    execution_header: ExecutionProtocol,
+    execution: ExecutionProtocol,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
     validator_mapping: &ValidatorMapping<
         CertificateSignaturePubKey<ST>,
@@ -166,7 +165,6 @@ where
     }
 
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
-
     let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
 
     Block::<SCT>::new(
@@ -174,13 +172,11 @@ where
         0,
         Epoch(1),
         block_round,
-        &Payload {
-            txns,
-            header: execution_header,
-            seq_num: SeqNum(1),
-            beneficiary: EthAddress::default(),
+        &ExecutionProtocol {
             randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
+            ..execution
         },
+        &Payload { txns },
         &qc,
     )
 }

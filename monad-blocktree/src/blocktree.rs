@@ -534,7 +534,7 @@ mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, PassthruBlockPolicy},
         ledger::CommitResult,
-        payload::{FullTransactionList, Payload, TransactionPayload},
+        payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -627,11 +627,13 @@ mod test {
     #[test]
     fn test_prune() {
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -642,7 +644,15 @@ mod test {
             parent_id: g.get_parent_id(),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -651,7 +661,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let v3 = VoteInfo {
             id: g.get_id(),
@@ -660,7 +678,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v3));
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v3),
+        );
 
         let v4 = VoteInfo {
             id: g.get_id(),
@@ -669,7 +695,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b4 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v4));
+        let b4 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v4),
+        );
 
         let v5 = VoteInfo {
             id: b3.get_id(),
@@ -678,7 +712,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b5 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v5));
+        let b5 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v5),
+        );
 
         let v6 = VoteInfo {
             id: b5.get_id(),
@@ -687,7 +729,15 @@ mod test {
             parent_round: Round(2),
             ..DontCare::dont_care()
         };
-        let b6 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v6));
+        let b6 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v6),
+        );
 
         let v7 = VoteInfo {
             id: b6.get_id(),
@@ -696,7 +746,15 @@ mod test {
             parent_round: Round(5),
             ..DontCare::dont_care()
         };
-        let b7 = Block::new(node_id(), 0, Epoch(1), Round(7), &payload, &mock_qc(v7));
+        let b7 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(7),
+            &execution,
+            &payload,
+            &mock_qc(v7),
+        );
 
         // Initial blocktree
         //        g
@@ -787,7 +845,15 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let b8 = Block::new(node_id(), 0, Epoch(1), Round(8), &payload, &mock_qc(v8));
+        let b8 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(8),
+            &execution,
+            &payload,
+            &mock_qc(v8),
+        );
 
         assert!(blocktree.add(b8, &mut block_policy, &state_backend).is_ok());
         println!("{:?}", blocktree);
@@ -796,11 +862,13 @@ mod test {
     #[test]
     fn test_add_parent_not_exist() {
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -813,7 +881,15 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -823,7 +899,15 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let gid = g.get_id();
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
@@ -866,11 +950,13 @@ mod test {
 
     #[test]
     fn equal_level_branching() {
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &Payload::dont_care(),
             &QC::genesis_qc(),
         );
@@ -888,9 +974,9 @@ mod test {
             0,
             Epoch(1),
             Round(2),
+            &execution,
             &Payload {
                 txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
-                ..DontCare::dont_care()
             },
             &mock_qc(v1),
         );
@@ -900,9 +986,9 @@ mod test {
             0,
             Epoch(1),
             Round(2),
+            &execution,
             &Payload {
                 txns: TransactionPayload::List(FullTransactionList::new(vec![2].into())),
-                ..DontCare::dont_care()
             },
             &mock_qc(v1),
         );
@@ -920,9 +1006,9 @@ mod test {
             0,
             Epoch(1),
             Round(3),
+            &execution,
             &Payload {
                 txns: TransactionPayload::List(FullTransactionList::new(vec![3].into())),
-                ..DontCare::dont_care()
             },
             &mock_qc(v2),
         );
@@ -973,11 +1059,13 @@ mod test {
 
     #[test]
     fn duplicate_blocks() {
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &Payload::dont_care(),
             &QC::genesis_qc(),
         );
@@ -995,9 +1083,9 @@ mod test {
             0,
             Epoch(1),
             Round(2),
+            &execution,
             &Payload {
                 txns: TransactionPayload::List(FullTransactionList::new(vec![1].into())),
-                ..DontCare::dont_care()
             },
             &mock_qc(v1),
         );
@@ -1027,11 +1115,13 @@ mod test {
     #[test]
     fn paths_to_root() {
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1043,7 +1133,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1052,9 +1150,33 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v2));
-        let b4 = Block::new(node_id(), 0, Epoch(1), Round(5), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
+        let b4 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(5),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1113,11 +1235,13 @@ mod test {
         //  b2    b3    b4
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1129,7 +1253,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1138,9 +1270,33 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v2));
-        let b4 = Block::new(node_id(), 0, Epoch(1), Round(5), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
+        let b4 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(5),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1202,11 +1358,13 @@ mod test {
         // blocktree is updated with b2
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1218,7 +1376,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1227,7 +1393,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1275,11 +1449,13 @@ mod test {
         // blocktree is updated with b1
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1291,7 +1467,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1300,7 +1484,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1349,11 +1541,13 @@ mod test {
         // blocktree is updated with b2 followed by b1
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1365,7 +1559,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1374,7 +1576,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let v3 = VoteInfo {
             id: b2.get_id(),
@@ -1383,7 +1593,15 @@ mod test {
             parent_round: Round(2),
             ..DontCare::dont_care()
         };
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v3));
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v3),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1447,11 +1665,13 @@ mod test {
         // blocktree is updated with b1 followed by b2
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1463,7 +1683,15 @@ mod test {
             parent_round: Round(0),
             ..DontCare::dont_care()
         };
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1472,7 +1700,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let v3 = VoteInfo {
             id: b2.get_id(),
@@ -1481,7 +1717,15 @@ mod test {
             parent_round: Round(2),
             ..DontCare::dont_care()
         };
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v3));
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v3),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1544,11 +1788,13 @@ mod test {
         // blocktree is updated with b1
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1561,7 +1807,15 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1570,8 +1824,24 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1630,11 +1900,13 @@ mod test {
         // blocktree is updated with missing b1
 
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1647,7 +1919,15 @@ mod test {
             ..DontCare::dont_care()
         };
 
-        let b1 = Block::new(node_id(), 0, Epoch(1), Round(2), &payload, &mock_qc(v1));
+        let b1 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(2),
+            &execution,
+            &payload,
+            &mock_qc(v1),
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1656,7 +1936,15 @@ mod test {
             parent_round: Round(1),
             ..DontCare::dont_care()
         };
-        let b2 = Block::new(node_id(), 0, Epoch(1), Round(3), &payload, &mock_qc(v2));
+        let b2 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(3),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let v3 = VoteInfo {
             id: b2.get_id(),
@@ -1665,7 +1953,15 @@ mod test {
             parent_round: Round(2),
             ..DontCare::dont_care()
         };
-        let b3 = Block::new(node_id(), 0, Epoch(1), Round(4), &payload, &mock_qc(v2));
+        let b3 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(4),
+            &execution,
+            &payload,
+            &mock_qc(v2),
+        );
 
         let v4 = VoteInfo {
             id: b3.get_id(),
@@ -1674,9 +1970,33 @@ mod test {
             parent_round: Round(2),
             ..DontCare::dont_care()
         };
-        let b4 = Block::new(node_id(), 0, Epoch(1), Round(5), &payload, &mock_qc(v3));
-        let b5 = Block::new(node_id(), 0, Epoch(1), Round(6), &payload, &mock_qc(v4));
-        let b6 = Block::new(node_id(), 0, Epoch(1), Round(7), &payload, &mock_qc(v4));
+        let b4 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(5),
+            &execution,
+            &payload,
+            &mock_qc(v3),
+        );
+        let b5 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(6),
+            &execution,
+            &payload,
+            &mock_qc(v4),
+        );
+        let b6 = Block::new(
+            node_id(),
+            0,
+            Epoch(1),
+            Round(7),
+            &execution,
+            &payload,
+            &mock_qc(v4),
+        );
 
         let genesis_qc: QC = QuorumCertificate::genesis_qc();
         let mut blocktree = BlockTreeType::new(RootInfo {
@@ -1754,11 +2074,13 @@ mod test {
         //    |
         //   b2
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let b1 = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1767,6 +2089,7 @@ mod test {
             0,
             Epoch(1),
             Round(2),
+            &execution,
             &payload,
             &mock_qc_for_block(&b1),
         );
@@ -1818,11 +2141,13 @@ mod test {
         // Need to craft b4 and b6 block id such that b6 is before b4 when
         // populating b3.children
         let payload = Payload::dont_care();
+        let execution = ExecutionProtocol::dont_care();
         let g = Block::new(
             node_id(),
             0,
             Epoch(1),
             Round(1),
+            &execution,
             &payload,
             &QC::genesis_qc(),
         );
@@ -1832,6 +2157,7 @@ mod test {
             0,
             Epoch(1),
             Round(3),
+            &execution,
             &payload,
             &mock_qc_for_block(&g),
         );
@@ -1841,6 +2167,7 @@ mod test {
             0,
             Epoch(1),
             Round(4),
+            &execution,
             &payload,
             &mock_qc_for_block(&b3),
         );
@@ -1850,6 +2177,7 @@ mod test {
             0,
             Epoch(1),
             Round(5),
+            &execution,
             &payload,
             &mock_qc_for_block(&b4),
         );
@@ -1859,6 +2187,7 @@ mod test {
             0,
             Epoch(1),
             Round(6),
+            &execution,
             &payload,
             &mock_qc_for_block(&b5),
         );
@@ -1868,6 +2197,7 @@ mod test {
             0,
             Epoch(1),
             Round(7),
+            &execution,
             &payload,
             &mock_qc_for_block(&b6),
         );
@@ -1877,6 +2207,7 @@ mod test {
             0,
             Epoch(1),
             Round(9),
+            &execution,
             &payload,
             &mock_qc_for_block(&b3),
         );
@@ -1886,6 +2217,7 @@ mod test {
             0,
             Epoch(1),
             Round(10),
+            &execution,
             &payload,
             &mock_qc_for_block(&b9),
         );
@@ -1895,6 +2227,7 @@ mod test {
             0,
             Epoch(1),
             Round(11),
+            &execution,
             &payload,
             &mock_qc_for_block(&b10),
         );

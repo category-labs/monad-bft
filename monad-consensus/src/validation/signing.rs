@@ -693,6 +693,7 @@ mod test {
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        state_root_hash::StateRootHash,
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
         validation::Error,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -1147,12 +1148,14 @@ mod test {
             0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::empty()),
-                header: ExecutionProtocol::zero(),
+            &ExecutionProtocol {
+                state_root: StateRootHash::default(),
                 seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
+            },
+            &Payload {
+                txns: TransactionPayload::List(FullTransactionList::empty()),
             },
             &QuorumCertificate::genesis_qc(),
         );

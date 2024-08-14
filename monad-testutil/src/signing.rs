@@ -105,6 +105,10 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.timestamp.as_bytes());
         hasher.update(b.epoch);
         hasher.update(b.round);
+        hasher.update(b.execution.state_root);
+        hasher.update(b.execution.seq_num.as_bytes());
+        hasher.update(b.execution.beneficiary.0.as_bytes());
+        hasher.update(b.execution.randao_reveal.0.as_bytes());
         match &b.payload.txns {
             TransactionPayload::List(rlp) => {
                 // EnumDiscriminant(1)
@@ -116,11 +120,7 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
                 hasher.update(2_i32.to_le_bytes());
             }
         }
-        hasher.update(b.payload.header.state_root);
-        hasher.update(b.payload.seq_num.as_bytes());
         hasher.update(b.qc.get_block_id().0);
-        hasher.update(b.payload.beneficiary.0.as_bytes());
-        hasher.update(b.payload.randao_reveal.0.as_bytes());
         hasher.update(b.qc.signatures.get_hash());
 
         hasher.hash()

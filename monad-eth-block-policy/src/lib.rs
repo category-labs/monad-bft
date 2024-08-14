@@ -174,11 +174,11 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
     }
 
     fn get_seq_num(&self) -> SeqNum {
-        self.block.payload.seq_num
+        self.block.execution.seq_num
     }
 
     fn get_state_root(&self) -> StateRootHash {
-        self.block.payload.header.state_root
+        self.block.execution.state_root
     }
 
     fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {

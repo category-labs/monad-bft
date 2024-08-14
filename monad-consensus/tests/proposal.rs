@@ -67,13 +67,13 @@ fn setup_block(
         0,
         block_epoch,
         block_round,
-        &Payload {
-            txns,
-            header: ExecutionProtocol::zero(),
+        &ExecutionProtocol {
+            state_root: Default::default(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         },
+        &Payload { txns },
         &qc,
     )
 }

@@ -2,7 +2,7 @@ use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMe
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -13,7 +13,6 @@ use monad_crypto::{
     hasher::{Hashable, Hasher, HasherType},
     NopKeyPair, NopSignature,
 };
-use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
 use monad_testutil::signing::*;
 use monad_types::*;
@@ -205,13 +204,8 @@ fn proposal_msg_hash() {
         0,
         epoch,
         round,
-        &Payload {
-            txns,
-            header: ExecutionProtocol::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
+        &ExecutionProtocol::dont_care(),
+        &Payload { txns },
         &qc,
     );
 

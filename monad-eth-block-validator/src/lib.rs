@@ -106,7 +106,7 @@ where
                 }
 
                 if let Err(e) = block
-                    .payload
+                    .execution
                     .randao_reveal
                     .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
                 {
@@ -123,7 +123,7 @@ where
             }
             TransactionPayload::Null => {
                 if let Err(e) = block
-                    .payload
+                    .execution
                     .randao_reveal
                     .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
                 {

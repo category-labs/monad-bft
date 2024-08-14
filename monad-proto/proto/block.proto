@@ -8,6 +8,9 @@ import "state_root_hash.proto";
 
 message ProtoExecutionProtocol{
   monad_proto.state_root_hash.ProtoStateRootHash state_root = 1;
+  monad_proto.basic.ProtoSeqNum seq_num = 2;
+  bytes beneficiary = 3;
+  bytes randao_reveal = 4;
 }
 
 
@@ -23,17 +26,14 @@ message ProtoTransactionPayload {
 
 message ProtoPayload {
   ProtoTransactionPayload txns = 1;
-  ProtoExecutionProtocol header = 2;
-  monad_proto.basic.ProtoSeqNum seq_num = 3;
-  bytes beneficiary = 4;
-  bytes randao_reveal = 5;
 }
 
 message ProtoBlock {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
   monad_proto.basic.ProtoRound round = 3;
-  ProtoPayload payload = 4;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 5;
-  uint64 timestamp = 6;
+  ProtoExecutionProtocol execution = 4;
+  ProtoPayload payload = 5;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 6;
+  uint64 timestamp = 7;
 }

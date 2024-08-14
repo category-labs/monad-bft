@@ -10,6 +10,7 @@ use monad_consensus_types::{
     payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
@@ -79,7 +80,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         txns: TransactionPayload,
-        execution_header: ExecutionProtocol,
+        srh: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
@@ -116,13 +117,13 @@ where
             self.timestamp,
             self.epoch,
             self.round,
-            &Payload {
-                txns,
-                header: execution_header,
+            &ExecutionProtocol {
+                state_root: srh,
                 seq_num,
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
+            &Payload { txns },
             qc,
         );
 
@@ -229,7 +230,7 @@ where
             round: block.round,
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),
-            seq_num: block.payload.seq_num,
+            seq_num: block.execution.seq_num,
             timestamp: block.timestamp,
         };
         let qcinfo = QcInfo {

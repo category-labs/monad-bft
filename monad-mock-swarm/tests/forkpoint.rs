@@ -5,7 +5,9 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    block::{BlockType, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    payload::StateRoot,
     txpool::MockTxPool,
 };
 use monad_crypto::{
@@ -375,7 +377,7 @@ fn forkpoint_restart_f(
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
-            .map(|b| b.payload.seq_num >= SeqNum(terminate_block as u64 - 2))
+            .map(|b| b.execution.seq_num >= SeqNum(terminate_block as u64 - 2))
             .unwrap_or(false);
 
         let test_result = restarted_node_caught_up
@@ -687,7 +689,7 @@ fn forkpoint_restart_below_all(
                     .get_blocks()
                     .values()
                     .last()
-                    .map(|block| block.payload.seq_num.0)
+                    .map(|block| block.get_seq_num().0)
                     .unwrap_or_default()
             })
             .min()
@@ -702,7 +704,7 @@ fn forkpoint_restart_below_all(
                     .get_blocks()
                     .values()
                     .last()
-                    .map(|block| block.payload.seq_num.0)
+                    .map(|block| block.get_seq_num().0)
                     .unwrap_or_default()
             })
             .max()

@@ -295,23 +295,27 @@ fn generate_header<SCT: SignatureCollection>(
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
-    let ExecutionProtocol { state_root } = monad_block.payload.header;
+    let ExecutionProtocol {
+        state_root,
+        seq_num,
+        beneficiary,
+        randao_reveal,
+    } = monad_block.execution.clone();
 
     let mut randao_reveal_hasher = HasherType::new();
-
-    randao_reveal_hasher.update(monad_block.payload.randao_reveal.0.clone());
+    randao_reveal_hasher.update(randao_reveal);
 
     Header {
         parent_hash: monad_block.get_parent_id().0 .0.into(),
         ommers_hash: block_body.calculate_ommers_root(),
-        beneficiary: monad_block.payload.beneficiary.0,
+        beneficiary: beneficiary.0,
         state_root: FixedBytes(*state_root.deref()),
         transactions_root: FixedBytes::default(),
         receipts_root: FixedBytes::default(),
         withdrawals_root: block_body.calculate_withdrawals_root(),
         logs_bloom: Bloom(FixedBytes::default()),
         difficulty: U256::ZERO,
-        number: monad_block.payload.seq_num.0,
+        number: seq_num.0,
         gas_limit: header_param.gas_limit,
         gas_used: 0,
         timestamp: monad_block.get_timestamp(),
