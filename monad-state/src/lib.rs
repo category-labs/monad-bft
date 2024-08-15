@@ -904,7 +904,7 @@ where
 
             MonadEvent::AsyncStateVerifyEvent(async_state_verify_event) => {
                 let ConsensusMode::Live(consensus) = &mut self.consensus else {
-                    tracing::debug!("ignoring AsyncStateVerifyEvent, not live yet");
+                    tracing::trace!("ignoring AsyncStateVerifyEvent, not live yet");
                     return vec![];
                 };
                 let current_round_estimate = consensus.get_current_round();

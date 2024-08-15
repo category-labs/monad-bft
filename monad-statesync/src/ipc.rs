@@ -1,4 +1,4 @@
-use std::pin::pin;
+use std::{pin::pin, time::Instant};
 
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
@@ -98,7 +98,7 @@ struct StreamState<'a, PT: PubKey> {
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
 
-    inbound_request: Option<(NodeId<PT>, StateSyncResponse)>,
+    inbound_request: Option<(NodeId<PT>, StateSyncResponse, Instant)>,
 }
 
 impl<'a, PT: PubKey> StreamState<'a, PT> {
@@ -156,7 +156,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             ExecutionMessage::SyncUpsert(upsert, key, value) => {
                 assert_eq!(upsert.key_size, key.len() as u64);
                 assert_eq!(upsert.value_size, value.len() as u64);
-                let (_, inbound_request) = self
+                let (_, inbound_request, _) = self
                     .inbound_request
                     .as_mut()
                     .expect("SyncUpsert with no pending request");
@@ -165,10 +165,16 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
                 // requests upserts point to
-                let (from, mut inbound_request) = self
+                let (from, mut inbound_request, start) = self
                     .inbound_request
                     .take()
                     .expect("syncdone received with no pending request");
+                tracing::debug!(
+                    elapsed =? start.elapsed(),
+                    ?from,
+                    ?done,
+                    "received SyncDone"
+                );
                 if done.success {
                     assert_eq!(inbound_request.request.prefix, done.prefix);
                     inbound_request.response_n = done.n;
@@ -213,6 +219,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 // this gets set in handle_execution_message(ExecutionMessage::SyncDone(_))
                 response_n: 0,
             },
+            Instant::now(),
         ));
         Ok(())
     }

@@ -131,6 +131,9 @@ where
                 StateSyncCommand::StartExecution => {
                     assert!(self.execution_ipc.is_none());
                     self.execution_ipc = Some(StateSyncIpc::new(&self.uds_path));
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -186,6 +189,12 @@ where
         if let Some(execution_ipc) = &mut this.execution_ipc {
             if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
                 let (to, response) = maybe_response.expect("did StateSyncIpc die?");
+                tracing::debug!(
+                    ?to,
+                    ?response,
+                    upserts_len = response.response.len(),
+                    "sending response"
+                );
                 return Poll::Ready(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
                     to,
                     StateSyncNetworkMessage::Response(response),

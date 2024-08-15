@@ -5,6 +5,7 @@ use std::{
     ops::{DerefMut, Range},
     pin::Pin,
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -21,7 +22,9 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
-use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
+use monad_types::{
+    Deserializable, DropTimer, Epoch, NodeId, Round, RouterTarget, Serializable, Stake,
+};
 
 pub struct RaptorCastConfig<ST>
 where
@@ -233,6 +236,10 @@ where
                 }
                 RouterCommand::Publish { target, message } => {
                     let app_message = message.serialize();
+                    let app_message_len = app_message.len();
+                    let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
+                        tracing::warn!(?elapsed, app_message_len, "long time to publish message")
+                    });
                     // send message to self if applicable
                     let (epoch, round, build_target) = match &target {
                         RouterTarget::Broadcast(epoch, round) => {

@@ -32,7 +32,9 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_statesync::StateSync;
 use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::StateBackendCache;
-use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM};
+use monad_types::{
+    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
+};
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
     timer::TokioTimer, tokio_timestamp::TokioTimestamp,
@@ -48,7 +50,7 @@ use opentelemetry::{
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::TracerProvider;
 use tokio::signal;
-use tracing::{event, Instrument, Level};
+use tracing::{event, warn, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -375,6 +377,16 @@ async fn run(
                     event!(Level::ERROR, "parent executor returned none!");
                     return Err(());
                 };
+                let event_debug = {
+                    let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            ?event,
+                            "long time to format event"
+                        )
+                    });
+                    format!("{:?}", event)
+                };
 
                 let event = LogFriendlyMonadEvent {
                     timestamp: Utc::now(),
@@ -391,14 +403,30 @@ async fn run(
                 };
 
                 let commands = {
+                    let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            event =? event_debug,
+                            "long time to update event"
+                        )
+                    });
                     let _ledger_span = ledger_span.enter();
                     let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
                     state.update(event.event)
                 };
 
                 if !commands.is_empty() {
+                    let num_commands = commands.len();
+                    let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
+                        warn!(
+                            ?elapsed,
+                            event =? event_debug,
+                            num_commands,
+                            "long time to execute commands"
+                        )
+                    });
                     let _ledger_span = ledger_span.enter();
-                    let _exec_span = tracing::trace_span!("exec_span", num_commands = commands.len()).entered();
+                    let _exec_span = tracing::trace_span!("exec_span", num_commands).entered();
                     executor.exec(commands);
                 }
 

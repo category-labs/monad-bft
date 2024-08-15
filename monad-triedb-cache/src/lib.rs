@@ -1,12 +1,14 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use itertools::Itertools;
 use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
+use monad_types::{DropTimer, SeqNum};
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct StateBackendCache<SBT> {
@@ -58,9 +60,17 @@ where
 
         if !cache_misses.is_empty() {
             // hydrate cache with missing accounts
-            let cache_misses_data = self
-                .state_backend
-                .get_account_statuses(block, cache_misses.iter().copied())?;
+            let cache_misses_data = {
+                let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+                    warn!(
+                        ?elapsed,
+                        lookups = cache_misses.len(),
+                        "long get_account_statuses"
+                    )
+                });
+                self.state_backend
+                    .get_account_statuses(block, cache_misses.iter().copied())?
+            };
             cache.entry(block).or_default().extend(
                 cache_misses
                     .iter()

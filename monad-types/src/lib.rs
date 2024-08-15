@@ -5,6 +5,7 @@ use std::{
     io,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
+    time::{Duration, Instant},
 };
 
 pub use monad_crypto::hasher::Hash;
@@ -398,6 +399,41 @@ impl Hashable for EnumDiscriminant {
 /// Trait for use in tests to populate structs where the value of the fields is not relevant
 pub trait DontCare {
     fn dont_care() -> Self;
+}
+
+pub struct DropTimer<F>
+where
+    F: Fn(Duration),
+{
+    start: Instant,
+    threshold: Duration,
+    trip: F,
+}
+
+impl<F> DropTimer<F>
+where
+    F: Fn(Duration),
+{
+    pub fn start(threshold: Duration, trip: F) -> Self {
+        Self {
+            start: Instant::now(),
+            threshold,
+            trip,
+        }
+    }
+}
+
+impl<F> Drop for DropTimer<F>
+where
+    F: Fn(Duration),
+{
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed <= self.threshold {
+            return;
+        }
+        (self.trip)(elapsed)
+    }
 }
 
 #[cfg(test)]

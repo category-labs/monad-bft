@@ -384,12 +384,22 @@ pub struct StateSyncRequest {
     pub until: u64,
     pub old_target: u64,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
     pub response: Vec<(bool, Vec<u8>, Vec<u8>)>,
     pub response_n: u64,
+}
+
+impl Debug for StateSyncResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateSyncResponse")
+            .field("request", &self.request)
+            .field("response_len", &self.response.len())
+            .field("response_n", &self.response_n)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
