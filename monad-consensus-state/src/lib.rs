@@ -1437,6 +1437,9 @@ mod test {
         ConsensusStateWrapper,
     };
 
+    const BASE_FEE: u128 = 1000;
+    const INTRINSIC_GAS: u64 = 21000;
+
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = PassthruBlockPolicy;
@@ -4512,7 +4515,7 @@ mod test {
     fn test_coherent_block_zero_nonce() {
         let num_states = 2;
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<
@@ -4579,7 +4582,7 @@ mod test {
     fn test_incoherent_block_invalid_nonce() {
         let num_states = 2;
         let sender_1_key = B256::random();
-        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<
@@ -4647,8 +4650,8 @@ mod test {
     fn test_incoherent_block_duplicate_nonce() {
         let num_states = 2;
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
-        let txn_nonce_zero_prime = make_tx(sender_1_key, 1, 1, 0, 1000);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
+        let txn_nonce_zero_prime = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 1000);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -4734,10 +4737,10 @@ mod test {
         let num_states = 2;
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
-        let txn_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
-        let txn_nonce_two = make_tx(sender_1_key, 1, 1, 2, 10);
-        let txn_nonce_three = make_tx(sender_1_key, 1, 1, 3, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 2, 10);
+        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 3, 10);
 
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
@@ -4860,9 +4863,9 @@ mod test {
         let num_states = 2;
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, 1, 1, 0, 10);
-        let txn_1_nonce_one = make_tx(sender_1_key, 1, 1, 1, 10);
-        let txn_2_nonce_one = make_tx(sender_1_key, 1, 1, 1, 1000);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
+        let txn_1_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_2_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 1000);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<

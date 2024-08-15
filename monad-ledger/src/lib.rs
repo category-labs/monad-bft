@@ -325,6 +325,8 @@ fn generate_header<SCT: SignatureCollection>(
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
         // TODO: calculate base fee according to EIP1559
+        // Remember to remove hardcoded value in monad-eth-block-validator
+        // and in monad-eth-txpool
         base_fee_per_gas: Some(1000),
         blob_gas_used: None,
         excess_blob_gas: None,

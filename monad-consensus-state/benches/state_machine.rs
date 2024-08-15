@@ -412,8 +412,8 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let transaction = Transaction::Legacy(TxLegacy {
         chain_id: Some(1337),
         nonce: rand::thread_rng().gen_range(10_000..50_000),
-        gas_price: 1,
-        gas_limit: 6400,
+        gas_price: 1000,
+        gas_limit: 21000,
         to: TransactionKind::Call(Address::random()),
         value: 0.into(),
         input: input.into(),

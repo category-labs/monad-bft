@@ -3770,6 +3770,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-block-validator",
  "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-types",
