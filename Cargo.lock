@@ -4174,7 +4174,6 @@ dependencies = [
  "monad-types",
  "notify",
  "pin-project",
- "rayon",
  "reth-primitives",
  "reth-rpc-types",
  "serde",

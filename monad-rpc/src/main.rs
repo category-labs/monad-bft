@@ -485,11 +485,6 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build_global()
-        .expect("thread pool with 4 threads");
-
     // blockdb is only created when monad node starts
     // therefore we retry initialization if blockdb path is provided
     let blockdb_env = if let Some(blockdb_path) = &args.blockdb_path {
