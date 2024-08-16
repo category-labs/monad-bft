@@ -184,7 +184,7 @@ async fn run(
 
     let validators = node_state.forkpoint_config.validator_sets[0].clone();
 
-    let val_set_update_interval = SeqNum(100_000); // TODO configurable
+    let val_set_update_interval = SeqNum(10_000); // TODO configurable
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let state_sync_bound: usize = 300; // TODO configurable
