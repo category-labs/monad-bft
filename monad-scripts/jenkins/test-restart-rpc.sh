@@ -43,7 +43,7 @@ echo "TrieDB has been initialized correctly."
 EXECUTION_CONTAINER_ID=$(docker run \
     -d --security-opt seccomp:$MONAD_BFT_ROOT/docker/devnet/monad/config/profile.json \
     --volume $MONAD_BFT_ROOT/docker/devnet/monad:/monad \
-    monad-execution:latest monad --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json)
+    monad-execution:latest monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --genesis /monad/config/genesis.json)
 echo "Execution node has been started."
 
 CONSENSUS_CONTAINER_ID=$(docker run \

@@ -15,7 +15,7 @@ services:
 
   monad_execution:
     image: monad-execution-builder:latest
-    command: monad --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level ERROR
+    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --genesis /monad/config/genesis.json --log_level ERROR
     depends_on:
       - build_triedb
     volumes:
