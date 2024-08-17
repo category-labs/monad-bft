@@ -153,6 +153,12 @@ impl Handle {
             return None;
         };
 
+        // address (currently not needed)
+        let Ok(_) = <[u8; 20]>::decode(&mut buf) else {
+            error!("rlp address decode failed: {:?}", buf);
+            return None;
+        };
+
         // account incarnation decode (currently not needed)
         let Ok(_) = u64::decode(&mut buf) else {
             error!("rlp incarnation decode failed: {:?}", buf);

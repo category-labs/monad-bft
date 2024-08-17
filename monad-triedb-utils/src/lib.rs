@@ -89,6 +89,13 @@ impl TriedbEnv {
                     return;
                 };
 
+                // address (currently not needed)
+                let Ok(_) = EthAddress::decode(&mut buf) else {
+                    debug!("rlp address decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
+
                 // account incarnation decode (currently not needed)
                 let Ok(_) = u64::decode(&mut buf) else {
                     debug!("rlp incarnation decode failed: {:?}", buf);
@@ -101,6 +108,7 @@ impl TriedbEnv {
                     let _ = send.send(TriedbResult::EncodingError);
                     return;
                 };
+
                 let Ok(balance) = u128::decode(&mut buf) else {
                     debug!("rlp balance decode failed: {:?}", buf);
                     let _ = send.send(TriedbResult::EncodingError);
@@ -155,7 +163,22 @@ impl TriedbEnv {
                     return;
                 };
 
-                let _ = match U256::decode(&mut result.as_slice()) {
+                let mut buf = result.as_slice();
+                let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+                    debug!("rlp decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
+
+                // storage key (currently not needed)
+                let Ok(_) = U256::decode(&mut buf) else {
+                    debug!("rlp storage key decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
+
+                // storage value
+                let _ = match U256::decode(&mut buf) {
                     Ok(res) => {
                         let mut storage_value = [0_u8; 32];
                         for (byte, storage) in res
@@ -168,7 +191,7 @@ impl TriedbEnv {
                         send.send(TriedbResult::Storage(storage_value))
                     }
                     Err(e) => {
-                        debug!("rlp storage decode failed: {:?}", e);
+                        debug!("rlp storage value decode failed: {:?}", e);
                         send.send(TriedbResult::EncodingError)
                     }
                 };
