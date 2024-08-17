@@ -27,7 +27,7 @@ fn make_tx(rng: &mut ChaCha8Rng, input_len: usize) -> TransactionSigned {
         chain_id: Some(1337),
         nonce: rng.gen_range(10_000..50_000),
         gas_price: rng.gen_range(1000..10_000),
-        gas_limit: 21000,
+        gas_limit: 30000,
         to: TransactionKind::Call(Address::random()),
         value: 0.into(),
         input: input.into(),
