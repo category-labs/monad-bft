@@ -11,8 +11,9 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_eth_block_policy::{compute_txn_carriage_cost, EthBlockPolicy, EthValidatedBlock};
-use monad_eth_block_validator::static_validate_transaction;
+use monad_eth_block_policy::{
+    compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
@@ -493,7 +494,7 @@ mod test {
 
     const EXECUTION_DELAY: u64 = 4;
     const BASE_FEE: u128 = 1000;
-    const INTRINSIC_GAS: u64 = 21000;
+    const GAS_LIMIT: u64 = 30000;
 
     type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
 
@@ -504,7 +505,7 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), 1000, INTRINSIC_GAS, 0, 10);
+        let tx = make_tx(B256::repeat_byte(0xAu8), 1000, GAS_LIMIT, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));
@@ -542,7 +543,7 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_gas_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS + 1, 0, 10);
+        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT + 1, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));
@@ -565,7 +566,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             1,
-            INTRINSIC_GAS,
+            GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -580,12 +581,12 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_partial_proposal_with_insufficient_gas_limit() {
-        let t1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS, 0, 10);
-        let t2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS, 1, 10);
-        let t3 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS, 2, 10);
+        let t1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10);
+        let t2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 1, 10);
+        let t3 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 2, 10);
         let expected_txs = vec![
-            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, INTRINSIC_GAS, 1, 10),
+            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 1, 10),
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
@@ -610,7 +611,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             2,
-            INTRINSIC_GAS * 2,
+            GAS_LIMIT * 2,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -625,16 +626,16 @@ mod test {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
         let s2 = B256::repeat_byte(0xBu8); // 0xf288ECAF15790EfcAc528946963A6Db8c3f8211d
         let txs = vec![
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, 2 * BASE_FEE, 2 * INTRINSIC_GAS, 0, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
         ];
 
         let a1 = EthAddress(txs[0].recover_signer().unwrap());
         let a2 = EthAddress(txs[1].recover_signer().unwrap());
 
         let expected_txs = vec![
-            make_tx(s2, 2 * BASE_FEE, 2 * INTRINSIC_GAS, 0, 10),
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 0, 10),
+            make_tx(s2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
@@ -654,7 +655,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             2,
-            INTRINSIC_GAS * 3,
+            GAS_LIMIT * 3,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -669,11 +670,11 @@ mod test {
     fn test_resubmit_with_better_price() {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
         let txs = vec![
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s1, 2 * BASE_FEE, 2 * INTRINSIC_GAS, 0, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
         ];
         let a1 = EthAddress(txs[0].recover_signer().unwrap());
-        let expected_txs = vec![make_tx(s1, 2 * BASE_FEE, 2 * INTRINSIC_GAS, 0, 10)];
+        let expected_txs = vec![make_tx(s1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10)];
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
@@ -691,7 +692,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             2,
-            3 * INTRINSIC_GAS,
+            3 * GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -711,26 +712,26 @@ mod test {
         let s3: B256 =
             hex!("0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2").into(); // pubkey starts with CCC
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s1, 5 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s1, 3 * BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, 5 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, 1 * BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s3, 8 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s3, 10 * BASE_FEE, INTRINSIC_GAS, 2, 10),
+            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 3 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 1 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 10 * BASE_FEE, GAS_LIMIT, 2, 10),
         ];
         let expected_txs = vec![
-            make_tx(s1, 10 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 8 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s3, 10 * BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s1, 5 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s1, 3 * BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, 1 * BASE_FEE, INTRINSIC_GAS, 2, 10),
+            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 10 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 3 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, 1 * BASE_FEE, GAS_LIMIT, 2, 10),
         ];
         let acc = txs
             .iter()
@@ -751,7 +752,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             200,
-            300 * INTRINSIC_GAS,
+            300 * GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -771,20 +772,20 @@ mod test {
         let s3: B256 =
             hex!("0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2").into(); // pubkey starts with CCC
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s1, 5 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s3, 8 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, INTRINSIC_GAS, 1, 10),
+            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
         ];
         let expected_txs = vec![
-            make_tx(s1, 10 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 8 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s1, 5 * BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, INTRINSIC_GAS, 1, 10),
+            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
         ];
 
         let acc = txs
@@ -806,7 +807,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             200,
-            300 * INTRINSIC_GAS,
+            300 * GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -825,29 +826,29 @@ mod test {
         let s2: B256 =
             hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, 100 * INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 3, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 4, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 5, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 6, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 7, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 8, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 9, 10),
+            make_tx(s1, 10 * BASE_FEE, 100 * GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
         ];
         let expected_txs = vec![
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 3, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 4, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 5, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 6, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 7, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 8, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 9, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
         ];
 
         let acc = txs
@@ -869,7 +870,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             200,
-            10 * INTRINSIC_GAS,
+            10 * GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -887,29 +888,29 @@ mod test {
         let s2: B256 =
             hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
         let txs = vec![
-            make_tx(s1, 2 * BASE_FEE, 10 * INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 3, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 4, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 5, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 6, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 7, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 8, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 9, 10),
+            make_tx(s1, 2 * BASE_FEE, 10 * GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
         ];
         let expected_txs = vec![
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 2, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 3, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 4, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 5, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 6, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 7, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 8, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 9, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
         ];
 
         let acc = txs
@@ -931,7 +932,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             10,
-            10 * INTRINSIC_GAS,
+            10 * GAS_LIMIT,
             &eth_block_policy,
             Default::default(),
             &state_backend,
@@ -978,28 +979,28 @@ mod test {
         let s5: B256 =
             hex!("9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8").into(); // pubkey starts with EEE
         let txs = vec![
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s3, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s4, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s4, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s5, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s5, BASE_FEE, INTRINSIC_GAS, 1, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s4, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s4, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s5, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s5, BASE_FEE, GAS_LIMIT, 1, 10),
         ];
         let expected_txs = vec![
-            make_tx(s5, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s5, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s4, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s4, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s3, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s3, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s2, BASE_FEE, INTRINSIC_GAS, 1, 10),
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 0, 10),
-            make_tx(s1, BASE_FEE, INTRINSIC_GAS, 1, 10),
+            make_tx(s5, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s5, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s4, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s4, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, BASE_FEE, GAS_LIMIT, 1, 10),
         ];
 
         let acc = txs
@@ -1021,7 +1022,7 @@ mod test {
             &mut pool,
             SeqNum(0),
             10,
-            10 * INTRINSIC_GAS,
+            10 * GAS_LIMIT,
             &eth_block_policy,
             Vec::new(),
             &state_backend,
@@ -1036,7 +1037,7 @@ mod test {
         // The first transaction from an account with 0 nonce should be including in the block
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
 
         let acc = vec![(EthAddress(txn_nonce_zero.recover_signer().unwrap()), 0)];
         let mut eth_tx_pool = EthTxPool::default();
@@ -1073,11 +1074,11 @@ mod test {
 
         let sender_1_key = B256::random();
         // Txn with nonce = 0
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         // Txn with nonce = 1
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         // Txn with nonce = 3
-        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 3, 10);
+        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let mut eth_tx_pool = EthTxPool::default();
@@ -1119,8 +1120,8 @@ mod test {
         // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let mut eth_tx_pool = EthTxPool::default();
@@ -1160,9 +1161,9 @@ mod test {
 
         let sender_1_key = B256::random();
         // generate two transactions, both with nonce = 0
-        let txn_1_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 10);
-        let txn_2_nonce_zero = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 0, 1000);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_1_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_2_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
 
         let acc = vec![(EthAddress(txn_1_nonce_zero.recover_signer().unwrap()), 0)];
         let mut eth_tx_pool = EthTxPool::default();
@@ -1206,11 +1207,11 @@ mod test {
         let sender_1_key = B256::random();
 
         // txn with nonce = 1
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         // txn with nonce = 2
-        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 2, 10);
+        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
         // txn with nonce = 3
-        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 3, 10);
+        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
 
         let mut eth_tx_pool = EthTxPool::default();
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
@@ -1255,7 +1256,7 @@ mod test {
     #[test]
     fn test_invalid_chain_id() {
         let sender_1_key = B256::random();
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, INTRINSIC_GAS, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
 
         let mut eth_tx_pool = EthTxPool::default();
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());

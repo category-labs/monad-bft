@@ -8,7 +8,7 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{EthTransaction, EthTxHash};
+use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
@@ -25,15 +25,85 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-pub fn compute_intrinsic_gas(txn: &EthTransaction) -> u128 {
-    // TODO implement full intrinsic_gas formula, use a simple formula for now.
-    21000 + 32000
+fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
+    // base stipend
+    let mut intrinsic_gas = 21000;
+
+    // YP, Eqn. 60, first summation
+    // 4 gas for each zero byte and 16 gas for each non zero byte
+    let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
+    let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
+    intrinsic_gas += zero_data_len * 4;
+    // EIP-2028: Transaction data gas cost reduction (was originally 64 for non zero byte)
+    intrinsic_gas += non_zero_data_len * 16;
+
+    if tx.kind().is_create() {
+        // adds 32000 to intrinsic gas if transaction is contract creation
+        intrinsic_gas += 32000;
+        // EIP-3860: Limit and meter initcode
+        // Init code stipend for bytecode analysis
+        intrinsic_gas += ((tx.input().len() as u64 + 31) / 32) * 2;
+    }
+
+    // EIP-2930
+    let access_list = tx
+        .access_list()
+        .map(|list| list.0.as_slice())
+        .unwrap_or(&[]);
+    let accessed_slots: usize = access_list.iter().map(|item| item.storage_keys.len()).sum();
+    // each address in access list costs 2400 gas
+    intrinsic_gas += access_list.len() as u64 * 2400;
+    // each storage key in access list costs 1900 gas
+    intrinsic_gas += accessed_slots as u64 * 1900;
+
+    intrinsic_gas
 }
 
 pub fn compute_txn_carriage_cost(txn: &EthTransaction) -> u128 {
     let max_fee_per_gas = txn.max_fee_per_gas();
     let intrinsic_gas = compute_intrinsic_gas(txn);
-    intrinsic_gas * max_fee_per_gas
+    (intrinsic_gas as u128) * max_fee_per_gas
+}
+
+// allow for more fine grain debugging if needed
+#[derive(Debug)]
+pub enum TransactionError {
+    InvalidChainId,
+    MaxPriorityFeeTooHigh,
+    InitCodeLimitExceeded,
+    GasLimitTooLow,
+}
+
+/// Stateless helper function to check validity of an Ethereum transaction
+pub fn static_validate_transaction(
+    tx: &EthSignedTransaction,
+    chain_id: u64,
+) -> Result<(), TransactionError> {
+    // EIP-155
+    tx.chain_id()
+        .and_then(|cid| (cid == chain_id).then_some(()))
+        .ok_or(TransactionError::InvalidChainId)?;
+
+    // EIP-1559
+    if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
+        if max_priority_fee > tx.max_fee_per_gas() {
+            return Err(TransactionError::MaxPriorityFeeTooHigh);
+        }
+    }
+
+    // EIP-3860
+    const DATA_SIZE_LIMIT: usize = 2 * 0x6000;
+    if tx.to().is_some() && tx.input().len() > DATA_SIZE_LIMIT {
+        return Err(TransactionError::InitCodeLimitExceeded);
+    }
+
+    // YP eq. 62 - intrinsic gas validation
+    let intrinsic_gas = compute_intrinsic_gas(tx);
+    if tx.gas_limit() < intrinsic_gas {
+        return Err(TransactionError::GasLimitTooLow);
+    }
+
+    Ok(())
 }
 
 /// A consensus block that has gone through the EthereumValidator and makes the decoded and
