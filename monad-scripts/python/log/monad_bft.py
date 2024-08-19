@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -11,6 +12,19 @@ class BftLog:
     ##############################################################################
     #                     DATA PARSING HELPER FUNCTIONS                          #
     ##############################################################################
+
+    # summary data on common metrics
+    def summary(self):
+        df = self.block_commit_df()
+        print(f"Number of committed blocks: {len(df)}")
+
+        print(f"Average block duration: {round(df['duration'].mean())}ms")
+
+        print(f"Number of transactions: {df['num_tx'].sum()}")
+
+        df = self.timeout_df()
+        print(f"Number of timeouts: {len((df))}")
+
 
     # collect duration between committed blocks
     def block_commit_df(self):
@@ -91,9 +105,15 @@ class BftLog:
                 (self.df['message'] == 'created proposal')
             )
         ]
-        df = df[['timestamp', 'fields']]
-        df['seq_num'] = df['fields'].apply(lambda x: x.get('proposed_seq_num')).astype(int)
+        df = df[['timestamp', 'fields', 'message']]
+
+        df['seq_num'] = np.where(
+            df['message'] == 'Creating Proposal',
+            df['fields'].apply(lambda x: x.get('try_propose_seq_num')),
+            df['fields'].apply(lambda x: x.get('proposed_seq_num'))
+        ).astype(int)
         df = df.drop('fields', axis=1)
+        df = df.drop('message', axis=1)
 
         # group by round and aggregate
         df_grouped = df.groupby('seq_num').agg({
@@ -200,6 +220,7 @@ class BftLog:
         plt.title('Duration between consecutive blocks')
         plt.savefig('block_time.png')
         plt.close()
+        print('Plot saved to block_time.png')
 
 
     # plot the graph of proposal duration between each round
@@ -213,6 +234,7 @@ class BftLog:
         plt.title('Duration between consecutive proposals')
         plt.savefig('proposal_time.png')
         plt.close()
+        print('Plot saved to proposal_time.png')
 
 
     # plot the duration to collect the votes and the total number of votes collected
@@ -240,6 +262,7 @@ class BftLog:
         fig.tight_layout()
         plt.savefig('vote_collection.png')
         plt.close()
+        print('Plot saved to vote_collection.png')
 
 
     # plot the duration to collect transaction and create proposal
@@ -253,11 +276,15 @@ class BftLog:
         plt.title('Duration for creating proposals')
         plt.savefig('proposal_creation.png')
         plt.close()
+        print('Plot saved to proposal_creation.png')
 
 
     # plot the graph of duration of timeouts to next proposal
     def plot_timeout(self):
         df = self.timeout_df()
+        if len(df) == 0:
+            print("No timeouts have happened.")
+            return
 
         plt.figure(figsize=(12, 6))
         plt.scatter(df['round'], df['duration'], color='blue', s=50)
@@ -266,6 +293,7 @@ class BftLog:
         plt.title('Duration between timeouts and next proposal')
         plt.savefig('timeout_duration.png')
         plt.close()
+        print('Plot saved to timeout_duration.png')
 
 
     @staticmethod
