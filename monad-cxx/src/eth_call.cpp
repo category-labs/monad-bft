@@ -10,6 +10,7 @@
 #include <monad/execution/block_hash_buffer.hpp>
 #include <monad/execution/evmc_host.hpp>
 #include <monad/execution/execute_transaction.hpp>
+#include <monad/execution/intrinsic_gas_buffer.hpp>
 #include <monad/execution/tx_context.hpp>
 #include <monad/execution/validate_transaction.hpp>
 #include <monad/state2/block_state.hpp>
@@ -34,7 +35,8 @@ namespace
         std::vector<std::filesystem::path> const &dbname_paths)
     {
         constexpr evmc_revision rev = EVMC_SHANGHAI; // TODO
-        MonadDevnet chain;
+        IntrinsicGasBuffer intrinsic_gas_buffer{};
+        MonadDevnet chain{intrinsic_gas_buffer};
         MONAD_ASSERT(rev == chain.get_revision(header));
 
         Transaction enriched_txn{txn};

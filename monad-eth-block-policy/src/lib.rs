@@ -27,7 +27,7 @@ pub enum ReserveBalanceCheck {
 
 pub fn compute_intrinsic_gas(txn: &EthTransaction) -> u128 {
     // TODO implement full intrinsic_gas formula, use a simple formula for now.
-    21000 + 32000
+    21000
 }
 
 pub fn compute_txn_carriage_cost(txn: &EthTransaction) -> u128 {
