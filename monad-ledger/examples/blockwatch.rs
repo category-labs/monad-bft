@@ -16,30 +16,38 @@ use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long)]
-    ledger_path: PathBuf,
+    /// Watch the ledger directory for updates
+    #[arg(short, long, exclusive = true)]
+    ledger_path: Option<PathBuf>,
 
-    // Load a single block
-    #[arg(long)]
+    /// Dump a single block
+    #[arg(long, exclusive = true)]
     debug: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async_main())
+}
+
+async fn async_main() -> io::Result<()> {
     let args = Args::parse();
 
-    // debug a single block
-    if let Some(debug_path) = args.debug {
-        let (seq_num, cnt_delta, hash) = process_block(&debug_path);
+    if let Some(ledger_path) = args.ledger_path {
+        if let Err(e) = async_watch(ledger_path).await {
+            println!("error: {:?}", e)
+        }
+    } else if let Some(debug_path) = args.debug {
+        let (seq_num, cnt_delta, hash) = process_block(&debug_path, true);
         println!(
             "seqnum: {:?}, tx count: {}, running hash: {:?}",
             seq_num, cnt_delta, hash
         );
         return Ok(());
-    }
-
-    if let Err(e) = async_watch(args.ledger_path).await {
-        println!("error: {:?}", e)
+    } else {
+        println!("error: no operating mode specified");
     }
 
     Ok(())
@@ -81,7 +89,7 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
                 attrs: _,
             }) if kind == EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
                 assert_eq!(paths.len(), 1);
-                let (seq_num, cnt_delta, hash) = process_block(&paths[0]);
+                let (seq_num, cnt_delta, hash) = process_block(&paths[0], false);
                 running_txn_cnt += cnt_delta;
                 hasher.update(hash);
                 running_hash = hasher.hash();
@@ -98,7 +106,7 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
     Ok(())
 }
 
-fn process_block(path: &PathBuf) -> (u64, u64, Hash) {
+fn process_block(path: &PathBuf, print_block: bool) -> (u64, u64, Hash) {
     let mut f = File::open(path).unwrap();
 
     let sz = f.metadata().unwrap().len();
@@ -108,6 +116,10 @@ fn process_block(path: &PathBuf) -> (u64, u64, Hash) {
     let b = Block::decode(&mut &buf[..]);
     match b {
         Ok(block) => {
+            if print_block {
+                println!("{:#?}", block);
+            }
+
             // get data on the block
             let cnt = block.body.len() as u64;
             let (h, block) = block.seal(B256::default()).split_header_body();
