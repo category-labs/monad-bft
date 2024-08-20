@@ -71,6 +71,7 @@ mod state;
 use state::NodeState;
 
 fn main() {
+    panic!();
     let mut cmd = Cli::command();
 
     rayon::ThreadPoolBuilder::new()
