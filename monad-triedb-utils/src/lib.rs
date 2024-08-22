@@ -13,8 +13,6 @@ use tracing::debug;
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];
 
-use tracing::debug;
-
 #[derive(Clone)]
 pub struct TriedbEnv {
     triedb_path: PathBuf,
@@ -266,7 +264,7 @@ impl TriedbEnv {
                 });
 
                 let (triedb_key, key_len_nibbles) = TriedbEnv::create_call_frame_key(&tx_hash);
-        
+
                 let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
                 let Some(result) = result else {
                     let _ = send.send(TriedbResult::Null);

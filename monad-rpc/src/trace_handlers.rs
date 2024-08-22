@@ -19,26 +19,17 @@ use tracing::{debug, trace};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallFrame {
+    #[serde(rename = "type")]
     pub typ: U8,
-
     pub flags: U64,
-
     pub from: Address,
-
     pub to: Option<Address>,
-
     pub value: U256,
-
     pub gas: U64,
-
     pub gas_used: U64,
-
     pub input: Bytes,
-
     pub output: Bytes,
-
     pub status: U8,
-
     pub depth: U64,
 }
 
@@ -91,9 +82,34 @@ pub struct CallFrames {
 }
 
 #[derive(Deserialize, Debug)]
-struct MonadEthGetTransactionByHashParams {
+#[serde(rename_all = "camelCase")]
+pub struct TracerCfg {
+    pub only_top_call: bool,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct TracerObject {
+    #[serde(default)]
+    tracer: Tracer,
+    tracerCfg: Option<TracerCfg>,
+    timeout: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub enum Tracer {
+    #[default]
+    #[serde(rename = "callTracer")]
+    CallTracer,
+    #[serde(rename = "prestateTracer")]
+    PreStateTracer,
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadDebugTraceTransactionParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
+    #[serde(default)]
+    tracer: TracerObject,
 }
 
 #[allow(non_snake_case)]
@@ -104,7 +120,7 @@ pub async fn monad_debugTraceTransaction(
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let p: MonadEthGetTransactionByHashParams = match serde_json::from_value(params) {
+    let p: MonadDebugTraceTransactionParams = match serde_json::from_value(params) {
         Ok(s) => s,
         Err(e) => {
             debug!("invalid params {e}");
@@ -113,7 +129,7 @@ pub async fn monad_debugTraceTransaction(
     };
 
     let tx_hash = p.tx_hash.0;
-    let key = EthTxKey(B256::new(p.tx_hash.0));
+    let key = EthTxKey(B256::new(tx_hash));
     let Some(result) = blockdb_env.get_txn(key).await else {
         return serialize_result(None::<Transaction>);
     };
