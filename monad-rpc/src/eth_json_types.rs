@@ -2,12 +2,12 @@ use std::str::FromStr;
 
 use monad_blockdb::BlockTagKey;
 use reth_primitives::{Address, U256};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
 
 use crate::{
-    hex::{decode, decode_quantity, DecodeHexError},
+    hex::{self, decode, decode_quantity, DecodeHexError},
     jsonrpc::JsonRpcError,
 };
 
@@ -23,6 +23,20 @@ impl FromStr for UnformattedData {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         decode(s).map(UnformattedData)
+    }
+}
+impl From<reth_primitives::Bytes> for UnformattedData {
+    fn from(data: reth_primitives::Bytes) -> Self {
+        UnformattedData(data.to_vec())
+    }
+}
+
+impl Serialize for UnformattedData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
     }
 }
 
@@ -67,6 +81,15 @@ impl<const N: usize> FromStr for FixedData<N> {
             Ok(a) => Ok(FixedData(a)),
             Err(_) => Err(DecodeHexError::InvalidLen),
         })?
+    }
+}
+
+impl<const N: usize> Serialize for FixedData<N> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(&self.0))
     }
 }
 
