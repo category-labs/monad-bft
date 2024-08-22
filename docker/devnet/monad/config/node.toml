@@ -27,7 +27,6 @@ chain_id = 41454
 peers = []
 # [[bootstrap.peers]]
 # address = "x.x.x.x:xxxx"
-# mempool_address = "x.x.x.x:xxxx"
 # secp256k1_pubkey = "..."
 
 [network]
