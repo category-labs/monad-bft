@@ -27,6 +27,7 @@ int64_t monad_evmc_result::get_gas_used() const
 int64_t monad_evmc_result::get_gas_refund() const
 {
     return gas_refund;
+
 }
 
 monad_evmc_result eth_call(
