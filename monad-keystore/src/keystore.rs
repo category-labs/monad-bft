@@ -6,6 +6,7 @@ use std::{
 
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     checksum_module::{ChecksumError, ChecksumHash},
@@ -92,16 +93,28 @@ impl CryptoModules {
         }
     }
 
-    // Encrypt the private key with a passphrase
-    // Returns the corresponding ciphertext and checksum
+    /// Encrypt the private key with a passphrase Returns the corresponding
+    /// ciphertext and checksum
+    ///
+    /// Password normalization
+    /// https://eips.ethereum.org/EIPS/eip-2335#password-requirements
+    /// > The password is a string of arbitrary unicode characters. The password
+    /// > is first converted to its NFKD representation, then the control codes
+    /// > (specified below) are stripped from the password and finally it is
+    /// > UTF-8 encoded.
     pub fn encrypt(
         &self,
         private_key: &[u8],
         password: &String,
     ) -> Result<(Vec<u8>, Vec<u8>), KeystoreError> {
+        let password_nfkd = password
+            .nfkd()
+            .filter(|&c| !c.is_control())
+            .collect::<String>();
+
         let encryption_key = self
             .kdf
-            .derive_key(password.as_bytes())
+            .derive_key(password_nfkd.as_bytes())
             .map_err(KeystoreError::KDFError)?;
 
         let ciphertext = self.cipher.encrypt(private_key, &encryption_key);
@@ -110,17 +123,24 @@ impl CryptoModules {
         Ok((ciphertext, checksum))
     }
 
-    // Decrypt the ciphertext with the passphrase
-    // Returns the corresponding private key
+    /// Decrypt the ciphertext with the passphrase
+    /// Returns the corresponding private key
+    ///
+    /// See [CryptoModules::encrypt] for password normalization
     pub fn decrypt(
         &self,
         ciphertext: &[u8],
         password: &String,
         checksum: &[u8],
     ) -> Result<Vec<u8>, KeystoreError> {
+        let password_nfkd = password
+            .nfkd()
+            .filter(|&c| !c.is_control())
+            .collect::<String>();
+
         let decryption_key = self
             .kdf
-            .derive_key(password.as_bytes())
+            .derive_key(password_nfkd.as_bytes())
             .map_err(KeystoreError::KDFError)?;
 
         self.hash
