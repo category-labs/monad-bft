@@ -82,9 +82,9 @@ where
                     let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
                     // txn iteration is following the same order as they are in the
                     // block. A block is invalid if we see a smaller or equal nonce
-                    // after the first
+                    // after the first or if there is a nonce gap
                     if let Some(old_nonce) = maybe_old_nonce {
-                        if old_nonce >= eth_txn.nonce() {
+                        if eth_txn.nonce() != old_nonce + 1 {
                             return Err(BlockValidationError::TxnError);
                         }
                     }
