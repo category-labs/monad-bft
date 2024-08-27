@@ -15,7 +15,13 @@ monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+futures = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+monad-eth-testutil = { path = "../monad-eth-testutil" }
+
+clap = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
 bindgen = { workspace = true }
