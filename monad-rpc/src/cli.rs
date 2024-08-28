@@ -11,11 +11,15 @@ pub struct Cli {
 
     /// Set the execution ledger path
     #[arg(long)]
-    pub execution_ledger_path: Option<PathBuf>,
+    pub execution_ledger_path: PathBuf,
 
-    /// Set the monad blockdb path
+    /// Set the path where the bft block headers will be stored
     #[arg(long)]
-    pub blockdb_path: Option<PathBuf>,
+    pub bft_block_header_path: PathBuf,
+
+    /// Set the path where the bft block payloads will be stored
+    #[arg(long)]
+    pub bft_block_payload_path: PathBuf,
 
     /// Set the monad triedb path
     #[arg(long)]

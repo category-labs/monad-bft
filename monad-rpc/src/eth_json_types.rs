@@ -268,7 +268,7 @@ where
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#hex-encoding
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Quantity(pub u64);
 
 impl schemars::JsonSchema for Quantity {
@@ -351,6 +351,12 @@ impl From<Address> for FixedData<20> {
     }
 }
 
+impl From<FixedData<32>> for monad_types::BlockId {
+    fn from(value: FixedData<32>) -> Self {
+        monad_types::BlockId(monad_types::Hash(value.0))
+    }
+}
+
 impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -382,46 +388,15 @@ where
         .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
 }
 
-impl From<FixedData<32>> for monad_blockdb::BlockTableKey {
-    fn from(f: FixedData<32>) -> Self {
-        monad_blockdb::BlockTableKey(monad_types::BlockId(monad_types::Hash(f.0)))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 pub enum BlockTags {
     Number(Quantity),
-    Default(BlockTagKey),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-pub enum BlockTagKey {
     Latest,
-    Finalized,
-}
-
-impl From<BlockTagKey> for monad_blockdb::BlockTagKey {
-    fn from(t: BlockTagKey) -> Self {
-        match t {
-            BlockTagKey::Latest => monad_blockdb::BlockTagKey::Latest,
-            BlockTagKey::Finalized => monad_blockdb::BlockTagKey::Finalized,
-        }
-    }
-}
-
-impl From<BlockTags> for monad_blockdb_utils::BlockTags {
-    fn from(t: BlockTags) -> Self {
-        match t {
-            BlockTags::Number(q) => monad_blockdb_utils::BlockTags::Number(q.0),
-            BlockTags::Default(k) => monad_blockdb_utils::BlockTags::Default(k.into()),
-        }
-    }
 }
 
 impl Default for BlockTags {
     fn default() -> Self {
-        BlockTags::Default(BlockTagKey::Latest)
+        BlockTags::Latest
     }
 }
 
@@ -430,12 +405,21 @@ impl FromStr for BlockTags {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "earliest" => Ok(Self::Default(BlockTagKey::Latest)),
-            "latest" => Ok(Self::Default(BlockTagKey::Latest)),
-            "safe" => Ok(Self::Default(BlockTagKey::Latest)),
-            "finalized" => Ok(Self::Default(BlockTagKey::Finalized)),
-            "pending" => Ok(Self::Default(BlockTagKey::Latest)),
+            "earliest" => Ok(Self::Latest),
+            "latest" => Ok(Self::Latest),
+            "safe" => Ok(Self::Latest),
+            "finalized" => Ok(Self::Latest),
+            "pending" => Ok(Self::Latest),
             _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
+        }
+    }
+}
+
+impl From<BlockTags> for crate::triedb::BlockTags {
+    fn from(value: BlockTags) -> Self {
+        match value {
+            BlockTags::Number(n) => crate::triedb::BlockTags::Number(n.0),
+            BlockTags::Latest => crate::triedb::BlockTags::Latest,
         }
     }
 }
@@ -464,7 +448,7 @@ mod tests {
 
     use super::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTagKey, BlockTags, FixedData, Quantity, UnformattedData,
+        deserialize_unformatted_data, BlockTags, FixedData, Quantity, UnformattedData,
     };
 
     #[derive(Deserialize, Debug)]
@@ -555,7 +539,7 @@ mod tests {
     #[test]
     fn test_block_enums() {
         let x: OneBlockParam = serde_json::from_value(json!(["latest"])).unwrap();
-        assert_eq!(BlockTags::Default(BlockTagKey::Latest), x.a);
+        assert_eq!(BlockTags::Latest, x.a);
 
         let x: OneBlockParam = serde_json::from_value(json!(["0xffacb0"])).unwrap();
         assert_eq!(BlockTags::Number(Quantity(16755888)), x.a);

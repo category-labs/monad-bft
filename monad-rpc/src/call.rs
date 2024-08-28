@@ -1,7 +1,6 @@
 use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
-use monad_blockdb_utils::BlockDbEnv;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use reth_primitives::Block;
@@ -9,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    eth_json_types::{deserialize_block_tags, BlockTags},
+    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
+    eth_json_types::{deserialize_block_tags, BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{TriedbEnv, TriedbResult},
@@ -274,7 +274,7 @@ pub async fn sender_gas_allowance(
         let TriedbResult::Account(_, balance, _) = triedb_env
             .get_account(
                 from.into(),
-                monad_blockdb_utils::BlockTags::Number(block.number),
+                BlockTags::Number(Quantity(block.number)).into(),
             )
             .await
         else {
@@ -314,10 +314,14 @@ pub struct MonadEthCallParams {
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
-#[rpc(method = "eth_call", ignore = "chain_id")]
+#[rpc(
+    method = "eth_call",
+    ignore = "chain_id",
+    ignore = "file_ledger_reader"
+)]
 pub async fn monad_eth_call(
-    blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
+    file_ledger_reader: &FileBlockReader,
     execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthCallParams,
@@ -340,28 +344,13 @@ pub async fn monad_eth_call(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
-    let block_number = match params.block {
-        BlockTags::Default(_) => {
-            let TriedbResult::BlockNum(triedb_block_number) = triedb_env.get_latest_block().await
-            else {
-                debug!("triedb did not have latest block number");
-                return Err(JsonRpcError::internal_error());
-            };
-            let Some(blockdb_block_number) = blockdb_env.get_latest_block().await else {
-                debug!("blockdb did not have latest block number");
-                return Err(JsonRpcError::internal_error());
-            };
-            min(triedb_block_number, blockdb_block_number.0)
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let mut block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::DecodeFailed(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
         }
-        BlockTags::Number(block_number) => block_number.0,
-    };
-
-    let Some(mut block_header) = blockdb_env
-        .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_number))
-        .await
-    else {
-        debug!("blockdb did not have latest block header");
-        return Err(JsonRpcError::internal_error());
     };
 
     let sender = params.transaction.from.unwrap_or_default();
@@ -370,23 +359,22 @@ pub async fn monad_eth_call(
             // for eth_call from a zero address, we want to override the block base fee to be zero
             // so that reading from the smart contract does not require the zero address
             // to have any gas balance
-            block_header.block.header.base_fee_per_gas = Some(0);
+            block.header.base_fee_per_gas = Some(0);
             params.transaction.fill_gas_prices(U256::from(0))?;
 
             if params.transaction.gas.is_none() {
                 // eth_call from a zero address will default gas limit as block gas limit
-                params.transaction.gas = Some(U256::from(block_header.block.header.gas_limit));
+                params.transaction.gas = Some(U256::from(block.header.gas_limit));
             }
         }
         _ => {
-            params.transaction.fill_gas_prices(U256::from(
-                block_header.block.base_fee_per_gas.unwrap_or_default(),
-            ))?;
+            params
+                .transaction
+                .fill_gas_prices(U256::from(block.base_fee_per_gas.unwrap_or_default()))?;
 
             if params.transaction.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(triedb_env, &block_header.block, &params.transaction)
-                        .await?;
+                    sender_gas_allowance(triedb_env, &block, &params.transaction).await?;
                 params.transaction.gas = Some(U256::from(allowance));
             }
         }
@@ -397,10 +385,10 @@ pub async fn monad_eth_call(
     }
 
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
-    let block_number = block_header.block.header.number;
+    let block_number = block.header.number;
     match monad_cxx::eth_call(
         txn,
-        block_header.block.header,
+        block.header,
         sender,
         block_number,
         &triedb_env.path(),

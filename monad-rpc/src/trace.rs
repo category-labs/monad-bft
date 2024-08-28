@@ -1,4 +1,3 @@
-use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
 use serde::Deserialize;
 
@@ -32,10 +31,7 @@ pub struct TraceCallObject {
 
 #[rpc(method = "trace_block")]
 #[allow(non_snake_case)]
-pub async fn monad_trace_block(
-    blockdb_env: &BlockDbEnv,
-    params: BlockTags,
-) -> JsonRpcResult<String> {
+pub async fn monad_trace_block(params: BlockTags) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 
-blockdb="./monad/blockdb"
+bft_ledger="./monad/bft-ledger"
+block_payload="./monad/block-payload"
 ledger="./monad/ledger"
 mempool_sock="./monad/mempool.sock"
 controlpanel_sock="./monad/controlpanel.sock"
@@ -9,12 +10,16 @@ wal="./monad/wal"
 forkpoint="./monad/config/forkpoint.toml"
 
 # Check if directories/files from previous run exist, delete them if they exist
-if [ -d "$blockdb" ]; then
-    rm -r "$blockdb"
-fi
-
 if [ -d "$ledger" ]; then
     rm -r "$ledger"
+fi
+
+if [ -d "$bft_ledger" ]; then
+    rm -r "$bft_ledger"
+fi
+
+if [ -d "$block_payload" ]; then
+    rm -r "$block_payload"
 fi
 
 if [ -d "$triedb" ]; then

@@ -1,49 +1,53 @@
 use alloy_rlp::Encodable;
-use monad_blockdb::EthTxKey;
-use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
-use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     eth_json_types::{deserialize_fixed_data, BlockTags, EthHash, MonadU256},
     hex,
-    jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
+    jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
     triedb::{TriedbEnv, TriedbResult},
 };
 
-#[rpc(method = "debug_getRawBlock")]
+#[rpc(method = "debug_getRawBlock", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: BlockTags,
 ) -> JsonRpcResult<String> {
-    let block = blockdb_env
-        .get_block_by_tag(params.into())
+    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let Ok(raw_block) = file_ledger_reader
+        .async_read_encoded_eth_block(block_num)
         .await
-        .block_not_found()?;
-
-    let mut buf = Vec::default();
-    block.block.encode(&mut buf);
-    Ok(hex::encode(&buf))
+    else {
+        return Err(JsonRpcError::internal_error());
+    };
+    Ok(hex::encode(&raw_block))
 }
 
-#[rpc(method = "debug_getRawHeader")]
+#[rpc(method = "debug_getRawHeader", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
 pub async fn monad_debug_getRawHeader(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: BlockTags,
 ) -> JsonRpcResult<String> {
-    let value = blockdb_env
-        .get_block_by_tag(params.into())
-        .await
-        .block_not_found()?;
+    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::DecodeFailed(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+        }
+    };
 
     let mut buf = Vec::default();
-    value.block.header.encode(&mut buf);
+    block.header.encode(&mut buf);
     Ok(hex::encode(&buf))
 }
 
@@ -53,25 +57,26 @@ pub struct MonadDebugGetRawReceiptsResult {
     receipts: Vec<String>,
 }
 
-#[rpc(method = "debug_getRawReceipts")]
+#[rpc(method = "debug_getRawReceipts", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
 pub async fn monad_debug_getRawReceipts(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     triedb_env: &TriedbEnv,
     params: BlockTags,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
-    let block = blockdb_env
-        .get_block_by_tag(params.into())
-        .await
-        .block_not_found()?;
+    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::DecodeFailed(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+        }
+    };
 
     let mut receipts = Vec::new();
-    for txn_index in 0..block.block.body.len() {
-        match triedb_env
-            .get_receipt(txn_index as u64, block.block.number)
-            .await
-        {
+    for txn_index in 0..block.body.len() {
+        match triedb_env.get_receipt(txn_index as u64, block.number).await {
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
                 let receipt = hex::encode(&rlp_receipt);
@@ -90,48 +95,34 @@ pub struct MonadDebugGetRawTransactionParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "debug_getRawTransaction")]
+#[rpc(method = "debug_getRawTransaction", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
 pub async fn monad_debug_getRawTransaction(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
-    let key = EthTxKey(B256::new(params.tx_hash.0));
-    let result = blockdb_env.get_txn(key).await.block_not_found()?;
-
-    let block_key = result.block_hash;
-    let block = blockdb_env
-        .get_block_by_hash(block_key)
-        .await
-        .expect("txn was found so its block should exist");
-
-    let transaction = block
-        .block
-        .body
-        .get(result.transaction_index as usize)
-        .expect("txn and block found so its index should be correct");
-
-    let mut buf = Vec::default();
-    transaction.encode_enveloped(&mut buf);
-    Ok(hex::encode(&buf))
+    Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByHash")]
+#[rpc(method = "debug_traceBlockByHash", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: EthHash,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByNumber")]
+#[rpc(method = "debug_traceBlockByNumber", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: MonadU256,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())

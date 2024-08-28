@@ -10,7 +10,6 @@ use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_blockdb::BlockDbBuilder;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -196,7 +195,6 @@ async fn run(
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
-    let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
@@ -219,7 +217,8 @@ async fn run(
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(
             node_state.execution_ledger_path,
-            blockdb.clone(),
+            node_state.bft_block_header_path,
+            node_state.bft_block_payload_path,
             EthHeaderParam {
                 gas_limit: node_state.node_config.consensus.block_gas_limit,
             },

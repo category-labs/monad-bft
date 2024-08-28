@@ -3,8 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use monad_blockdb::BlockTagKey;
-use monad_blockdb_utils::BlockTags;
 use monad_triedb_utils::TriedbReader;
 
 type EthAddress = [u8; 20];
@@ -20,6 +18,18 @@ pub enum TriedbResult {
     Code(Vec<u8>),
     Receipt(Vec<u8>),
     BlockNum(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockTags {
+    Number(u64),
+    Latest,
+}
+
+impl Default for BlockTags {
+    fn default() -> Self {
+        Self::Latest
+    }
 }
 
 #[derive(Clone)]
@@ -66,10 +76,7 @@ impl TriedbEnv {
                 // parse block tag
                 let block_num = match block_tag {
                     BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
+                    BlockTags::Latest => db.get_latest_block(),
                 };
 
                 let Some(account) = db.get_account(&addr, block_num) else {
@@ -104,10 +111,7 @@ impl TriedbEnv {
                 // parse block tag
                 let block_num = match block_tag {
                     BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
+                    BlockTags::Latest => db.get_latest_block(),
                 };
 
                 let Some(storage_value) = db.get_storage_at(&addr, &at, block_num) else {
@@ -133,10 +137,7 @@ impl TriedbEnv {
                 // parse block tag
                 let block_num = match block_tag {
                     BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
+                    BlockTags::Latest => db.get_latest_block(),
                 };
 
                 let Some(code) = db.get_code(&code_hash, block_num) else {

@@ -105,6 +105,7 @@ ENV RUST_LOG=info
 
 CMD monad-rpc \
     --ipc-path /monad/mempool.sock \
-    --blockdb-path /monad/blockdb \
     --execution-ledger-path /monad/ledger \
+    --bft-block-header-path /monad/bft-ledger \
+    --bft-block-payload-path /monad/block-payload \
     --triedb-path /monad/triedb

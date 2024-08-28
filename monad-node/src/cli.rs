@@ -33,9 +33,13 @@ pub struct Cli {
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
 
-    /// Set the path where the blockdb will be stored
+    /// Set the path where the bft block headers will be stored
     #[arg(long)]
-    pub blockdb_path: PathBuf,
+    pub bft_block_header_path: PathBuf,
+
+    /// Set the path where the bft block payloads will be stored
+    #[arg(long)]
+    pub bft_block_payload_path: PathBuf,
 
     /// Set a custom monad mempool ipc path
     #[arg(long)]

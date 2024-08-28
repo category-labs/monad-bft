@@ -60,7 +60,7 @@ pub async fn monad_eth_getCode(
     trace!("monad_eth_getCode: {params:?}");
 
     let code_hash = match triedb_env
-        .get_account(params.account.0, params.block_number.clone().into())
+        .get_account(params.account.0, params.block_number.into())
         .await
     {
         TriedbResult::Null => return Ok(format!("0x")),

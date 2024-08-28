@@ -1,14 +1,14 @@
 use std::ops::Div;
 
 use alloy_primitives::aliases::{U256, U64};
-use monad_blockdb::BlockValue;
-use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
+use reth_primitives::Block as EthBlock;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
+    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, BlockTags, EthHash, MonadBlock,
         MonadTransactionReceipt, Quantity,
@@ -19,38 +19,38 @@ use crate::{
     triedb::{TriedbEnv, TriedbResult},
 };
 
-fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
+fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block> {
     // parse block header
     let header = Header {
-        hash: Some(value.block_id()),
-        parent_hash: value.block.header.parent_hash,
-        uncles_hash: value.block.header.ommers_hash,
-        miner: value.block.header.beneficiary,
-        state_root: value.block.header.state_root,
-        transactions_root: value.block.header.transactions_root,
-        receipts_root: value.block.header.receipts_root,
-        withdrawals_root: value.block.header.withdrawals_root,
-        number: Some(U256::from(value.block.header.number)),
-        gas_used: U256::from(value.block.header.gas_used),
-        gas_limit: U256::from(value.block.header.gas_limit),
-        extra_data: value.block.header.clone().extra_data,
-        logs_bloom: value.block.header.logs_bloom,
+        hash: None, //FIXME: figure out how to get this from consensus
+        parent_hash: value.header.parent_hash,
+        uncles_hash: value.header.ommers_hash,
+        miner: value.header.beneficiary,
+        state_root: value.header.state_root,
+        transactions_root: value.header.transactions_root,
+        receipts_root: value.header.receipts_root,
+        withdrawals_root: value.header.withdrawals_root,
+        number: Some(U256::from(value.header.number)),
+        gas_used: U256::from(value.header.gas_used),
+        gas_limit: U256::from(value.header.gas_limit),
+        extra_data: value.header.clone().extra_data,
+        logs_bloom: value.header.logs_bloom,
         // timestamp in block header is in Unix milliseconds but we parse it
         // to be in Unix seconds here for integration compatability
-        timestamp: U256::from(value.block.header.timestamp.div(1000)),
-        difficulty: value.block.header.difficulty,
-        mix_hash: Some(value.block.header.mix_hash),
-        nonce: Some(value.block.header.nonce.to_be_bytes().into()),
-        base_fee_per_gas: value.block.header.base_fee_per_gas.map(U256::from),
-        blob_gas_used: value.block.header.blob_gas_used.map(U64::from),
-        excess_blob_gas: value.block.header.excess_blob_gas.map(U64::from),
-        parent_beacon_block_root: value.block.header.parent_beacon_block_root,
+        timestamp: U256::from(value.header.timestamp.div(1000)),
+        difficulty: value.header.difficulty,
+        mix_hash: Some(value.header.mix_hash),
+        nonce: Some(value.header.nonce.to_be_bytes().into()),
+        base_fee_per_gas: value.header.base_fee_per_gas.map(U256::from),
+        blob_gas_used: value.header.blob_gas_used.map(U64::from),
+        excess_blob_gas: value.header.excess_blob_gas.map(U64::from),
+        parent_beacon_block_root: value.header.parent_beacon_block_root,
     };
 
     // NOTE: depends on our staking logic
     // parse validators withdrawals
-    let withdrawals = if value.block.header.withdrawals_root.is_some() {
-        value.block.clone().withdrawals.map(|withdrawals| {
+    let withdrawals = if value.header.withdrawals_root.is_some() {
+        value.clone().withdrawals.map(|withdrawals| {
             withdrawals
                 .into_iter()
                 .map(|withdrawal| Withdrawal {
@@ -69,7 +69,6 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
     let transactions: BlockTransactions = match return_full_txns {
         true => {
             let transactions = value
-                .block
                 .body
                 .iter()
                 .enumerate()
@@ -78,7 +77,7 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
             BlockTransactions::Full(transactions)
         }
         false => {
-            let transactions = value.block.body.iter().map(|tx| tx.hash()).collect();
+            let transactions = value.body.iter().map(|tx| tx.hash()).collect();
             BlockTransactions::Hashes(transactions)
         }
     };
@@ -87,9 +86,9 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
         header,
         transactions,
         uncles: vec![],
-        total_difficulty: Some(value.block.header.difficulty),
+        total_difficulty: Some(value.header.difficulty),
         withdrawals,
-        size: Some(U256::from(value.block.size())),
+        size: Some(U256::from(value.size())),
         other: Default::default(),
     };
 
@@ -130,21 +129,21 @@ pub struct MonadEthGetBlock {
     block: MonadBlock,
 }
 
-#[rpc(method = "eth_getBlockByHash")]
+#[rpc(method = "eth_getBlockByHash", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
 
     let key = params.block_hash.into();
-    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
+    let Some(block) = file_ledger_reader.get_block_by_hash(key) else {
         return Ok(None);
     };
 
-    let retval = parse_block_content(&value, params.return_full_txns);
+    let retval = parse_block_content(&block, params.return_full_txns);
     Ok(retval.map(|block| MonadEthGetBlock {
         block: MonadBlock(block),
     }))
@@ -157,24 +156,27 @@ pub struct MonadEthGetBlockByNumberParams {
     return_full_txns: bool,
 }
 
-#[rpc(method = "eth_getBlockByNumber")]
+#[rpc(method = "eth_getBlockByNumber", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
 
-    let Some(value) = blockdb_env
-        .get_block_by_tag(params.block_number.into())
-        .await
-    else {
-        return Ok(None);
+    let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
+    let block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Ok(None),
+        BlockResult::DecodeFailed(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+        }
     };
 
-    let retval = parse_block_content(&value, params.return_full_txns);
-    Ok(retval.map(|block| MonadEthGetBlock {
+    let parsed_block = parse_block_content(&block, params.return_full_txns);
+    Ok(parsed_block.map(|block| MonadEthGetBlock {
         block: MonadBlock(block),
     }))
 }
@@ -185,21 +187,24 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
     block_hash: EthHash,
 }
 
-#[rpc(method = "eth_getBlockTransactionCountByHash")]
+#[rpc(
+    method = "eth_getBlockTransactionCountByHash",
+    ignore = "file_ledger_reader"
+)]
 #[allow(non_snake_case)]
 /// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     params: MonadEthGetBlockTransactionCountByHashParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
 
     let key = params.block_hash.into();
-    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
+    let Some(block) = file_ledger_reader.get_block_by_hash(key) else {
         return Ok(None);
     };
 
-    let count = value.block.body.len() as u64;
+    let count = block.body.len() as u64;
     Ok(Some(format!("0x{:x}", count)))
 }
 
@@ -209,30 +214,39 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
     block_tag: BlockTags,
 }
 
-#[rpc(method = "eth_getBlockTransactionCountByNumber")]
+#[rpc(
+    method = "eth_getBlockTransactionCountByNumber",
+    ignore = "file_ledger_reader"
+)]
 #[allow(non_snake_case)]
 /// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: MonadEthGetBlockTransactionCountByNumberParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
 
-    let Some(value) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
-        return Ok(None);
+    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
+    let block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Ok(None),
+        BlockResult::DecodeFailed(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+        }
     };
 
-    let count = value.block.body.len() as u64;
+    let count = block.body.len() as u64;
     Ok(Some(format!("0x{:x}", count)))
 }
 
 pub async fn block_receipts(
     triedb_env: &TriedbEnv,
-    block: BlockValue,
+    block: EthBlock,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
-    let block_num: u64 = block.block.number;
+    let block_num: u64 = block.number;
     let mut block_receipts: Vec<(ReceiptDetails, u64)> = vec![];
-    for txn_index in 0..block.block.body.len() {
+    for txn_index in 0..block.body.len() {
         match triedb_env.get_receipt(txn_index as u64, block_num).await {
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
@@ -260,7 +274,7 @@ pub async fn block_receipts(
         })
         .collect();
 
-    if block_receipts.len() != block.block.body.len() {
+    if block_receipts.len() != block.body.len() {
         return Err(JsonRpcError::internal_error());
     }
 
@@ -276,22 +290,36 @@ pub struct MonadEthGetBlockReceiptsParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
-#[rpc(method = "eth_getBlockReceipts")]
+#[rpc(method = "eth_getBlockReceipts", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     triedb_env: &TriedbEnv,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    let Some(block) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
+    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
+
+    let Ok(encoded_block) = file_ledger_reader
+        .async_read_encoded_eth_block(block_num)
+        .await
+    else {
         return Ok(None);
     };
+    let decoded_block = match file_ledger_reader.decode_eth_block(encoded_block) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)));
+        }
+    };
 
-    let receipts = block_receipts(triedb_env, block).await?;
+    let block_receipts = block_receipts(triedb_env, decoded_block).await?;
     Ok(Some(MonadEthGetBlockReceiptsResult(
-        receipts.into_iter().map(MonadTransactionReceipt).collect(),
+        block_receipts
+            .into_iter()
+            .map(MonadTransactionReceipt)
+            .collect(),
     )))
 }
