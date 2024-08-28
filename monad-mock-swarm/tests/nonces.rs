@@ -109,7 +109,7 @@ mod test {
             SimpleRoundRobin::default,
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000, 1337),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     Balance::MAX,

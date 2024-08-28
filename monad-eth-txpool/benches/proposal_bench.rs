@@ -57,7 +57,7 @@ fn create_pool_and_transactions() -> BenchController {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
     let eth_block_policy =
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, EXECUTION_DELAY, 0, 1337);
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, EXECUTION_DELAY, 1337);
 
     let mut rng = ChaCha8Rng::seed_from_u64(420);
 

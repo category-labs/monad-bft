@@ -4552,7 +4552,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4619,7 +4618,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4687,7 +4685,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4778,7 +4775,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4902,7 +4898,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -5021,7 +5016,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },

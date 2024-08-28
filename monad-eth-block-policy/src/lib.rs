@@ -376,12 +376,6 @@ pub struct EthBlockPolicy {
 
     /// Chain ID
     chain_id: u64,
-
-    /// lowest-order bit 0 set: enable check for insert_tx
-    /// lowest-order bit 1 set: enable check for create_proposal
-    /// lowest-order bit 2 set: enable check for validation
-    /// i.e. 0b00000111 all reserve balance checks are enabled
-    reserve_balance_check_mode: u8,
 }
 
 impl EthBlockPolicy {
@@ -389,7 +383,6 @@ impl EthBlockPolicy {
         last_commit: SeqNum,
         max_reserve_balance: u128,
         execution_delay: u64,
-        reserve_balance_check_mode: u8,
         chain_id: u64,
     ) -> Self {
         Self {
@@ -397,7 +390,6 @@ impl EthBlockPolicy {
             last_commit,
             max_reserve_balance,
             execution_delay: SeqNum(execution_delay),
-            reserve_balance_check_mode,
             chain_id,
         }
     }
@@ -456,14 +448,6 @@ impl EthBlockPolicy {
 
     pub fn get_last_commit(&self) -> SeqNum {
         self.last_commit
-    }
-
-    pub fn reserve_balance_check_enabled(&self, mode: ReserveBalanceCheck) -> bool {
-        match mode {
-            ReserveBalanceCheck::Insert => self.reserve_balance_check_mode & 0b00000001 > 0,
-            ReserveBalanceCheck::Propose => self.reserve_balance_check_mode & 0b00000010 > 0,
-            ReserveBalanceCheck::Validate => self.reserve_balance_check_mode & 0b00000100 > 0,
-        }
     }
 
     // Computes reserve balance available for the account

@@ -352,7 +352,7 @@ fn setup<
 
                 state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX, 1337),
-                block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337),
+                block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 1337),
                 state_backend: InMemoryStateInner::genesis(u128::MAX, SeqNum(0)),
                 block_timestamp: BlockTimestamp::new(
                     100,

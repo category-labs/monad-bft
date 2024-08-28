@@ -499,7 +499,7 @@ mod test {
     type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
 
     fn make_test_block_policy() -> EthBlockPolicy {
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 0, 1337)
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 1337)
     }
 
     #[test]
@@ -1262,7 +1262,7 @@ mod test {
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
         // eth block policy has a different chain id than the transaction
-        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 0, 1);
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 1);
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),

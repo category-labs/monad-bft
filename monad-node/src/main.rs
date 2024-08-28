@@ -293,7 +293,6 @@ async fn run(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
             node_state.node_config.consensus.max_reserve_balance.into(),
             node_state.node_config.consensus.execution_delay,
-            node_state.node_config.consensus.reserve_balance_check_mode,
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
