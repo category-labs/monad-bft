@@ -70,7 +70,6 @@ ARG TRIEDB_TARGET=triedb_driver
 COPY . .
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin debug-node --example wal2json && \
     mv target/release/monad-node node && \
