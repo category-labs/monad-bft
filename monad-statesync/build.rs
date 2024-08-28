@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=../monax-cxx/monad-execution");
+    println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
     println!("cargo:rerun-if-env-changed=TRIEDB_TARGET");
     let build_execution_lib =
         env::var("TRIEDB_TARGET").is_ok_and(|target| target == "triedb_driver");
