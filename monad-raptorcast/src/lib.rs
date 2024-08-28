@@ -10,6 +10,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream};
+use monad_compress::CompressionAlgo;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -39,11 +40,12 @@ where
     pub local_addr: String,
 }
 
-pub struct RaptorCast<ST, M, OM>
+pub struct RaptorCast<ST, M, OM, C>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    C: CompressionAlgo,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -60,16 +62,18 @@ where
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
+    compression: C,
     _phantom: PhantomData<OM>,
 }
 
-impl<ST, M, OM> RaptorCast<ST, M, OM>
+impl<ST, M, OM, C> RaptorCast<ST, M, OM, C>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    C: CompressionAlgo,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST>, compression: C) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr);
         Self {
@@ -88,6 +92,7 @@ where
 
             waker: None,
             metrics: Default::default(),
+            compression,
             _phantom: PhantomData,
         }
     }
@@ -115,11 +120,12 @@ where
     }
 }
 
-impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
+impl<ST, M, OM, C> Executor for RaptorCast<ST, M, OM, C>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    C: CompressionAlgo,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -175,8 +181,19 @@ where
                     }
                 }
                 RouterCommand::Publish { target, message } => {
-                    let app_message = message.serialize();
-                    let app_message_len = app_message.len();
+                    let (app_message, app_message_len) = {
+                        let serialized_message = message.serialize();
+                        let mut compressed_message = vec![];
+                        self.compression
+                            .compress(&serialized_message, &mut compressed_message)
+                            .unwrap_or_else(|e| {
+                                tracing::error!("compression should not fail {:?}", e);
+                                panic!("compression should not fail: {:?}", e);
+                            });
+                        let len = compressed_message.len();
+                        (compressed_message.into(), len)
+                    };
+
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")
                     });
@@ -283,11 +300,12 @@ where
     }
 }
 
-impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
+impl<ST, M, OM, C> Stream for RaptorCast<ST, M, OM, C>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    C: CompressionAlgo,
 
     Self: Unpin,
 {
@@ -323,15 +341,27 @@ where
                 },
                 message,
             );
-            let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match M::deserialize(&decoded) {
-                    Ok(app_message) => Some(app_message.event(from)),
-                    Err(_) => {
-                        tracing::warn!(?from, "failed to deserialize message");
-                        None
-                    }
-                },
-            );
+            let deserialized_app_messages =
+                decoded_app_messages
+                    .into_iter()
+                    .filter_map(|(from, decoded)| {
+                        let mut decompressed = vec![];
+                        this.compression
+                            .decompress(&decoded, &mut decompressed)
+                            .unwrap_or_else(|e| {
+                                tracing::error!("decompression should not fail: {:?}", e);
+                                panic!("decompression should not fail: {:?}", e);
+                            });
+                        let decompressed: Bytes = decompressed.into();
+
+                        match M::deserialize(&decompressed) {
+                            Ok(app_message) => Some(app_message.event(from)),
+                            Err(_) => {
+                                tracing::warn!(?from, "failed to deserialize message");
+                                None
+                            }
+                        }
+                    });
             this.pending_events.extend(deserialized_app_messages);
             if let Some(event) = this.pending_events.pop_front() {
                 return Poll::Ready(Some(event));
