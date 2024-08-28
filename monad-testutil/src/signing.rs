@@ -177,6 +177,19 @@ impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
     }
 }
 
+impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
+    pub fn sign_incorrect_object<T: Hashable>(
+        signed_object: T,
+        unsigned_object: T,
+        key: &ST::KeyPairType,
+    ) -> Unverified<ST, Unvalidated<T>> {
+        let msg = HasherType::hash_object(&signed_object);
+        let sig = ST::sign(msg.as_ref(), key);
+
+        Unverified::new(Unvalidated::new(unsigned_object), sig)
+    }
+}
+
 pub fn get_key<ST: CertificateSignatureRecoverable>(seed: u64) -> ST::KeyPairType {
     let mut hasher = HasherType::new();
     hasher.update(seed.to_le_bytes());
