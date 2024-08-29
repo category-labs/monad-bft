@@ -505,7 +505,7 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), 1000, GAS_LIMIT, 0, 10);
+        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));

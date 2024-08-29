@@ -3695,6 +3695,7 @@ dependencies = [
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
@@ -3713,10 +3714,12 @@ dependencies = [
 name = "monad-eth-block-validator"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",

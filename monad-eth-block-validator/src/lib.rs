@@ -182,3 +182,82 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use alloy_primitives::B256;
+    use monad_consensus_types::payload::FullTransactionList;
+    use monad_eth_testutil::make_tx;
+    use monad_eth_tx::EthFullTransactionList;
+
+    use super::*;
+
+    #[test]
+    fn test_invalid_block_with_nonce_gap() {
+        let block_validator = EthValidator::new(10, 100_000, 1337);
+
+        // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 3, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_over_gas_limit() {
+        let block_validator = EthValidator::new(10, 100_000, 1337);
+
+        // total gas used is 120_000 which is higher than block gas limit
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 2, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_over_tx_limit() {
+        let block_validator = EthValidator::new(1, 100_000, 1337);
+
+        // tx limit per block is 1
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 2, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+}

@@ -309,15 +309,13 @@ impl CommittedBlkBuffer {
         let mut carriage_cost: u128 = 0;
         let mut next_validate = base_seq_num + SeqNum(1);
 
-        // TODO: start iteration from base_seq_num
-        for (&cache_seq_num, (_nonce, block_carriage_costs)) in self.blocks.iter() {
-            if cache_seq_num > base_seq_num {
-                assert_eq!(next_validate, cache_seq_num);
-                if let Some(account_carriage_cost) = block_carriage_costs.get(eth_address) {
-                    carriage_cost += account_carriage_cost;
-                }
-                next_validate += SeqNum(1);
+        // start iteration from base_seq_num (non inclusive)
+        for (&cache_seq_num, (_nonce, block_carriage_costs)) in self.blocks.range(next_validate..) {
+            assert_eq!(next_validate, cache_seq_num);
+            if let Some(account_carriage_cost) = block_carriage_costs.get(eth_address) {
+                carriage_cost += account_carriage_cost;
             }
+            next_validate += SeqNum(1);
         }
 
         CommittedCarriageCostResult {
@@ -708,6 +706,94 @@ where
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::{Address, FixedBytes};
+    use monad_eth_types::EthAddress;
+    use monad_types::SeqNum;
+
+    use super::*;
+
+    #[test]
+    fn test_compute_carriage_cost() {
+        // setup test addresses
+        let address1 = EthAddress(Address(FixedBytes([0x11; 20])));
+        let address2 = EthAddress(Address(FixedBytes([0x22; 20])));
+        let address3 = EthAddress(Address(FixedBytes([0x33; 20])));
+        let address4 = EthAddress(Address(FixedBytes([0x44; 20])));
+
+        // add committed blocks to buffer
+        let mut buffer = CommittedBlkBuffer::new(3);
+        let block1 = (
+            BlockAccountNonce {
+                nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
+            },
+            BlockCarriageCosts {
+                carriage_costs: BTreeMap::from([(address1, 100), (address2, 200)]),
+            },
+        );
+
+        let block2 = (
+            BlockAccountNonce {
+                nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
+            },
+            BlockCarriageCosts {
+                carriage_costs: BTreeMap::from([(address1, 150), (address3, 300)]),
+            },
+        );
+
+        let block3 = (
+            BlockAccountNonce {
+                nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
+            },
+            BlockCarriageCosts {
+                carriage_costs: BTreeMap::from([(address2, 250), (address3, 350)]),
+            },
+        );
+
+        buffer.blocks.insert(SeqNum(1), block1);
+        buffer.blocks.insert(SeqNum(2), block2);
+        buffer.blocks.insert(SeqNum(3), block3);
+
+        // test compute_carriage_cost for different addresses and base sequence numbers
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(0), &address1)
+                .carriage_cost,
+            250
+        );
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(1), &address1)
+                .carriage_cost,
+            150
+        );
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(2), &address1)
+                .carriage_cost,
+            0
+        );
+
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(0), &address2)
+                .carriage_cost,
+            450
+        );
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(0), &address3)
+                .carriage_cost,
+            650
+        );
+
+        // address that is not present in all blocks
+        assert_eq!(
+            buffer
+                .compute_carriage_cost(SeqNum(0), &address4)
+                .carriage_cost,
+            0
+        );
+    }
+
     // TODO: reserve balance check accounts for previous transactions in the block
-    // TODO: unit test for CommittedTxnBuffer.compute_carriage_cost
 }
