@@ -168,6 +168,7 @@ struct MonadEthCoinbaseReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_coinbase(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
+
     trace!("monad_eth_coinbase");
 
     // TODO. TBD where this data actually comes from
