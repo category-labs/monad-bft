@@ -30,8 +30,8 @@ use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
-use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_cache::StateBackendCache;
+use monad_triedb_utils::TriedbReader;
 use monad_types::{
     Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
@@ -287,7 +287,7 @@ async fn run(
             node_state.node_config.chain_id,
         ),
         state_backend: StateBackendCache::new(
-            TriedbHandle::try_new(node_state.triedb_path.as_path())
+            TriedbReader::try_new(node_state.triedb_path.as_path())
                 .expect("triedb should exist in path"),
             SeqNum(node_state.node_config.consensus.execution_delay),
         ),

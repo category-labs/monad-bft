@@ -1,6 +1,5 @@
 use alloy_primitives::aliases::U256;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +12,7 @@ use crate::{
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -93,15 +93,15 @@ pub struct MonadEthGetStorageAtParams {
 /// Returns the value from a storage position at a given address.
 pub async fn monad_eth_getStorageAt(
     triedb_env: &TriedbEnv,
-    p: MonadEthGetStorageAtParams,
+    params: MonadEthGetStorageAtParams,
 ) -> JsonRpcResult<String> {
-    trace!("monad_eth_getStorageAt: {p:?}");
+    trace!("monad_eth_getStorageAt: {params:?}");
 
     match triedb_env
         .get_storage_at(
-            p.account.0,
-            B256::from(p.position.0).0,
-            p.block_number.into(),
+            params.account.0,
+            B256::from(params.position.0).0,
+            params.block_number.into(),
         )
         .await
     {

@@ -16,6 +16,7 @@ use crate::{
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
+
 #[derive(Debug)]
 pub struct MonadU256(pub U256);
 

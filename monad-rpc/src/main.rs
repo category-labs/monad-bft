@@ -30,7 +30,6 @@ use eth_txn_handlers::{
 };
 use futures::SinkExt;
 use monad_blockdb_utils::BlockDbEnv;
-use monad_triedb_utils::TriedbEnv;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
 use trace::{
@@ -57,6 +56,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
+    triedb::TriedbEnv,
     websocket::Disconnect,
 };
 
@@ -74,6 +74,7 @@ mod jsonrpc;
 mod mempool_tx;
 mod receipt;
 mod trace;
+mod triedb;
 mod txpool;
 mod websocket;
 

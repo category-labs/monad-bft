@@ -42,8 +42,8 @@ monad-updaters = { path = "../monad-updaters", features = ["monad-triedb", "toki
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 monad-state-backend = { path = "../monad-state-backend" }
-monad-triedb = { path = "../monad-triedb" }
 monad-triedb-cache = { path = "../monad-triedb-cache" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
 
 bytes = { workspace = true }
 chrono = { workspace = true }

@@ -7,12 +7,18 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-blockdb = { path = "../monad-blockdb" }
-monad-blockdb-utils = { path = "../monad-blockdb-utils" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-triedb = { path = "../monad-triedb" }
+monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+futures = { workspace = true }
 rayon = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
+
+[dev-dependencies]
+monad-eth-testutil = { path = "../monad-eth-testutil" }
+
+clap = { workspace = true, features = ["derive"] }

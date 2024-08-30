@@ -4035,8 +4035,8 @@ dependencies = [
  "monad-state",
  "monad-state-backend",
  "monad-statesync",
- "monad-triedb",
  "monad-triedb-cache",
+ "monad-triedb-utils",
  "monad-types",
  "monad-updaters",
  "monad-validator",
@@ -4383,16 +4383,9 @@ dependencies = [
 name = "monad-triedb"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
- "alloy-rlp",
  "bindgen 0.69.4",
- "clap 4.4.10",
  "cmake",
  "futures",
- "monad-eth-testutil",
- "monad-eth-types",
- "monad-state-backend",
- "monad-types",
  "tracing",
 ]
 
@@ -4417,11 +4410,14 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "monad-blockdb",
- "monad-blockdb-utils",
+ "clap 4.4.10",
+ "futures",
+ "monad-eth-testutil",
+ "monad-eth-types",
+ "monad-state-backend",
  "monad-triedb",
+ "monad-types",
  "rayon",
- "tokio",
  "tracing",
 ]
 

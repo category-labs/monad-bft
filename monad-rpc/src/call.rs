@@ -4,7 +4,6 @@ use alloy_primitives::{Address, Uint, U256, U64, U8};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -13,6 +12,7 @@ use crate::{
     eth_json_types::{deserialize_block_tags, BlockTags},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]

@@ -5,7 +5,6 @@ use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
@@ -17,6 +16,7 @@ use crate::{
         deserialize_block_tags, deserialize_quantity, BlockTags, MonadFeeHistory, Quantity,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

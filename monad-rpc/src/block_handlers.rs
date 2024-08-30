@@ -2,7 +2,6 @@ use alloy_primitives::aliases::{U256, U64};
 use monad_blockdb::BlockValue;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
@@ -15,6 +14,7 @@ use crate::{
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {

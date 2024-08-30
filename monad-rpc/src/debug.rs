@@ -2,7 +2,6 @@ use alloy_rlp::Encodable;
 use monad_blockdb::EthTxKey;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +10,7 @@ use crate::{
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
     trace::{TraceCallObject, TracerObject},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[rpc(method = "debug_getRawBlock")]

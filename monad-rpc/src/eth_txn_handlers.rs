@@ -7,7 +7,6 @@ use alloy_primitives::{
 use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
@@ -24,6 +23,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 pub fn parse_tx_content(

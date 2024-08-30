@@ -9,28 +9,14 @@ use std::{
     },
 };
 
-use alloy_primitives::{keccak256, B256};
-use alloy_rlp::Decodable;
-use futures::{
-    channel::oneshot::{self, Receiver, Sender},
-    executor::block_on,
-    future::join_all,
-    FutureExt,
-};
-use key::create_addr_key;
-use monad_eth_types::{EthAccount, EthAddress};
-use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::SeqNum;
-use tracing::{debug, error, warn};
-
-pub mod key;
+use futures::channel::oneshot::{self, Receiver, Sender};
+use tracing::debug;
 
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
 
 const STATE_NIBBLE: u8 = 0x0;
-const MAX_TRIEDB_ASYNC_POLLS: u32 = 320_000;
 
 // TODO: rename to TriedbHandle
 #[derive(Clone, Debug)]
@@ -74,54 +60,6 @@ pub unsafe extern "C" fn read_async_callback(
 }
 
 impl Handle {
-    pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
-        let mut buf = account_rlp.as_slice();
-        let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
-            error!("rlp decode failed: {:?}", buf);
-            return None;
-        };
-
-        // address (currently not needed)
-        let Ok(_) = <[u8; 20]>::decode(&mut buf) else {
-            error!("rlp address decode failed: {:?}", buf);
-            return None;
-        };
-
-        // account incarnation decode (currently not needed)
-        let Ok(_) = u64::decode(&mut buf) else {
-            error!("rlp incarnation decode failed: {:?}", buf);
-            return None;
-        };
-
-        let Ok(nonce) = u64::decode(&mut buf) else {
-            error!("rlp nonce decode failed: {:?}", buf);
-
-            return None;
-        };
-        let Ok(balance) = u128::decode(&mut buf) else {
-            error!("rlp balance decode failed: {:?}", buf);
-            return None;
-        };
-
-        let code_hash = if buf.is_empty() {
-            None
-        } else {
-            match <[u8; 32]>::decode(&mut buf) {
-                Ok(x) => Some(x),
-                Err(e) => {
-                    error!("rlp code_hash decode failed: {:?}", e);
-                    return None;
-                }
-            }
-        };
-
-        Some(EthAccount {
-            nonce,
-            balance,
-            code_hash: code_hash.map(B256::from),
-        })
-    }
-
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
@@ -136,31 +74,6 @@ impl Handle {
         }
 
         Some(Self { db_ptr })
-    }
-
-    fn create_addr_key(addr: &EthAddress) -> (Vec<u8>, u8) {
-        let mut key_nibbles: Vec<u8> = vec![];
-
-        let state_nibble = 0_u8;
-
-        key_nibbles.push(state_nibble);
-
-        let hashed_addr = keccak256(addr);
-        for byte in &hashed_addr {
-            key_nibbles.push(*byte >> 4);
-            key_nibbles.push(*byte & 0xF);
-        }
-
-        let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
-        if num_nibbles % 2 != 0 {
-            key_nibbles.push(0);
-        }
-        let key: Vec<_> = key_nibbles
-            .chunks(2)
-            .map(|chunk| (chunk[0] << 4) | chunk[1])
-            .collect();
-
-        (key, num_nibbles)
     }
 
     pub fn read(&self, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {
@@ -197,10 +110,6 @@ impl Handle {
         Some(value)
     }
 
-    fn triedb_poll(&self) {
-        let _io_count = unsafe { bindings::triedb_poll(self.db_ptr, true, usize::MAX) };
-    }
-
     /// This is used to make an async read call to TrieDB.
     /// It creates a oneshot channel and Boxes its sender and the completed_counter
     /// into a context struct and passes it to TrieDB. When TrieDB completes processing
@@ -210,7 +119,7 @@ impl Handle {
     /// The user needs to poll TrieDB using the `triedb_poll` function to pump the async
     /// reads and wait on the returned receiver for the value.
     /// NOTE: the returned receiver must be resolved before key is dropped
-    fn read_async(
+    pub fn read_async(
         &self,
         key: &[u8],
         key_len_nibbles: u8,
@@ -243,6 +152,10 @@ impl Handle {
         }
 
         receiver
+    }
+
+    pub fn triedb_poll(&self) {
+        let _io_count = unsafe { bindings::triedb_poll(self.db_ptr, true, usize::MAX) };
     }
 
     pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
@@ -279,114 +192,12 @@ impl Handle {
     pub fn latest_block(&self) -> u64 {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
-
-    pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
-        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
-
-        let result = self.read(&triedb_key, key_len_nibbles, block_id);
-
-        let Some(account_rlp) = result else {
-            debug!("account {:?} not found at {:?}", eth_address, block_id);
-            return None;
-        };
-
-        Handle::rlp_decode_account(account_rlp)
-    }
-
-    pub fn get_accounts_async<'a>(
-        &self,
-        eth_addresses: impl Iterator<Item = &'a EthAddress>,
-        block_id: u64,
-    ) -> Option<Vec<Option<EthAccount>>> {
-        // Counter which is updated when TrieDB processes a single async read to completion
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        let mut num_accounts = 0;
-        let eth_account_receivers = eth_addresses.map(|eth_address| {
-            num_accounts += 1;
-            let (triedb_key, key_len_nibbles) = create_addr_key(eth_address.as_ref());
-            self.read_async(
-                triedb_key.as_ref(),
-                key_len_nibbles,
-                block_id,
-                completed_counter.clone(),
-            )
-            .map(|receiver_result| {
-                // Receiver should not fail
-                let maybe_rlp_account = receiver_result.expect("receiver can't be canceled");
-                // RLP decode the received account value
-                maybe_rlp_account.and_then(Handle::rlp_decode_account)
-            })
-        });
-
-        // Join all futures of receivers
-        let eth_account_receivers = join_all(eth_account_receivers);
-
-        let mut poll_count = 0;
-        // Poll TrieDB until the completed_counter reaches num_accounts
-        while completed_counter.load(SeqCst) < num_accounts && poll_count < MAX_TRIEDB_ASYNC_POLLS {
-            self.triedb_poll();
-            poll_count += 1;
-        }
-        // TrieDB should have completed processing all the async callbacks at this point
-        if completed_counter.load(SeqCst) != num_accounts {
-            warn!(
-                "TrieDB poll count went over limit for {} lookups",
-                num_accounts
-            );
-            return None;
-        }
-
-        Some(block_on(eth_account_receivers))
-    }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
         let result = unsafe { bindings::triedb_close(self.db_ptr) };
         assert_eq!(result, 0);
-    }
-}
-
-impl StateBackend for Handle {
-    fn get_account_statuses<'a>(
-        &self,
-        block: SeqNum,
-        eth_addresses: impl Iterator<Item = &'a EthAddress>,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let latest = self.raw_read_latest_block();
-        if latest < block {
-            // latest < block
-            return Err(StateBackendError::NotAvailableYet);
-        }
-        // block <= latest
-
-        let earliest = self.raw_read_earliest_block();
-        if block < earliest {
-            // block < earliest
-            return Err(StateBackendError::NeverAvailable);
-        }
-        // block >= earliest
-
-        let Some(statuses) = self.get_accounts_async(eth_addresses, block.0) else {
-            // TODO: Use a more descriptive error
-            return Err(StateBackendError::NotAvailableYet);
-        };
-
-        // all accounts are now guaranteed to be fully consistent and correct
-        Ok(statuses)
-    }
-
-    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
-        self.get_account(address.as_ref(), block.0)
-    }
-
-    fn raw_read_earliest_block(&self) -> SeqNum {
-        SeqNum(self.earliest_block())
-    }
-
-    fn raw_read_latest_block(&self) -> SeqNum {
-        SeqNum(self.latest_block())
     }
 }
 
