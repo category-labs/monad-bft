@@ -202,13 +202,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
 ///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
 ///
-/// - 1 byte => Chunk's merkle leaf idx
 /// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
 ///   - we set this even if broadcast bit is not set so that it's known if a message was intended
 ///     to be sent to self
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 1 byte => reserved
 /// - 2 bytes (u16) => This chunk's id
-/// - 2 bytes => Merkle chunk payload len
-/// - (merkle_chunk_payload_len bytes) => data
+/// - rest => data
 ///
 //
 //
@@ -225,10 +225,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 //
 //     merkle_proof: Vec<[u8; 20]>,
 //
-//     chunk_merkle_leaf_idx: u8,
 //     chunk_recipient: [u8; 20],
+//     chunk_merkle_leaf_idx: u8,
+//     reserved: u8,
 //     chunk_id: u16,
-//     chunk_len: u16,
 //
 //     data: Bytes,
 // }
@@ -239,10 +239,10 @@ pub const HEADER_LEN: u16 = 65  // Sender signature
             + 8  // Unix timestamp
             + 20 // AppMessage hash
             + 4; // AppMessage length
-const CHUNK_HEADER_LEN: u16 = 1 // Chunk's merkle leaf idx
-            + 20 // Chunk recipient hash
-            + 2 // Chunk idx
-            + 2; // Chunk data length
+const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
+            + 1  // Chunk's merkle leaf idx
+            + 1  // reserved
+            + 2; // Chunk idx
 
 // We compute these as consts so that the desired Raptor symbol length is also a const, which
 // then allows passing it into the Raptor encoder as a const generic.
@@ -325,7 +325,7 @@ where
             outbound_gso_idx.push((*addr, 0..GSO_SIZE as usize * num_packets as usize));
             for chunk_data in &mut chunk_datas {
                 // populate chunk_recipient
-                chunk_data[1..1 + 20].copy_from_slice(&compute_hash(to));
+                chunk_data[0..20].copy_from_slice(&compute_hash(to));
             }
         }
         BuildTarget::Broadcast(epoch_validators) => {
@@ -352,7 +352,7 @@ where
                 }
                 for chunk_data in &mut chunk_datas[start_idx..end_idx] {
                     // populate chunk_recipient
-                    chunk_data[1..1 + 20].copy_from_slice(&compute_hash(node_id));
+                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
                 }
             }
         }
@@ -383,7 +383,7 @@ where
                 }
                 for chunk_data in &mut chunk_datas[start_idx..end_idx] {
                     // populate chunk_recipient
-                    chunk_data[1..1 + 20].copy_from_slice(&compute_hash(node_id));
+                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id));
                 }
             }
         }
@@ -391,7 +391,6 @@ where
 
     // populates the following chunk-specific stuff
     // - chunk_id: u16
-    // - chunk_len: u16
     // - chunk_payload
     let encoder = monad_raptor::Encoder::<{ DATA_SIZE as usize }>::new(&app_message).unwrap();
     for (chunk_id, mut chunk_data) in chunk_datas.iter_mut().enumerate() {
@@ -399,12 +398,11 @@ where
         let chunk_len: u16 = DATA_SIZE;
 
         let cursor = &mut chunk_data;
-        let (cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
         let (cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
+        let (cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
+        let (cursor_chunk_reserved, cursor) = cursor.split_at_mut(1);
         let (cursor_chunk_id, cursor) = cursor.split_at_mut(2);
         cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
-        let (cursor_chunk_payload_len, cursor) = cursor.split_at_mut(2);
-        cursor_chunk_payload_len.copy_from_slice(&chunk_len.to_le_bytes());
         let (cursor_chunk_payload, cursor) = cursor.split_at_mut(chunk_len.into());
         encoder.encode_symbol(
             (&mut cursor_chunk_payload[..chunk_len.into()])
@@ -439,7 +437,7 @@ where
                         CHUNK_HEADER_LEN as usize + DATA_SIZE as usize
                     );
                     // populate merkle_leaf_idx
-                    chunk_payload[0] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
+                    chunk_payload[20] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
 
                     let mut hasher = HasherType::new();
                     hasher.update(chunk_payload);
@@ -465,13 +463,13 @@ where
                 cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
 
                 cursor.copy_from_slice(merkle_tree.root());
-                // 65  // Sender signature
+                // 65 // Sender signature
                 // 2  // Version
-                // 1 // Broadcast bit, 7 bits for Merkle Tree Depth
+                // 1  // Broadcast bit, 7 bits for Merkle Tree Depth
                 // 8  // Epoch #
                 // 8  // Unix timestamp
                 // 20 // AppMessage hash
-                // 4 // AppMessage length
+                // 4  // AppMessage length
                 // --
                 // 20 // Merkle root
 
@@ -543,13 +541,13 @@ pub enum MessageValidationError {
 /// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
 ///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
 ///
-/// - 1 byte => Chunk's merkle leaf idx
 /// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
 ///   - we set this even if broadcast bit is not set so that it's known if a message was intended
 ///     to be sent to self
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 1 byte => reserved
 /// - 2 bytes (u16) => This chunk's id
-/// - 2 bytes => Merkle chunk payload len
-/// - (merkle_chunk_payload_len bytes) => data
+/// - rest => data
 pub fn parse_message<ST>(
     signature_cache: &mut LruCache<
         [u8; HEADER_LEN as usize - 65 + 20],
@@ -620,9 +618,6 @@ where
             MerkleHash::try_from(cursor_sibling.as_ref()).expect("MerkleHash is 20 bytes");
         merkle_proof.push(sibling);
     }
-    let cursor_merkle_idx = split_off(1)?[0];
-    let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
-        .ok_or(MessageValidationError::InvalidMerkleProof)?;
 
     let cursor_recipient = split_off(20)?;
     let recipient_hash: [u8; 20] = cursor_recipient
@@ -630,22 +625,20 @@ where
         .try_into()
         .expect("Hash is 20 bytes");
 
+    let cursor_merkle_idx = split_off(1)?[0];
+    let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
+        .ok_or(MessageValidationError::InvalidMerkleProof)?;
+
+    let cursor_reserved = split_off(1)?;
+
     let cursor_chunk_id = split_off(2)?;
     let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));
 
-    let cursor_payload_len = split_off(2)?;
-    let payload_len = u16::from_le_bytes(
-        cursor_payload_len
-            .as_ref()
-            .try_into()
-            .expect("u16 is 2 bytes"),
-    );
-    if payload_len == 0 {
+    let cursor_payload = cursor;
+    if cursor_payload.is_empty() {
         // handle the degenerate case
         return Err(MessageValidationError::TooShort);
     }
-
-    let cursor_payload = split_off(payload_len as usize)?;
 
     let leaf_hash = {
         let mut hasher = HasherType::new();
