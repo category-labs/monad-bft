@@ -8,8 +8,8 @@ use tracing::trace;
 
 use crate::{
     eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
-        EthHash, MonadU256,
+        deserialize_block_tags, deserialize_fixed_data, deserialize_u256, serialize_result,
+        BlockTags, EthAddress, EthHash, MonadU256,
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -82,6 +82,7 @@ pub async fn monad_eth_getCode(
 pub struct MonadEthGetStorageAtParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
+    #[serde(deserialize_with = "deserialize_u256")]
     position: MonadU256,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,

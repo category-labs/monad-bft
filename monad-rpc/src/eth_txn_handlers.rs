@@ -7,7 +7,7 @@ use alloy_primitives::{
 use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::{EthAddress, TriedbEnv, TriedbResult};
+use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
@@ -19,7 +19,7 @@ use crate::{
     block_handlers::block_receipts,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, EthHash, MonadLog, MonadTransaction,
+        deserialize_unformatted_data, BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction,
         MonadTransactionReceipt, Quantity, UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -253,9 +253,7 @@ pub enum AddressValueOrArray {
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
-pub struct MonadEthGetLogsResult {
-    logs: Vec<MonadLog>,
-}
+pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 
 #[rpc(method = "eth_getLogs")]
 #[allow(non_snake_case)]
@@ -274,13 +272,13 @@ pub async fn monad_eth_getLogs(
 
         match req.address {
             AddressValueOrArray::Address(Some(address)) => {
-                filter = filter.address(Address::from_slice(&address));
+                filter = filter.address(Address::from_slice(&address.0));
             }
             AddressValueOrArray::Addresses(addresses) => {
                 filter = filter.address(
                     addresses
                         .iter()
-                        .map(|a| Address::from_slice(a))
+                        .map(|a| Address::from_slice(&a.0))
                         .collect::<Vec<_>>(),
                 );
             }
@@ -363,9 +361,9 @@ pub async fn monad_eth_getLogs(
         }
     }
 
-    Ok(MonadEthGetLogsResult {
-        logs: logs.into_iter().map(MonadLog).collect(),
-    })
+    Ok(MonadEthGetLogsResult(
+        logs.into_iter().map(MonadLog).collect(),
+    ))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

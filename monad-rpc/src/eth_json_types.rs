@@ -28,6 +28,16 @@ impl Serialize for MonadU256 {
     }
 }
 
+pub fn deserialize_u256<'de, D>(deserializer: D) -> Result<MonadU256, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    let u = U256::from_str(&buf)
+        .map_err(|e| serde::de::Error::custom(format!("MonadU256 parse failed: {e:?}")))?;
+    Ok(MonadU256(u))
+}
+
 #[derive(Debug, Serialize)]
 pub struct MonadLog(pub Log);
 
