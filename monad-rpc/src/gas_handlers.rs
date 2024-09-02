@@ -52,7 +52,7 @@ fn set_gas_limit(tx: &mut Transaction, gas_limit: u64) {
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas(
     blockdb_env: &BlockDbEnv,
-    triedb_path: &Path,
+    triedb_env: &TriedbEnv,
     execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthEstimateGasParams,
@@ -71,8 +71,6 @@ pub async fn monad_eth_estimateGas(
     };
 
     let state_override_set = &params.state_override_set;
-
-    let triedb_env = TriedbEnv::new(triedb_path);
 
     let block_number = match params.block {
         BlockTags::Default(_) => {
@@ -103,7 +101,7 @@ pub async fn monad_eth_estimateGas(
     ))?;
 
     let allowance: Option<u64> = if params.tx.gas.is_none() {
-        Some(sender_gas_allowance(&triedb_env, &block_header.block, &params.tx).await?)
+        Some(sender_gas_allowance(triedb_env, &block_header.block, &params.tx).await?)
     } else {
         None
     };
@@ -128,7 +126,7 @@ pub async fn monad_eth_estimateGas(
         block_header.block.header.clone(),
         sender,
         block_number,
-        triedb_path,
+        &triedb_env.path(),
         execution_ledger_path,
         state_override_set,
     ) {
@@ -152,7 +150,7 @@ pub async fn monad_eth_estimateGas(
                 block_header.block.header.clone(),
                 sender,
                 block_number,
-                triedb_path,
+                &triedb_env.path(),
                 execution_ledger_path,
                 state_override_set,
             ) {
@@ -185,7 +183,7 @@ pub async fn monad_eth_estimateGas(
             block_header.block.header.clone(),
             sender,
             block_number,
-            triedb_path,
+            &triedb_env.path(),
             execution_ledger_path,
             state_override_set,
         ) {

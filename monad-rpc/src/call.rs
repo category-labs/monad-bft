@@ -317,7 +317,7 @@ pub struct MonadEthCallParams {
 #[rpc(method = "eth_call", ignore = "chain_id")]
 pub async fn monad_eth_call(
     blockdb_env: &BlockDbEnv,
-    triedb_path: &Path,
+    triedb_env: &TriedbEnv,
     execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthCallParams,
@@ -339,8 +339,6 @@ pub async fn monad_eth_call(
     let state_overrides = &params.state_overrides;
 
     // TODO: check duplicate address, duplicate storage key, etc.
-
-    let triedb_env: TriedbEnv = TriedbEnv::new(triedb_path);
 
     let block_number = match params.block {
         BlockTags::Default(_) => {
@@ -387,7 +385,7 @@ pub async fn monad_eth_call(
 
             if params.transaction.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(&triedb_env, &block_header.block, &params.transaction)
+                    sender_gas_allowance(triedb_env, &block_header.block, &params.transaction)
                         .await?;
                 params.transaction.gas = Some(U256::from(allowance));
             }
@@ -405,7 +403,7 @@ pub async fn monad_eth_call(
         block_header.block.header,
         sender,
         block_number,
-        triedb_path,
+        &triedb_env.path(),
         execution_ledger_path,
         state_overrides,
     ) {

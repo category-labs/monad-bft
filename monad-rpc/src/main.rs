@@ -232,7 +232,7 @@ async fn rpc_select(
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_call(
                 reader,
-                &triedb_env.path(),
+                triedb_env,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
@@ -411,7 +411,7 @@ async fn rpc_select(
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_estimateGas(
                 reader,
-                &triedb_env.path(),
+                triedb_env,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
