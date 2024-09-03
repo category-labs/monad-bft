@@ -4509,7 +4509,6 @@ dependencies = [
  "ntest",
  "rand",
  "rand_chacha",
- "rayon",
  "serde_json",
  "sorted-vec",
  "thiserror",

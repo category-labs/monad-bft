@@ -54,7 +54,7 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
         let cancel_below_clone = cancel_below.clone();
 
         let path = triedb_path.to_path_buf();
-        rayon::spawn(move || {
+        std::thread::spawn(move || {
             // FIXME: handle error, maybe retry
             let handle = TriedbHandle::try_new(path.as_path()).unwrap();
 

@@ -26,7 +26,6 @@ bytes = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-rayon = { workspace = true }
 serde_json = { workspace = true }
 sorted-vec = { workspace = true }
 thiserror = { workspace = true }
