@@ -46,5 +46,7 @@ opentelemetry-otlp = "0.17.0"
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
+alloy-rpc-client = { workspace = true }
+reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }
