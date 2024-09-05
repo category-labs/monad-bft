@@ -30,6 +30,7 @@ use eth_txn_handlers::{
 };
 use futures::SinkExt;
 use monad_blockdb_utils::BlockDbEnv;
+use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
 use trace::{
@@ -72,6 +73,7 @@ mod gas_handlers;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
+mod metrics;
 mod receipt;
 mod trace;
 mod triedb;
@@ -564,6 +566,26 @@ impl Actor for MonadRpcResources {
     type Context = Context<Self>;
 }
 
+pub fn create_app_with_metrics<S: 'static>(
+    app_data: S,
+    with_metrics: metrics::Metrics,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse,
+        Error = actix_web::Error,
+        InitError = (),
+    >,
+> {
+    App::new()
+        .app_data(web::JsonConfig::default().limit(8192))
+        .app_data(web::Data::new(app_data))
+        .wrap(with_metrics)
+        .service(web::resource("/").route(web::post().to(rpc_handler)))
+        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+}
+
 pub fn create_app<S: 'static>(
     app_data: S,
 ) -> App<
@@ -582,7 +604,7 @@ pub fn create_app<S: 'static>(
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
@@ -645,11 +667,40 @@ async fn main() -> std::io::Result<()> {
         args.max_response_size,
     );
 
+    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
+        args.otel_endpoint.and_then(|endpoint| {
+            let provider = metrics::build_otel_meter_provider(
+                &endpoint,
+                "monad-rpc".to_string(),
+                std::time::Duration::from_secs(5),
+            )
+            .expect("failed to build otel meter");
+            opentelemetry::global::set_meter_provider(provider.clone());
+            Some(provider)
+        });
+
+    let with_metrics = meter_provider
+        .as_ref()
+        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+
     // main server app
-    HttpServer::new(move || create_app(resources.clone()))
-        .bind((args.rpc_addr, args.rpc_port))?
-        .run()
-        .await
+    match with_metrics {
+        Some(metrics) => {
+            HttpServer::new(move || create_app_with_metrics(resources.clone(), metrics.clone()))
+                .bind((args.rpc_addr, args.rpc_port))?
+                .run()
+                .await
+        }
+        None => {
+            HttpServer::new(move || create_app(resources.clone()))
+                .bind((args.rpc_addr, args.rpc_port))?
+                .run()
+                .await
+        }
+    }?;
+
+    meter_provider.map(|provider| provider.shutdown());
+    Ok(())
 }
 
 async fn retry<T, E, F>(attempt: impl Fn() -> F) -> Result<T, E>

@@ -41,12 +41,15 @@ reth-rpc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
-tokio = { workspace = true, features = ["net", "macros"] }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
 schemars = "0.8.21"
+opentelemetry = { workspace = true, features = ["metrics"] }
+opentelemetry-otlp = "0.17.0"
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
 test-case = { workspace = true }
