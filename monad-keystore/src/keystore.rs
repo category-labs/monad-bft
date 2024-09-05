@@ -44,7 +44,7 @@ pub enum KeystoreError {
     InvalidJSONFormat,
     KDFError(KDFError),
     ChecksumError(ChecksumError),
-    ReadOrWriteFileError,
+    FileIOError(std::io::Error),
 }
 
 impl From<serde_json::Error> for KeystoreError {
@@ -54,8 +54,8 @@ impl From<serde_json::Error> for KeystoreError {
 }
 
 impl From<std::io::Error> for KeystoreError {
-    fn from(_err: std::io::Error) -> KeystoreError {
-        KeystoreError::ReadOrWriteFileError
+    fn from(err: std::io::Error) -> KeystoreError {
+        KeystoreError::FileIOError(err)
     }
 }
 
