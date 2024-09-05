@@ -6,7 +6,7 @@ use std::{
 
 use itertools::Itertools;
 use monad_eth_types::{EthAccount, EthAddress};
-use monad_state_backend::{StateBackend, StateBackendError};
+use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::warn;
 
@@ -114,5 +114,30 @@ where
 
     fn raw_read_latest_block(&self) -> SeqNum {
         self.state_backend.raw_read_latest_block()
+    }
+}
+
+pub trait GetMemoryStateInner {
+    fn get_account_read_count(&self, address: EthAddress) -> u32;
+    fn set_account_state(
+        &mut self,
+        seq_num: SeqNum,
+        address: EthAddress,
+        account_state: EthAccount,
+    );
+}
+
+#[cfg(feature="test-utils")]
+impl GetMemoryStateInner for StateBackendCache<InMemoryState> {
+    fn get_account_read_count(&self, address: EthAddress) -> u32 {
+        self.state_backend.lock().unwrap().get_account_read_count(&address)
+    }
+    fn set_account_state(
+        &mut self,
+        seq_num: SeqNum,
+        address: EthAddress,
+        account_state: EthAccount,
+    ) {
+        self.state_backend.lock().unwrap().set_account_state(seq_num, address, account_state);
     }
 }

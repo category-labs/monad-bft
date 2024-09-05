@@ -78,7 +78,7 @@ pub fn generate_random_block_with_txns(
         Round(1),
         &ExecutionProtocol {
             state_root: Default::default(),
-            seq_num: seq_num,
+            seq_num,
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },

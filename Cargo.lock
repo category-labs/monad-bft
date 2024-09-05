@@ -3549,6 +3549,7 @@ dependencies = [
  "monad-state-backend",
  "monad-testutil",
  "monad-tracing-counter",
+ "monad-triedb-cache",
  "monad-types",
  "monad-validator",
  "rand",

@@ -30,6 +30,7 @@ monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-testutil = { path = "../monad-testutil" }
+monad-triedb-cache = { path = "../monad-triedb-cache", features = ["test-utils"] }
 monad-multi-sig = { path = "../monad-multi-sig" }
 criterion = { workspace = true, features = ["html_reports"] }
 

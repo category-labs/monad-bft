@@ -1,6 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    cell::RefCell, collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex}
 };
 
 use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
@@ -61,6 +60,7 @@ pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
 pub struct InMemoryStateInner {
     states: BTreeMap<SeqNum, InMemoryBlockState>,
     commits: BTreeSet<SeqNum>,
+    account_read_counts: RefCell<BTreeMap<EthAddress, u32>>,
     /// InMemoryState doesn't have access to an execution engine. It returns
     /// `max_reserve_balance` as the balance every time so txn reserve balance
     /// will pass if the sum doesn't exceed the max reserve
@@ -92,6 +92,7 @@ impl InMemoryStateInner {
             ))
             .collect(),
             commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
+            account_read_counts: RefCell::new(BTreeMap::new()),
             max_reserve_balance,
             execution_delay,
         }))
@@ -104,6 +105,7 @@ impl InMemoryStateInner {
         Arc::new(Mutex::new(Self {
             states: std::iter::once((init_state.block, init_state)).collect(),
             commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
+            account_read_counts: RefCell::new(BTreeMap::new()),
             max_reserve_balance,
             execution_delay,
         }))
@@ -166,10 +168,18 @@ impl InMemoryStateInner {
     pub fn reset_state(&mut self, state: InMemoryBlockState) {
         self.states = std::iter::once((state.block, state)).collect();
     }
+
+    pub fn get_account_read_count(&self, address: &EthAddress) -> u32 {
+        let account_reads = self.account_read_counts.borrow();
+        account_reads.get(address).cloned().unwrap_or(0)
+    }
 }
 
 impl StateBackend for InMemoryStateInner {
     fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
+        let initial_reads = self.get_account_read_count(address);
+        let mut account_reads = self.account_read_counts.borrow_mut();
+        account_reads.insert(address.to_owned(), initial_reads + 1);
         self.states
             .get(&block)?
             .account_states

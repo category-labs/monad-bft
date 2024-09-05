@@ -1556,7 +1556,7 @@ mod test {
             txn_nonce_three.envelope_encoded().into(),
             txn_nonce_four.envelope_encoded().into(),
         ];
-        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        let result = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
         assert!(result.len() == 2);
 
         let pending_block = generate_random_block_with_txns(vec![
@@ -1616,7 +1616,7 @@ mod test {
             txn_nonce_one.envelope_encoded().into(),
             txn_nonce_two.envelope_encoded().into(),
         ];
-        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        let result = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
         assert!(result.len() == 2);
 
         let encoded_txns = Pool::create_proposal(
@@ -1633,12 +1633,9 @@ mod test {
         assert!(decoded_txns.len() == 2);
         assert!(decoded_txns[0].nonce() == 0);
 
-        state_backend.lock().unwrap().ledger_commit(SeqNum(0),
-            std::iter::once((
-                sender_1_address,
-                EthAccountDelta::new(2, 0, None)
-            ))
-            .collect()
+        state_backend.lock().unwrap().set_account_state(SeqNum(0),
+            sender_1_address,
+            EthAccount::new(2, overall_cost, None)
         );
 
         for seq_num in 1..6 {
@@ -1650,7 +1647,7 @@ mod test {
             txn_nonce_three.envelope_encoded().into(),
             txn_nonce_four.envelope_encoded().into(),
         ];
-        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        let result_2 = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
         assert!(result_2.len() == 2);
 
         let encoded_txns_2 = Pool::create_proposal(
@@ -1709,7 +1706,7 @@ mod test {
             txn_nonce_three.envelope_encoded().into(),
             txn_nonce_four.envelope_encoded().into(),
         ];
-        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        let result_2 = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
         assert!(result_2.len() == 2);
 
         let encoded_txns_2 = Pool::create_proposal(
@@ -1769,7 +1766,7 @@ mod test {
             txn_nonce_one.envelope_encoded().into(),
             txn_nonce_two.envelope_encoded().into(),
         ];
-        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        let result = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
         assert!(result.len() == 2);
 
         let encoded_txns = Pool::create_proposal(
@@ -1786,12 +1783,9 @@ mod test {
         assert!(decoded_txns.len() == 2);
         assert!(decoded_txns[0].nonce() == 0);
 
-        state_backend.lock().unwrap().ledger_commit(SeqNum(0),
-            std::iter::once((
+        state_backend.lock().unwrap().set_account_state(SeqNum(0),
                 sender_1_address,
-                EthAccountDelta::new(2, 0, None)
-            ))
-            .collect()
+                EthAccount::new(2, committed_cost + valid_proposal_cost, None)
         );
 
         for seq_num in 1..6 {
@@ -1809,7 +1803,7 @@ mod test {
             txn_nonce_five.envelope_encoded().into(),
             txn_nonce_six.envelope_encoded().into(),
         ];
-        let result_2 = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
+        let result_2 = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns_2);
         assert!(result_2.len() == 2);
 
         let encoded_txns_2 = Pool::create_proposal(
@@ -1881,7 +1875,7 @@ mod test {
             txn_nonce_five.envelope_encoded().into(),
             txn_nonce_six.envelope_encoded().into(),
         ];
-        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        let result = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
         assert!(result.len() == 2);
 
         let encoded_txns = Pool::create_proposal(
@@ -1934,7 +1928,7 @@ mod test {
             txn_nonce_one_two.envelope_encoded().into(),
             txn_nonce_two_two.envelope_encoded().into(),
         ];
-        let result = TestPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
+        let result = EthTxPool::insert_tx_unchecked(&mut eth_tx_pool, txns);
         assert!(result.len() == 4);
 
         // Commit 4 empty blocks
@@ -1945,18 +1939,8 @@ mod test {
                 .ledger_commit(SeqNum(seq_num), BTreeMap::new());
         }
         // Commit an account state at SeqNum(5)
-        state_backend.lock().unwrap().ledger_commit(
-            SeqNum(5),
-            vec![(
-                sender_1_address,
-                EthAccountDelta::new(0, sender_one_carriage_cost as i128, None),
-            ), (
-                sender_2_address,
-                EthAccountDelta::new(0, sender_two_carriage_cost as i128, None)
-            )]
-            .into_iter()
-            .collect(),
-        );
+        state_backend.lock().unwrap().set_account_state(SeqNum(5), sender_1_address, EthAccount::new(0, sender_one_carriage_cost, None));
+        state_backend.lock().unwrap().set_account_state(SeqNum(5), sender_2_address, EthAccount::new(0, sender_two_carriage_cost, None));
 
         let encoded_txns = Pool::create_proposal(
             &mut eth_tx_pool,

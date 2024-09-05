@@ -1397,7 +1397,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{ops::Deref, time::Duration};
+    use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
     use itertools::Itertools;
     use monad_consensus::{
@@ -1447,6 +1447,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
+    use monad_triedb_cache::{GetMemoryStateInner, StateBackendCache};
     use monad_types::{
         BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
     };
@@ -5390,5 +5391,276 @@ mod test {
             .get_entry(&block_1_id)
             .expect("should be in the blocktree");
         assert!(!block_1_blocktree_entry.is_coherent);
+    }
+
+    #[test]
+    fn test_triedb_cache_miss_then_hit() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendCache<InMemoryState>,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                StateBackendCache::new(
+                    InMemoryStateInner::new(
+                        u128::MAX,
+                        EXECUTION_DELAY,
+                        InMemoryBlockState::genesis(
+                            std::iter::once((
+                                sender_1_address,
+                                EthAccount::new(0, u128::MAX, None),
+                            ))
+                            .collect(),
+                        ),
+                    ),
+                    EXECUTION_DELAY
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        n1.handle_proposal_message(author_1, proposal_message_1);
+
+        let reads = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+
+        // First proposal, so we miss the cache and make one read
+        assert!(reads == 1);
+
+        let cp2 = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_2, _, proposal_message_2) = cp2.destructure();
+
+        n1.handle_proposal_message(author_2, proposal_message_2);
+
+        let reads_2 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+
+        // Second proposal, state is cached so therre should still be only one read
+        assert!(reads_2 == 1);
+    }
+
+    #[test]
+    fn test_triedb_cache_miss_after_delay() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendCache<InMemoryState>,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                StateBackendCache::new(
+                    InMemoryStateInner::new(
+                        u128::MAX,
+                        EXECUTION_DELAY,
+                        InMemoryBlockState::genesis(
+                            BTreeMap::from([(
+                                sender_1_address,
+                                EthAccount::new(0, u128::MAX, None),
+                            )]),
+                        ),
+                    ),
+                    EXECUTION_DELAY
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        n1.handle_proposal_message(author_1, proposal_message_1);
+
+        let reads = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+
+        // First proposal, so we miss the cache and make one read
+        assert!(reads == 1);
+
+        // Submit 2*EXECUTION_DELAY proposals that don't touch the account, which should cause the account to be evicted
+        for i in 1..(2 * EXECUTION_DELAY.0) {
+            let cp2 = env.next_proposal(
+                FullTransactionList::empty(),
+                StateRootHash::default(),
+            );
+            let (author_2, _, proposal_message_2) = cp2.destructure();
+
+            n1.handle_proposal_message(author_2, proposal_message_2);
+
+            let reads_2 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+
+            GetMemoryStateInner::set_account_state(&mut n1.state_backend, SeqNum(i), sender_1_address, EthAccount::default());
+
+            // Additional proposal, state is cached and we haven't touched the account so there should still be only one read
+            assert!(reads_2 == 1);
+        }
+
+        // One more proposal should miss the cache, since we have passed 2*execution delay now
+        let txn_final = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let cp3 = env.next_proposal(
+            generate_full_tx_list(vec![txn_final]),
+            StateRootHash::default(),
+        );
+        let (author_3, _, proposal_mesage_3) = cp3.destructure();
+        n1.handle_proposal_message(author_3, proposal_mesage_3);
+
+        let reads_3 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+        assert!(reads_3 == 2);
+    }
+
+    #[test]
+    fn test_triedb_cache_miss_amongst_second_account() {
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let sender_2_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let sender_2_txn_nonce_zero = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+        let sender_2_address = EthAddress(sender_2_txn_nonce_zero.recover_signer().unwrap());
+
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendCache<InMemoryState>,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                StateBackendCache::new(
+                    InMemoryStateInner::new(
+                        u128::MAX,
+                        EXECUTION_DELAY,
+                        InMemoryBlockState::genesis(
+                            BTreeMap::from([(
+                                sender_1_address,
+                                EthAccount::new(0, u128::MAX, None),
+                            ), (
+                                sender_2_address,
+                                EthAccount::new(0, u128::MAX, None),
+                            )]),
+                        ),
+                    ),
+                    EXECUTION_DELAY
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero, sender_2_txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        n1.handle_proposal_message(author_1, proposal_message_1);
+
+        let acct_1_reads = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+        let acct_2_reads = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_2_address);
+
+        // First proposal, so we miss the cache and make one read
+        assert!(acct_1_reads == 1);
+        assert!(acct_2_reads == 1);
+
+        // Submit 2*EXECUTION_DELAY proposals that affect other accounts, but not account 1
+        for i in 1..(2 * EXECUTION_DELAY.0) {
+            let proposal_tx = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, i, 10);
+            let cp2 = env.next_proposal(
+                generate_full_tx_list(vec![proposal_tx]),
+                StateRootHash::default(),
+            );
+            let (author_2, _, proposal_message_2) = cp2.destructure();
+
+            n1.handle_proposal_message(author_2, proposal_message_2);
+
+            let acct_1_reads_2 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+            let acct_2_reads_2 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_2_address);
+
+            GetMemoryStateInner::set_account_state(&mut n1.state_backend, SeqNum(i), sender_2_address, EthAccount::new(i, u128::MAX, None));
+
+            // Second proposal, state is cached and we haven't touched the account so there should still be only one read
+            assert!(acct_1_reads_2 == 1);
+            // Since we've touched account 2, its read count should be increasing after we pass the first EXECUTION_DELAY
+            let expected_reads = if i >= EXECUTION_DELAY.0 { i - EXECUTION_DELAY.0 + 2 } else { 1 };
+            assert!(acct_2_reads_2 == expected_reads as u32);
+        }
+
+        // One more proposal should miss the cache, since we have passed 2*execution delay now
+        let txn_final = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let cp3 = env.next_proposal(
+            generate_full_tx_list(vec![txn_final]),
+            StateRootHash::default(),
+        );
+        let (author_3, _, proposal_mesage_3) = cp3.destructure();
+        n1.handle_proposal_message(author_3, proposal_mesage_3);
+
+        let acct_1_reads_3 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_1_address);
+        let acct_2_reads_3 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_2_address);
+        assert!(acct_1_reads_3 == 2);
+        assert!(acct_2_reads_3 == (EXECUTION_DELAY.0 + 1) as u32);
     }
 }
