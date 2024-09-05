@@ -3704,6 +3704,7 @@ dependencies = [
  "monad-state-backend",
  "monad-types",
  "rand",
+ "reth-primitives",
  "sorted_vector_map",
  "tracing",
 ]

@@ -94,7 +94,7 @@ pub fn static_validate_transaction(
 
     // EIP-3860
     const DATA_SIZE_LIMIT: usize = 2 * 0x6000;
-    if tx.to().is_some() && tx.input().len() > DATA_SIZE_LIMIT {
+    if tx.kind().is_create() && tx.input().len() > DATA_SIZE_LIMIT {
         return Err(TransactionError::InitCodeLimitExceeded);
     }
 
@@ -690,11 +690,18 @@ where
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{Address, FixedBytes};
+    use alloy_primitives::{Address, FixedBytes, B256};
     use monad_eth_types::EthAddress;
     use monad_types::SeqNum;
+    use reth_primitives::{sign_message, AccessList, Transaction, TransactionKind, TxEip1559};
 
     use super::*;
+
+    fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> EthSignedTransaction {
+        let hash = tx.signature_hash();
+        let signature = sign_message(secret_key, hash).expect("signature should always succeed");
+        EthSignedTransaction::from_transaction_and_signature(tx, signature)
+    }
 
     #[test]
     fn test_compute_carriage_cost() {
@@ -777,6 +784,52 @@ mod test {
                 .carriage_cost,
             0
         );
+    }
+
+    #[test]
+    fn test_static_validate_transaction() {
+        const CHAIN_ID: u64 = 1337;
+
+        // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
+        let input = vec![0; 2 * 0x6000 + 1];
+        let tx_over_initcode_limit = Transaction::Eip1559(TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            to: TransactionKind::Create,
+            max_fee_per_gas: 10000,
+            max_priority_fee_per_gas: 10,
+            gas_limit: 1_000_000,
+            input: input.into(),
+            value: 0.into(),
+            access_list: AccessList::default(),
+        });
+        let txn = create_signed_tx(tx_over_initcode_limit, B256::repeat_byte(0xAu8));
+
+        let result = static_validate_transaction(&txn, CHAIN_ID);
+        assert!(matches!(
+            result,
+            Err(TransactionError::InitCodeLimitExceeded)
+        ));
+
+        // transaction with larger max priority fee than max fee per gas
+        let tx_priority_fee_too_high = Transaction::Eip1559(TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            to: TransactionKind::Call(Address::random()),
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10000,
+            gas_limit: 1_000_000,
+            input: vec![].into(),
+            value: 0.into(),
+            access_list: AccessList::default(),
+        });
+        let txn = create_signed_tx(tx_priority_fee_too_high, B256::repeat_byte(0xAu8));
+
+        let result = static_validate_transaction(&txn, CHAIN_ID);
+        assert!(matches!(
+            result,
+            Err(TransactionError::MaxPriorityFeeTooHigh)
+        ));
     }
 
     // TODO: reserve balance check accounts for previous transactions in the block

@@ -21,3 +21,6 @@ itertools = { workspace = true }
 rand = { workspace = true }
 sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+reth-primitives = { workspace = true }
