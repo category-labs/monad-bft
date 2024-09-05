@@ -9,8 +9,8 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, UpdateValidatorSet,
-    WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetMetrics, GetValidatorSet, ReadCommand,
+    UpdateValidatorSet, WriteCommand,
 };
 use monad_secp::SecpSignature;
 use tokio::net::{
@@ -53,6 +53,8 @@ enum Commands {
         #[arg(short, long, value_name = "FILE")]
         path: PathBuf,
     },
+    /// Gets snapshot of current metrics
+    Metrics,
     /// Clears the metrics
     ClearMetrics,
     /// Update the logging filter
@@ -128,6 +130,12 @@ fn main() -> Result<(), Error> {
                             )));
                         }
                     },
+                    r => {
+                        return Err(Error::other(format!(
+                            "expected validator set response, got {:?}",
+                            r
+                        )));
+                    }
                 },
                 r => {
                     return Err(Error::other(format!(
@@ -190,6 +198,11 @@ fn main() -> Result<(), Error> {
             }
             _ => unreachable!(),
         },
+        Commands::Metrics => {
+            rt.block_on(write.send(Command::Read(ReadCommand::GetMetrics(GetMetrics::Request))))?;
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            println!("{}", serde_json::to_string(&response).unwrap());
+        }
     }
 
     Ok(())

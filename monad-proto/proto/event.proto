@@ -136,12 +136,15 @@ message ProtoUpdateLogFilter {
   string filter = 1;
 }
 
+message ProtoGetMetricsEvent {}
+
 message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
     ProtoClearMetricsEvent clear_metrics_event = 2;
     ProtoUpdateValidatorsEvent update_validators_event = 3;
     ProtoUpdateLogFilter update_log_filter = 4;
+    ProtoGetMetricsEvent get_metrics_event = 5;
   }
 }
 

@@ -101,9 +101,16 @@ pub enum GetValidatorSet<SCT: SignatureCollection> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GetMetrics {
+    Request,
+    Response(Metrics),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ReadCommand<SCT: SignatureCollection + Clone> {
     #[serde(bound = "SCT: SignatureCollection")]
     GetValidatorSet(GetValidatorSet<SCT>),
+    GetMetrics(GetMetrics),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -449,6 +456,7 @@ where
     SCT: SignatureCollection,
 {
     GetValidatorSet,
+    GetMetricsEvent,
     ClearMetricsEvent,
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
     UpdateLogFilter(String),

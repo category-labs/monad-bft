@@ -401,6 +401,11 @@ where
                     ProtoGetValidatorSetEvent {},
                 )),
             },
+            ControlPanelEvent::GetMetricsEvent => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::GetMetricsEvent(
+                    ProtoGetMetricsEvent {},
+                )),
+            },
             ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
                     ProtoClearMetricsEvent {},
@@ -441,6 +446,9 @@ where
             ))? {
                 proto_control_panel_event::Event::GetValidatorSetEvent(_) => {
                     ControlPanelEvent::GetValidatorSet
+                }
+                proto_control_panel_event::Event::GetMetricsEvent(_) => {
+                    ControlPanelEvent::GetMetricsEvent
                 }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent

@@ -36,9 +36,10 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetValidatorSet, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand,
-    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -1084,6 +1085,11 @@ where
                         ReadCommand::GetValidatorSet(GetValidatorSet::Response(
                             ParsedValidatorData { epoch, validators },
                         )),
+                    ))]
+                }
+                ControlPanelEvent::GetMetricsEvent => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
                     ))]
                 }
                 ControlPanelEvent::ClearMetricsEvent => {
