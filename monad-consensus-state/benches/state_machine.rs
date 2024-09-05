@@ -450,7 +450,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
         4u32,
         ValidatorSetFactory::default(),
         SimpleRoundRobin::default(),
-        || NopStateRoot,
+        || NopStateRoot::new(SeqNum(u32::MAX.into())),
     );
 
     // this guy is the leader
@@ -579,7 +579,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
-                        || NopStateRoot,
+                        || NopStateRoot::new(SeqNum(u32::MAX.into())),
                     );
 
                 // this guy is the leader
@@ -643,7 +643,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
-                        || NopStateRoot,
+                        || NopStateRoot::new(SeqNum(u32::MAX.into())),
                     );
 
                 let (raw_txns, _) = make_txns();

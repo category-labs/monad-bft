@@ -25,6 +25,10 @@ use tracing::{info, trace, warn};
 
 type VirtualTimestamp = u64;
 
+// TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+// update this when base fee is included in consensus proposal
+const TRANSACTION_BASE_FEE: u128 = 1000;
+
 /// Needed to have control over Ord implementation
 #[derive(Debug, PartialEq)]
 struct WrappedTransaction<'a> {
@@ -421,9 +425,7 @@ where
             }
 
             // We also want to make sure that the transaction has max_fee_per_gas larger than base fee
-            // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
-            // update this when base fee is included in consensus proposal
-            if best_tx.max_fee_per_gas() < 1000 {
+            if best_tx.max_fee_per_gas() < TRANSACTION_BASE_FEE {
                 transaction_iters.remove(&address);
                 continue;
             }
@@ -477,23 +479,26 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use alloy_primitives::{hex, B256};
     use alloy_rlp::Decodable;
     use bytes::Bytes;
+    use itertools::Itertools;
     use monad_consensus_types::txpool::TxPool;
     use monad_crypto::NopSignature;
+    use monad_eth_block_policy::compute_txn_carriage_cost;
     use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
-    use monad_eth_tx::EthSignedTransaction;
-    use monad_eth_types::{Balance, EthAddress};
+    use monad_eth_tx::{EthSignedTransaction, EthTransaction};
+    use monad_eth_types::{Balance, EthAccount, EthAddress};
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
     use monad_types::{SeqNum, GENESIS_SEQ_NUM};
     use tracing_test::traced_test;
 
-    use crate::{EthBlockPolicy, EthTxPool};
+    use crate::{effective_tip_per_gas, EthBlockPolicy, EthTxPool, TRANSACTION_BASE_FEE};
 
     const EXECUTION_DELAY: u64 = 4;
-    const BASE_FEE: u128 = 1000;
     const GAS_LIMIT: u64 = 30000;
 
     type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
@@ -502,13 +507,58 @@ mod test {
         EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 0, 1337)
     }
 
+    impl EthTxPool {
+        fn insert_tx_unchecked(&mut self, txns: Vec<Bytes>) -> Vec<Bytes> {
+            let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
+                .into_iter()
+                .filter_map(|b| {
+                    if let Ok(valid_tx) = EthTransaction::decode(&mut b.as_ref()) {
+                        Some((valid_tx, b))
+                    } else {
+                        None
+                    }
+                })
+                .unzip();
+
+            let inserted_txs = decoded_txs
+                .into_iter()
+                .zip(raw_txs)
+                .filter_map(|(eth_tx, raw_tx)| {
+                    let ratio =
+                        (effective_tip_per_gas(&eth_tx) as f64) / (eth_tx.gas_limit() as f64);
+
+                    if ratio.is_nan() {
+                        return None;
+                    }
+
+                    let sender = EthAddress(eth_tx.signer());
+
+                    self.pool.entry(sender).or_default().add(eth_tx, ratio);
+
+                    Some(raw_tx)
+                })
+                .collect_vec();
+
+            inserted_txs
+        }
+    }
+
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10);
+        let tx = make_tx(
+            B256::repeat_byte(0xAu8),
+            TRANSACTION_BASE_FEE,
+            GAS_LIMIT,
+            0,
+            10,
+        );
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = std::iter::once((
+            EthAddress(tx.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        ));
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -543,10 +593,19 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_gas_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT + 1, 0, 10);
+        let tx = make_tx(
+            B256::repeat_byte(0xAu8),
+            TRANSACTION_BASE_FEE,
+            GAS_LIMIT + 1,
+            0,
+            10,
+        );
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = std::iter::once((
+            EthAddress(tx.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        ));
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -581,16 +640,49 @@ mod test {
     #[test]
     #[traced_test]
     fn test_create_partial_proposal_with_insufficient_gas_limit() {
-        let t1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10);
-        let t2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 1, 10);
-        let t3 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 2, 10);
+        let t1 = make_tx(
+            B256::repeat_byte(0xAu8),
+            TRANSACTION_BASE_FEE,
+            GAS_LIMIT,
+            0,
+            10,
+        );
+        let t2 = make_tx(
+            B256::repeat_byte(0xAu8),
+            TRANSACTION_BASE_FEE,
+            GAS_LIMIT,
+            1,
+            10,
+        );
+        let t3 = make_tx(
+            B256::repeat_byte(0xAu8),
+            TRANSACTION_BASE_FEE,
+            GAS_LIMIT,
+            2,
+            10,
+        );
         let expected_txs = vec![
-            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(
+                B256::repeat_byte(0xAu8),
+                TRANSACTION_BASE_FEE,
+                GAS_LIMIT,
+                0,
+                10,
+            ),
+            make_tx(
+                B256::repeat_byte(0xAu8),
+                TRANSACTION_BASE_FEE,
+                GAS_LIMIT,
+                1,
+                10,
+            ),
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
-        let acc = std::iter::once((EthAddress(t1.recover_signer().unwrap()), 0));
+        let acc = std::iter::once((
+            EthAddress(t1.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        ));
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -626,23 +718,30 @@ mod test {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
         let s2 = B256::repeat_byte(0xBu8); // 0xf288ECAF15790EfcAc528946963A6Db8c3f8211d
         let txs = vec![
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 2 * TRANSACTION_BASE_FEE, 2 * GAS_LIMIT, 0, 10),
         ];
 
         let a1 = EthAddress(txs[0].recover_signer().unwrap());
         let a2 = EthAddress(txs[1].recover_signer().unwrap());
 
         let expected_txs = vec![
-            make_tx(s2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 2 * TRANSACTION_BASE_FEE, 2 * GAS_LIMIT, 0, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
         ];
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(vec![(a1, 0), (a2, 0)].into_iter().collect()),
+            InMemoryBlockState::genesis(
+                vec![
+                    (a1, EthAccount::new(0, Balance::MAX, None)),
+                    (a2, EthAccount::new(0, Balance::MAX, None)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
         );
 
         let txns: Vec<Bytes> = txs
@@ -670,18 +769,22 @@ mod test {
     fn test_resubmit_with_better_price() {
         let s1 = B256::repeat_byte(0xAu8); // 0xC171033d5CBFf7175f29dfD3A63dDa3d6F8F385E
         let txs = vec![
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 2 * TRANSACTION_BASE_FEE, 2 * GAS_LIMIT, 0, 10),
         ];
         let a1 = EthAddress(txs[0].recover_signer().unwrap());
-        let expected_txs = vec![make_tx(s1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10)];
+        let expected_txs = vec![make_tx(s1, 2 * TRANSACTION_BASE_FEE, 2 * GAS_LIMIT, 0, 10)];
 
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(vec![(a1, 0)].into_iter().collect()),
+            InMemoryBlockState::genesis(
+                vec![(a1, EthAccount::new(0, Balance::MAX, None))]
+                    .into_iter()
+                    .collect(),
+            ),
         );
         let txns: Vec<Bytes> = txs
             .iter()
@@ -712,30 +815,33 @@ mod test {
         let s3: B256 =
             hex!("0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2").into(); // pubkey starts with CCC
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s1, 3 * BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, 1 * BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s3, 10 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s1, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 1 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s3, 8 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
         ];
         let expected_txs = vec![
-            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s3, 10 * BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s1, 3 * BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, 1 * BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s1, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 8 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s1, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, 1 * TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
         ];
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -772,25 +878,28 @@ mod test {
         let s3: B256 =
             hex!("0d756f31a3e98f1ae46475687cbfe3085ec74b3abdd712decff3e1e5e4c697a2").into(); // pubkey starts with CCC
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, 8 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
         ];
         let expected_txs = vec![
-            make_tx(s1, 10 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 8 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, 9 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s1, 5 * BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, 5 * BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, 3 * BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 10 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 8 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, 9 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, 5 * TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, 3 * TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
         ];
 
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -826,34 +935,37 @@ mod test {
         let s2: B256 =
             hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
         let txs = vec![
-            make_tx(s1, 10 * BASE_FEE, 100 * GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
+            make_tx(s1, 10 * TRANSACTION_BASE_FEE, 100 * GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 9, 10),
         ];
         let expected_txs = vec![
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 9, 10),
         ];
 
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -888,34 +1000,37 @@ mod test {
         let s2: B256 =
             hex!("009ac901cf45a2e92e7e7bdf167dc52e3a6232be3c56cc3b05622b247c2c716a").into(); // pubkey starts with BBB
         let txs = vec![
-            make_tx(s1, 2 * BASE_FEE, 10 * GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
+            make_tx(s1, 2 * TRANSACTION_BASE_FEE, 10 * GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 9, 10),
         ];
         let expected_txs = vec![
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 2, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 3, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 4, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 5, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 6, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 7, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 8, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 9, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 4, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 5, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 6, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 7, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 8, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 9, 10),
         ];
 
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -947,10 +1062,13 @@ mod test {
     fn zero_gas_limit() {
         let s1: B256 =
             hex!("0ed2e19e3aca1a321349f295837988e9c6f95d4a6fc54cfab6befd5ee82662ad").into(); // pubkey starts with AAA
-        let txs = vec![make_tx(s1, BASE_FEE, 0, 0, 10)];
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let txs = vec![make_tx(s1, TRANSACTION_BASE_FEE, 0, 0, 10)];
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -979,33 +1097,36 @@ mod test {
         let s5: B256 =
             hex!("9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8").into(); // pubkey starts with EEE
         let txs = vec![
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s3, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s4, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s4, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s5, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s5, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s4, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s4, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s5, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s5, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
         ];
         let expected_txs = vec![
-            make_tx(s5, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s5, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s4, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s4, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s3, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s3, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s2, BASE_FEE, GAS_LIMIT, 1, 10),
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 0, 10),
-            make_tx(s1, BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s5, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s5, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s4, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s4, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s3, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s3, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s2, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10),
+            make_tx(s1, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10),
         ];
 
-        let acc = txs
-            .iter()
-            .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+        let acc = txs.iter().map(|tx| {
+            (
+                EthAddress(tx.recover_signer().unwrap()),
+                EthAccount::new(0, Balance::MAX, None),
+            )
+        });
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -1037,9 +1158,12 @@ mod test {
         // The first transaction from an account with 0 nonce should be including in the block
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
 
-        let acc = vec![(EthAddress(txn_nonce_zero.recover_signer().unwrap()), 0)];
+        let acc = vec![(
+            EthAddress(txn_nonce_zero.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        )];
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -1074,11 +1198,11 @@ mod test {
 
         let sender_1_key = B256::random();
         // Txn with nonce = 0
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
         // Txn with nonce = 1
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
         // Txn with nonce = 3
-        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let mut eth_tx_pool = EthTxPool::default();
@@ -1086,7 +1210,10 @@ mod test {
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+            InMemoryBlockState::genesis(
+                std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                    .collect(),
+            ),
         );
 
         let txns = vec![
@@ -1120,8 +1247,8 @@ mod test {
         // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
         let sender_1_key = B256::random();
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let mut eth_tx_pool = EthTxPool::default();
@@ -1129,7 +1256,10 @@ mod test {
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(std::iter::once((sender_1_address, 1)).collect()),
+            InMemoryBlockState::genesis(
+                std::iter::once((sender_1_address, EthAccount::new(1, Balance::MAX, None)))
+                    .collect(),
+            ),
         );
 
         let txns = vec![
@@ -1161,11 +1291,14 @@ mod test {
 
         let sender_1_key = B256::random();
         // generate two transactions, both with nonce = 0
-        let txn_1_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        let txn_2_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_1_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_2_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 1000);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
 
-        let acc = vec![(EthAddress(txn_1_nonce_zero.recover_signer().unwrap()), 0)];
+        let acc = vec![(
+            EthAddress(txn_1_nonce_zero.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        )];
         let mut eth_tx_pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let state_backend = InMemoryStateInner::new(
@@ -1207,11 +1340,11 @@ mod test {
         let sender_1_key = B256::random();
 
         // txn with nonce = 1
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
         // txn with nonce = 2
-        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 2, 10);
         // txn with nonce = 3
-        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
+        let txn_nonce_three = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 3, 10);
 
         let mut eth_tx_pool = EthTxPool::default();
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
@@ -1220,7 +1353,10 @@ mod test {
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(std::iter::once((sender_1_address, 1)).collect()),
+            InMemoryBlockState::genesis(
+                std::iter::once((sender_1_address, EthAccount::new(1, Balance::MAX, None)))
+                    .collect(),
+            ),
         );
 
         let txns = vec![
@@ -1256,7 +1392,7 @@ mod test {
     #[test]
     fn test_invalid_chain_id() {
         let sender_1_key = B256::random();
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
 
         let mut eth_tx_pool = EthTxPool::default();
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
@@ -1266,7 +1402,10 @@ mod test {
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
-            InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+            InMemoryBlockState::genesis(
+                std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                    .collect(),
+            ),
         );
 
         let txns = vec![txn_nonce_one.envelope_encoded().into()];
@@ -1274,5 +1413,110 @@ mod test {
 
         // transaction should not be inserted into the pool
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_insufficient_reserve_balance_genesis_proposal() {
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+
+        let txn_one_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_zero.try_ecrecovered().unwrap());
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let execution_delay = SeqNum(5);
+
+        let eth_block_policy =
+            EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            // Enough balance for only the first transaction to be in the proposal
+            InMemoryBlockState::genesis(
+                std::iter::once((
+                    sender_1_address,
+                    EthAccount::new(0, txn_one_carriage_cost, None),
+                ))
+                .collect(),
+            ),
+        );
+
+        let txns = vec![
+            txn_nonce_zero.envelope_encoded().into(),
+            txn_nonce_one.envelope_encoded().into(),
+        ];
+        let result = eth_tx_pool.insert_tx_unchecked(txns);
+        assert_eq!(result.len(), 2);
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(0),
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend,
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert_eq!(decoded_txns.len(), 1);
+        assert_eq!(decoded_txns[0].nonce(), 0);
+    }
+
+    #[test]
+    fn test_insufficient_reserve_balance_proposal() {
+        let sender_1_key = B256::random();
+        let txn_nonce_one = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_two = make_tx(sender_1_key, TRANSACTION_BASE_FEE, GAS_LIMIT, 1, 10);
+
+        let txn_one_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_one.try_ecrecovered().unwrap());
+
+        let mut eth_tx_pool = EthTxPool::default();
+        let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
+
+        let execution_delay = SeqNum(5);
+
+        let eth_block_policy =
+            EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, execution_delay.0, 0, 1);
+        let state_backend = InMemoryStateInner::new(
+            Balance::MAX,
+            execution_delay,
+            // No accounts initially
+            InMemoryBlockState::genesis(BTreeMap::new()),
+        );
+
+        let txns = vec![
+            txn_nonce_one.envelope_encoded().into(),
+            txn_nonce_two.envelope_encoded().into(),
+        ];
+        let result = eth_tx_pool.insert_tx_unchecked(txns);
+        assert_eq!(result.len(), 2);
+
+        // Set the account balance enough for just one transaction
+        state_backend.lock().unwrap().set_account_state(
+            SeqNum(5),
+            sender_1_address,
+            EthAccount::new(0, txn_one_carriage_cost, None),
+        );
+
+        let encoded_txns = Pool::create_proposal(
+            &mut eth_tx_pool,
+            SeqNum(5) + execution_delay, // proposed sequence number should fetch account state from SeqNum(5)
+            10_000,
+            500_000,
+            &eth_block_policy,
+            vec![],
+            &state_backend,
+        )
+        .unwrap();
+        let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
+
+        assert_eq!(decoded_txns.len(), 1);
+        assert_eq!(decoded_txns[0].nonce(), 0);
     }
 }

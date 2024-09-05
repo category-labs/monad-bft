@@ -7,6 +7,7 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
 pub type Nonce = u64;
 pub type Balance = u128;
+pub type BalanceDelta = i128;
 
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
@@ -33,9 +34,19 @@ impl AsRef<[u8; 20]> for EthAddress {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Serialize, Deserialize)]
 pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
     pub code_hash: Option<B256>,
+}
+
+impl EthAccount {
+    pub fn new(nonce: Nonce, balance: Balance, code_hash: Option<B256>) -> Self {
+        Self {
+            nonce,
+            balance,
+            code_hash,
+        }
+    }
 }

@@ -356,8 +356,16 @@ impl StateRootValidator for StateRoot {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct NopStateRoot;
+#[derive(Debug, Clone)]
+pub struct NopStateRoot {
+    pub delay: SeqNum,
+}
+
+impl NopStateRoot {
+    pub fn new(delay: SeqNum) -> Self {
+        Self { delay }
+    }
+}
 
 impl StateRootValidator for NopStateRoot {
     fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: StateRootHash) {}
@@ -371,8 +379,7 @@ impl StateRootValidator for NopStateRoot {
     }
 
     fn get_delay(&self) -> SeqNum {
-        // TODO we should tie this to the InMemoryStateBackend
-        SeqNum(u32::MAX.into())
+        self.delay
     }
 }
 

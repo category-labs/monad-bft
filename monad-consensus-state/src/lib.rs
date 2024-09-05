@@ -1432,12 +1432,12 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
-    use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+    use monad_eth_block_policy::{compute_txn_carriage_cost, EthBlockPolicy, EthValidatedBlock};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_testutil::make_tx;
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{Balance, EthAccount, EthAddress};
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{
         InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend,
@@ -1468,6 +1468,7 @@ mod test {
 
     const BASE_FEE: u128 = 1000;
     const GAS_LIMIT: u64 = 30000;
+    const EXECUTION_DELAY: SeqNum = SeqNum(5);
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -1950,10 +1951,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2016,10 +2017,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
         let p1 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2061,10 +2062,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2121,10 +2122,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2158,10 +2159,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2222,10 +2223,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2311,10 +2312,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2362,10 +2363,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2436,10 +2437,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
         let (n2, xs) = xs.split_first_mut().unwrap();
@@ -2615,10 +2616,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
+            || StateRoot::new(EXECUTION_DELAY),
         );
         let mut wrapped_state = ctx[0].wrapped_state();
 
@@ -2788,7 +2789,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
             MissingNextStateRoot::default,
@@ -2946,10 +2947,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let node = &mut ctx[0];
 
@@ -3037,10 +3038,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         for i in 0..8 {
@@ -3136,10 +3137,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3200,10 +3201,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3241,10 +3242,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let missing_round = 9;
@@ -3357,10 +3358,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let node = &mut ctx[0];
 
@@ -3424,10 +3425,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -3493,10 +3494,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -3600,10 +3601,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -3698,10 +3699,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -3813,10 +3814,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let mut blocks = vec![];
@@ -3964,10 +3965,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -4086,10 +4087,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let p1 = env.next_proposal_empty();
         // there's no child block in the blocktree, so this must be ignored
@@ -4127,10 +4128,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let val_stakes: Vec<(NodeId<_>, Stake)> = env
@@ -4228,10 +4229,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
         let mut blocks = vec![];
 
@@ -4290,10 +4291,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4395,10 +4396,10 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
             || MockValidator,
             MockTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4547,25 +4548,20 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
-                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                            .collect(),
+                    ),
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4614,25 +4610,20 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
-                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                            .collect(),
+                    ),
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4682,25 +4673,20 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
-                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                            .collect(),
+                    ),
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4773,25 +4759,20 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
-                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                            .collect(),
+                    ),
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -4897,25 +4878,20 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
-                    SeqNum(4),
-                    InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((sender_1_address, EthAccount::new(0, Balance::MAX, None)))
+                            .collect(),
+                    ),
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),
-            || NopStateRoot,
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let (n1, other_states) = ctx.split_first_mut().unwrap();
@@ -5005,9 +4981,9 @@ mod test {
         let (mut env, mut ctx) = setup::<
             SignatureType,
             SignatureCollectionType,
-            EthBlockPolicy,
+            BlockPolicyType,
             InMemoryState,
-            EthValidator,
+            BlockValidatorType,
             _,
             StateRootValidatorType,
             _,
@@ -5016,19 +4992,11 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    0,
-                    1337,
-                )
-            },
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
-            || NopStateRoot,
+            || PassthruBlockPolicy,
+            || InMemoryStateInner::genesis(u128::MAX, EXECUTION_DELAY),
+            || MockValidator,
+            MockTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
         );
 
         let epoch_length = ctx[0].epoch_manager.val_set_update_interval;
@@ -5101,5 +5069,326 @@ mod test {
         }
         assert_eq!(wrapped_state.consensus.get_current_epoch(), Epoch(2));
         assert_eq!(wrapped_state.consensus.get_current_round(), epoch_2_start);
+    }
+
+    #[test]
+    fn test_sufficient_reserve_balance() {
+        // Sender has enough balance for transaction
+
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_zero.try_ecrecovered().unwrap());
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendType,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((
+                            sender_1_address,
+                            EthAccount::new(0, txn_nonce_zero_carriage_cost, None),
+                        ))
+                        .collect(),
+                    ),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_insufficient_reserve_balance_pending_blocks() {
+        // Sender has enough balance for only 1 transaction which is in a pending block
+
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_zero_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_zero.try_ecrecovered().unwrap());
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendType,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((
+                            sender_1_address,
+                            EthAccount::new(0, txn_nonce_zero_carriage_cost, None),
+                        ))
+                        .collect(),
+                    ),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 which is incoherent
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+        // should not vote for block 2
+        assert!(find_vote_message(&cmds).is_none());
+        // block 2 should be in the blocktree as incoherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(!block_2_blocktree_entry.is_coherent);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_insufficient_reserve_balance_committed_blocks() {
+        // Sender has enough balance for only 1 transaction which is in a committed block
+
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_zero_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_zero.try_ecrecovered().unwrap());
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendType,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((
+                            sender_1_address,
+                            EthAccount::new(0, txn_nonce_zero_carriage_cost, None),
+                        ))
+                        .collect(),
+                    ),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // state receives block 2 and 3 which commits block 1.
+        let mut cmds = Vec::default();
+        for _ in 0..2 {
+            let cp = env.next_proposal_empty();
+            let (author, _, proposal_message) = cp.destructure();
+            cmds.extend(n1.handle_proposal_message(author, proposal_message));
+        }
+        assert!(find_commit_cmd(&cmds).is_some());
+
+        // state receives block 4 which is incoherent
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_4, _, proposal_message_4) = cp.destructure();
+        let block_4_id = proposal_message_4.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_4, proposal_message_4);
+        // should not vote for block 4
+        assert!(find_vote_message(&cmds).is_none());
+        // block 4 should be in the blocktree as incoherent
+        let block_4_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_4_id)
+            .expect("should be in the blocktree");
+        assert!(!block_4_blocktree_entry.is_coherent);
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_incoherent_block_insufficient_reserve_balance() {
+        // Sender has enough balance for only 1 transaction but block has 2 transactions
+
+        let num_states = 2;
+        let sender_1_key = B256::random();
+        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_zero_carriage_cost =
+            compute_txn_carriage_cost(&txn_nonce_zero.try_ecrecovered().unwrap());
+        let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendType,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                InMemoryStateInner::new(
+                    u128::MAX,
+                    EXECUTION_DELAY,
+                    InMemoryBlockState::genesis(
+                        std::iter::once((
+                            sender_1_address,
+                            EthAccount::new(0, txn_nonce_zero_carriage_cost, None),
+                        ))
+                        .collect(),
+                    ),
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(vec![txn_nonce_zero, txn_nonce_one]),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // should not vote for block 1
+        assert!(find_vote_message(&cmds).is_none());
+        // block 1 should be in the blocktree as incoherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(!block_1_blocktree_entry.is_coherent);
     }
 }

@@ -5,7 +5,7 @@ use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::EthTxPool;
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{Balance, EthAccount, EthAddress};
 use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -64,9 +64,12 @@ fn create_pool_and_transactions() -> BenchController {
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(&mut rng, TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
-    let acc = txns
-        .iter()
-        .map(|tx| (EthAddress(tx.recover_signer().unwrap()), 0));
+    let acc = txns.iter().map(|tx| {
+        (
+            EthAddress(tx.recover_signer().unwrap()),
+            EthAccount::new(0, Balance::MAX, None),
+        )
+    });
     let state_backend = InMemoryStateInner::new(
         Balance::MAX,
         SeqNum(4),

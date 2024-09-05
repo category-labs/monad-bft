@@ -21,7 +21,7 @@ mod test {
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
     use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
-    use monad_eth_types::{Balance, EthAddress};
+    use monad_eth_types::{Balance, EthAccount, EthAddress};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -100,8 +100,10 @@ mod test {
     ) -> Nodes<EthSwarm> {
         let execution_delay = SeqNum(4);
 
-        let existing_nonces: BTreeMap<_, _> =
-            existing_accounts.into_iter().map(|acc| (acc, 0)).collect();
+        let existing_account_states: BTreeMap<_, _> = existing_accounts
+            .into_iter()
+            .map(|acc| (acc, EthAccount::new(0, Balance::MAX, None)))
+            .collect();
 
         let state_configs = make_state_configs::<EthSwarm>(
             num_nodes,
@@ -114,7 +116,7 @@ mod test {
                 InMemoryStateInner::new(
                     Balance::MAX,
                     execution_delay,
-                    InMemoryBlockState::genesis(existing_nonces.clone()),
+                    InMemoryBlockState::genesis(existing_account_states.clone()),
                 )
             },
             || StateRoot::new(execution_delay),

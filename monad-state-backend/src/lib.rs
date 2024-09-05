@@ -71,14 +71,14 @@ pub struct InMemoryStateInner {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InMemoryBlockState {
     block: SeqNum,
-    nonces: BTreeMap<EthAddress, Nonce>,
+    account_states: BTreeMap<EthAddress, EthAccount>,
 }
 
 impl InMemoryBlockState {
-    pub fn genesis(nonces: BTreeMap<EthAddress, Nonce>) -> Self {
+    pub fn genesis(account_states: BTreeMap<EthAddress, EthAccount>) -> Self {
         Self {
             block: GENESIS_SEQ_NUM,
-            nonces,
+            account_states,
         }
     }
 }
@@ -109,9 +109,9 @@ impl InMemoryStateInner {
         }))
     }
 
-    // new_account_nonces is the changeset of nonces from a given block
-    // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
-    // this is because N+1 is the next valid nonce for A
+    // new_account_nonces is the changeset of account nonces from a given block.
+    // if account A's last tx nonce in a block is N, then account A in new_account_nonces
+    // should include nonce=N+1 this is because N+1 is the next valid nonce for A
     pub fn ledger_commit(
         &mut self,
         seq_num: SeqNum,
@@ -124,20 +124,39 @@ impl InMemoryStateInner {
             .all(|block| self.commits.contains(&SeqNum(block)))
         {
             // we have `delay` number of blocks, so we can execute
-            let mut last_state_nonces = self
+            let mut last_account_states = self
                 .states
                 .last_entry()
-                .map_or(Default::default(), |entry| entry.get().nonces.clone());
+                .map_or(Default::default(), |entry| {
+                    entry.get().account_states.clone()
+                });
             for (address, account_nonce) in new_account_nonces {
-                last_state_nonces.insert(address, account_nonce);
+                last_account_states
+                    .insert(address, EthAccount::new(account_nonce, Balance::MAX, None));
             }
             let last_state = InMemoryBlockState {
                 block: seq_num,
-                nonces: last_state_nonces,
+                account_states: last_account_states,
             };
             assert_eq!(seq_num, last_state.block);
             self.states.insert(seq_num, last_state);
         }
+    }
+
+    pub fn set_account_state(
+        &mut self,
+        seq_num: SeqNum,
+        address: EthAddress,
+        account_state: EthAccount,
+    ) {
+        let last_account_states = self.states.entry(seq_num).or_insert(InMemoryBlockState {
+            block: seq_num,
+            account_states: Default::default(),
+        });
+
+        last_account_states
+            .account_states
+            .insert(address, account_state);
     }
 
     pub fn block_state(&self, block: &SeqNum) -> Option<&InMemoryBlockState> {
@@ -151,12 +170,11 @@ impl InMemoryStateInner {
 
 impl StateBackend for InMemoryStateInner {
     fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
-        let nonce = self.states.get(&block)?.nonces.get(address)?;
-        Some(EthAccount {
-            nonce: *nonce,
-            balance: self.max_reserve_balance,
-            code_hash: None,
-        })
+        self.states
+            .get(&block)?
+            .account_states
+            .get(address)
+            .copied()
     }
 
     fn raw_read_earliest_block(&self) -> SeqNum {
