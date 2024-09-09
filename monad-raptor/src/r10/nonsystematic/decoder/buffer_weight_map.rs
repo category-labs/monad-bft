@@ -1,27 +1,31 @@
-use std::{cmp::Ordering, mem::replace, num::NonZeroU16};
+use std::{cmp::Ordering, iter, mem::replace, num::NonZeroU16};
 
 #[derive(Debug)]
-pub struct BufferWeightMap<const MAX_BUFFERS: usize> {
-    // weight 1..=8419
-    buffer_index_to_weight: Box<[Option<NonZeroU16>; MAX_BUFFERS]>,
+pub struct BufferWeightMap {
+    // An minheap (in array representation) consisting of buffer indices ordered by their
+    // corresponding buffer weights.
+    heap_index_to_buffer_index: Vec<u16>,
 
-    num_heap_entries: usize,
-    heap_index_to_buffer_index: Box<[u16; MAX_BUFFERS]>,
-    buffer_index_to_heap_index: Box<[u16; MAX_BUFFERS]>,
+    // The minimum weight of a buffer is 1.
+    //
+    // The maximum weight of a buffer is 8419, which is the number of intermediate symbols
+    // corresponding to 8192 source symbols, 8192 being the maximum number of source symbols.
+    buffer_index_to_weight: Vec<Option<NonZeroU16>>,
+
+    buffer_index_to_heap_index: Vec<u16>,
 }
 
-impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
-    pub fn new() -> BufferWeightMap<MAX_BUFFERS> {
+impl BufferWeightMap {
+    pub fn new(num_expected_buffers: usize) -> BufferWeightMap {
         BufferWeightMap {
-            buffer_index_to_weight: Box::new([None; MAX_BUFFERS]),
-            num_heap_entries: 0,
-            heap_index_to_buffer_index: Box::new([0; MAX_BUFFERS]),
-            buffer_index_to_heap_index: Box::new([0; MAX_BUFFERS]),
+            heap_index_to_buffer_index: Vec::with_capacity(num_expected_buffers),
+            buffer_index_to_weight: Vec::with_capacity(num_expected_buffers),
+            buffer_index_to_heap_index: Vec::with_capacity(num_expected_buffers),
         }
     }
 
     fn print_node(&self, heap_index: usize, indent: usize) {
-        if heap_index < self.num_heap_entries {
+        if heap_index < self.heap_index_to_buffer_index.len() {
             let buffer_index = self.heap_index_to_buffer_index[heap_index];
             let weight = self.buffer_index_to_weight[usize::from(buffer_index)];
 
@@ -42,32 +46,24 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
     }
 
     pub fn check_force(&self) {
-        let mut buffer_index_to_weight = [None; MAX_BUFFERS];
+        let mut buffer_index_to_weight: Vec<_> = iter::repeat(None)
+            .take(self.buffer_index_to_weight.len())
+            .collect();
 
-        for i in 0..self.num_heap_entries {
-            let buffer_index = usize::from(self.heap_index_to_buffer_index[i]);
-
+        for buffer_index in &self.heap_index_to_buffer_index {
+            let buffer_index = usize::from(*buffer_index);
             buffer_index_to_weight[buffer_index] = self.buffer_index_to_weight[buffer_index];
         }
 
-        assert_eq!(*self.buffer_index_to_weight, buffer_index_to_weight);
+        assert_eq!(self.buffer_index_to_weight, buffer_index_to_weight);
 
-        for i in 0..self.num_heap_entries {
-            let buffer_index = usize::from(self.heap_index_to_buffer_index[i]);
-
-            assert_eq!(
-                usize::from(self.buffer_index_to_heap_index[buffer_index]),
-                i
-            );
-        }
-
-        for i in 0..self.num_heap_entries {
+        for i in 0..self.heap_index_to_buffer_index.len() {
             let weight = self.buffer_index_to_weight
                 [usize::from(self.heap_index_to_buffer_index[i])]
             .unwrap();
 
             let child = 2 * i + 1;
-            if child < self.num_heap_entries {
+            if child < self.heap_index_to_buffer_index.len() {
                 let child_weight = self.buffer_index_to_weight
                     [usize::from(self.heap_index_to_buffer_index[child])]
                 .unwrap();
@@ -75,12 +71,21 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
             }
 
             let child = 2 * i + 2;
-            if child < self.num_heap_entries {
+            if child < self.heap_index_to_buffer_index.len() {
                 let child_weight = self.buffer_index_to_weight
                     [usize::from(self.heap_index_to_buffer_index[child])]
                 .unwrap();
                 assert!(weight <= child_weight);
             }
+        }
+
+        for (i, buffer_index) in self.heap_index_to_buffer_index.iter().enumerate() {
+            let buffer_index = usize::from(*buffer_index);
+
+            assert_eq!(
+                usize::from(self.buffer_index_to_heap_index[buffer_index]),
+                i
+            );
         }
     }
 
@@ -91,11 +96,11 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.num_heap_entries == 0
+        self.heap_index_to_buffer_index.is_empty()
     }
 
     pub fn peek_min(&self) -> Option<(u16, NonZeroU16)> {
-        if self.num_heap_entries > 0 {
+        if !self.heap_index_to_buffer_index.is_empty() {
             let buffer_index = self.heap_index_to_buffer_index[0];
             let weight = self.buffer_index_to_weight[usize::from(buffer_index)].unwrap();
 
@@ -136,12 +141,19 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
     }
 
     pub fn insert_buffer_weight(&mut self, buffer_index: usize, weight: NonZeroU16) {
-        assert!(replace(&mut self.buffer_index_to_weight[buffer_index], Some(weight)).is_none());
+        let heap_index = self.heap_index_to_buffer_index.len();
+        self.heap_index_to_buffer_index
+            .push(buffer_index.try_into().unwrap());
 
-        let heap_index = self.num_heap_entries;
-        self.num_heap_entries += 1;
+        if self.buffer_index_to_weight.len() < buffer_index + 1 {
+            self.buffer_index_to_weight.resize(buffer_index + 1, None);
+            self.buffer_index_to_heap_index.resize(buffer_index + 1, 0);
+        }
 
-        self.heap_index_to_buffer_index[heap_index] = buffer_index.try_into().unwrap();
+        assert_eq!(
+            replace(&mut self.buffer_index_to_weight[buffer_index], Some(weight)),
+            None
+        );
         self.buffer_index_to_heap_index[buffer_index] = heap_index.try_into().unwrap();
 
         self.pull_up(heap_index);
@@ -154,7 +166,7 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
             let mut heap_index_min = heap_index;
 
             let child_heap_index = 2 * heap_index + 1;
-            if child_heap_index < self.num_heap_entries
+            if child_heap_index < self.heap_index_to_buffer_index.len()
                 && self.heap_index_to_weight(child_heap_index)
                     < self.heap_index_to_weight(heap_index_min)
             {
@@ -162,7 +174,7 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
             }
 
             let child_heap_index = 2 * heap_index + 2;
-            if child_heap_index < self.num_heap_entries
+            if child_heap_index < self.heap_index_to_buffer_index.len()
                 && self.heap_index_to_weight(child_heap_index)
                     < self.heap_index_to_weight(heap_index_min)
             {
@@ -182,20 +194,25 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
         let heap_index_usize = usize::from(heap_index);
         let buffer_index_usize = usize::from(buffer_index);
 
-        debug_assert!(self.heap_index_to_buffer_index[heap_index_usize] == buffer_index);
-        debug_assert!(self.buffer_index_to_heap_index[buffer_index_usize] == heap_index);
+        debug_assert_eq!(
+            self.heap_index_to_buffer_index[heap_index_usize],
+            buffer_index
+        );
+        debug_assert_eq!(
+            self.buffer_index_to_heap_index[buffer_index_usize],
+            heap_index
+        );
 
-        let last_heap_index = self.num_heap_entries - 1;
+        let last_heap_index = self.heap_index_to_buffer_index.len() - 1;
         if heap_index_usize != last_heap_index {
             self.swap(heap_index_usize, last_heap_index);
         }
+        self.heap_index_to_buffer_index.pop();
 
         let prev_weight = self.buffer_index_to_weight[buffer_index_usize]
             .take()
             .unwrap()
             .get();
-
-        self.num_heap_entries -= 1;
 
         if heap_index_usize != last_heap_index {
             match self
@@ -245,28 +262,11 @@ impl<const MAX_BUFFERS: usize> BufferWeightMap<MAX_BUFFERS> {
         }
     }
 
-    /*
-    pub fn update_buffer_weight_fn(
-        &mut self,
-        buffer_index: usize,
-        update_fn: impl FnMut(Option<NonZeroU16>) -> Option<NonZeroU16>,
-    ) {
-        todo!()
-    }
-    */
-
     pub fn enumerate(&self, mut buffer_index_weight_fn: impl FnMut(u16, NonZeroU16)) {
-        for i in 0..self.num_heap_entries {
-            let buffer_index = self.heap_index_to_buffer_index[i];
-            let weight = self.buffer_index_to_weight[usize::from(buffer_index)].unwrap();
+        for buffer_index in &self.heap_index_to_buffer_index {
+            let weight = self.buffer_index_to_weight[usize::from(*buffer_index)].unwrap();
 
-            buffer_index_weight_fn(buffer_index, weight);
+            buffer_index_weight_fn(*buffer_index, weight);
         }
-    }
-}
-
-impl<const MAX_BUFFERS: usize> Default for BufferWeightMap<MAX_BUFFERS> {
-    fn default() -> Self {
-        Self::new()
     }
 }

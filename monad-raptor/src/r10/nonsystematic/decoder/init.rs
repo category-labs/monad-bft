@@ -90,14 +90,14 @@ impl Decoder {
             intermediate_symbol_state[intermediate_symbol_id].active_push(buffer_index);
         }
 
-        let mut buffers_active_usable = BufferWeightMap::<MAX_TRIPLES>::new();
+        let mut buffers_active_usable = BufferWeightMap::new(MAX_TRIPLES);
 
         for (i, buffer_state) in buffer_state.iter().enumerate() {
             buffers_active_usable
                 .insert_buffer_weight(i, NonZeroU16::new(buffer_state.active_used_weight).unwrap());
         }
 
-        let buffers_inactivated = BufferWeightMap::<MAX_TRIPLES>::new();
+        let buffers_inactivated = BufferWeightMap::new(MAX_TRIPLES);
 
         let decoder = Decoder {
             params,
