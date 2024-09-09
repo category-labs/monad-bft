@@ -398,10 +398,18 @@ where
         }
     };
 
+    let encoder = match monad_raptor::Encoder::<{ DATA_SIZE as usize }>::new(&app_message) {
+        Ok(encoder) => encoder,
+        Err(err) => {
+            // TODO: signal this error to the caller
+            tracing::warn!(?err, "unable to create Encoder, dropping message");
+            return Vec::new();
+        }
+    };
+
     // populates the following chunk-specific stuff
     // - chunk_id: u16
     // - chunk_payload
-    let encoder = monad_raptor::Encoder::<{ DATA_SIZE as usize }>::new(&app_message).unwrap();
     for (chunk_id, mut chunk_data) in chunk_datas.iter_mut().enumerate() {
         let chunk_id = chunk_id as u16;
         let chunk_len: u16 = DATA_SIZE;
