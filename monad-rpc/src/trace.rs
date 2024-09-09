@@ -1,4 +1,3 @@
-use monad_rpc_docs::rpc;
 use serde::Deserialize;
 
 use crate::{
@@ -29,26 +28,23 @@ pub struct TraceCallObject {
     pub data: Option<String>,
 }
 
-#[rpc(method = "trace_block")]
 #[allow(non_snake_case)]
 pub async fn monad_trace_block(params: BlockTags) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
+#[derive(Deserialize, Debug)]
 pub struct TraceCallParams {
     pub calls: Vec<TraceCallObject>,
     pub block: BlockTags,
 }
 
-#[rpc(method = "trace_call")]
 #[allow(non_snake_case)]
 /// Executes a new message call and returns a number of possible traces.
 pub async fn monad_trace_call(params: TraceCallParams) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "trace_callMany")]
 #[allow(non_snake_case)]
 /// Executes multiple message calls within the same block and returns a number of possible traces.
 pub async fn monad_trace_callMany() -> JsonRpcResult<String> {
@@ -61,14 +57,12 @@ pub struct TraceGetParams {
     indexes: Vec<Quantity>,
 }
 
-#[rpc(method = "trace_get")]
 #[allow(non_snake_case)]
 /// Returns trace at given position.
 pub async fn monad_trace_get(params: TraceGetParams) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "trace_transaction")]
 #[allow(non_snake_case)]
 /// Returns all traces of given transaction.
 pub async fn monad_trace_transaction(params: EthHash) -> JsonRpcResult<String> {

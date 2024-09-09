@@ -136,6 +136,7 @@ pub struct MonadCallFrame {
     revert_reason: Option<String>,
     // FIXME why Rc<RefCell<_>> ?
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[schemars(skip)] // TODO: handle recursive generation in jsonrpc schema
     calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
 }
 
@@ -179,7 +180,7 @@ impl From<CallFrame> for MonadCallFrame {
 
 #[derive(Serialize, Debug, Clone, schemars::JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
-enum CallKind {
+pub enum CallKind {
     Call,
     DelegateCall,
     CallCode,

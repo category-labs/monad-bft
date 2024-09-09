@@ -7,6 +7,8 @@ use actix_web::{
 };
 use clap::Parser;
 use eth_json_types::serialize_result;
+use fee::FixedFee;
+use meta::{monad_net_version, monad_web3_client_version};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
@@ -26,7 +28,7 @@ use tracing_subscriber::{
 
 use crate::{
     account_handlers::{
-        monad_eth_getBalance, monad_eth_getCode, monad_eth_getProof, monad_eth_getStorageAt,
+        monad_eth_getBalance, monad_eth_getCode, monad_eth_getStorageAt,
         monad_eth_getTransactionCount, monad_eth_syncing,
     },
     block_handlers::{
@@ -45,7 +47,6 @@ use crate::{
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
         monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
     },
-    fee::FixedFee,
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
@@ -69,7 +70,6 @@ mod block_handlers;
 mod call;
 mod cli;
 mod debug;
-pub mod docs;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod fee;
@@ -77,6 +77,7 @@ mod gas_handlers;
 mod gas_oracle;
 mod hex;
 mod jsonrpc;
+mod meta;
 mod metrics;
 mod timing;
 mod trace;
@@ -84,8 +85,6 @@ mod trace_handlers;
 mod txpool;
 mod vpool;
 mod websocket;
-
-const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
 
 pub(crate) async fn rpc_handler(
     root_span: RootSpan,
@@ -449,7 +448,7 @@ async fn rpc_select(
         "eth_chainId" => monad_eth_chainId(app_state.chain_id)
             .await
             .map(serialize_result)?,
-        "eth_syncing" => monad_eth_syncing().await,
+        "eth_syncing" => serialize_result(monad_eth_syncing().await),
         "eth_estimateGas" => {
             let Some(triedb_env) = &app_state.triedb_reader else {
                 return Err(JsonRpcError::method_not_supported());
@@ -517,18 +516,7 @@ async fn rpc_select(
                 .await
                 .map(serialize_result)?
         }
-        "eth_getProof" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getProof(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
-        "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
-        "eth_sign" => Err(JsonRpcError::method_not_supported()),
-        "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
-        "net_version" => serialize_result(app_state.chain_id.to_string()),
+        "net_version" => monad_net_version(app_state.chain_id).map(serialize_result)?,
         "trace_block" => {
             let params = serde_json::from_value(params).invalid_params()?;
             monad_trace_block(params).await.map(serialize_result)?
@@ -560,7 +548,7 @@ async fn rpc_select(
                 .await
                 .map(serialize_result)?
         }
-        "web3_clientVersion" => serialize_result(WEB3_RPC_CLIENT_VERSION),
+        "web3_clientVersion" => monad_web3_client_version().map(serialize_result)?,
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
@@ -1101,5 +1089,61 @@ mod tests {
         let resp: jsonrpc::ResponseWrapper<Response> =
             serde_json::from_value(recover_response_body(resp).await).unwrap();
         assert_eq!(resp, expected);
+    }
+
+    #[allow(non_snake_case)]
+    #[actix_web::test]
+    async fn test_monad_eth_call_sha256_precompile() {
+        let app = init_server().await;
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [
+                {
+                    "to": "0x0000000000000000000000000000000000000002",
+                    "data": "0x68656c6c6f" // hex for "hello"
+                },
+                "latest"
+            ],
+            "id": 1
+        });
+
+        let req = actix_web::test::TestRequest::post()
+            .uri("/")
+            .set_payload(payload.to_string())
+            .to_request();
+
+        let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
+        assert!(resp.result.is_none());
+    }
+
+    #[allow(non_snake_case)]
+    #[actix_web::test]
+    async fn test_monad_eth_call() {
+        let app = init_server().await;
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [
+            {
+                "from": "0xb60e8dd61c5d32be8058bb8eb970870f07233155",
+                "to": "0xd46e8dd67c5d32be8058bb8eb970870f07244567",
+                "gas": "0x76c0",
+                "gasPrice": "0x9184e72a000",
+                "value": "0x9184e72a",
+                "data": "0xd46e8dd67c5d32be8d46e8dd67c5d32be8058bb8eb970870f072445675058bb8eb970870f072445675"
+            },
+            "latest"
+            ],
+            "id": 1
+        });
+
+        let req = actix_web::test::TestRequest::post()
+            .uri("/")
+            .set_payload(payload.to_string())
+            .to_request();
+
+        let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
+        assert!(resp.result.is_none());
     }
 }

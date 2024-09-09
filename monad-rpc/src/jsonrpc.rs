@@ -20,7 +20,7 @@ pub enum RequestWrapper<T> {
     /// To be JSON-RPC spec-compliant, `Batch(Vec<T>)` needs to be the first variant in this enum.
     /// To see why, refer to these examples from https://www.jsonrpc.org/specification
     ///
-    /// ```
+    /// ```text
     /// rpc call with an invalid Batch (but not empty):
     /// --> [1]
     /// <-- [

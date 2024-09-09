@@ -1,16 +1,6 @@
-use std::{borrow::BorrowMut, collections::HashMap};
+use std::collections::HashMap;
 
 use monad_rpc_docs::OpenRpc;
-
-use crate::{
-    account_handlers::StorageProof,
-    call::CallRequest,
-    eth_json_types::{
-        BlockTags, EthAddress, EthHash, MonadBlock, MonadLog, MonadTransaction,
-        MonadTransactionReceipt, MonadU256, Quantity, UnformattedData,
-    },
-    trace::{TraceCallObject, Tracer, TracerObject},
-};
 
 pub fn as_openrpc() -> OpenRpc {
     let method_map = &monad_rpc_docs::FUNCTION_MAP;
@@ -19,82 +9,18 @@ pub fn as_openrpc() -> OpenRpc {
         schemas: HashMap::new(),
     };
 
-    let quantity_schema = schemars::schema_for!(Quantity);
-    components
-        .schemas
-        .insert("Quantity".to_string(), quantity_schema.schema.into());
-    let hash_schema = schemars::schema_for!(EthHash);
-    components
-        .schemas
-        .insert("EthHash".to_string(), hash_schema.schema.into());
-    let address_schema = schemars::schema_for!(EthAddress);
-    components
-        .schemas
-        .insert("EthAddress".to_string(), address_schema.schema.into());
-    let monad_u256 = schemars::schema_for!(MonadU256);
-    components
-        .schemas
-        .insert("MonadU256".to_string(), monad_u256.schema.into());
-    let monad_block = schemars::schema_for!(MonadBlock);
-    components
-        .schemas
-        .insert("MonadBlock".to_string(), monad_block.schema.into());
-    let monad_receipt = schemars::schema_for!(MonadTransactionReceipt);
-    components.schemas.insert(
-        "MonadTransactionReceipt".to_string(),
-        monad_receipt.schema.into(),
-    );
-    let monad_transaction = schemars::schema_for!(MonadTransaction);
-    components.schemas.insert(
-        "MonadTransaction".to_string(),
-        monad_transaction.schema.into(),
-    );
-    let unformatted_data = schemars::schema_for!(UnformattedData);
-    components.schemas.insert(
-        "UnformattedData".to_string(),
-        unformatted_data.schema.into(),
-    );
-    let mut blocktags = schemars::schema_for!(BlockTags).schema.into();
-    clean_schema_refs(&mut blocktags);
-    components
-        .schemas
-        .insert("BlockTags".to_string(), blocktags);
-    let call_request = schemars::schema_for!(CallRequest);
-    components
-        .schemas
-        .insert("CallRequest".to_string(), call_request.schema.into());
-    let storage_proof = schemars::schema_for!(StorageProof);
-    let mut storage_proof = storage_proof.schema.into();
-    clean_schema_refs(&mut storage_proof);
-    components
-        .schemas
-        .insert("StorageProof".to_string(), storage_proof);
-    components.schemas.insert(
-        "MonadLog".to_string(),
-        schemars::schema_for!(MonadLog).schema.into(),
-    );
-    let mut tracer = schemars::schema_for!(Tracer).schema.into();
-    clean_schema_refs(&mut tracer);
-    components.schemas.insert("Tracer".to_string(), tracer);
-    let mut tracer_obj = schemars::schema_for!(TracerObject).schema.into();
-    clean_schema_refs(&mut tracer_obj);
-    components
-        .schemas
-        .insert("TracerObject".to_string(), tracer_obj);
-    let mut tracer_call_obj = schemars::schema_for!(TraceCallObject).schema.into();
-    clean_schema_refs(&mut tracer_call_obj);
-    components
-        .schemas
-        .insert("TraceCallObject".to_string(), tracer_call_obj);
+    // Register components from all RPC methods
+    for (_, info) in method_map.iter() {
+        (info.register_components)(&mut components);
+    }
+
     let mut methods = Vec::new();
     for (name, info) in method_map.iter() {
-        println!("{name}");
-
         let mut params: Vec<monad_rpc_docs::Params> = Vec::new();
         if let Some(in_schema) = (info.input_schema)() {
             let in_schema_title = in_schema.schema.clone().metadata().clone().title.unwrap();
             let mut in_sub_schema: schemars::schema::Schema = in_schema.schema.into();
-            clean_schema_refs(&mut in_sub_schema);
+            monad_rpc_docs::clean_schema_refs(&mut in_sub_schema);
 
             let inputs = in_sub_schema
                 .clone()
@@ -127,7 +53,7 @@ pub fn as_openrpc() -> OpenRpc {
         let out_schema = ((info.output_schema)()).unwrap();
         let out_schema_title = out_schema.schema.clone().metadata().clone().title.unwrap();
         let mut out_sub_schema: schemars::schema::Schema = out_schema.schema.into();
-        clean_schema_refs(&mut out_sub_schema);
+        monad_rpc_docs::clean_schema_refs(&mut out_sub_schema);
 
         components
             .schemas
@@ -146,86 +72,17 @@ pub fn as_openrpc() -> OpenRpc {
         })
     }
 
+    // Sort methods alphabetically
+    methods.sort_by(|a, b| a.name.cmp(&b.name));
+
     monad_rpc_docs::OpenRpc {
         openrpc: "1.0.0".to_string(),
         info: monad_rpc_docs::Info {
             version: "1.0.0".to_string(),
-            description: "Monad RPC".to_string(),
+            description: "This section provides an interactive reference for the Monad's JSON-RPC API.\n\nView the JSON-RPC API methods by selecting a method in the left sidebar. You can test the methods directly in the page using the API playground, with pre-configured examples or custom parameters. You can also save URLs with custom parameters using your browser's bookmarks.".to_string(),
             title: "Monad RPC".to_string(),
         },
         methods,
         components,
-    }
-}
-
-fn clean_schema_refs(schema: &mut schemars::schema::Schema) {
-    if let schemars::schema::Schema::Object(ref mut o) = schema {
-        o.array().items.iter_mut().for_each(|item| match item {
-            schemars::schema::SingleOrVec::Single(s) => {
-                if let schemars::schema::Schema::Object(ref mut o) = s.as_mut() {
-                    if let Some(reference) = &o.reference {
-                        let reference = reference.split("/").last().unwrap().to_string();
-                        o.reference = Some(format!("#/components/schemas/{reference}"));
-
-                        o.object().properties.iter_mut().for_each(|(_, v)| {
-                            if v.is_ref() {
-                                if let schemars::schema::Schema::Object(ref mut o) = v.borrow_mut()
-                                {
-                                    let reference = o
-                                        .reference
-                                        .as_ref()
-                                        .unwrap()
-                                        .split("/")
-                                        .last()
-                                        .unwrap()
-                                        .to_string();
-                                    o.reference = Some(format!("#/components/schemas/{reference}"));
-                                }
-                            }
-                        });
-                    }
-
-                    o.object().properties.iter_mut().for_each(|(_, v)| {
-                        clean_schema_refs(v);
-                    });
-                }
-            }
-            schemars::schema::SingleOrVec::Vec(v) => v.iter_mut().for_each(|item| {
-                clean_schema_refs(item);
-            }),
-        });
-
-        o.object().properties.iter_mut().for_each(|(_, v)| {
-            if let schemars::schema::Schema::Object(ref mut o) = v {
-                if let Some(reference) = &o.reference {
-                    let reference = reference.split("/").last().unwrap().to_string();
-                    o.reference = Some(format!("#/components/schemas/{reference}"));
-                }
-            }
-        });
-
-        o.subschemas().any_of.iter_mut().for_each(|v| {
-            for item in v.iter_mut() {
-                clean_schema_refs(item);
-            }
-        });
-
-        o.object().properties.iter_mut().for_each(|(_, v)| {
-            clean_schema_refs(v);
-        });
-    }
-
-    if schema.is_ref() {
-        if let schemars::schema::Schema::Object(ref mut o) = schema {
-            let reference = o
-                .reference
-                .as_ref()
-                .unwrap()
-                .split("/")
-                .last()
-                .unwrap()
-                .to_string();
-            o.reference = Some(format!("#/components/schemas/{reference}"));
-        }
     }
 }

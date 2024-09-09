@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::BorrowMut, collections::HashMap};
 
 pub use inventory;
 pub use monad_rpc_docs_derive::rpc;
@@ -23,6 +23,7 @@ pub trait RpcMethod {
 
     fn input_schema() -> Option<schemars::schema::RootSchema>;
     fn output_schema() -> Option<schemars::schema::RootSchema>;
+    fn register_components(components: &mut Components);
 }
 
 #[derive(Clone, Copy)]
@@ -31,6 +32,7 @@ pub struct RpcMethodInfo {
     pub docs: &'static str,
     pub input_schema: fn() -> Option<schemars::schema::RootSchema>,
     pub output_schema: fn() -> Option<schemars::schema::RootSchema>,
+    pub register_components: fn(&mut Components),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,4 +79,80 @@ pub struct Params {
     pub description: String,
     pub required: bool,
     pub schema: schemars::schema::Schema,
+}
+
+pub fn clean_schema_refs(schema: &mut schemars::schema::Schema) {
+    if let schemars::schema::Schema::Object(ref mut o) = schema {
+        o.array().items.iter_mut().for_each(|item| match item {
+            schemars::schema::SingleOrVec::Single(s) => {
+                if let schemars::schema::Schema::Object(ref mut o) = s.as_mut() {
+                    if let Some(reference) = &o.reference {
+                        let reference = reference.split("/").last().unwrap().to_string();
+                        o.reference = Some(format!("#/components/schemas/{reference}"));
+
+                        o.object().properties.iter_mut().for_each(|(_, v)| {
+                            if v.is_ref() {
+                                if let schemars::schema::Schema::Object(ref mut o) = v.borrow_mut()
+                                {
+                                    let reference = o
+                                        .reference
+                                        .as_ref()
+                                        .unwrap()
+                                        .split("/")
+                                        .last()
+                                        .unwrap()
+                                        .to_string();
+                                    o.reference = Some(format!("#/components/schemas/{reference}"));
+                                }
+                            }
+                        });
+                    }
+
+                    o.object().properties.iter_mut().for_each(|(_, v)| {
+                        clean_schema_refs(v);
+                    });
+                }
+            }
+            schemars::schema::SingleOrVec::Vec(v) => v.iter_mut().for_each(|item| {
+                clean_schema_refs(item);
+            }),
+        });
+
+        o.object().properties.iter_mut().for_each(|(_, v)| {
+            if let schemars::schema::Schema::Object(ref mut o) = v {
+                if let Some(reference) = &o.reference {
+                    let reference = reference.split("/").last().unwrap().to_string();
+                    o.reference = Some(format!("#/components/schemas/{reference}"));
+                }
+            }
+        });
+
+        o.subschemas().any_of.iter_mut().for_each(|v| {
+            for item in v.iter_mut() {
+                clean_schema_refs(item);
+            }
+        });
+
+        o.object().properties.iter_mut().for_each(|(_, v)| {
+            clean_schema_refs(v);
+        });
+
+        o.object().additional_properties.iter_mut().for_each(|v| {
+            clean_schema_refs(v);
+        });
+    }
+
+    if schema.is_ref() {
+        if let schemars::schema::Schema::Object(ref mut o) = schema {
+            let reference = o
+                .reference
+                .as_ref()
+                .unwrap()
+                .split("/")
+                .last()
+                .unwrap()
+                .to_string();
+            o.reference = Some(format!("#/components/schemas/{reference}"));
+        }
+    }
 }

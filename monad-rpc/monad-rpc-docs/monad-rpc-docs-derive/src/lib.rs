@@ -74,6 +74,30 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
             fn output_schema() -> Option<schemars::schema::RootSchema> {
                 #output_schema
             }
+
+            fn register_components(components: &mut monad_rpc_docs::Components) {
+                // Register input schema components
+                if let Some(schema) = Self::input_schema() {
+                    let definitions = schema.definitions;
+                    let schemas: std::collections::HashMap<_, _> = definitions.into_iter().map(|(k,v)| {
+                        let mut v = v.clone();
+                        monad_rpc_docs::clean_schema_refs(&mut v);
+                        (k, v)
+                     }).collect();
+                    components.schemas.extend(schemas);
+                };
+
+                // Register output schema components
+                if let Some(schema) = Self::output_schema() {
+                    let definitions = schema.definitions;
+                    let schemas: std::collections::HashMap<_, _> = definitions.into_iter().map(|(k,v)| {
+                        let mut v = v.clone();
+                        monad_rpc_docs::clean_schema_refs(&mut v);
+                        (k, v)
+                     }).collect();
+                    components.schemas.extend(schemas);
+                };
+            }
         }
 
         #[doc(hidden)]
@@ -83,6 +107,7 @@ pub fn rpc(attr_args: TokenStream, decorated: TokenStream) -> TokenStream {
             docs: #docs,
             input_schema: <#name_ident as monad_rpc_docs::RpcMethod>::input_schema,
             output_schema: <#name_ident as monad_rpc_docs::RpcMethod>::output_schema,
+            register_components: <#name_ident as monad_rpc_docs::RpcMethod>::register_components,
         };
 
         monad_rpc_docs::inventory::submit! {

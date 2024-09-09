@@ -20,6 +20,7 @@ use monad_triedb_utils::triedb_env::{
     TxEnvelopeWithSender,
 };
 use monad_types::SeqNum;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
@@ -153,14 +154,26 @@ impl From<FilterError> for JsonRpcError {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct MonadEthGetLogsParams {
-    filters: Filter,
-}
-
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MonadEthGetLogsParams {
+    #[schemars(schema_with = "schema_for_filter")]
+    filters: Filter,
+}
+
+fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    schemars::schema_for_value!(Filter::new().from_block(0).to_block(1).address(
+        "0xAc4b3DacB91461209Ae9d41EC517c2B9Cb1B7DAF"
+            .parse::<Address>()
+            .unwrap()
+    ))
+    .schema
+    .into()
+}
+
+#[rpc(method = "eth_getLogs", ignore = "max_block_range")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 #[tracing::instrument(level = "debug", skip(archive_reader))]

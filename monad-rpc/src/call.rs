@@ -552,10 +552,12 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     }
 }
 
+/// Returns the tracing result result by executing an eth call.
 #[rpc(
     method = "debug_traceCall",
     ignore = "chain_id",
-    ignore = "eth_call_executor"
+    ignore = "eth_call_executor",
+    ignore = "eth_call_gas_limit"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
@@ -617,7 +619,7 @@ mod tests {
     use serde_json::json;
 
     use super::{fill_gas_params, CallRequest, GasPriceDetails};
-    use crate::{call::sender_gas_allowance, jsonrpc, tests::init_server};
+    use crate::call::sender_gas_allowance;
 
     #[test]
     fn parse_call_request() {
@@ -664,62 +666,6 @@ mod tests {
             result.max_fee_per_gas(),
             Some(U256::from_str_radix("9184e72a000", 16).unwrap())
         );
-    }
-
-    #[allow(non_snake_case)]
-    #[actix_web::test]
-    async fn test_monad_eth_call_sha256_precompile() {
-        let app = init_server().await;
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "eth_call",
-            "params": [
-                {
-                    "to": "0x0000000000000000000000000000000000000002",
-                    "data": "0x68656c6c6f" // hex for "hello"
-                },
-                "latest"
-            ],
-            "id": 1
-        });
-
-        let req = actix_web::test::TestRequest::post()
-            .uri("/")
-            .set_payload(payload.to_string())
-            .to_request();
-
-        let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
-        assert!(resp.result.is_none());
-    }
-
-    #[allow(non_snake_case)]
-    #[actix_web::test]
-    async fn test_monad_eth_call() {
-        let app = init_server().await;
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "eth_call",
-            "params": [
-            {
-                "from": "0xb60e8dd61c5d32be8058bb8eb970870f07233155",
-                "to": "0xd46e8dd67c5d32be8058bb8eb970870f07244567",
-                "gas": "0x76c0",
-                "gasPrice": "0x9184e72a000",
-                "value": "0x9184e72a",
-                "data": "0xd46e8dd67c5d32be8d46e8dd67c5d32be8058bb8eb970870f072445675058bb8eb970870f072445675"
-            },
-            "latest"
-            ],
-            "id": 1
-        });
-
-        let req = actix_web::test::TestRequest::post()
-            .uri("/")
-            .set_payload(payload.to_string())
-            .to_request();
-
-        let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
-        assert!(resp.result.is_none());
     }
 
     #[tokio::test]

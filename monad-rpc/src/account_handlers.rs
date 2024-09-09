@@ -1,13 +1,12 @@
 use alloy_primitives::B256;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
     block_handlers::get_block_key_from_tag_or_hash,
-    eth_json_types::{serialize_result, BlockTagOrHash, BlockTags, EthAddress, EthHash, MonadU256},
+    eth_json_types::{BlockTagOrHash, EthAddress, MonadU256},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -143,46 +142,11 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 
 #[allow(non_snake_case)]
 /// Returns an object with data about the sync status or false.
-pub async fn monad_eth_syncing() -> Result<Value, JsonRpcError> {
+#[rpc(method = "eth_syncing")]
+pub async fn monad_eth_syncing() -> JsonRpcResult<bool> {
     trace!("monad_eth_syncing");
 
-    serialize_result(serde_json::Value::Bool(false))
-}
-
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
-pub struct MonadEthGetProofParams {
-    account: EthAddress,
-    keys: Vec<EthHash>,
-    block_number: BlockTags,
-}
-
-#[derive(Serialize, Debug, schemars::JsonSchema)]
-pub struct StorageProof {
-    key: EthHash,
-    value: EthHash,
-    proof: Vec<EthHash>,
-}
-
-#[derive(Serialize, Debug, schemars::JsonSchema)]
-pub struct MonadEthGetProofResult {
-    balance: MonadU256,
-    code_hash: EthHash,
-    nonce: u128,
-    storage_hash: EthHash,
-    account_proof: Vec<EthHash>,
-    storage_proof: Vec<StorageProof>,
-}
-
-#[rpc(method = "eth_getProof")]
-#[allow(non_snake_case)]
-/// Returns the account and storage values of the specified account including the Merkle-proof.
-// TODO: this is a stub to support rpc docs, need to implement
-pub async fn monad_eth_getProof<T: Triedb>(
-    triedb_env: &T,
-    params: MonadEthGetProofParams,
-) -> JsonRpcResult<MonadEthGetProofResult> {
-    trace!("monad_eth_getProof");
-    Err(JsonRpcError::method_not_supported())
+    Ok(false)
 }
 
 #[cfg(test)]

@@ -10,6 +10,13 @@ edition = "2021"
 name = "monad-rpc"
 bench = false
 
+[[bin]]
+name = "monad-rpc-docs"
+bench = false
+path = "./bin/docs.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [dependencies]
 monad-archive = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
@@ -46,7 +53,7 @@ opentelemetry-otlp = { workspace = true }
 pin-project = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-schemars = { workspace = true }
+schemars = { workspace = true, features = ["preserve_order"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
