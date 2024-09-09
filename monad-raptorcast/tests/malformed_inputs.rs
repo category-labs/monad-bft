@@ -13,8 +13,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
-    udp::build_messages,
+    udp::{build_messages, build_messages_with_length},
     util::{BuildTarget, EpochValidators, Validator},
     RaptorCast, RaptorCastConfig,
 };
@@ -138,6 +139,56 @@ pub fn buffer_count_overflow() {
 
         std::thread::sleep(Duration::from_millis(1));
     }
+
+    // Wait for RaptorCast instance to catch up.
+    std::thread::sleep(Duration::from_millis(100));
+}
+
+// Try to crash the RaptorCast receive path by feeding it (part of) an oversized encoded
+// message.  A previous version of the RaptorCast receive path would unwrap() an Err when
+// it would receive an invalid (e.g. oversized) message for which ManagedDecoder::new()
+// would fail.
+#[test]
+pub fn oversized_message() {
+    let rx_addr = "127.0.0.1:10004";
+    let tx_addr = "127.0.0.1:10005";
+
+    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(rx_addr, tx_addr);
+
+    let message: Bytes = vec![0; 4 * 1000].into();
+
+    let tx_socket = UdpSocket::bind(tx_addr).unwrap();
+
+    let gso_size = 1460;
+
+    let mut validators = EpochValidators {
+        validators: BTreeMap::from([
+            (rx_nodeid, Validator { stake: Stake(1) }),
+            (tx_nodeid, Validator { stake: Stake(1) }),
+        ]),
+    };
+
+    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+
+    let messages = build_messages_with_length::<SignatureType>(
+        &tx_keypair,
+        gso_size,
+        message,
+        ((SOURCE_SYMBOLS_MAX + 1) * usize::from(gso_size))
+            .try_into()
+            .unwrap(),
+        2, // redundancy,
+        0, // epoch_no
+        0, // unix_ts_ms
+        BuildTarget::Raptorcast(epoch_validators),
+        &known_addresses,
+    );
+
+    // Sending a single packet of an oversized message is sufficient to crash the
+    // receiver if it is vulnerable to this issue.
+    tx_socket
+        .send_to(&messages[0].1[0..usize::from(gso_size)], messages[0].0)
+        .unwrap();
 
     // Wait for RaptorCast instance to catch up.
     std::thread::sleep(Duration::from_millis(100));

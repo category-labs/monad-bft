@@ -147,16 +147,23 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
-            let decoder = self.pending_message_cache.get_or_insert_mut(key, || {
+            let decoder_result = self.pending_message_cache.try_get_or_insert_mut(key, || {
                 let symbol_len = parsed_message.chunk.len();
 
                 // symbol_len is always greater than zero, so this division is safe
                 let num_source_symbols =
                     app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
 
-                // TODO: verify unwrap
-                ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
+                ManagedDecoder::new(num_source_symbols, symbol_len)
             });
+
+            let decoder = match decoder_result {
+                Ok(decoder) => decoder,
+                Err(err) => {
+                    tracing::warn!(?err, "unable to create ManagedDecoder, dropping message");
+                    continue;
+                }
+            };
 
             // can we assert!(!decoder.decoding_done()) ?
 
@@ -272,7 +279,41 @@ pub fn build_messages<ST>(
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+) -> Vec<(SocketAddr, Bytes)>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
 
+    build_messages_with_length(
+        key,
+        gso_size,
+        app_message,
+        app_message_len,
+        redundancy,
+        epoch_no,
+        unix_ts_ms,
+        build_target,
+        known_addresses,
+    )
+}
+
+// This should be called with app_message.len() == app_message_len, but we allow the caller
+// to specify a different app_message_len to allow one of the unit tests to build an invalid
+// (oversized) message that build_messages() would normally not allow you to build, in order
+// to verify that the RaptorCast receive path doesn't crash when it receives such a message,
+// as previous versions of the RaptorCast receive path would indeed crash when receiving
+// such a message.
+pub fn build_messages_with_length<ST>(
+    key: &ST::KeyPairType,
+    gso_size: u16,
+    app_message: Bytes,
+    app_message_len: u32,
+    redundancy: u8, // 2 == send 1 extra packet for every 1 original
+    epoch_no: u64,
+    unix_ts_ms: u64,
+    build_target: BuildTarget<ST>,
     known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 ) -> Vec<(SocketAddr, Bytes)>
 where
@@ -281,8 +322,6 @@ where
     let body_size = gso_size
         .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
         .expect("GSO too small");
-
-    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
 
     let is_broadcast = matches!(
         build_target,
