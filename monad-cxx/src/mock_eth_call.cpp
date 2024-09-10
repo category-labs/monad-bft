@@ -1,20 +1,19 @@
-#include "eth_call.hpp"
+#include "eth_call.h"
 
 #include <array>
-#include <cstring>
-#include <stdlib.h>
 
+// monad_evmc_result functions
 int monad_evmc_result::get_status_code() const
 {
     return status_code;
 }
 
-std::vector<uint8_t> monad_evmc_result::get_output_data() const
+bytes monad_evmc_result::get_output_data() const
 {
     return output_data;
 }
 
-std::string monad_evmc_result::get_message() const
+char const *monad_evmc_result::get_message() const
 {
     return message;
 }
@@ -29,38 +28,39 @@ int64_t monad_evmc_result::get_gas_refund() const
     return gas_refund;
 }
 
-void monad_state_override_set::add_override_address(bytes const &) {}
+// monad_state_override functions
+struct monad_state_override_set
+{
+};
 
-void monad_state_override_set::set_override_balance(
-    bytes const &, bytes const &)
+void add_override_address(monad_state_override_set *, bytes const &) {}
+
+void set_override_balance(
+    monad_state_override_set *, bytes const &, bytes const &)
 {
 }
 
-void monad_state_override_set::set_override_nonce(
-    bytes const &, uint64_t const &)
+void set_override_nonce(
+    monad_state_override_set *, bytes address, uint64_t nonce)
 {
 }
 
-void monad_state_override_set::set_override_code(bytes const &, bytes const &)
+void set_override_code(monad_state_override_set *, bytes address, bytes code) {}
+
+void set_override_state_diff(
+    monad_state_override_set *, bytes address, bytes key, bytes value)
 {
 }
 
-void monad_state_override_set::set_override_state_diff(
-    bytes const &, bytes const &, bytes const &)
-{
-}
-
-void monad_state_override_set::set_override_state(
-    bytes const &, bytes const &, bytes const &)
+void set_override_state(
+    monad_state_override_set *, bytes address, bytes key, bytes value)
 {
 }
 
 monad_evmc_result eth_call(
-    std::vector<uint8_t> const &rlp_encoded_transaction,
-    std::vector<uint8_t> const &rlp_encoded_block_header,
-    std::vector<uint8_t> const &rlp_encoded_sender, uint64_t const block_number,
-    std::string const &triedb_path, std::string const &block_db_path,
-    monad_state_override_set const &state_overides)
+    bytes rlp_txn, bytes rlp_header, bytes rlp_sender,
+    uint64_t const block_number, char const *triedb_path,
+    char const *blockdb_path, monad_state_override_set const &state_overrides)
 {
     static constexpr auto N = 32;
     std::array<uint8_t, N> data = {
@@ -69,7 +69,7 @@ monad_evmc_result eth_call(
         0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef};
     return monad_evmc_result{
         .status_code = 0,
-        .output_data = std::vector<uint8_t>{data.begin(), data.end()},
+        .output_data = data.data(),
         .message = "test message",
         .gas_used = 21000,
         .gas_refund = 0};

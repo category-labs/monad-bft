@@ -12,20 +12,19 @@ typedef uint8_t const *bytes;
 struct monad_evmc_result
 {
     int status_code;
-    bytes output_data;
-    bytes message;
+    uint8_t *output_data;
+    char *message;
     int64_t gas_used;
     int64_t gas_refund;
 
     int get_status_code() const;
     bytes get_output_data() const;
-    bytes get_message() const;
+    char const *get_message() const;
     int64_t get_gas_used() const;
     int64_t get_gas_refund() const;
 };
 
-// state override objects
-typedef struct monad_state_override_object monad_state_override_object;
+// state override set
 typedef struct monad_state_override_set monad_state_override_set;
 
 void add_override_address(monad_state_override_set *, bytes address);
@@ -38,6 +37,11 @@ void set_override_state_diff(
     monad_state_override_set *, bytes address, bytes key, bytes value);
 void set_override_state(
     monad_state_override_set *, bytes address, bytes key, bytes value);
+
+monad_evmc_result eth_call(
+    bytes rlp_txn, bytes rlp_header, bytes rlp_sender,
+    uint64_t const block_number, char const *triedb_path,
+    char const *blockdb_path, monad_state_override_set const &state_overrides);
 
 #ifdef __cplusplus
 }
