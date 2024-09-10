@@ -9,6 +9,7 @@ use monad_proto::{
 
 use crate::{
     block::{Block, BlockKind, FullBlock},
+    compress::CompressionAlgorithm,
     payload::{
         Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
         TransactionPayload,
@@ -231,6 +232,15 @@ impl From<&TransactionPayload> for ProtoTransactionPayload {
             TransactionPayload::Null => {
                 proto_transaction_payload::Txns::Empty(ProtoEmptyBlockTransactionList {})
             }
+            TransactionPayload::CompressedList {
+                algorithm,
+                compressed_payload,
+            } => proto_transaction_payload::Txns::CompressedList(
+                ProtoCompressedBlockTransactionList {
+                    algorithm: Some(algorithm.into()),
+                    compressed_payload: compressed_payload.clone(),
+                },
+            ),
         });
         Self { txns }
     }
@@ -248,6 +258,22 @@ impl TryFrom<ProtoTransactionPayload> for TransactionPayload {
                 TransactionPayload::List(FullTransactionList::new(txns))
             }
             proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Null,
+            proto_transaction_payload::Txns::CompressedList(
+                ProtoCompressedBlockTransactionList {
+                    algorithm,
+                    compressed_payload,
+                },
+            ) => {
+                let algorithm: CompressionAlgorithm = algorithm
+                    .ok_or(Self::Error::MissingRequiredField(
+                        "ProtoCompressionAlgorithm.compression.algorithm".to_owned(),
+                    ))?
+                    .try_into()?;
+                TransactionPayload::CompressedList {
+                    algorithm,
+                    compressed_payload,
+                }
+            }
         };
         Ok(txn_payload)
     }

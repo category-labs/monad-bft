@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package monad_proto.compress;
+
+message ProtoBrotliCompression {
+  // TODO: algorithm-specific parameters here
+}
+message ProtoDeflateCompression {
+  // TODO: algorithm-specific parameters here
+}
+message ProtoLz4Compression {
+  // TODO: algorithm-specific parameters here
+}
+
+message ProtoCompressionAlgorithm {
+  oneof compression {
+    ProtoBrotliCompression brotli = 1;
+    ProtoDeflateCompression deflate = 2;
+    ProtoLz4Compression lz4 = 3;
+  }
+}

@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &[
                 "proto/basic.proto",
                 "proto/block.proto",
+                "proto/compress.proto",
                 "proto/event.proto",
                 "proto/ledger.proto",
                 "proto/message.proto",

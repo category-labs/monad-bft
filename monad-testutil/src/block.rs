@@ -174,6 +174,8 @@ where
     let block_kind = match txns {
         TransactionPayload::List(_) => BlockKind::Executable,
         TransactionPayload::Null => BlockKind::Null,
+        // procrastinate adding a BlockKind::Compressed type
+        TransactionPayload::CompressedList { .. } => todo!(),
     };
     let payload = Payload { txns };
 

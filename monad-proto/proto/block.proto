@@ -5,6 +5,7 @@ package monad_proto.block;
 import "basic.proto";
 import "quorum_certificate.proto";
 import "state_root_hash.proto";
+import "compress.proto";
 
 message ProtoExecutionProtocol{
   monad_proto.state_root_hash.ProtoStateRootHash state_root = 1;
@@ -16,11 +17,16 @@ message ProtoExecutionProtocol{
 
 message ProtoEmptyBlockTransactionList {}
 
+message ProtoCompressedBlockTransactionList {
+  monad_proto.compress.ProtoCompressionAlgorithm algorithm = 1;
+  bytes compressed_payload = 2;
+}
+
 message ProtoTransactionPayload {
   oneof txns {
     bytes list = 1;
     ProtoEmptyBlockTransactionList empty = 2;
-    
+    ProtoCompressedBlockTransactionList compressed_list = 3;
   }
 }
 
@@ -45,6 +51,6 @@ message ProtoBlock {
 }
 
 message ProtoFullBlock {
-    ProtoBlock block = 1;
-    ProtoPayload payload = 2;
+  ProtoBlock block = 1;
+  ProtoPayload payload = 2;
 }

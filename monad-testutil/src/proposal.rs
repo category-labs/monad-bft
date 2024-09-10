@@ -111,10 +111,12 @@ where
         let seq_num = match txns {
             TransactionPayload::List(_) => qc.get_seq_num() + SeqNum(1),
             TransactionPayload::Null => qc.get_seq_num(),
+            TransactionPayload::CompressedList { .. } => todo!(),
         };
         let block_kind = match txns {
             TransactionPayload::List(_) => BlockKind::Executable,
             TransactionPayload::Null => BlockKind::Null,
+            TransactionPayload::CompressedList { .. } => todo!(),
         };
         let payload = Payload { txns };
         let block = Block::new(

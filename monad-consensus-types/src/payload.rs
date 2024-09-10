@@ -10,7 +10,7 @@ use monad_types::{DontCare, EnumDiscriminant, Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
-use crate::state_root_hash::StateRootHash;
+use crate::{compress::CompressionAlgorithm, state_root_hash::StateRootHash};
 
 const BLOOM_SIZE: usize = 256;
 
@@ -134,6 +134,10 @@ impl AsRef<[u8]> for RandaoReveal {
 pub enum TransactionPayload {
     List(FullTransactionList),
     Null,
+    CompressedList {
+        algorithm: CompressionAlgorithm,
+        compressed_payload: Bytes,
+    },
 }
 
 impl Hashable for TransactionPayload {
@@ -145,6 +149,10 @@ impl Hashable for TransactionPayload {
             }
             TransactionPayload::Null => {
                 EnumDiscriminant(2).hash(state);
+            }
+            TransactionPayload::CompressedList { .. } => {
+                // TODO(rene): question for review is this all that's needed?
+                EnumDiscriminant(3).hash(state);
             }
         }
     }
@@ -166,6 +174,11 @@ impl std::fmt::Debug for Payload {
                         format!("{:?}", txns.bytes().len())
                     }
                     TransactionPayload::Null => "null".to_owned(),
+                    TransactionPayload::CompressedList {
+                        compressed_payload, ..
+                    } => {
+                        format!("{:?}", compressed_payload.len())
+                    }
                 },
             )
             .finish_non_exhaustive()

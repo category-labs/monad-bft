@@ -1,6 +1,7 @@
 pub mod block;
 pub mod block_validator;
 pub mod checkpoint;
+pub mod compress;
 pub mod convert;
 pub mod ledger;
 pub mod metrics;

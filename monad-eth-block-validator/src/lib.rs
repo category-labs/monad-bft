@@ -109,6 +109,11 @@ impl EthValidator {
             TransactionPayload::Null => {
                 unreachable!();
             }
+            TransactionPayload::CompressedList { .. } => {
+                // I think it should be OK to decompress here because `monad-debugger`
+                // should not depend on `monad-eth-block-validator`
+                todo!()
+            }
         }
     }
 

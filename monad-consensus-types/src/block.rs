@@ -422,6 +422,9 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
         match &self.payload.txns {
             TransactionPayload::List(list) => list.bytes().len(),
             TransactionPayload::Null => 0,
+            TransactionPayload::CompressedList {
+                compressed_payload, ..
+            } => compressed_payload.len(),
         }
     }
 

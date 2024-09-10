@@ -181,6 +181,7 @@ mod test {
                         Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
                     }
                     TransactionPayload::Null => Vec::new(),
+                    TransactionPayload::CompressedList { .. } => todo!(),
                 };
 
                 let decoded_txn_hashes: HashSet<_> =
