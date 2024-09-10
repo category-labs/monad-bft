@@ -227,7 +227,6 @@ impl<'a> NetworkSocket<'a> {
                             &mut stride,
                             1,
                         );
-                        // debug!("cmsg_data = {}", stride);
 
                         assert!(stride as usize <= MONAD_GSO_SIZE);
                     }
@@ -241,8 +240,6 @@ impl<'a> NetworkSocket<'a> {
                 src_addr: NetworkSocket::get_addr(self.recv_ctrl.name[i]),
                 stride,
             });
-            // debug!("from: {}", NetworkSocket::get_addr(self.recv_ctrl.name[i]));
-            // debug!("received: {}", msglen);
         }
 
         Some(retval)
@@ -342,7 +339,7 @@ impl<'a> NetworkSocket<'a> {
 
         assert!(msg.len() < NUM_TX_MSGHDR);
 
-        let msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
+        let _msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
 
         let mut i = 0;
         for (to, mut payload) in msg {

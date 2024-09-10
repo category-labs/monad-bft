@@ -155,7 +155,6 @@ impl EventFd {
                 libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>())
             })
         };
-        // debug!("got tx event");
 
         (n, s)
     }
@@ -195,8 +194,11 @@ impl TimerFd {
         let interval_data = &interval as *const libc::itimerspec;
 
         let s = unsafe { libc::timerfd_settime(self.fd, 0, interval_data, std::ptr::null_mut()) };
-
-        Ok(())
+        if s == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn handle_event(&self) -> isize {

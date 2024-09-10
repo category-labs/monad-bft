@@ -341,7 +341,7 @@ where
             assert!(is_broadcast && !is_raptor_broadcast);
             let total_validators = epoch_validators.view().len();
             let mut running_validator_count = 0;
-            for (node_id, validator) in epoch_validators.view().iter() {
+            for (node_id, _validator) in epoch_validators.view().iter() {
                 let start_idx: usize =
                     num_packets as usize * running_validator_count / total_validators;
                 running_validator_count += 1;
@@ -415,12 +415,12 @@ where
         let chunk_len: u16 = DATA_SIZE;
 
         let cursor = &mut chunk_data;
-        let (cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
-        let (cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
-        let (cursor_chunk_reserved, cursor) = cursor.split_at_mut(1);
+        let (_cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
+        let (_cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
+        let (_cursor_chunk_reserved, cursor) = cursor.split_at_mut(1);
         let (cursor_chunk_id, cursor) = cursor.split_at_mut(2);
         cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
-        let (cursor_chunk_payload, cursor) = cursor.split_at_mut(chunk_len.into());
+        let (cursor_chunk_payload, _cursor) = cursor.split_at_mut(chunk_len.into());
         encoder.encode_symbol(
             (&mut cursor_chunk_payload[..chunk_len.into()])
                 .try_into()
@@ -465,7 +465,7 @@ where
             let mut header_with_root = {
                 let mut data = [0_u8; HEADER_LEN as usize + 20];
                 let cursor = &mut data;
-                let (cursor_signature, cursor) = cursor.split_at_mut(SIGNATURE_SIZE);
+                let (_cursor_signature, cursor) = cursor.split_at_mut(SIGNATURE_SIZE);
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
                 let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
@@ -646,7 +646,7 @@ where
     let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
         .ok_or(MessageValidationError::InvalidMerkleProof)?;
 
-    let cursor_reserved = split_off(1)?;
+    let _cursor_reserved = split_off(1)?;
 
     let cursor_chunk_id = split_off(2)?;
     let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));

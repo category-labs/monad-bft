@@ -358,11 +358,6 @@ impl DataplaneEventLoop {
                 // this blocks until something happens
                 let polled_events = self.epoll.wait().unwrap();
 
-                // debug!(
-                //     "event tokens: {:?}",
-                //     polled_events.iter().map(|e| e.token()).collect::<Vec<_>>()
-                // );
-
                 if polled_events.is_empty() {
                     // if a timeout was configured in the call to epoll_wait,
                     // then we can get here if there were no events ready at expiration
@@ -372,8 +367,6 @@ impl DataplaneEventLoop {
                 }
 
                 for e in polled_events {
-                    // debug!("event token: {:?}", e.token());
-
                     'handle_event: loop {
                         if e.token() == UDP_RX_EVENT {
                             match self.handle_rx() {
@@ -474,7 +467,7 @@ impl DataplaneEventLoop {
     }
 
     fn handle_tx(&mut self) {
-        let (n, s) = self.efd.handle_event();
+        let (_n, s) = self.efd.handle_event();
         if s == -1 {
             let r = std::io::Error::last_os_error();
             if r.kind() == std::io::ErrorKind::WouldBlock {
@@ -540,13 +533,7 @@ impl DataplaneEventLoop {
     }
 
     fn tcp_incoming_get_free_connection_slot(&self) -> Option<usize> {
-        for i in 0..TCP_INCOMING_MAX_CONNECTIONS {
-            if self.tcp_incoming_connections[i].is_none() {
-                return Some(i);
-            }
-        }
-
-        None
+        (0..TCP_INCOMING_MAX_CONNECTIONS).find(|&i| self.tcp_incoming_connections[i].is_none())
     }
 
     fn tcp_incoming_arm_timer(&self, slot: usize, duration: Duration) {
@@ -871,13 +858,7 @@ impl DataplaneEventLoop {
     }
 
     fn tcp_outgoing_get_free_connection_slot(&self) -> Option<usize> {
-        for i in 0..TCP_OUTGOING_MAX_CONNECTIONS {
-            if self.tcp_outgoing_connections[i].is_none() {
-                return Some(i);
-            }
-        }
-
-        None
+        (0..TCP_OUTGOING_MAX_CONNECTIONS).find(|&i| self.tcp_outgoing_connections[i].is_none())
     }
 
     fn tcp_outgoing_arm_timer(&self, slot: usize, duration: Duration) {
