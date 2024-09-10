@@ -83,7 +83,7 @@ fn bench_txns(c: &mut Criterion) {
             &format!("bench_deflate_compress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
-                    let algo = DeflateCompression::new(compression_level, 0, Vec::new());
+                    let algo = DeflateCompression::new(compression_level);
                     let mut compressed = Vec::new();
                     algo.compress(&txns, &mut compressed)
                         .expect("compression success");
@@ -91,7 +91,7 @@ fn bench_txns(c: &mut Criterion) {
             },
         );
 
-        let algo = DeflateCompression::new(compression_level, 0, Vec::new());
+        let algo = DeflateCompression::new(compression_level);
         let mut compressed = Vec::new();
         algo.compress(&txns, &mut compressed)
             .expect("compression success");
@@ -100,7 +100,7 @@ fn bench_txns(c: &mut Criterion) {
             &format!("bench_deflate_decompress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
-                    let algo = DeflateCompression::new(compression_level, 0, Vec::new());
+                    let algo = DeflateCompression::new(compression_level);
                     let mut decompressed = Vec::new();
                     algo.decompress(&compressed, &mut decompressed)
                         .expect("compression success");
@@ -114,7 +114,7 @@ fn bench_txns(c: &mut Criterion) {
             &format!("bench_lz4_compress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
-                    let algo = Lz4Compression::new(compression_level, 0, Vec::new());
+                    let algo = Lz4Compression::new(compression_level);
                     let mut compressed = Vec::new();
                     algo.compress(&txns, &mut compressed)
                         .expect("compression success");
@@ -122,7 +122,7 @@ fn bench_txns(c: &mut Criterion) {
             },
         );
 
-        let algo = Lz4Compression::new(compression_level, 0, Vec::new());
+        let algo = Lz4Compression::new(compression_level);
         let mut compressed = Vec::new();
         algo.compress(&txns, &mut compressed)
             .expect("compression success");
@@ -131,7 +131,7 @@ fn bench_txns(c: &mut Criterion) {
             &format!("bench_lz4_decompress_txns_level_{compression_level}"),
             |b| {
                 b.iter(|| {
-                    let algo = Lz4Compression::new(compression_level, 0, Vec::new());
+                    let algo = Lz4Compression::new(compression_level);
                     let mut decompressed = Vec::new();
                     algo.decompress(&compressed, &mut decompressed)
                         .expect("compression success");

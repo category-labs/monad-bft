@@ -17,10 +17,6 @@ impl CompressionAlgo for NopCompression {
     type CompressError = NopCompressionError;
     type DecompressError = NopCompressionError;
 
-    fn new(_quality: u32, _window_bits: u32, _custom_dictionary: Vec<u8>) -> Self {
-        Self
-    }
-
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
         output.extend_from_slice(input);
         Ok(())

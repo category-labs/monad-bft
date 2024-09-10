@@ -11,17 +11,19 @@ pub struct Lz4Compression {
     builder: EncoderBuilder,
 }
 
-impl CompressionAlgo for Lz4Compression {
-    type CompressError = std::io::Error;
-    type DecompressError = std::io::Error;
-
-    fn new(quality: u32, _window_bits: u32, _custom_dictionary: Vec<u8>) -> Self {
+impl Lz4Compression {
+    pub fn new(quality: u32) -> Self {
         Self {
             builder: EncoderBuilder::new()
                 .level(quality.min(MAX_COMPRESSION_LEVEL))
                 .to_owned(),
         }
     }
+}
+
+impl CompressionAlgo for Lz4Compression {
+    type CompressError = std::io::Error;
+    type DecompressError = std::io::Error;
 
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
         let mut encoder = self.builder.build(output)?;
@@ -49,7 +51,7 @@ mod test {
             .read_to_end(&mut data)
             .unwrap();
 
-        let algo = Lz4Compression::new(8, 0, Vec::new());
+        let algo = Lz4Compression::new(8);
 
         let mut compressed = Vec::new();
         assert!(algo.compress(&data, &mut compressed).is_ok());

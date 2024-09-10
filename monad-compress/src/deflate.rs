@@ -11,15 +11,17 @@ pub struct DeflateCompression {
     level: Compression,
 }
 
-impl CompressionAlgo for DeflateCompression {
-    type CompressError = std::io::Error;
-    type DecompressError = std::io::Error;
-
-    fn new(quality: u32, _window_bits: u32, _custom_dictionary: Vec<u8>) -> Self {
+impl DeflateCompression {
+    pub fn new(quality: u32) -> Self {
         Self {
             level: Compression::new(quality.min(MAX_COMPRESSION_LEVEL)),
         }
     }
+}
+
+impl CompressionAlgo for DeflateCompression {
+    type CompressError = std::io::Error;
+    type DecompressError = std::io::Error;
 
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
         let mut writer = DeflateEncoder::new(output, self.level);
@@ -49,7 +51,7 @@ mod test {
             .read_to_end(&mut data)
             .unwrap();
 
-        let algo = DeflateCompression::new(6, 0, Vec::new());
+        let algo = DeflateCompression::new(6);
 
         let mut compressed = Vec::new();
         assert!(algo.compress(&data, &mut compressed).is_ok());

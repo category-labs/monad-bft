@@ -80,7 +80,7 @@ fn main() {
     for compression_level in 0..=11 {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
-        let algo = DeflateCompression::new(compression_level, 0, Vec::new());
+        let algo = DeflateCompression::new(compression_level);
         let mut compressed = Vec::new();
         algo.compress(&txns, &mut compressed)
             .expect("compression success");
@@ -102,7 +102,7 @@ fn main() {
     for compression_level in 0..=16 {
         // compress txns
         PEAK_ALLOC.reset_peak_usage();
-        let algo = Lz4Compression::new(compression_level, 0, Vec::new());
+        let algo = Lz4Compression::new(compression_level);
         let mut compressed = Vec::new();
         algo.compress(&txns, &mut compressed)
             .expect("compression success");

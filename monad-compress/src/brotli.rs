@@ -21,6 +21,16 @@ pub struct BrotliCompression {
     custom_dictionary: Vec<u8>,
 }
 
+impl BrotliCompression {
+    pub fn new(quality: u32, window_bits: u32, custom_dictionary: Vec<u8>) -> Self {
+        Self {
+            quality: quality.min(MAX_COMPRESSION_LEVEL),
+            window_bits,
+            custom_dictionary,
+        }
+    }
+}
+
 impl Default for BrotliCompression {
     fn default() -> Self {
         Self {
@@ -34,14 +44,6 @@ impl Default for BrotliCompression {
 impl CompressionAlgo for BrotliCompression {
     type CompressError = std::io::Error;
     type DecompressError = std::io::Error;
-
-    fn new(quality: u32, window_bits: u32, custom_dictionary: Vec<u8>) -> Self {
-        Self {
-            quality: quality.min(MAX_COMPRESSION_LEVEL),
-            window_bits,
-            custom_dictionary,
-        }
-    }
 
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
         let mut input_buffer = StandardAlloc {}.alloc_cell(4096);
