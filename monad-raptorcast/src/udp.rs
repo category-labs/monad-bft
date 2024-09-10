@@ -398,7 +398,7 @@ where
         }
     };
 
-    let encoder = match monad_raptor::Encoder::<{ DATA_SIZE as usize }>::new(&app_message) {
+    let encoder = match monad_raptor::Encoder::new(&app_message, usize::from(DATA_SIZE)) {
         Ok(encoder) => encoder,
         Err(err) => {
             // TODO: signal this error to the caller
@@ -422,9 +422,7 @@ where
         cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
         let (cursor_chunk_payload, _cursor) = cursor.split_at_mut(chunk_len.into());
         encoder.encode_symbol(
-            (&mut cursor_chunk_payload[..chunk_len.into()])
-                .try_into()
-                .unwrap(),
+            &mut cursor_chunk_payload[..chunk_len.into()],
             chunk_id.into(),
         );
     }

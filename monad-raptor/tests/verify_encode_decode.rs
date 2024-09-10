@@ -14,18 +14,18 @@ use rand::{prelude::SliceRandom, thread_rng, Rng, RngCore};
 
 const SYMBOL_LEN: usize = 4;
 
-struct BufferSet<const SYMBOL_LEN: usize> {
-    temp_buffers: Vec<[u8; SYMBOL_LEN]>,
-    rx_buffers: Vec<Box<[u8; SYMBOL_LEN]>>,
+struct BufferSet {
+    temp_buffers: Vec<Box<[u8]>>,
+    rx_buffers: Vec<Box<[u8]>>,
 }
 
-impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
-    fn new(num_temp_buffers: usize) -> BufferSet<SYMBOL_LEN> {
-        let temp_buffers: Vec<[u8; SYMBOL_LEN]> = iter::repeat([0; SYMBOL_LEN])
+impl BufferSet {
+    fn new(num_temp_buffers: usize, symbol_len: usize) -> BufferSet {
+        let temp_buffers: Vec<Box<[u8]>> = iter::repeat(vec![0; symbol_len].into_boxed_slice())
             .take(num_temp_buffers)
             .collect();
 
-        let rx_buffers: Vec<Box<[u8; SYMBOL_LEN]>> = Vec::new();
+        let rx_buffers: Vec<Box<[u8]>> = Vec::new();
 
         BufferSet {
             temp_buffers,
@@ -33,7 +33,7 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
         }
     }
 
-    fn buffer(&self, buffer_id: BufferId) -> &[u8; SYMBOL_LEN] {
+    fn buffer(&self, buffer_id: BufferId) -> &[u8] {
         match buffer_id {
             BufferId::TempBuffer { index } => &self.temp_buffers[index],
             BufferId::ReceiveBuffer { index } => &self.rx_buffers[index],
@@ -49,12 +49,12 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
             Ordering::Less => {
                 let (first, second) = self.temp_buffers.split_at_mut(b);
 
-                xor_eq::<SYMBOL_LEN>(&mut first[a], slice::from_ref(&&second[0]));
+                xor_eq(&mut first[a], slice::from_ref(&&*second[0]));
             }
             Ordering::Greater => {
                 let (first, second) = self.temp_buffers.split_at_mut(a);
 
-                xor_eq::<SYMBOL_LEN>(&mut second[0], slice::from_ref(&&first[b]));
+                xor_eq(&mut second[0], slice::from_ref(&&*first[b]));
             }
             Ordering::Equal => panic!(),
         }
@@ -69,12 +69,12 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
             Ordering::Less => {
                 let (first, second) = self.rx_buffers.split_at_mut(b);
 
-                xor_eq::<SYMBOL_LEN>(&mut first[a], slice::from_ref(&&*second[0]));
+                xor_eq(&mut first[a], slice::from_ref(&&*second[0]));
             }
             Ordering::Greater => {
                 let (first, second) = self.rx_buffers.split_at_mut(a);
 
-                xor_eq::<SYMBOL_LEN>(&mut second[0], slice::from_ref(&&*first[b]));
+                xor_eq(&mut second[0], slice::from_ref(&&*first[b]));
             }
             Ordering::Equal => panic!(),
         }
@@ -87,7 +87,7 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
                     self.xor_temp_buffers(a_index, b_index);
                 }
                 BufferId::ReceiveBuffer { index: b_index } => {
-                    xor_eq::<SYMBOL_LEN>(
+                    xor_eq(
                         &mut self.temp_buffers[a_index],
                         slice::from_ref(&&*self.rx_buffers[b_index]),
                     );
@@ -95,9 +95,9 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
             },
             BufferId::ReceiveBuffer { index: a_index } => match b {
                 BufferId::TempBuffer { index: b_index } => {
-                    xor_eq::<SYMBOL_LEN>(
+                    xor_eq(
                         &mut self.rx_buffers[a_index],
-                        slice::from_ref(&&self.temp_buffers[b_index]),
+                        slice::from_ref(&&*self.temp_buffers[b_index]),
                     );
                 }
                 BufferId::ReceiveBuffer { index: b_index } => {
@@ -109,20 +109,20 @@ impl<const SYMBOL_LEN: usize> BufferSet<SYMBOL_LEN> {
 }
 
 fn test_single_decode(mut src: Vec<u8>) {
-    let encoder: Encoder<SYMBOL_LEN> = Encoder::new(&src).unwrap();
+    let encoder: Encoder = Encoder::new(&src, SYMBOL_LEN).unwrap();
 
     let num_source_symbols = encoder.num_source_symbols();
 
     let mut decoder = Decoder::new(num_source_symbols).unwrap();
 
-    let mut buffer_set = BufferSet::new(decoder.num_temp_buffers_required());
+    let mut buffer_set = BufferSet::new(decoder.num_temp_buffers_required(), SYMBOL_LEN);
 
     let mut esis: Vec<usize> = (0..2 * num_source_symbols).collect();
     esis.shuffle(&mut thread_rng());
 
     for esi in &esis {
         let mut buf: Box<[u8; SYMBOL_LEN]> = Box::new([0; SYMBOL_LEN]);
-        encoder.encode_symbol(&mut buf, *esi);
+        encoder.encode_symbol(&mut buf[..], *esi);
 
         // We feed some encoded symbols back into the decoder twice to test the
         // Redundant buffer handling paths.
