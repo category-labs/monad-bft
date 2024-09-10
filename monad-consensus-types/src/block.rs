@@ -81,9 +81,7 @@ impl Hashable for BlockKind {
     }
 }
 
-/// structure of the consensus block
-/// the payload field is used to carry the data of the block
-/// which is agnostic to the actual protocol of consensus
+/// Structure of the consensus block.
 #[derive(Clone)]
 pub struct Block<SCT: SignatureCollection> {
     /// proposer of this block
