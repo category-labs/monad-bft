@@ -253,26 +253,9 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
             + 1  // reserved
             + 2; // Chunk idx
 
-// We compute these as consts so that the desired Raptor symbol length is also a const, which
-// then allows passing it into the Raptor encoder as a const generic.
-const _: () = assert!(monad_dataplane::network::MONAD_GSO_SIZE <= (u16::MAX as usize));
-const GSO_SIZE: u16 = monad_dataplane::network::MONAD_GSO_SIZE as u16;
-
-const BODY_SIZE: u16 = GSO_SIZE - HEADER_LEN - CHUNK_HEADER_LEN;
-
-// TODO make this more sophisticated
-const TREE_DEPTH: u8 = 6;
-const _: () = assert!(
-    TREE_DEPTH & (1 << 7) == 0,
-    "tree depth doesn't fit in 7 bits"
-);
-
-const PROOF_SIZE: u16 = 20 * ((TREE_DEPTH as u16) - 1);
-
-const DATA_SIZE: u16 = BODY_SIZE - PROOF_SIZE;
-
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
+    gso_size: u16,
     app_message: Bytes,
     redundancy: u8, // 2 == send 1 extra packet for every 1 original
     epoch_no: u64,
@@ -284,6 +267,10 @@ pub fn build_messages<ST>(
 where
     ST: CertificateSignatureRecoverable,
 {
+    let body_size = gso_size
+        .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
+        .expect("GSO too small");
+
     let app_message_len: u32 = app_message.len().try_into().expect("message too big");
 
     let is_broadcast = matches!(
@@ -291,15 +278,23 @@ where
         BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_)
     );
 
+    // TODO make this more sophisticated
+    let tree_depth: u8 = 6; // corresponds to 32 chunks (2^(h-1))
+    assert!(
+        tree_depth & (1 << 7) == 0,
+        "tree depth doesn't fit in 7 bits"
+    );
     let chunks_per_merkle_batch: u8 = 2_u8
-        .checked_pow(u32::from(TREE_DEPTH) - 1)
+        .checked_pow(u32::from(tree_depth) - 1)
         .expect("tree depth too big");
+    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
 
+    let data_size = body_size.checked_sub(proof_size).expect("proof too big");
     let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
 
     let num_packets: u16 = {
         let mut num_packets: u16 = (app_message_len
-            .div_ceil(u32::from(DATA_SIZE))
+            .div_ceil(u32::from(data_size))
             .max(SOURCE_SYMBOLS_MIN.try_into().unwrap())
             * u32::from(redundancy))
         .try_into()
@@ -314,11 +309,11 @@ where
         num_packets
     };
 
-    let mut message = BytesMut::zeroed(GSO_SIZE as usize * num_packets as usize);
+    let mut message = BytesMut::zeroed(gso_size as usize * num_packets as usize);
 
     let mut chunk_datas = message
-        .chunks_mut(GSO_SIZE.into())
-        .map(|chunk| &mut chunk[(HEADER_LEN + PROOF_SIZE).into()..])
+        .chunks_mut(gso_size.into())
+        .map(|chunk| &mut chunk[(HEADER_LEN + proof_size).into()..])
         .collect_vec();
     assert_eq!(chunk_datas.len(), num_packets as usize);
 
@@ -331,7 +326,7 @@ where
                 tracing::warn!(?to, "not sending message, address unknown");
                 return Vec::new();
             };
-            outbound_gso_idx.push((*addr, 0..GSO_SIZE as usize * num_packets as usize));
+            outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets as usize));
             for chunk_data in &mut chunk_datas {
                 // populate chunk_recipient
                 chunk_data[0..20].copy_from_slice(&compute_hash(to));
@@ -354,7 +349,7 @@ where
                 if let Some(addr) = known_addresses.get(node_id) {
                     outbound_gso_idx.push((
                         *addr,
-                        start_idx * GSO_SIZE as usize..end_idx * GSO_SIZE as usize,
+                        start_idx * gso_size as usize..end_idx * gso_size as usize,
                     ));
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
@@ -385,7 +380,7 @@ where
                 if let Some(addr) = known_addresses.get(node_id) {
                     outbound_gso_idx.push((
                         *addr,
-                        start_idx * GSO_SIZE as usize..end_idx * GSO_SIZE as usize,
+                        start_idx * gso_size as usize..end_idx * gso_size as usize,
                     ));
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
@@ -398,7 +393,7 @@ where
         }
     };
 
-    let encoder = match monad_raptor::Encoder::new(&app_message, usize::from(DATA_SIZE)) {
+    let encoder = match monad_raptor::Encoder::new(&app_message, usize::from(data_size)) {
         Ok(encoder) => encoder,
         Err(err) => {
             // TODO: signal this error to the caller
@@ -412,7 +407,7 @@ where
     // - chunk_payload
     for (chunk_id, mut chunk_data) in chunk_datas.iter_mut().enumerate() {
         let chunk_id = chunk_id as u16;
-        let chunk_len: u16 = DATA_SIZE;
+        let chunk_len: u16 = data_size;
 
         let cursor = &mut chunk_data;
         let (_cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
@@ -438,18 +433,18 @@ where
         hasher.hash().0[..20].try_into().unwrap()
     };
     message
-        // .par_chunks_mut(GSO_SIZE as usize * chunks_per_merkle_batch as usize)
-        .chunks_mut(GSO_SIZE as usize * chunks_per_merkle_batch as usize)
+        // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
+        .chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
         .for_each(|merkle_batch| {
-            let mut merkle_batch = merkle_batch.chunks_mut(GSO_SIZE as usize).collect_vec();
+            let mut merkle_batch = merkle_batch.chunks_mut(gso_size as usize).collect_vec();
             let merkle_leaves = merkle_batch
                 .iter_mut()
                 .enumerate()
                 .map(|(chunk_idx, chunk)| {
-                    let chunk_payload = &mut chunk[(HEADER_LEN + PROOF_SIZE).into()..];
+                    let chunk_payload = &mut chunk[(HEADER_LEN + proof_size).into()..];
                     assert_eq!(
                         chunk_payload.len(),
-                        CHUNK_HEADER_LEN as usize + DATA_SIZE as usize
+                        CHUNK_HEADER_LEN as usize + data_size as usize
                     );
                     // populate merkle_leaf_idx
                     chunk_payload[20] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
@@ -459,7 +454,7 @@ where
                     hasher.hash()
                 })
                 .collect_vec();
-            let merkle_tree = MerkleTree::new_with_depth(&merkle_leaves, TREE_DEPTH);
+            let merkle_tree = MerkleTree::new_with_depth(&merkle_leaves, tree_depth);
             let mut header_with_root = {
                 let mut data = [0_u8; HEADER_LEN as usize + 20];
                 let cursor = &mut data;
@@ -467,7 +462,7 @@ where
                 let (cursor_version, cursor) = cursor.split_at_mut(2);
                 cursor_version.copy_from_slice(&version.to_le_bytes());
                 let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
-                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | TREE_DEPTH;
+                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | tree_depth;
                 let (cursor_epoch_no, cursor) = cursor.split_at_mut(8);
                 cursor_epoch_no.copy_from_slice(&epoch_no.to_le_bytes());
                 let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
@@ -830,7 +825,7 @@ mod tests {
     use monad_types::{NodeId, Stake};
 
     use crate::{
-        udp::{build_messages, parse_message, GSO_SIZE, SIGNATURE_CACHE_SIZE},
+        udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
         util::{BuildTarget, EpochValidators, Validator},
     };
 
@@ -872,8 +867,10 @@ mod tests {
 
         const EPOCH: u64 = 5;
         const UNIX_TS_MS: u64 = 5;
+        const GSO_SIZE: u16 = 1500;
         let messages = build_messages::<SecpSignature>(
             &keys[0],
+            GSO_SIZE, // gso_size
             app_message.clone(),
             2,     // redundancy,
             EPOCH, // epoch_no
@@ -933,8 +930,10 @@ mod tests {
 
         const EPOCH: u64 = 5;
         const UNIX_TS_MS: u64 = 5;
+        const GSO_SIZE: u16 = 1500;
         let messages = build_messages::<SecpSignature>(
             &keys[0],
+            GSO_SIZE, // gso_size
             app_message,
             2,     // redundancy,
             EPOCH, // epoch_no

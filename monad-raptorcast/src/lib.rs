@@ -193,6 +193,9 @@ where
                             .expect("unix epoch doesn't fit in u64");
                         let messages = udp::build_messages::<ST>(
                             &self.key,
+                            monad_dataplane::network::MONAD_GSO_SIZE
+                                .try_into()
+                                .expect("GSO size too big"),
                             app_message,
                             self.redundancy,
                             epoch.0,

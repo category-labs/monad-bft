@@ -54,8 +54,11 @@ pub fn encoder_error() {
 
     let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
 
+    const GSO_SIZE: u16 = 1500;
+
     let _ = build_messages::<SecpSignature>(
         &keys[0],
+        GSO_SIZE,
         message,
         1, // redundancy,
         0, // epoch_no
