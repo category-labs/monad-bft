@@ -125,7 +125,7 @@ pub struct MonadEthGetBlockByHashParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlock {
     #[serde(flatten)]
-    block: Option<MonadBlock>,
+    block: MonadBlock,
 }
 
 #[rpc(method = "eth_getBlockByHash")]
@@ -134,18 +134,18 @@ pub struct MonadEthGetBlock {
 pub async fn monad_eth_getBlockByHash(
     blockdb_env: &BlockDbEnv,
     params: MonadEthGetBlockByHashParams,
-) -> JsonRpcResult<MonadEthGetBlock> {
+) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
 
     let key = params.block_hash.into();
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return Ok(MonadEthGetBlock { block: None });
+        return Ok(None);
     };
 
     let retval = parse_block_content(&value, params.return_full_txns);
-    Ok(MonadEthGetBlock {
-        block: retval.map(MonadBlock),
-    })
+    Ok(retval.map(|block| MonadEthGetBlock {
+        block: MonadBlock(block),
+    }))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -161,20 +161,20 @@ pub struct MonadEthGetBlockByNumberParams {
 pub async fn monad_eth_getBlockByNumber(
     blockdb_env: &BlockDbEnv,
     params: MonadEthGetBlockByNumberParams,
-) -> JsonRpcResult<MonadEthGetBlock> {
+) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
 
     let Some(value) = blockdb_env
         .get_block_by_tag(params.block_number.into())
         .await
     else {
-        return Ok(MonadEthGetBlock { block: None });
+        return Ok(None);
     };
 
     let retval = parse_block_content(&value, params.return_full_txns);
-    Ok(MonadEthGetBlock {
-        block: retval.map(MonadBlock),
-    })
+    Ok(retval.map(|block| MonadEthGetBlock {
+        block: MonadBlock(block),
+    }))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -189,16 +189,16 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
 pub async fn monad_eth_getBlockTransactionCountByHash(
     blockdb_env: &BlockDbEnv,
     params: MonadEthGetBlockTransactionCountByHashParams,
-) -> JsonRpcResult<String> {
+) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
 
     let key = params.block_hash.into();
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return Ok(format!("0x{:x}", 0));
+        return Ok(None);
     };
 
     let count = value.block.body.len() as u64;
-    Ok(format!("0x{:x}", count))
+    Ok(Some(format!("0x{:x}", count)))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -213,15 +213,15 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 pub async fn monad_eth_getBlockTransactionCountByNumber(
     blockdb_env: &BlockDbEnv,
     params: MonadEthGetBlockTransactionCountByNumberParams,
-) -> JsonRpcResult<String> {
+) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
 
     let Some(value) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
-        return Ok(format!("0x{:x}", 0));
+        return Ok(None);
     };
 
     let count = value.block.body.len() as u64;
-    Ok(format!("0x{:x}", count))
+    Ok(Some(format!("0x{:x}", count)))
 }
 
 pub async fn block_receipts(
@@ -284,22 +284,18 @@ pub async fn monad_eth_getBlockReceipts(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: MonadEthGetBlockReceiptsParams,
-) -> JsonRpcResult<MonadEthGetBlockReceiptsResult> {
+) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
     let Some(block) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
-        return Ok(MonadEthGetBlockReceiptsResult { receipts: vec![] });
+        return Ok(None);
     };
 
     let block_receipts = block_receipts(triedb_env, block).await?;
-    if block_receipts.is_empty() {
-        Ok(MonadEthGetBlockReceiptsResult { receipts: vec![] })
-    } else {
-        Ok(MonadEthGetBlockReceiptsResult {
-            receipts: block_receipts
-                .into_iter()
-                .map(MonadTransactionReceipt)
-                .collect(),
-        })
-    }
+    Ok(Some(MonadEthGetBlockReceiptsResult {
+        receipts: block_receipts
+            .into_iter()
+            .map(MonadTransactionReceipt)
+            .collect(),
+    }))
 }
