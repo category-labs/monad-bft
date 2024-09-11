@@ -680,7 +680,7 @@ async fn main() -> std::io::Result<()> {
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.and_then(|endpoint| {
+        args.otel_endpoint.map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
                 &endpoint,
                 "monad-rpc".to_string(),
@@ -688,7 +688,7 @@ async fn main() -> std::io::Result<()> {
             )
             .expect("failed to build otel meter");
             opentelemetry::global::set_meter_provider(provider.clone());
-            Some(provider)
+            provider
         });
 
     let with_metrics = meter_provider

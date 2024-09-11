@@ -156,7 +156,7 @@ impl Handle {
     }
 
     /// Used to pump async reads in TrieDB
-    /// if blocking is true, the thread will sleep atleast until 1 completion is availabe to process
+    /// if blocking is true, the thread will sleep at least until 1 completion is available to process
     /// if blocking is false, poll will return if no completion is available to process
     /// max_completions is used as a bound for maximum completions to process in this poll
     ///

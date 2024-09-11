@@ -1,4 +1,5 @@
-/// Prerequisite is to run an rpc server at http://localhost:8080 before running this binary
+use std::time::Instant;
+
 use alloy_primitives::{Address, U256};
 use alloy_rpc_client::ClientBuilder;
 use futures::future::join_all;
@@ -27,7 +28,7 @@ async fn run_benchmark(rpc_url: &str, num_requests: usize, batch_size: usize) {
         }
 
         // send the batch and wait for the results
-        if let Ok(_) = batch.send().await {
+        if batch.send().await.is_ok() {
             let results = join_all(futures).await;
 
             let successful = results.iter().filter(|r| r.is_ok()).count();

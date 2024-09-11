@@ -2234,15 +2234,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "doxygen-rs"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "415b6ec780d34dcf624666747194393603d0373b7141eef01d12ee58881507d9"
-dependencies = [
- "phf",
-]
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3763,7 +3754,7 @@ dependencies = [
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
+ "alloy-primitives 0.6.0",
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
@@ -3813,7 +3804,6 @@ dependencies = [
 name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 0.6.0",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
@@ -4232,6 +4222,7 @@ dependencies = [
  "futures-util",
  "monad-cxx",
  "monad-rpc-docs",
+ "monad-triedb",
  "monad-triedb-utils",
  "monad-types",
  "notify",

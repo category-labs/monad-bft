@@ -38,7 +38,7 @@ pub struct Cli {
     pub chain_id: u64,
 
     /// Set the max number of requests in a batch request
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
 
     /// Set the max response size in bytes
