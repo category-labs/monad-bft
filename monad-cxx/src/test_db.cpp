@@ -1,4 +1,4 @@
-#include "test_db.hpp"
+#include "test_db.h"
 
 #include <monad/db/trie_db.hpp>
 
@@ -106,9 +106,9 @@ void testdb_load_callcontract(TestDb *const db)
     db->tdb.commit(state_deltas, code, {});
 }
 
-std::string testdb_path(TestDb const *const db)
+char const *testdb_path(TestDb const *const db)
 {
-    return db->path;
+    return db->path.c_str();
 }
 
 void destroy_testdb(TestDb *const db)

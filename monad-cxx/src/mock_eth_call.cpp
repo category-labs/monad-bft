@@ -3,29 +3,30 @@
 #include <array>
 
 // monad_evmc_result functions
-int monad_evmc_result::get_status_code() const
+
+int get_status_code(const struct monad_evmc_result *result)
 {
-    return status_code;
+    return result->status_code;
 }
 
-bytes monad_evmc_result::get_output_data() const
+bytes get_output_data(const struct monad_evmc_result *result)
 {
-    return output_data;
+    return result->output_data;
 }
 
-char const *monad_evmc_result::get_message() const
+char const *get_message(const struct monad_evmc_result *result)
 {
-    return message;
+    return result->message;
 }
 
-int64_t monad_evmc_result::get_gas_used() const
+int64_t get_gas_used(const struct monad_evmc_result *result)
 {
-    return gas_used;
+    return result->gas_used;
 }
 
-int64_t monad_evmc_result::get_gas_refund() const
+int64_t get_gas_refund(const struct monad_evmc_result *result)
 {
-    return gas_refund;
+    return result->gas_refund;
 }
 
 // monad_state_override functions
@@ -70,7 +71,7 @@ monad_evmc_result eth_call(
     return monad_evmc_result{
         .status_code = 0,
         .output_data = data.data(),
-        .message = "test message",
+        .message = (char *)("test message"),
         .gas_used = 21000,
         .gas_refund = 0};
 }

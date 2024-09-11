@@ -9,8 +9,9 @@ bench = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-autocxx = { workspace = true }
+bindgen = { workspace = true }
 alloy-primitives = { workspace = true }
+cc = { workspace = true }
 cxx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
@@ -26,5 +27,6 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 tempfile = { workspace = true }
 
 [build-dependencies]
-autocxx-build = { workspace = true }
+bindgen = { workspace = true }
+cc = { workspace = true }
 cmake = { workspace = true }

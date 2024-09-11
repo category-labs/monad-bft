@@ -1,4 +1,4 @@
-#include "test_db.hpp"
+#include "test_db.h"
 
 struct TestDb
 {
@@ -15,9 +15,9 @@ void testdb_load_callcontract(TestDb *const db) {}
 
 void testdb_load_transfer(TestDb *const db) {}
 
-std::string testdb_path(TestDb const *const db)
+char const *testdb_path(TestDb const *const db)
 {
-    return std::string{};
+    return nullptr;
 }
 
 void destroy_testdb(TestDb *const db) {}

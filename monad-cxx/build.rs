@@ -11,20 +11,6 @@ fn main() {
     }
     println!("cargo:warning=target {}", &target);
 
-    // let includes = [PathBuf::from("include")];
-
-    // // TODO(rene): find a better way of figuring out the vendor-specific standard version string
-    // let std = "-std=c++23";
-
-    // // generate rust bindings for eth_call C++ API
-    // {
-    //     let mut b = autocxx_build::Builder::new("src/lib.rs", includes.iter())
-    //         .extra_clang_args(&[std])
-    //         .build()
-    //         .expect("autocxx failed");
-    //     b.flag_if_supported(std).compile("monad-cxx");
-    // }
-
     let dst = cmake::Config::new(".")
         .define("CMAKE_BUILD_TARGET", &target)
         .always_configure(true)
@@ -37,9 +23,15 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib={}", target);
 
     let bindings = bindgen::Builder::default()
-        .header("include/triedb.h")
+        .header("include/eth_call.h")
+        .header("include/test_db.h")
         // invalidate on header change
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
         .expect("Unable to generate bindings");
+
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("eth_call.rs"))
+        .expect("Couldn't write bindings!");
 }

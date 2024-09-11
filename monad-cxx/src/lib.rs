@@ -5,24 +5,12 @@ use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 use alloy_primitives::{
     bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
 };
-use autocxx::{block, moveit::moveit, WithinBox};
 use futures::pin_mut;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string, Value};
 
-autocxx::include_cpp! {
-    #include "eth_call.hpp"
-    #include "test_db.hpp"
-    safety!(unsafe)
-    generate!("monad_evmc_result")
-    generate!("monad_state_override_set")
-    generate!("eth_call")
-    generate!("make_testdb")
-    generate!("testdb_load_callenv")
-    generate!("testdb_load_callcontract")
-    generate!("testdb_load_transfer")
-    generate!("testdb_path")
-    generate!("destroy_testdb")
+mod bindings {
+    include!(concat!(env!("OUT_DIR"), "/eth_call.rs"));
 }
 
 pub const EVMC_SUCCESS: i32 = 0;
@@ -112,9 +100,7 @@ pub fn eth_call(
     cxx::let_cxx_string!(triedb_path = triedb_path.to_str().unwrap().to_string());
     cxx::let_cxx_string!(blockdb_path = blockdb_path.to_str().unwrap().to_string());
 
-    moveit! {
-        let mut cxx_state_override_set = ffi::monad_state_override_set::new();
-    }
+    let mut cxx_state_override_set = bindings::monad_state_override_set::new();
 
     for (address, state_override_object) in state_override_set {
         let mut cxx_address: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
@@ -201,16 +187,15 @@ pub fn eth_call(
         }
     }
 
-    moveit! {
-        let result = ffi::eth_call(
+    let result = bindings::eth_call(
         &cxx_rlp_encoded_tx,
         &cxx_rlp_encoded_block_header,
         &cxx_rlp_encoded_sender,
         block_number,
         &triedb_path,
         &blockdb_path,
-        &cxx_state_override_set);
-    }
+        &cxx_state_override_set,
+    );
 
     let status_code = result.deref().get_status_code().0 as i32;
     let output_data = result.deref().get_output_data().as_slice().to_vec();
