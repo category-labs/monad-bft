@@ -33,7 +33,7 @@ use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
-    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
+    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, Stake, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -147,7 +147,9 @@ async fn run(
     let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
         .validators
         .0
-        .len()
+        .iter()
+        .filter(|node| node.stake != Stake(0))
+        .count()
         > 1
     {
         <_ as Updater<_>>::boxed(

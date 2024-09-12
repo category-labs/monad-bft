@@ -14,11 +14,6 @@ pub struct MockGossipConfig<PT: PubKey> {
 
 impl<PT: PubKey> MockGossipConfig<PT> {
     pub fn build(self) -> MockGossip<PT> {
-        assert!(
-            self.all_peers.len() == 1 || self.message_delay.is_zero(),
-            "Message delay only enabled for single node"
-        );
-
         MockGossip {
             config: self,
 
