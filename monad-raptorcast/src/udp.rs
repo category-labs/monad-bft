@@ -372,7 +372,8 @@ where
                 .view()
                 .values()
                 .map(|validator| validator.stake.0)
-                .sum();
+                .sum::<i64>()
+                .max(1);
             let mut running_stake = 0;
             for (node_id, validator) in epoch_validators.view().iter() {
                 let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
