@@ -172,7 +172,7 @@ async fn run(
                 .map(|peer| NodeId::new(peer.node_id.pubkey()))
                 .collect(),
             me: NodeId::new(node_state.secp256k1_identity.pubkey()),
-            message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
+            message_delay: Duration::from_secs(1),
         }
         .build()
         .boxed();
