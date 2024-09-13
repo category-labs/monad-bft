@@ -1,7 +1,11 @@
 use std::marker::PhantomData;
 
-use monad_consensus::messages::{
-    consensus_message::ProtocolMessage, message::RequestBlockSyncMessage,
+use monad_consensus::{
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::RequestBlockSyncMessage,
+    },
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
@@ -145,48 +149,29 @@ where
             cert_keypair: self.cert_keypair,
         };
 
-        let vec = match event {
+        let consensus_cmds = match event {
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
             } => {
-                let verified_message = match unverified_message.verify(
+                match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
-                    &sender.pubkey(),
+                    self.version,
+                    consensus.metrics,
+                    sender,
+                    unverified_message,
                 ) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        handle_validation_error(e, consensus.metrics);
-                        // TODO-2: collect evidence
-                        let evidence_cmds = vec![];
-                        return evidence_cmds;
-                    }
-                };
-
-                let (author, _, verified_message) = verified_message.destructure();
-
-                // Validated message according to consensus protocol spec
-                let validated_mesage = match verified_message.validate(
-                    consensus.epoch_manager,
-                    consensus.val_epoch_map,
-                    consensus.version,
-                ) {
-                    Ok(m) => m.into_inner(),
-                    Err(e) => {
-                        handle_validation_error(e, consensus.metrics);
-                        // TODO-2: collect evidence
-                        let evidence_cmds = vec![];
-                        return evidence_cmds;
-                    }
-                };
-
-                match validated_mesage {
-                    ProtocolMessage::Proposal(msg) => {
+                    Ok((author, ProtocolMessage::Proposal(msg))) => {
                         consensus.handle_proposal_message(author, msg)
                     }
-                    ProtocolMessage::Vote(msg) => consensus.handle_vote_message(author, msg),
-                    ProtocolMessage::Timeout(msg) => consensus.handle_timeout_message(author, msg),
+                    Ok((author, ProtocolMessage::Vote(msg))) => {
+                        consensus.handle_vote_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::Timeout(msg))) => {
+                        consensus.handle_timeout_message(author, msg)
+                    }
+                    Err(evidence) => evidence,
                 }
             }
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
@@ -194,7 +179,6 @@ where
                 consensus.handle_block_sync(block, payload)
             }
         };
-        let consensus_cmds = vec;
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
@@ -202,6 +186,40 @@ where
                 command: cmd,
             })
             .collect::<Vec<_>>()
+    }
+
+    fn verify_and_validate_consensus_message(
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        version: &MonadVersion,
+        metrics: &mut Metrics,
+
+        sender: NodeId<CertificateSignaturePubKey<ST>>,
+        message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+    ) -> Result<
+        (NodeId<CertificateSignaturePubKey<ST>>, ProtocolMessage<SCT>),
+        Vec<ConsensusCommand<ST, SCT>>,
+    > {
+        let verified_message = message
+            .verify(epoch_manager, val_epoch_map, &sender.pubkey())
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        let (author, _, verified_message) = verified_message.destructure();
+
+        // Validated message according to consensus protocol spec
+        let validated_mesage = verified_message
+            .validate(epoch_manager, val_epoch_map, version.protocol_version)
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        Ok((author, validated_mesage.into_inner()))
     }
 }
 
