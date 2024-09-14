@@ -32,15 +32,23 @@ impl OutboundRequests {
 
     pub fn queue_request(&mut self, request: StateSyncRequest) {
         tracing::debug!(?request, "queueing request");
-        if self
+        let new_target = self
             .pending_requests
             .first()
             .or(self.in_flight_requests.keys().next())
-            .is_some_and(|old_request| old_request.target != request.target)
-        {
-            panic!("changing targets mid-sync not supported right now (would be racey)")
-            // self.pending_requests.clear();
-            // self.in_flight_requests.clear();
+            .is_some_and(|old_request| {
+                assert!(old_request.target <= request.target);
+                // check if a new target is being requested
+                // clear old requests if so
+                old_request.target < request.target
+            });
+        if new_target {
+            tracing::debug!(
+                new_target =? request.target,
+                "clearing requests for old target"
+            );
+            self.pending_requests.clear();
+            self.in_flight_requests.clear();
         }
         let _batch_size = 256_usize.pow(request.prefix_bytes.into());
         self.pending_requests.insert(request);

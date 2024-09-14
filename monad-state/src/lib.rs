@@ -959,6 +959,9 @@ where
                             state_root_hash_info,
                         )));
                     } else {
+                        // if latest_block > state_root_seq_num, we can't RequestSync because we
+                        // would be trying to sync backwards.
+
                         assert!(self.state_backend.raw_read_earliest_block() <= state_root_seq_num);
                         // TODO assert state root matches?
                         commands.extend(self.update(MonadEvent::StateSyncEvent(

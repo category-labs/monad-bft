@@ -159,6 +159,10 @@ pub enum TimestampCommand {
 }
 
 pub enum StateSyncCommand<PT: PubKey> {
+    /// The *last* RequestSync(n) called is guaranteed to be followed up with DoneSync(n).
+    ///
+    /// Note that if RequestSync(n') is invoked before receiving DoneSync(n), it is not guaranteed
+    /// that DoneSync(n) will be received - so the caller should drop any DoneSync < n'
     RequestSync(StateRootHashInfo),
     Message((NodeId<PT>, StateSyncNetworkMessage)),
     StartExecution,
