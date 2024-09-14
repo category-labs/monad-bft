@@ -991,17 +991,25 @@ where
                         unreachable!("DoneSync invoked while ConsensusState is live")
                     };
                     assert!(!*done_db_sync);
-                    assert!(self.state_backend.raw_read_earliest_block() <= n);
-                    assert!(self.state_backend.raw_read_latest_block() >= n);
 
                     let root_seq_num = root.seq_num;
                     let delay = self.state_root_validator.get_delay();
-                    assert_eq!(n, root_seq_num.max(delay) - delay);
+                    let target = root_seq_num.max(delay) - delay;
+                    assert!(n <= target);
 
-                    tracing::info!(?n, "done db statesync");
-                    *done_db_sync = true;
+                    if n < target {
+                        tracing::debug!(?n, ?target, "dropping DoneSync, n < target");
+                        Vec::new()
+                    } else {
+                        assert_eq!(n, target);
+                        assert!(self.state_backend.raw_read_earliest_block() <= n);
+                        assert!(self.state_backend.raw_read_latest_block() >= n);
 
-                    self.maybe_start_consensus()
+                        tracing::info!(?n, "done db statesync");
+                        *done_db_sync = true;
+
+                        self.maybe_start_consensus()
+                    }
                 }
                 StateSyncEvent::BlockSync(full_block) => {
                     let ConsensusMode::Sync {
