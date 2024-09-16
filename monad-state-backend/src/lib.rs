@@ -173,6 +173,13 @@ impl InMemoryStateInner {
         let account_reads = self.account_read_counts.borrow();
         account_reads.get(address).cloned().unwrap_or(0)
     }
+
+    pub fn get_total_reads(&self) -> u32 {
+        self.account_read_counts
+            .borrow()
+            .values()
+            .sum()
+    }
 }
 
 impl StateBackend for InMemoryStateInner {

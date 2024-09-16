@@ -119,6 +119,7 @@ where
 
 pub trait GetMemoryStateInner {
     fn get_account_read_count(&self, address: EthAddress) -> u32;
+    fn get_total_reads(&self) -> u32;
     fn set_account_state(
         &mut self,
         seq_num: SeqNum,
@@ -131,6 +132,9 @@ pub trait GetMemoryStateInner {
 impl GetMemoryStateInner for StateBackendCache<InMemoryState> {
     fn get_account_read_count(&self, address: EthAddress) -> u32 {
         self.state_backend.lock().unwrap().get_account_read_count(&address)
+    }
+    fn get_total_reads(&self) -> u32 {
+        self.state_backend.lock().unwrap().get_total_reads()
     }
     fn set_account_state(
         &mut self,

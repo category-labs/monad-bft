@@ -24,13 +24,24 @@ pub fn make_tx(
     nonce: u64,
     input_len: usize,
 ) -> EthSignedTransaction {
+    make_tx_to(sender, gas_price, gas_limit, nonce, input_len, Address::repeat_byte(0u8))
+}
+
+pub fn make_tx_to(
+    sender: FixedBytes<32>,
+    gas_price: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+    to: Address
+) -> EthSignedTransaction {
     let input = vec![0; input_len];
     let transaction = Transaction::Legacy(TxLegacy {
         chain_id: Some(1337),
         nonce,
         gas_price,
         gas_limit,
-        to: TransactionKind::Call(Address::repeat_byte(0u8)),
+        to: TransactionKind::Call(to),
         value: 0.into(),
         input: input.into(),
     });

@@ -1434,7 +1434,7 @@ mod test {
     };
     use monad_eth_block_policy::{compute_txn_carriage_cost, EthBlockPolicy, EthValidatedBlock};
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_testutil::make_tx;
+    use monad_eth_testutil::{make_tx, make_tx_to};
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
     use monad_eth_types::{Balance, EthAccount, EthAddress};
@@ -5662,5 +5662,169 @@ mod test {
         let acct_2_reads_3 = GetMemoryStateInner::get_account_read_count(&n1.state_backend, sender_2_address);
         assert!(acct_1_reads_3 == 2);
         assert!(acct_2_reads_3 == (EXECUTION_DELAY.0 + 1) as u32);
+    }
+
+    #[test]
+    fn test_triedb_cache_many_transactions() {
+        const NUM_ACCOUNTS: u32 = 200;
+        const NUM_PROPOSALS: u64 = 200;
+        let num_states = 2;
+        let keys: [B256; NUM_ACCOUNTS as usize] = std::array::from_fn(|_| B256::random());
+        let initial_transactions: Vec<_> = keys.iter().map(|&key| make_tx(key, BASE_FEE, GAS_LIMIT, 0, 10)).collect();
+        let addresses: Vec<EthAddress> = initial_transactions
+            .iter()
+            .map(|txn| EthAddress(txn.recover_signer().unwrap()))
+            .collect();
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendCache<InMemoryState>,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                let initial_states: BTreeMap<EthAddress, EthAccount> = addresses
+                    .iter()
+                    .map(|&address| (address, EthAccount::new(0, u128::MAX, None)))
+                    .collect();
+                StateBackendCache::new(
+                    InMemoryStateInner::new(
+                        u128::MAX,
+                        EXECUTION_DELAY,
+                        InMemoryBlockState::genesis(initial_states),
+                    ),
+                    EXECUTION_DELAY
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(initial_transactions),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        n1.handle_proposal_message(author_1, proposal_message_1);
+
+        for nonce in 1..NUM_PROPOSALS {
+            let transactions: Vec<_> = keys.iter().map(|&key| make_tx(key, BASE_FEE, GAS_LIMIT, nonce, 10)).collect();
+            let proposal = env.next_proposal(generate_full_tx_list(transactions), StateRootHash::default());
+            let (author, _, proposal_message) = proposal.destructure();
+
+            n1.handle_proposal_message(author, proposal_message);
+
+            // Make sure the number of account reads hasn't blown up
+            let read_count = GetMemoryStateInner::get_total_reads(&n1.state_backend);
+            assert!(read_count <= 2 * NUM_ACCOUNTS * (nonce as u32 + 1));
+
+            for &address in &addresses {
+                GetMemoryStateInner::set_account_state(
+                    &mut n1.state_backend,
+                    SeqNum(nonce),
+                    address,
+                    EthAccount::new(nonce, u128::MAX, None)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_triedb_cache_many_transactions_between_accounts() {
+        const NUM_ACCOUNTS: u32 = 200;
+        const NUM_PROPOSALS: u64 = 200;
+        let num_states = 2;
+        let keys: [B256; NUM_ACCOUNTS as usize] = std::array::from_fn(|_| B256::random());
+        let initial_transactions: Vec<_> = keys.iter().map(|&key| make_tx(key, BASE_FEE, GAS_LIMIT, 0, 10)).collect();
+        let addresses: Vec<EthAddress> = initial_transactions
+            .iter()
+            .map(|txn| EthAddress(txn.recover_signer().unwrap()))
+            .collect();
+
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthBlockPolicy,
+            StateBackendCache<InMemoryState>,
+            EthValidator,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY.0, 0, 1337),
+            || {
+                let initial_states: BTreeMap<EthAddress, EthAccount> = addresses
+                    .iter()
+                    .map(|&address| (address, EthAccount::new(0, u128::MAX, None)))
+                    .collect();
+                StateBackendCache::new(
+                    InMemoryStateInner::new(
+                        u128::MAX,
+                        EXECUTION_DELAY,
+                        InMemoryBlockState::genesis(initial_states),
+                    ),
+                    EXECUTION_DELAY
+                )
+            },
+            || EthValidator::new(10000, u64::MAX, 1337),
+            EthTxPool::default(),
+            || NopStateRoot::new(EXECUTION_DELAY),
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (_, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(
+            generate_full_tx_list(initial_transactions),
+            StateRootHash::default(),
+        );
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        n1.handle_proposal_message(author_1, proposal_message_1);
+
+        for nonce in 1..NUM_PROPOSALS {
+            // Make transactions between the different accounts
+            let transactions: Vec<_> = keys.iter().enumerate().map(|(i, &key)| {
+                let recipient = addresses[(i + 1) % addresses.len()];
+                make_tx_to(key, BASE_FEE, GAS_LIMIT, nonce, 10, recipient.0)
+            }).collect();
+            let proposal = env.next_proposal(generate_full_tx_list(transactions), StateRootHash::default());
+            let (author, _, proposal_message) = proposal.destructure();
+
+            n1.handle_proposal_message(author, proposal_message);
+
+            // Make sure the number of account reads hasn't blown up
+            let read_count = GetMemoryStateInner::get_total_reads(&n1.state_backend);
+            assert!(read_count <= 2 * NUM_ACCOUNTS * (nonce as u32 + 1));
+
+            for &address in &addresses {
+                GetMemoryStateInner::set_account_state(
+                    &mut n1.state_backend,
+                    SeqNum(nonce),
+                    address,
+                    EthAccount::new(nonce, u128::MAX, None)
+                );
+            }
+        }
     }
 }
