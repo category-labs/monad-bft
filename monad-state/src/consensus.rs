@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::RequestBlockSyncMessage,
+        message::{ProposalMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified},
 };
@@ -120,13 +120,46 @@ where
         &mut self,
         event: ConsensusEvent<ST, SCT>,
     ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
-        let ConsensusMode::Live(mode) = self.consensus else {
-            tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
-            return vec![];
+        let live = match self.consensus {
+            ConsensusMode::Live(live) => live,
+            ConsensusMode::Sync { block_buffer, .. } => {
+                let mut cmds = Vec::new();
+                if let ConsensusEvent::Message {
+                    sender,
+                    unverified_message,
+                } = event.clone()
+                {
+                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
+                        Self::verify_and_validate_consensus_message(
+                            self.epoch_manager,
+                            self.val_epoch_map,
+                            self.version,
+                            self.metrics,
+                            sender,
+                            unverified_message,
+                        )
+                    {
+                        if let Some((new_root, new_high_qc)) =
+                            block_buffer.handle_proposal(author, proposal)
+                        {
+                            cmds.push(WrappedConsensusCommand {
+                                state_root_delay: self.state_root_validator.get_delay(),
+                                command: ConsensusCommand::RequestStateSync {
+                                    root: new_root,
+                                    high_qc: new_high_qc,
+                                    // TODO also pass in buffer here so no race possibility
+                                },
+                            });
+                        }
+                    }
+                }
+                tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
+                return cmds;
+            }
         };
 
         let mut consensus = ConsensusStateWrapper {
-            consensus: mode,
+            consensus: live,
 
             metrics: self.metrics,
             tx_pool: self.txpool,
@@ -179,6 +212,50 @@ where
                 consensus.handle_block_sync(block, payload)
             }
         };
+        consensus_cmds
+            .into_iter()
+            .map(|cmd| WrappedConsensusCommand {
+                state_root_delay: consensus.state_root_validator.get_delay(),
+                command: cmd,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub(super) fn handle_validated_proposal(
+        &mut self,
+        author: NodeId<CertificateSignaturePubKey<ST>>,
+        validated_proposal: ProposalMessage<SCT>,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        let ConsensusMode::Live(mode) = self.consensus else {
+            unreachable!("handle_validated_proposal when not live")
+        };
+
+        let mut consensus = ConsensusStateWrapper {
+            consensus: mode,
+
+            metrics: self.metrics,
+            tx_pool: self.txpool,
+            epoch_manager: self.epoch_manager,
+            block_policy: self.block_policy,
+            state_backend: self.state_backend,
+
+            val_epoch_map: self.val_epoch_map,
+            election: self.leader_election,
+            version: self.version.protocol_version,
+
+            state_root_validator: self.state_root_validator,
+            block_timestamp: self.block_timestamp,
+            block_validator: self.block_validator,
+            beneficiary: self.beneficiary,
+            nodeid: self.nodeid,
+            config: self.consensus_config,
+
+            keypair: self.keypair,
+            cert_keypair: self.cert_keypair,
+        };
+
+        let consensus_cmds = consensus.handle_proposal_message(author, validated_proposal);
+
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
