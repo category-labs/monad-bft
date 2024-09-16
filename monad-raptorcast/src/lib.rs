@@ -10,6 +10,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream};
+use monad_compressible::Compressible;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -119,7 +120,7 @@ impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    OM: Serializable<Bytes> + Into<M> + Clone + Compressible<Output = OM>,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -175,7 +176,7 @@ where
                     }
                 }
                 RouterCommand::Publish { target, message } => {
-                    let app_message = message.serialize();
+                    let app_message = message.compress().serialize();
                     let app_message_len = app_message.len();
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")

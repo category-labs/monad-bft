@@ -8,6 +8,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
+use monad_compressible::Compressible;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
@@ -188,6 +189,14 @@ struct MockMessage {
 impl MockMessage {
     fn new(id: u32, message_len: usize) -> Self {
         Self { id, message_len }
+    }
+}
+
+impl Compressible for MockMessage {
+    type Output = MockMessage;
+
+    fn compress(&self) -> Self::Output {
+        todo!()
     }
 }
 

@@ -3507,6 +3507,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-compressible"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "monad-compress",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-state",
+]
+
+[[package]]
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
@@ -4141,6 +4152,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "lru",
+ "monad-compressible",
  "monad-crypto",
  "monad-dataplane",
  "monad-executor",

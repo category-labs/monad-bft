@@ -8,6 +8,7 @@ members = [
     "monad-bls",
     "monad-control-panel",
     "monad-compress",
+    "monad-compressible",
     "monad-consensus",
     "monad-consensus-state",
     "monad-consensus-types",
