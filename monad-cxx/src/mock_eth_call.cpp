@@ -14,6 +14,11 @@ bytes get_output_data(const struct monad_evmc_result *result)
     return result->output_data;
 }
 
+uint64_t get_output_size(const struct monad_evmc_result *result)
+{
+    return result->output_size;
+}
+
 char const *get_message(const struct monad_evmc_result *result)
 {
     return result->message;
@@ -33,6 +38,11 @@ int64_t get_gas_refund(const struct monad_evmc_result *result)
 struct monad_state_override_set
 {
 };
+
+struct monad_state_override_set *create_empty_state_override_set()
+{
+    return nullptr;
+}
 
 void add_override_address(monad_state_override_set *, bytes const &) {}
 
@@ -59,8 +69,8 @@ void set_override_state(
 }
 
 monad_evmc_result eth_call(
-    bytes rlp_txn, bytes rlp_header, bytes rlp_sender,
-    uint64_t const block_number, char const *triedb_path,
+    bytes rlp_txn, uint64_t txn_len, bytes rlp_header, uint64_t header_len,
+    bytes rlp_sender, uint64_t const block_number, char const *triedb_path,
     char const *blockdb_path, monad_state_override_set const &state_overrides)
 {
     static constexpr auto N = 32;

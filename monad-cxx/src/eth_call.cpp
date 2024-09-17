@@ -182,6 +182,11 @@ int64_t monad_evmc_result::get_gas_refund() const
     return gas_refund;
 }
 
+struct monad_state_override_set *create_empty_state_override_set()
+{
+    return new monad_state_override_set{};
+}
+
 void add_override_address(monad_state_override_set *, bytes address)
 {
     MONAD_ASSERT(override_sets.find(address) == override_sets.end());
@@ -235,8 +240,8 @@ void set_override_state(
 }
 
 monad_evmc_result eth_call(
-    bytes rlp_txn, bytes rlp_header, bytes rlp_sender,
-    uint64_t const block_number, char const *triedb_path,
+    bytes rlp_txn, uint64_t txn_len, bytes rlp_header, uint64_t header_len,
+    bytes rlp_sender, uint64_t const block_number, char const *triedb_path,
     char const *blockdb_path, monad_state_override_set const &state_overrides)
 {
     byte_string_view rlp_txn_view(rlp_txn, rlp_txn.end());
@@ -304,10 +309,8 @@ monad_evmc_result eth_call(
         int64_t const gas_used = static_cast<int64_t>(txn.gas_limit) -
                                  result.assume_value().gas_left;
         ret.status_code = result.assume_value().status_code;
-        ret.output_data = {
-            result.assume_value().output_data,
-            result.assume_value().output_data +
-                result.assume_value().output_size};
+        ret.output_data = result.assume_value().output_data;
+        ret.output_size = result.assume_value().output_size;
         ret.gas_used = gas_used;
         ret.gas_refund = result.assume_value().gas_refund;
     }

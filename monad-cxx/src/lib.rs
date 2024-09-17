@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
+use std::{collections::HashMap, ffi::CStr, ffi::CString, ops::Deref, path::Path, pin::pin, slice};
 
 use alloy_primitives::{
     bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
@@ -54,6 +54,10 @@ pub struct StateOverrideObject {
 
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
+fn path_to_cstring(path: &Path) -> Result<CString, std::ffi::NulError> {
+    // For simplicity, using to_string_lossy and unwrapping any NulError
+    CString::new(path.to_string_lossy().into_owned())
+}
 pub fn eth_call(
     transaction: reth_primitives::Transaction,
     block_header: reth_primitives::Header,
@@ -77,131 +81,132 @@ pub fn eth_call(
         transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
         buf.freeze().into()
     };
-    let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-    for byte in &rlp_encoded_tx {
-        cxx_rlp_encoded_tx.pin_mut().push(*byte);
-    }
 
     let mut rlp_encoded_block_header = vec![];
     block_header.encode(&mut rlp_encoded_block_header);
-    let mut cxx_rlp_encoded_block_header: cxx::UniquePtr<cxx::CxxVector<u8>> =
-        cxx::CxxVector::new();
-    for byte in &rlp_encoded_block_header {
-        cxx_rlp_encoded_block_header.pin_mut().push(*byte);
-    }
 
     let mut rlp_encoded_sender = vec![];
     sender.encode(&mut rlp_encoded_sender);
-    let mut cxx_rlp_encoded_sender: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-    for byte in &rlp_encoded_sender {
-        cxx_rlp_encoded_sender.pin_mut().push(*byte);
-    }
 
-    cxx::let_cxx_string!(triedb_path = triedb_path.to_str().unwrap().to_string());
-    cxx::let_cxx_string!(blockdb_path = blockdb_path.to_str().unwrap().to_string());
-
-    let mut cxx_state_override_set = bindings::monad_state_override_set::new();
+    let c_state_override_set = unsafe { bindings::create_empty_state_override_set() };
 
     for (address, state_override_object) in state_override_set {
-        let mut cxx_address: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-        for byte in address {
-            cxx_address.pin_mut().push(*byte);
+        unsafe {
+            bindings::add_override_address(c_state_override_set, address.as_ptr());
         }
-        cxx_state_override_set
-            .as_mut()
-            .add_override_address(&cxx_address);
 
         if let Some(balance) = &state_override_object.balance {
-            let mut cxx_balance = cxx::CxxVector::new();
-
             // Big Endianess is to match with decode in eth_call.cpp (intx::be::load)
-            for byte in balance.to_be_bytes_vec() {
-                cxx_balance.pin_mut().push(byte);
+            let c_balance = balance.to_be_bytes_vec();
+            unsafe {
+                bindings::set_override_balance(
+                    c_state_override_set,
+                    address.as_ptr(),
+                    c_balance.as_ptr(),
+                    c_balance.len() as u64,
+                );
             }
-
-            cxx_state_override_set
-                .as_mut()
-                .set_override_balance(&cxx_address, &cxx_balance);
         }
 
         if let Some(nonce) = state_override_object.nonce {
-            cxx_state_override_set
-                .as_mut()
-                .set_override_nonce(&cxx_address, &nonce.as_limbs()[0]);
+            unsafe {
+                bindings::set_override_nonce(
+                    c_state_override_set,
+                    address.as_ptr(),
+                    nonce.as_limbs()[0],
+                );
+            }
         }
 
         if let Some(code) = &state_override_object.code {
-            let mut cxx_code = cxx::CxxVector::new();
-
-            for byte in code {
-                cxx_code.pin_mut().push(*byte);
-            }
-
-            cxx_state_override_set
-                .as_mut()
-                .set_override_code(&cxx_address, &cxx_code);
-        }
-
-        if let Some(StorageOverride::State(override_state)) =
-            &state_override_object.storage_override
-        {
-            for (key, value) in override_state {
-                let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-                let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-
-                for byte in key {
-                    cxx_key.pin_mut().push(*byte);
-                }
-
-                for byte in value {
-                    cxx_value.pin_mut().push(*byte);
-                }
-
-                cxx_state_override_set.as_mut().set_override_state(
-                    &cxx_address,
-                    &cxx_key,
-                    &cxx_value,
-                );
-            }
-        } else if let Some(StorageOverride::StateDiff(override_state_diff)) =
-            &state_override_object.storage_override
-        {
-            for (key, value) in override_state_diff {
-                let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-                let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
-
-                for byte in key {
-                    cxx_key.pin_mut().push(*byte);
-                }
-
-                for byte in value {
-                    cxx_value.pin_mut().push(*byte);
-                }
-
-                cxx_state_override_set.as_mut().set_override_state_diff(
-                    &cxx_address,
-                    &cxx_key,
-                    &cxx_value,
+            let c_code = code.clone().to_vec();
+            unsafe {
+                bindings::set_override_code(
+                    c_state_override_set,
+                    address.as_ptr(),
+                    c_code.as_ptr(),
+                    c_code.len() as u64,
                 );
             }
         }
+
+        // if let Some(StorageOverride::State(override_state)) =
+        //     &state_override_object.storage_override
+        // {
+        //     for (key, value) in override_state {
+        //         let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+        //         let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+
+        //         for byte in key {
+        //             cxx_key.pin_mut().push(*byte);
+        //         }
+
+        //         for byte in value {
+        //             cxx_value.pin_mut().push(*byte);
+        //         }
+
+        //         cxx_state_override_set.as_mut().set_override_state(
+        //             &cxx_address,
+        //             &cxx_key,
+        //             &cxx_value,
+        //         );
+        //     }
+        // } else if let Some(StorageOverride::StateDiff(override_state_diff)) =
+        //     &state_override_object.storage_override
+        // {
+        //     for (key, value) in override_state_diff {
+        //         let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+        //         let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+
+        //         for byte in key {
+        //             cxx_key.pin_mut().push(*byte);
+        //         }
+
+        //         for byte in value {
+        //             cxx_value.pin_mut().push(*byte);
+        //         }
+
+        //         cxx_state_override_set.as_mut().set_override_state_diff(
+        //             &cxx_address,
+        //             &cxx_key,
+        //             &cxx_value,
+        //         );
+        //     }
+        // }
     }
 
-    let result = bindings::eth_call(
-        &cxx_rlp_encoded_tx,
-        &cxx_rlp_encoded_block_header,
-        &cxx_rlp_encoded_sender,
-        block_number,
-        &triedb_path,
-        &blockdb_path,
-        &cxx_state_override_set,
-    );
+    let triedb_cstring = path_to_cstring(triedb_path).unwrap();
+    let blockdb_cstring = path_to_cstring(blockdb_path).unwrap();
 
-    let status_code = result.deref().get_status_code().0 as i32;
-    let output_data = result.deref().get_output_data().as_slice().to_vec();
-    let message = result.deref().get_message().to_string();
-    let gas_used = result.deref().get_gas_used() as u64;
-    let gas_refund = result.deref().get_gas_refund() as u64;
+    let result = unsafe {
+        bindings::eth_call(
+            rlp_encoded_tx.as_ptr(),
+            rlp_encoded_tx.len() as u64,
+            rlp_encoded_block_header.as_ptr(),
+            rlp_encoded_block_header.len() as u64,
+            rlp_encoded_sender.as_ptr(),
+            block_number,
+            triedb_cstring.as_ptr(),
+            blockdb_cstring.as_ptr(),
+            c_state_override_set,
+        )
+    };
+
+    let status_code = unsafe { bindings::get_status_code(&result) as i32 };
+    let output_data = unsafe {
+        slice::from_raw_parts(
+            bindings::get_output_data(&result),
+            bindings::get_output_size(&result) as usize,
+        )
+        .to_vec()
+    };
+    let message = unsafe {
+        CStr::from_ptr(bindings::get_message(&result))
+            .to_str()
+            .unwrap()
+    };
+    let gas_used = unsafe { bindings::get_gas_used(&result) as u64 };
+    let gas_refund = unsafe { bindings::get_gas_refund(&result) as u64 };
 
     match status_code {
         EVMC_SUCCESS => CallResult::Success(SuccessCallResult {
@@ -215,7 +220,7 @@ pub fn eth_call(
             if !message.is_empty() {
                 // invalid transaction
                 CallResult::Failure(FailureCallResult {
-                    message,
+                    message: message.to_string(),
                     data: None,
                 })
             } else {
