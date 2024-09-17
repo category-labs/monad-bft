@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, io::Error, iter};
+use std::{
+    cmp::Ordering,
+    io::{Error, ErrorKind},
+    iter,
+};
 
 use crate::r10::nonsystematic::decoder::{BufferId, Decoder};
 
@@ -94,13 +98,30 @@ impl ManagedDecoder {
     // TODO: Explore accepting Bytes as data, making rx_buffers a vector of enums
     // designating either an owned Box<[u8]> or an un-owned Bytes, and converting
     // un-owned to owned buffers whenever they are targeted for XORing.
-    pub fn received_encoded_symbol(&mut self, data: &[u8], encoding_symbol_id: usize) {
+    pub fn received_encoded_symbol(
+        &mut self,
+        data: &[u8],
+        encoding_symbol_id: usize,
+    ) -> Result<(), Error> {
+        if self.symbol_len != data.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ManagedDecoder with symbol_len = {} given symbol of length {}",
+                    self.symbol_len,
+                    data.len()
+                ),
+            ));
+        }
+
         let buf: Box<[u8]> = data.into();
 
         self.buffer_set.push_buffer(buf);
 
         self.decoder
             .received_encoded_symbol(encoding_symbol_id, |a, b| self.buffer_set.xor_buffers(a, b));
+
+        Ok(())
     }
 
     pub fn num_source_symbols(&self) -> usize {

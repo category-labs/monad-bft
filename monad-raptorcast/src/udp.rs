@@ -150,7 +150,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let decoder = self.pending_message_cache.get_or_insert_mut(key, || {
                 let symbol_len = parsed_message.chunk.len();
 
-                // data_size is always greater than zero, so this division is safe
+                // symbol_len is always greater than zero, so this division is safe
                 let num_source_symbols =
                     app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
 
@@ -160,24 +160,35 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             // can we assert!(!decoder.decoding_done()) ?
 
-            decoder.received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into());
+            match decoder
+                .received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into())
+            {
+                Ok(()) => {
+                    if decoder.try_decode() {
+                        let Some(mut decoded) = decoder.reconstruct_source_data() else {
+                            tracing::error!("failed to reconstruct source data");
+                            continue;
+                        };
 
-            if decoder.try_decode() {
-                let Some(mut decoded) = decoder.reconstruct_source_data() else {
-                    tracing::error!("failed to reconstruct source data");
-                    continue;
-                };
+                        if app_message_len > 10_000 {
+                            tracing::debug!(app_message_len, "reconstructed large message");
+                        }
 
-                if app_message_len > 10_000 {
-                    tracing::debug!(app_message_len, "reconstructed large message");
+                        decoded.truncate(app_message_len);
+                        // successfully decoded, so pop out from pending_messages
+                        self.pending_message_cache.pop(&key);
+                        self.recently_decoded_cache.push(key, 0);
+
+                        messages.push((parsed_message.author, Bytes::from(decoded)));
+                    }
                 }
-
-                decoded.truncate(app_message_len);
-                // successfully decoded, so pop out from pending_messages
-                self.pending_message_cache.pop(&key);
-                self.recently_decoded_cache.push(key, 0);
-
-                messages.push((parsed_message.author, Bytes::from(decoded)));
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        ?key,
+                        "ManagedDecoder::received_encoded_symbol returned error",
+                    )
+                }
             }
         }
 
@@ -918,7 +929,7 @@ mod tests {
 
         let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
 
-        for (to, mut aggregate_message) in messages {
+        for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(GSO_SIZE.into());
                 let parsed_message =
@@ -954,7 +965,7 @@ mod tests {
 
         let mut signature_cache = LruCache::new(SIGNATURE_CACHE_SIZE);
 
-        for (to, mut aggregate_message) in messages {
+        for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let mut message: BytesMut =
                     aggregate_message.split_to(GSO_SIZE.into()).as_ref().into();
@@ -1003,7 +1014,7 @@ mod tests {
 
         let mut used_ids = HashSet::new();
 
-        for (to, mut aggregate_message) in messages {
+        for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
                 let message = aggregate_message.split_to(GSO_SIZE.into());
                 let parsed_message =
