@@ -11,15 +11,20 @@ use crate::{
     triedb::{Triedb, TriedbResult},
 };
 
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct DebugBlockParams {
+    block: BlockTags,
+}
+
 #[rpc(method = "debug_getRawBlock", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
-    params: BlockTags,
+    params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
-    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let Ok(raw_block) = file_ledger_reader
         .async_read_encoded_eth_block(block_num)
         .await
@@ -37,9 +42,9 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 pub async fn monad_debug_getRawHeader<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
-    params: BlockTags,
+    params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
-    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => {
@@ -70,9 +75,9 @@ pub struct MonadDebugGetRawReceiptsResult {
 pub async fn monad_debug_getRawReceipts<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
-    params: BlockTags,
+    params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
-    let block_num = get_block_num_from_tag(triedb_env, params).await?;
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => {
