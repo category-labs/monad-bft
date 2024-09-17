@@ -53,10 +53,7 @@ impl TimestampAdjuster {
         } else {
             t.delta
         };
-        let delta: i64 = match delta.try_into() {
-            Ok(d) => d,
-            Err(_) => 0,
-        };
+        let delta: i64 = delta.try_into().unwrap_or(0);
         match t.direction {
             TimestampAdjustmentDirection::Forward => delta,
             TimestampAdjustmentDirection::Backward => -delta,
