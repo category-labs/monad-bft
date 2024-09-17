@@ -22,7 +22,7 @@ use crate::{
 pub mod decode;
 pub mod key;
 
-const MAX_TRIEDB_ASYNC_POLLS: u32 = 320_000;
+const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 
 #[derive(Clone)]
 pub struct TriedbReader {
@@ -83,9 +83,12 @@ impl TriedbReader {
 
         let mut poll_count = 0;
         // Poll TrieDB until the completed_counter reaches num_accounts
+        // TODO: if initiating the reads had an error, this call to triedb_poll will not terminate.
+        //       wrap this loop in a timeout so consensus doesn't get stuck
         while completed_counter.load(SeqCst) < num_accounts && poll_count < MAX_TRIEDB_ASYNC_POLLS {
-            self.handle.triedb_poll();
-            poll_count += 1;
+            // blocking = true => wait to do more work
+            // max_completions = usize::MAX => process as many completions before returning
+            poll_count += self.handle.triedb_poll(true, usize::MAX);
         }
         // TrieDB should have completed processing all the async callbacks at this point
         if completed_counter.load(SeqCst) != num_accounts {

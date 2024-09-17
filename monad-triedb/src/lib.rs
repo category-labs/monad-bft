@@ -154,8 +154,15 @@ impl Handle {
         receiver
     }
 
-    pub fn triedb_poll(&self) {
-        let _io_count = unsafe { bindings::triedb_poll(self.db_ptr, true, usize::MAX) };
+    /// Used to pump async reads in TrieDB
+    /// if blocking is true, the thread will sleep atleast until 1 completion is availabe to process
+    /// if blocking is false, poll will return if no completion is available to process
+    /// max_completions is used as a bound for maximum completions to process in this poll
+    ///
+    /// Returns the number of completions processed
+    /// NOTE: could call poll internally: number of calls to this functions != number of completions processed
+    pub fn triedb_poll(&self, blocking: bool, max_completions: usize) -> usize {
+        unsafe { bindings::triedb_poll(self.db_ptr, blocking, max_completions) }
     }
 
     pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
