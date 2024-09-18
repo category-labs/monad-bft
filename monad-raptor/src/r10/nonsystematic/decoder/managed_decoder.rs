@@ -4,7 +4,19 @@ use std::{
     iter,
 };
 
+use bitvec::prelude::*;
+
 use crate::r10::nonsystematic::decoder::{BufferId, Decoder};
+
+// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
+// encoded symbols.
+//
+// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
+// will be discarded, as a protection against DoS and algorithmic complexity attacks.
+//
+// We pick 7 because that is the largest value that works for all values of K, as K
+// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
+const MAX_REDUNDANCY: usize = 7;
 
 // We switch from doing peeling only to performing inactivation decoding when
 // num_received_encoded_symbols >= (MULTIPLIER * num_source_symbols) >> SHIFT .
@@ -76,6 +88,8 @@ impl BufferSet {
 #[derive(Debug)]
 pub struct ManagedDecoder {
     num_source_symbols: usize,
+    max_encoded_symbols: usize,
+    seen_esis: BitVec<usize, Lsb0>,
     symbol_len: usize,
     decoder: Decoder,
     buffer_set: BufferSet,
@@ -83,12 +97,18 @@ pub struct ManagedDecoder {
 
 impl ManagedDecoder {
     pub fn new(num_source_symbols: usize, symbol_len: usize) -> Result<ManagedDecoder, Error> {
+        let max_encoded_symbols = MAX_REDUNDANCY * num_source_symbols;
+
+        let seen_esis = bitvec![usize, Lsb0; 0; max_encoded_symbols];
+
         let decoder = Decoder::new(num_source_symbols)?;
 
         let buffer_set = BufferSet::new(decoder.num_temp_buffers_required(), symbol_len);
 
         Ok(ManagedDecoder {
             num_source_symbols,
+            max_encoded_symbols,
+            seen_esis,
             symbol_len,
             decoder,
             buffer_set,
@@ -113,6 +133,24 @@ impl ManagedDecoder {
                 ),
             ));
         }
+
+        if encoding_symbol_id >= self.max_encoded_symbols {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ManagedDecoder with max_encoded_symbols = {} received ESI {}",
+                    self.max_encoded_symbols, encoding_symbol_id,
+                ),
+            ));
+        }
+
+        if self.seen_esis[encoding_symbol_id] {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("ManagedDecoder already saw ESI {}", encoding_symbol_id,),
+            ));
+        }
+        self.seen_esis.set(encoding_symbol_id, true);
 
         let buf: Box<[u8]> = data.into();
 

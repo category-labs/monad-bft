@@ -4125,6 +4125,7 @@ dependencies = [
 name = "monad-raptor"
 version = "0.1.0"
 dependencies = [
+ "bitvec",
  "rand",
  "rayon",
  "tracing",
