@@ -8,6 +8,7 @@ bench = false
 
 [dependencies]
 bytes = { workspace = true }
+monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-compress = { path = "../monad-compress" }
 monad-crypto = { path = "../monad-crypto" }
