@@ -688,18 +688,16 @@ async fn main() -> std::io::Result<()> {
         Some(metrics) => {
             HttpServer::new(move || create_app_with_metrics(resources.clone(), metrics.clone()))
                 .bind((args.rpc_addr, args.rpc_port))?
+                .shutdown_timeout(1)
                 .run()
-                .await
         }
-        None => {
-            HttpServer::new(move || create_app(resources.clone()))
-                .bind((args.rpc_addr, args.rpc_port))?
-                .run()
-                .await
-        }
-    }?;
+        None => HttpServer::new(move || create_app(resources.clone()))
+            .bind((args.rpc_addr, args.rpc_port))?
+            .shutdown_timeout(1)
+            .run(),
+    }
+    .await?;
 
-    meter_provider.map(|provider| provider.shutdown());
     Ok(())
 }
 
