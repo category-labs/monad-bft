@@ -290,14 +290,6 @@ impl schemars::JsonSchema for Quantity {
     }
 }
 
-impl FromStr for Quantity {
-    type Err = DecodeHexError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        decode_quantity(s).map(Quantity)
-    }
-}
-
 impl Serialize for Quantity {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -311,9 +303,25 @@ pub fn deserialize_quantity<'de, D>(deserializer: D) -> Result<Quantity, D::Erro
 where
     D: Deserializer<'de>,
 {
-    let buf = String::deserialize(deserializer)?;
-    Quantity::from_str(&buf)
-        .map_err(|e| serde::de::Error::custom(format!("Quantity parse failed: {e:?}")))
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum QuantityOrString {
+        Num(u64),
+        Str(String),
+    }
+
+    match QuantityOrString::deserialize(deserializer)? {
+        QuantityOrString::Num(n) => Ok(Quantity(n)),
+        QuantityOrString::Str(s) => {
+            if let Some(hex) = s.strip_prefix("0x") {
+                u64::from_str_radix(hex, 16)
+                    .map(Quantity)
+                    .map_err(serde::de::Error::custom)
+            } else {
+                s.parse().map(Quantity).map_err(serde::de::Error::custom)
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
