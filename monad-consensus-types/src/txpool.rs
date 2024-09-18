@@ -1,3 +1,4 @@
+use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -18,6 +19,7 @@ pub enum TxPoolInsertionError {
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
+#[auto_impl(Box)]
 pub trait TxPool<SCT, BPT, SBT>
 where
     SCT: SignatureCollection,
@@ -54,46 +56,6 @@ where
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
-}
-
-impl<SCT, BPT, SBT, T> TxPool<SCT, BPT, SBT> for Box<T>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-    T: TxPool<SCT, BPT, SBT> + ?Sized,
-{
-    fn insert_tx(
-        &mut self,
-        txns: Vec<Bytes>,
-        block_policy: &BPT,
-        state_backend: &SBT,
-    ) -> Vec<Bytes> {
-        (**self).insert_tx(txns, block_policy, state_backend)
-    }
-
-    fn create_proposal(
-        &mut self,
-        proposed_seq_num: SeqNum,
-        tx_limit: usize,
-        gas_limit: u64,
-        block_policy: &BPT,
-        pending_blocks: Vec<&BPT::ValidatedBlock>,
-        state_backend: &SBT,
-    ) -> Result<FullTransactionList, StateBackendError> {
-        (**self).create_proposal(
-            proposed_seq_num,
-            tx_limit,
-            gas_limit,
-            block_policy,
-            pending_blocks,
-            state_backend,
-        )
-    }
-
-    fn clear(&mut self) {
-        (**self).clear()
-    }
 }
 
 use rand::RngCore;

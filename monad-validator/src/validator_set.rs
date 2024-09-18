@@ -5,6 +5,7 @@ use std::{
 };
 
 use as_any::AsAny;
+use auto_impl::auto_impl;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
@@ -91,6 +92,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for BoxedValidatorSetTypeFactory<PT> {
     }
 }
 
+#[auto_impl(Box)]
 pub trait ValidatorSetType: Send + Sync + AsAny {
     type NodeIdPubKey: PubKey;
 
@@ -103,46 +105,6 @@ pub trait ValidatorSetType: Send + Sync + AsAny {
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool;
     fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake;
-}
-
-impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
-    type NodeIdPubKey = T::NodeIdPubKey;
-
-    fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake> {
-        (**self).get_members()
-    }
-
-    fn get_total_stake(&self) -> Stake {
-        (**self).get_total_stake()
-    }
-
-    fn len(&self) -> usize {
-        (**self).len()
-    }
-
-    fn is_empty(&self) -> bool {
-        (**self).is_empty()
-    }
-
-    fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool {
-        (**self).is_member(addr)
-    }
-
-    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
-        (**self).has_super_majority_votes(addrs)
-    }
-
-    fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
-        (**self).has_honest_vote(addrs)
-    }
-
-    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
-        (**self).has_threshold_votes(addrs, threshold)
-    }
-
-    fn calculate_current_stake(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> Stake {
-        (**self).calculate_current_stake(addrs)
-    }
 }
 
 #[derive(Clone, Copy)]

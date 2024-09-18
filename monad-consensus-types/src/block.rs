@@ -1,3 +1,4 @@
+use auto_impl::auto_impl;
 use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
@@ -282,6 +283,7 @@ impl From<StateBackendError> for BlockPolicyError {
 }
 
 /// Trait that represents how inner contents of a block should be validated
+#[auto_impl(Box)]
 pub trait BlockPolicy<SCT, SBT>
 where
     SCT: SignatureCollection,
@@ -310,32 +312,6 @@ where
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
     fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
-}
-
-impl<SCT, SBT, T> BlockPolicy<SCT, SBT> for Box<T>
-where
-    SCT: SignatureCollection,
-    SBT: StateBackend,
-    T: BlockPolicy<SCT, SBT> + ?Sized,
-{
-    type ValidatedBlock = T::ValidatedBlock;
-
-    fn check_coherency(
-        &self,
-        block: &Self::ValidatedBlock,
-        extending_blocks: Vec<&Self::ValidatedBlock>,
-        state_backend: &SBT,
-    ) -> Result<(), BlockPolicyError> {
-        (**self).check_coherency(block, extending_blocks, state_backend)
-    }
-
-    fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
-        (**self).update_committed_block(block)
-    }
-
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
-        (**self).reset(last_delay_committed_blocks)
-    }
 }
 
 /// A block policy which does not validate the inner contents of the block

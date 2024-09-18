@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-types = { path = "../monad-types" }
 
+auto_impl = { workspace = true }
 bytes = { workspace = true }
 
 [dev-dependencies]

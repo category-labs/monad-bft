@@ -17,8 +17,9 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 
-alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+auto_impl = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
 prost = { workspace = true }

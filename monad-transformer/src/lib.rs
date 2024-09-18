@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use auto_impl::auto_impl;
 use bytes::{Buf, Bytes};
 use monad_crypto::certificate_signature::PubKey;
 use monad_tracing_counter::inc_count;
@@ -622,6 +623,7 @@ pub type BytesTransformerPipeline<PT> = Vec<BytesTransformer<PT>>;
  * pipeline consist of transformers that goes through all the output
  * you can also use multiple pipelines to filter target for unique needs
  * */
+#[auto_impl(Box)]
 pub trait Pipeline<M> {
     type NodeIdPubKey: PubKey;
     #[must_use]
@@ -635,29 +637,6 @@ pub trait Pipeline<M> {
     /// pipeline must always emit delays >= min_delay for EXTERNAl messages
     /// min_external_delay MUST be > 0
     fn min_external_delay(&self) -> Duration;
-}
-
-impl<T: Pipeline<M> + ?Sized, M> Pipeline<M> for Box<T> {
-    type NodeIdPubKey = T::NodeIdPubKey;
-
-    fn process(
-        &mut self,
-        message: LinkMessage<Self::NodeIdPubKey, M>,
-    ) -> Vec<(Duration, LinkMessage<Self::NodeIdPubKey, M>)> {
-        (**self).process(message)
-    }
-
-    fn len(&self) -> usize {
-        (**self).len()
-    }
-
-    fn is_empty(&self) -> bool {
-        (**self).is_empty()
-    }
-
-    fn min_external_delay(&self) -> Duration {
-        (**self).min_external_delay()
-    }
 }
 
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through

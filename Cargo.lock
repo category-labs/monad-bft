@@ -3412,6 +3412,7 @@ dependencies = [
 name = "monad-async-state-verify"
 version = "0.1.0"
 dependencies = [
+ "auto_impl",
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
@@ -3567,6 +3568,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "auto_impl",
  "bytes",
  "hex",
  "monad-crypto",
@@ -4159,6 +4161,7 @@ dependencies = [
 name = "monad-router-scheduler"
 version = "0.1.0"
 dependencies = [
+ "auto_impl",
  "bytes",
  "monad-crypto",
  "monad-types",
@@ -4381,6 +4384,7 @@ dependencies = [
 name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
+ "auto_impl",
  "bytes",
  "monad-crypto",
  "monad-tracing-counter",
@@ -4528,6 +4532,7 @@ name = "monad-validator"
 version = "0.1.0"
 dependencies = [
  "as-any",
+ "auto_impl",
  "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
@@ -4566,6 +4571,7 @@ dependencies = [
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
+ "auto_impl",
  "bytes",
  "chrono",
  "clap 4.4.10",

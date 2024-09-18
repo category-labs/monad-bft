@@ -15,6 +15,7 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+auto_impl = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 

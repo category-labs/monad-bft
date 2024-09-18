@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -208,6 +209,7 @@ impl std::fmt::Debug for PayloadId {
 }
 
 /// Provides methods for Consensus to validate state root hashes
+#[auto_impl(Box)]
 pub trait StateRootValidator {
     /// Add the state root hash that corresponds to the sequence number
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: StateRootHash);
@@ -222,24 +224,6 @@ pub trait StateRootValidator {
 
     /// Return delay parameter
     fn get_delay(&self) -> SeqNum;
-}
-
-impl<T: StateRootValidator + ?Sized> StateRootValidator for Box<T> {
-    fn add_state_root(&mut self, seq_num: SeqNum, root_hash: StateRootHash) {
-        (**self).add_state_root(seq_num, root_hash)
-    }
-
-    fn get_next_state_root(&self, seq_num: SeqNum) -> Option<StateRootHash> {
-        (**self).get_next_state_root(seq_num)
-    }
-
-    fn validate(&self, seq_num: SeqNum, block_state_root_hash: StateRootHash) -> StateRootResult {
-        (**self).validate(seq_num, block_state_root_hash)
-    }
-
-    fn get_delay(&self) -> SeqNum {
-        (**self).get_delay()
-    }
 }
 
 /// The outcomes of validating state root hashes

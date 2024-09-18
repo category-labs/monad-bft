@@ -1,5 +1,6 @@
 use core::fmt::Debug;
 
+use auto_impl::auto_impl;
 use monad_state_backend::{InMemoryState, StateBackend};
 
 use crate::{
@@ -19,6 +20,7 @@ pub enum BlockValidationError {
     HeaderPayloadMismatchError,
 }
 
+#[auto_impl(Box)]
 pub trait BlockValidator<SCT, BPT, SBT>
 where
     SCT: SignatureCollection,
@@ -31,23 +33,6 @@ where
         payload: Payload,
         author_pubkey: &SignatureCollectionPubKeyType<SCT>,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
-}
-
-impl<SCT, BPT, SBT, T> BlockValidator<SCT, BPT, SBT> for Box<T>
-where
-    SCT: SignatureCollection,
-    BPT: BlockPolicy<SCT, SBT>,
-    SBT: StateBackend,
-    T: BlockValidator<SCT, BPT, SBT> + ?Sized,
-{
-    fn validate(
-        &self,
-        block: Block<SCT>,
-        payload: Payload,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
-    ) -> Result<BPT::ValidatedBlock, BlockValidationError> {
-        (**self).validate(block, payload, author_pubkey)
-    }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]

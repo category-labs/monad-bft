@@ -1,3 +1,4 @@
+use auto_impl::auto_impl;
 use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
@@ -39,6 +40,7 @@ pub enum AsyncStateVerifyUpdateConfig {
     Quorum(fn(Stake) -> Stake),
 }
 
+#[auto_impl(Box)]
 pub trait AsyncStateVerifyProcess {
     type SignatureCollectionType: SignatureCollection;
     type ValidatorSetType: ValidatorSetType<
@@ -65,39 +67,6 @@ pub trait AsyncStateVerifyProcess {
             SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         >,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>>;
-}
-
-impl<T> AsyncStateVerifyProcess for Box<T>
-where
-    T: AsyncStateVerifyProcess + ?Sized,
-{
-    type SignatureCollectionType = T::SignatureCollectionType;
-    type ValidatorSetType = T::ValidatorSetType;
-
-    fn handle_local_state_root(
-        &mut self,
-        self_id: NodeId<<Self::SignatureCollectionType as SignatureCollection>::NodeIdPubKey>,
-        cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
-        info: StateRootHashInfo,
-        epoch: Epoch,
-        round: Round,
-    ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
-        (**self).handle_local_state_root(self_id, cert_keypair, info, epoch, round)
-    }
-
-    fn handle_peer_state_root(
-        &mut self,
-        peer: NodeId<<Self::SignatureCollectionType as SignatureCollection>::NodeIdPubKey>,
-        info: StateRootHashInfo,
-        sig: <Self::SignatureCollectionType as SignatureCollection>::SignatureType,
-        validators: &Self::ValidatorSetType,
-        validator_mapping: &ValidatorMapping<
-            <Self::SignatureCollectionType as SignatureCollection>::NodeIdPubKey,
-            SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
-        >,
-    ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
-        (**self).handle_peer_state_root(peer, info, sig, validators, validator_mapping)
-    }
 }
 
 /// Helper trait that's only used for dynamic dispatch boxing
