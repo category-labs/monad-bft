@@ -149,6 +149,24 @@ impl EthTxPool {
                 .get(eth_address)
                 .expect("account_base_nonces must be populated");
 
+            if tracing::event_enabled!(tracing::Level::TRACE) {
+                transaction_group
+                    .transactions
+                    .iter()
+                    .filter(|&(nonce, _)| *nonce < lowest_valid_nonce)
+                    .for_each(|(nonce, txn)| {
+                        trace!(
+                            "validate_nonces_and_cariage_fee \
+                        txn {:?} will be excluded \
+                        nonce is : {:?} < lowest_valid_nonce {:?} \
+                        ",
+                            txn.0.hash(),
+                            nonce,
+                            lowest_valid_nonce
+                        )
+                    })
+            }
+
             // Remove transactions with nonces lower than the lowest valid nonce
             transaction_group
                 .transactions
