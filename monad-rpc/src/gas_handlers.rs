@@ -1,4 +1,7 @@
-use std::{ops::Sub, path::Path};
+use std::{
+    ops::{Div, Sub},
+    path::Path,
+};
 
 use alloy_primitives::{U256, U64};
 use monad_blockdb::BlockTagKey;
@@ -264,11 +267,42 @@ pub async fn monad_eth_feeHistory(
 ) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
 
-    let block_count: u64 = params.block_count.0;
-    if block_count == 0 {
-        return Ok(MonadFeeHistory(FeeHistory::default()));
+    // Between 1 and 1024 blocks are supported
+    let block_count = params.block_count.0;
+    if !(1..=1024).contains(&block_count) {
+        return Err(JsonRpcError::custom(
+            "block count must be between 1 and 1024".to_string(),
+        ));
     }
 
-    // TODO: retrieve fee parameters from historical blocks
-    Ok(MonadFeeHistory(FeeHistory::default()))
+    let block = match blockdb_env
+        .get_block_by_tag(params.newest_block.into())
+        .await
+    {
+        Some(block) => block,
+        None => {
+            debug!("unable to retrieve latest block");
+            return Err(JsonRpcError::internal_error());
+        }
+    };
+
+    let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default();
+    let gas_used_ratio = (block.block.gas_used as f64).div(block.block.gas_limit as f64);
+
+    let reward = if params.reward_percentiles.is_empty() {
+        None
+    } else {
+        Some(vec![
+            vec![U256::ZERO; params.reward_percentiles.len()];
+            block_count as usize
+        ])
+    };
+
+    // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default
+    Ok(MonadFeeHistory(FeeHistory {
+        base_fee_per_gas: vec![U256::from(base_fee_per_gas); (block_count + 1) as usize],
+        gas_used_ratio: vec![gas_used_ratio; block_count as usize],
+        reward,
+        oldest_block: U256::from(block.block.number.saturating_sub(block_count)),
+    }))
 }
