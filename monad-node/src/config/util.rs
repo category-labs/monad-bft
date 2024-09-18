@@ -8,7 +8,7 @@ where
 {
     let mut hex_str: String = Deserialize::deserialize(deserializer)?;
 
-    if let Some(("", hex_str_suffix)) = hex_str.split_once("0x") {
+    if let Some(hex_str_suffix) = hex_str.strip_prefix("0x") {
         hex_str = hex_str_suffix.to_owned();
     }
 
@@ -23,7 +23,7 @@ where
 {
     let mut hex_str: String = Deserialize::deserialize(deserializer)?;
 
-    if let Some(("", hex_str_suffix)) = hex_str.split_once("0x") {
+    if let Some(hex_str_suffix) = hex_str.strip_prefix("0x") {
         hex_str = hex_str_suffix.to_owned();
     }
 

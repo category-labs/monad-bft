@@ -269,11 +269,12 @@ where
     P: PubKey,
 {
     let buf = <String as Deserialize>::deserialize(deserializer)?;
-    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
-        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
-    } else {
+
+    let Some(hex_str) = buf.strip_prefix("0x") else {
         return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
     };
+
+    let bytes = hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?;
 
     P::from_bytes(&bytes).map_err(<D::Error as serde::de::Error>::custom)
 }
