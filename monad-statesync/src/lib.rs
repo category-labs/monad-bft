@@ -18,6 +18,7 @@ use monad_types::NodeId;
 
 use crate::ffi::Target;
 
+#[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/state_sync.rs"));
 }
