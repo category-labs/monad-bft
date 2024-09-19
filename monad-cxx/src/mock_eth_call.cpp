@@ -44,10 +44,11 @@ struct monad_state_override_set *create_empty_state_override_set()
     return nullptr;
 }
 
-void add_override_address(monad_state_override_set *, bytes const &) {}
+void add_override_address(monad_state_override_set *, bytes address) {}
 
 void set_override_balance(
-    monad_state_override_set *, bytes const &, bytes const &)
+    monad_state_override_set *, bytes address, bytes balance,
+    uint64_t balance_len)
 {
 }
 
@@ -56,7 +57,10 @@ void set_override_nonce(
 {
 }
 
-void set_override_code(monad_state_override_set *, bytes address, bytes code) {}
+void set_override_code(
+    monad_state_override_set *, bytes address, bytes code, uint64_t code_len)
+{
+}
 
 void set_override_state_diff(
     monad_state_override_set *, bytes address, bytes key, bytes value)
@@ -71,7 +75,7 @@ void set_override_state(
 monad_evmc_result eth_call(
     bytes rlp_txn, uint64_t txn_len, bytes rlp_header, uint64_t header_len,
     bytes rlp_sender, uint64_t const block_number, char const *triedb_path,
-    char const *blockdb_path, monad_state_override_set const &state_overrides)
+    char const *blockdb_path, monad_state_override_set *state_overrides)
 {
     static constexpr auto N = 32;
     std::array<uint8_t, N> data = {
