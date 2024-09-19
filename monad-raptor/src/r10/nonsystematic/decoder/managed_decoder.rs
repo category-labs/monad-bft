@@ -101,7 +101,7 @@ impl ManagedDecoder {
 
         let seen_esis = bitvec![usize, Lsb0; 0; max_encoded_symbols];
 
-        let decoder = Decoder::new(num_source_symbols)?;
+        let decoder = Decoder::with_capacity(num_source_symbols, max_encoded_symbols)?;
 
         let buffer_set = BufferSet::new(decoder.num_temp_buffers_required(), symbol_len);
 

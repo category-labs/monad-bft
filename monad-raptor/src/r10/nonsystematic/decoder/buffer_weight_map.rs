@@ -16,11 +16,11 @@ pub struct BufferWeightMap {
 }
 
 impl BufferWeightMap {
-    pub fn new(num_expected_buffers: usize) -> BufferWeightMap {
+    pub fn with_capacity(capacity: usize) -> BufferWeightMap {
         BufferWeightMap {
-            heap_index_to_buffer_index: Vec::with_capacity(num_expected_buffers),
-            buffer_index_to_weight: Vec::with_capacity(num_expected_buffers),
-            buffer_index_to_heap_index: Vec::with_capacity(num_expected_buffers),
+            heap_index_to_buffer_index: Vec::with_capacity(capacity),
+            buffer_index_to_weight: Vec::with_capacity(capacity),
+            buffer_index_to_heap_index: Vec::with_capacity(capacity),
         }
     }
 
