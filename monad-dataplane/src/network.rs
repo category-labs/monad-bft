@@ -332,12 +332,10 @@ impl<'a> NetworkSocket<'a> {
         self.sendmmsg(sendmmsg_len)
     }
 
-    pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) -> Option<()> {
+    pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) {
         if msg.is_empty() {
-            return None;
+            return;
         }
-
-        assert!(msg.len() < NUM_TX_MSGHDR);
 
         let _msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
 
@@ -363,10 +361,16 @@ impl<'a> NetworkSocket<'a> {
                     unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
 
                 i += 1;
+                if i == NUM_TX_MSGHDR {
+                    self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"));
+                    i = 0;
+                }
             }
         }
 
-        self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"))
+        if i != 0 {
+            self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"));
+        }
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {
