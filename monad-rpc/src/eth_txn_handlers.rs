@@ -17,9 +17,8 @@ use crate::{
     block_handlers::block_receipts,
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction,
-        MonadTransactionReceipt, Quantity, UnformattedData,
+        BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
+        Quantity, UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
@@ -228,13 +227,10 @@ impl<'de> Deserialize<'de> for FilterParams {
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum LogFilter {
     Range {
-        #[serde(deserialize_with = "deserialize_block_tags")]
         from_block: BlockTags,
-        #[serde(deserialize_with = "deserialize_block_tags")]
         to_block: BlockTags,
     },
     BlockHash {
-        #[serde(deserialize_with = "deserialize_fixed_data")]
         block_hash: EthHash,
     },
 }
@@ -366,7 +362,6 @@ pub async fn monad_eth_getLogs(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthSendRawTransactionParams {
-    #[serde(deserialize_with = "deserialize_unformatted_data")]
     hex_tx: UnformattedData,
 }
 
@@ -403,7 +398,6 @@ pub async fn monad_eth_sendRawTransaction(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionReceiptParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
@@ -460,7 +454,6 @@ pub async fn monad_eth_getTransactionReceipt(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
@@ -495,9 +488,7 @@ pub async fn monad_eth_getTransactionByHash(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
-    #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 
@@ -529,9 +520,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
-    #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 

@@ -9,10 +9,7 @@ use tracing::trace;
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
-    eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, BlockTags, EthHash, MonadBlock,
-        MonadTransactionReceipt, Quantity,
-    },
+    eth_json_types::{BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity},
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
@@ -118,7 +115,6 @@ pub async fn monad_eth_chainId(chain_id: u64) -> JsonRpcResult<Quantity> {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
     return_full_txns: bool,
 }
@@ -151,7 +147,6 @@ pub async fn monad_eth_getBlockByHash(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockByNumberParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
     return_full_txns: bool,
 }
@@ -183,7 +178,6 @@ pub async fn monad_eth_getBlockByNumber(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockTransactionCountByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
 }
 
@@ -210,7 +204,6 @@ pub async fn monad_eth_getBlockTransactionCountByHash(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockTransactionCountByNumberParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
 }
 
@@ -283,7 +276,6 @@ pub async fn block_receipts(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
 }
 

@@ -6,10 +6,7 @@ use serde_json::Value;
 use tracing::trace;
 
 use crate::{
-    eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, deserialize_u256, serialize_result,
-        BlockTags, EthAddress, EthHash, MonadU256,
-    },
+    eth_json_types::{serialize_result, BlockTags, EthAddress, EthHash, MonadU256},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{TriedbEnv, TriedbResult},
@@ -17,9 +14,7 @@ use crate::{
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBalanceParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
@@ -44,9 +39,7 @@ pub async fn monad_eth_getBalance(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetCodeParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
@@ -60,7 +53,7 @@ pub async fn monad_eth_getCode(
     trace!("monad_eth_getCode: {params:?}");
 
     let code_hash = match triedb_env
-        .get_account(params.account.0, params.block_number.into())
+        .get_account(params.account.0, params.block_number.clone().into())
         .await
     {
         TriedbResult::Null => return Ok(format!("0x")),
@@ -80,11 +73,8 @@ pub async fn monad_eth_getCode(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetStorageAtParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
-    #[serde(deserialize_with = "deserialize_u256")]
     position: MonadU256,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
@@ -113,9 +103,7 @@ pub async fn monad_eth_getStorageAt(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionCountParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 
@@ -158,10 +146,8 @@ pub async fn monad_eth_accounts(triedb_env: &TriedbEnv) -> Result<Value, JsonRpc
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetProofParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     account: EthAddress,
     keys: Vec<EthHash>,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
 }
 

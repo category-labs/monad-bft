@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
-    eth_json_types::{deserialize_fixed_data, BlockTags, EthHash, MonadU256},
+    eth_json_types::{BlockTags, EthHash, MonadU256},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
@@ -91,7 +91,6 @@ pub async fn monad_debug_getRawReceipts(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugGetRawTransactionParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 

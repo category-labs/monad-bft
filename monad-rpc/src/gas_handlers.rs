@@ -11,9 +11,7 @@ use tracing::{debug, trace};
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     call::{sender_gas_allowance, CallRequest},
-    eth_json_types::{
-        deserialize_block_tags, deserialize_quantity, BlockTags, MonadFeeHistory, Quantity,
-    },
+    eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{TriedbEnv, TriedbResult},
 };
@@ -21,7 +19,6 @@ use crate::{
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthEstimateGasParams {
     tx: CallRequest,
-    #[serde(default, deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
@@ -250,9 +247,7 @@ pub async fn monad_eth_maxPriorityFeePerGas() -> JsonRpcResult<Quantity> {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthHistoryParams {
-    #[serde(deserialize_with = "deserialize_quantity")]
     block_count: Quantity,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     newest_block: BlockTags,
     reward_percentiles: Vec<f64>,
 }

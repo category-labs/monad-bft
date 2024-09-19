@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
-    eth_json_types::{deserialize_block_tags, BlockTags, Quantity},
+    eth_json_types::{BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{TriedbEnv, TriedbResult},
@@ -306,7 +306,6 @@ pub async fn sender_gas_allowance(
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadEthCallParams {
     transaction: CallRequest,
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
