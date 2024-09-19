@@ -27,6 +27,11 @@ pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unc
 pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 
+// Drop a message to be transmitted if it would lead to more than this number of packets
+// to be transmitted.  This can happen in Broadcast mode when the message is large or
+// if we have many peers to transmit the message to.
+const MAX_NUM_PACKETS: usize = 65535;
+
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
 
@@ -342,30 +347,41 @@ where
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
     let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
 
-    let num_packets: u16 = {
-        let mut num_packets: u16 = (app_message_len
+    let num_packets: usize = {
+        let mut num_packets: usize = (app_message_len
             .div_ceil(u32::from(data_size))
             .max(SOURCE_SYMBOLS_MIN.try_into().unwrap())
             * u32::from(redundancy))
         .try_into()
-        .expect("is redundancy too high? doesn't fit in u16");
+        .expect("num_packets doesn't fit in usize");
 
         if let BuildTarget::Broadcast(epoch_validators) = &build_target {
             num_packets = num_packets
-                .checked_mul(epoch_validators.view().len() as u16)
-                .expect("num_packets doesn't fit in u16")
+                .checked_mul(epoch_validators.view().len())
+                .expect("num_packets doesn't fit in usize")
+        }
+
+        if num_packets > MAX_NUM_PACKETS {
+            tracing::warn!(
+                ?build_target,
+                ?known_addresses,
+                num_packets,
+                MAX_NUM_PACKETS,
+                "exceeded maximum number of packets in a message, dropping message",
+            );
+            return Vec::new();
         }
 
         num_packets
     };
 
-    let mut message = BytesMut::zeroed(gso_size as usize * num_packets as usize);
+    let mut message = BytesMut::zeroed(gso_size as usize * num_packets);
 
     let mut chunk_datas = message
         .chunks_mut(gso_size.into())
         .map(|chunk| (None, &mut chunk[(HEADER_LEN + proof_size).into()..]))
         .collect_vec();
-    assert_eq!(chunk_datas.len(), num_packets as usize);
+    assert_eq!(chunk_datas.len(), num_packets);
 
     // the GSO-aware indices into `message`
     let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
@@ -376,7 +392,7 @@ where
                 tracing::warn!(?to, "not sending message, address unknown");
                 return Vec::new();
             };
-            outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets as usize));
+            outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets));
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
                 chunk_data[0..20].copy_from_slice(&compute_hash(to));
@@ -388,11 +404,9 @@ where
             let total_validators = epoch_validators.view().len();
             let mut running_validator_count = 0;
             for (node_id, _validator) in epoch_validators.view().iter() {
-                let start_idx: usize =
-                    num_packets as usize * running_validator_count / total_validators;
+                let start_idx: usize = num_packets * running_validator_count / total_validators;
                 running_validator_count += 1;
-                let end_idx: usize =
-                    num_packets as usize * running_validator_count / total_validators;
+                let end_idx: usize = num_packets * running_validator_count / total_validators;
 
                 if start_idx == end_idx {
                     continue;
