@@ -52,7 +52,7 @@ use crate::{
         monad_trace_transaction,
     },
     trace_handlers::{
-        monad_debugTraceBlockByHash, monad_debugTraceBlockByNumber, monad_debugTraceTransaction,
+        monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
     triedb::TriedbEnv,
     txpool::{
@@ -195,14 +195,14 @@ async fn rpc_select(
         "debug_traceBlockByHash" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debugTraceBlockByHash(triedb_env, params)
+            monad_debug_traceBlockByHash(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_traceBlockByNumber" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debugTraceBlockByNumber(triedb_env, params)
+            monad_debug_traceBlockByNumber(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
@@ -216,7 +216,7 @@ async fn rpc_select(
         "debug_traceTransaction" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debugTraceTransaction(triedb_env, params)
+            monad_debug_traceTransaction(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }

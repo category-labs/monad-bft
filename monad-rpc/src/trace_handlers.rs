@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace};
 
 use crate::{
-    eth_json_types::{BlockTags, EthAddress, EthHash, MonadU256, Quantity, UnformattedData},
+    eth_json_types::{
+        BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
+    },
+    hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::Triedb,
 };
@@ -180,7 +183,7 @@ pub struct MonadDebugTraceBlockByHashParams {
 #[rpc(method = "debug_traceBlockByHash")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
-pub async fn monad_debugTraceBlockByHash<T: Triedb>(
+pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     triedb_env: &T,
     params: MonadDebugTraceBlockByHashParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
@@ -194,25 +197,26 @@ pub async fn monad_debugTraceBlockByHash<T: Triedb>(
         return Err(JsonRpcError::internal_error("block not found".to_string()));
     };
 
+    let mut resp = Vec::new();
+
     let tx_ids = triedb_env
         .get_transactions(block_num)
         .await?
         .iter()
-        .enumerate()
-        .map(|(idx, tx)| (idx, tx.hash()))
+        .map(|tx| tx.hash())
         .collect::<Vec<_>>();
+    let call_frames = triedb_env.get_call_frames(block_num).await?;
 
-    let mut resp = Vec::new();
-    for (idx, tx_hash) in tx_ids {
+    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+        let rlp_call_frame = &mut call_frame.as_slice();
         let Some(traces) =
-            fetch_trace_for_tx(triedb_env, idx as u64, block_num, &params.tracer).await?
+            decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
         else {
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
-
         resp.push(MonadDebugTraceBlockResult {
-            tx_hash: tx_hash.into(),
-            trace: traces,
+            tx_hash: FixedData::<32>::from(tx_id),
+            result: traces,
         });
     }
 
@@ -227,40 +231,42 @@ pub struct MonadDebugTraceBlockByNumberParams {
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct MonadDebugTraceBlockResult {
     tx_hash: EthHash,
-    trace: MonadCallFrame,
+    result: MonadCallFrame,
 }
 
 #[rpc(method = "debug_traceBlockByNumber")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
-pub async fn monad_debugTraceBlockByNumber<T: Triedb>(
+pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     triedb_env: &T,
     params: MonadDebugTraceBlockByNumberParams,
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
     let block_num = params.block_number.0;
+    let mut resp = Vec::new();
+
     let tx_ids = triedb_env
         .get_transactions(block_num)
         .await?
         .iter()
-        .enumerate()
-        .map(|(idx, tx)| (idx, tx.hash()))
+        .map(|tx| tx.hash())
         .collect::<Vec<_>>();
+    let call_frames = triedb_env.get_call_frames(block_num).await?;
 
-    let mut resp = Vec::new();
-    for (idx, tx_hash) in tx_ids {
+    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+        let rlp_call_frame = &mut call_frame.as_slice();
         let Some(traces) =
-            fetch_trace_for_tx(triedb_env, idx as u64, block_num, &params.tracer).await?
+            decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
         else {
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
-
         resp.push(MonadDebugTraceBlockResult {
-            tx_hash: tx_hash.into(),
-            trace: traces,
+            tx_hash: FixedData::<32>::from(tx_id),
+            result: traces,
         });
     }
 
@@ -270,7 +276,7 @@ pub async fn monad_debugTraceBlockByNumber<T: Triedb>(
 #[rpc(method = "debug_traceTransaction")]
 #[allow(non_snake_case)]
 /// Returns all traces of a given transaction.
-pub async fn monad_debugTraceTransaction<T: Triedb>(
+pub async fn monad_debug_traceTransaction<T: Triedb>(
     triedb_env: &T,
     params: MonadDebugTraceTransactionParams,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
@@ -286,26 +292,25 @@ pub async fn monad_debugTraceTransaction<T: Triedb>(
         ));
     };
 
-    fetch_trace_for_tx(
-        triedb_env,
-        tx_loc.tx_index,
-        tx_loc.block_num,
-        &params.tracer,
-    )
-    .await
-}
-
-async fn fetch_trace_for_tx<T: Triedb>(
-    triedb_env: &T,
-    txn_index: u64,
-    block_num: u64,
-    tracer: &TracerObject,
-) -> JsonRpcResult<Option<MonadCallFrame>> {
-    let Some(rlp_call_frames) = triedb_env.get_call_frame(txn_index, block_num).await? else {
+    let Some(rlp_call_frame) = triedb_env
+        .get_call_frame(tx_loc.tx_index, tx_loc.block_num)
+        .await?
+    else {
         return Ok(None);
     };
 
-    let mut call_frames = Vec::<Vec<CallFrame>>::decode(&mut rlp_call_frames.as_slice())
+    let rlp_call_frame = &mut rlp_call_frame.as_slice();
+
+    decode_call_frame(triedb_env, rlp_call_frame, tx_loc.block_num, &params.tracer).await
+}
+
+async fn decode_call_frame<T: Triedb>(
+    triedb_env: &T,
+    rlp_call_frame: &mut &[u8],
+    block_num: u64,
+    tracer: &TracerObject,
+) -> JsonRpcResult<Option<MonadCallFrame>> {
+    let mut call_frames = Vec::<Vec<CallFrame>>::decode(rlp_call_frame)
         .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
         .into_iter()
         .flatten()
@@ -367,7 +372,10 @@ async fn include_code_output<T: Triedb>(
             .get_code(account.code_hash, BlockTags::Number(Quantity(block_num)))
             .await?;
 
-        frame.output = code.into();
+        frame.output = hex::decode(&code)
+            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))
+            .unwrap()
+            .into();
     }
 
     Ok(())

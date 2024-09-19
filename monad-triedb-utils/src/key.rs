@@ -20,7 +20,7 @@ pub enum KeyInput<'a> {
     BlockHeader,
     TxHash(&'a [u8; 32]),
     BlockHash(&'a [u8; 32]),
-    CallFrame(u64),
+    CallFrame(Option<u64>),
 }
 
 pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
@@ -102,12 +102,14 @@ pub fn create_triedb_key(key: KeyInput) -> (Vec<u8>, u8) {
         KeyInput::CallFrame(tx_index) => {
             key_nibbles.push(CALL_FRAME_NIBBLE);
 
-            let mut rlp_buf = vec![];
-            tx_index.encode(&mut rlp_buf);
+            if let Some(index) = tx_index {
+                let mut rlp_buf = vec![];
+                index.encode(&mut rlp_buf);
 
-            for byte in rlp_buf {
-                key_nibbles.push(byte >> 4);
-                key_nibbles.push(byte & 0xF);
+                for byte in rlp_buf {
+                    key_nibbles.push(byte >> 4);
+                    key_nibbles.push(byte & 0xF);
+                }
             }
         }
     }
