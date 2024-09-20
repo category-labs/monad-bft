@@ -663,11 +663,6 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build_global()
-        .expect("thread pool with 4 threads");
-
     let file_block_reader = Some(FileBlockReader::new(args.execution_ledger_path.clone()));
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),

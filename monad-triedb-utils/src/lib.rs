@@ -7,7 +7,7 @@ use std::{
 };
 
 use decode::rlp_decode_storage_slot;
-use futures::{executor::block_on, future::join_all, FutureExt};
+use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::Handle;
@@ -63,19 +63,20 @@ impl TriedbReader {
         let eth_account_receivers = eth_addresses.map(|eth_address| {
             num_accounts += 1;
             let (triedb_key, key_len_nibbles) = create_addr_key(eth_address.as_ref());
-            self.handle
-                .read_async(
-                    triedb_key.as_ref(),
-                    key_len_nibbles,
-                    block_id,
-                    completed_counter.clone(),
-                )
-                .map(|receiver_result| {
-                    // Receiver should not fail
-                    let maybe_rlp_account = receiver_result.expect("receiver can't be canceled");
-                    // RLP decode the received account value
-                    maybe_rlp_account.and_then(rlp_decode_account)
-                })
+            let (sender, receiver) = oneshot::channel();
+            self.handle.read_async(
+                triedb_key.as_ref(),
+                key_len_nibbles,
+                block_id,
+                completed_counter.clone(),
+                sender,
+            );
+            receiver.map(|receiver_result| {
+                // Receiver should not fail
+                let maybe_rlp_account = receiver_result.expect("receiver can't be canceled");
+                // RLP decode the received account value
+                maybe_rlp_account.and_then(rlp_decode_account)
+            })
         });
 
         // Join all futures of receivers

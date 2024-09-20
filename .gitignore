@@ -1,7 +1,8 @@
 /target
 /docker/flexnet/.venv
 /docker/flexnet/logs
-/docker/devnet/monad/blockdb
+/docker/devnet/monad/bft-ledger
+/docker/devnet/monad/block-payload
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal_*
 /docker/devnet/monad/triedb

@@ -1,6 +1,5 @@
 use std::{
     path::{Path, PathBuf},
-    rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         mpsc, Arc,
@@ -9,18 +8,29 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::channel::oneshot::Receiver;
+use futures::channel::oneshot;
 use monad_triedb::Handle as TriedbHandle;
 use monad_triedb_utils::{
     decode::{rlp_decode_account, rlp_decode_storage_slot},
     key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
 };
-use tokio::sync::oneshot;
 use tracing::error;
 
 type EthAddress = [u8; 20];
 type EthStorageKey = [u8; 32];
 type EthCodeHash = [u8; 32];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockTags {
+    Number(u64),
+    Latest,
+}
+
+impl Default for BlockTags {
+    fn default() -> Self {
+        Self::Latest
+    }
+}
 
 enum TriedbRequest {
     BlockNumberRequest(BlockNumberRequest),
@@ -36,7 +46,7 @@ struct BlockNumberRequest {
 struct AsyncRequest {
     // a sender for the polling thread to send the result back to the request handler
     // after polling is completed
-    request_sender: oneshot::Sender<Receiver<Option<Vec<u8>>>>,
+    request_sender: oneshot::Sender<Option<Vec<u8>>>,
     // counter which is updated when TrieDB processes a single async read to completion
     completed_counter: Arc<AtomicUsize>,
     // triedb_key and key_len_nibbles are used to read items from triedb
@@ -58,22 +68,10 @@ pub enum TriedbResult {
     BlockNum(u64),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockTags {
-    Number(u64),
-    Latest,
-}
-
-impl Default for BlockTags {
-    fn default() -> Self {
-        Self::Latest
-    }
-}
-
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
     // create a new triedb handle for the polling thread
-    let triedb_handle: Rc<TriedbHandle> =
-        Rc::new(TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path"));
+    let triedb_handle: TriedbHandle =
+        TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
 
     // create a polling interval of 200 microseconds
     let poll_interval = Duration::from_micros(200);
@@ -88,16 +86,14 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
         // spin on receiver
         match receiver.try_recv() {
             Ok(triedb_request) => {
-                let triedb_handle_clone = Rc::clone(&triedb_handle);
-
                 match triedb_request {
                     TriedbRequest::BlockNumberRequest(block_num_request) => {
-                        let block_num = triedb_handle_clone.latest_block();
+                        let block_num = triedb_handle.latest_block();
                         let _ = block_num_request.request_sender.send(block_num);
                     }
                     TriedbRequest::AsyncRequest(async_request) => {
                         // Process the request directly in this thread
-                        process_request(triedb_handle_clone, async_request);
+                        process_request(&triedb_handle, async_request);
                     }
                 }
             }
@@ -109,22 +105,21 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
     }
 }
 
-fn process_request(triedb_handle: Rc<TriedbHandle>, async_request: AsyncRequest) {
+fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
     // Parse block tag
     let block_num = match async_request.block_tag {
         BlockTags::Number(q) => q,
         BlockTags::Latest => triedb_handle.latest_block(),
     };
 
-    let future_result = triedb_handle.read_async(
+    // read_async will send back a future to request_receiver of tokio oneshot channel
+    triedb_handle.read_async(
         &async_request.triedb_key,
         async_request.key_len_nibbles,
         block_num,
         async_request.completed_counter,
+        async_request.request_sender,
     );
-
-    // send read async future back to original thread
-    let _ = async_request.request_sender.send(future_result);
 }
 
 #[derive(Clone)]
@@ -198,37 +193,31 @@ impl TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result.await {
-                Ok(result) => {
-                    // sanity check to ensure completed_counter is equal to 1
-                    if completed_counter.load(SeqCst) != 1 {
-                        error!("Unexpected completed_counter value");
-                        return TriedbResult::Error;
-                    }
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
 
-                    match result {
-                        Some(triedb_result) => rlp_decode_account(triedb_result)
-                            .map(|account| {
-                                TriedbResult::Account(
-                                    account.nonce,
-                                    account.balance,
-                                    account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                error!("Decoding account error");
-                                TriedbResult::Error
-                            }),
-                        None => TriedbResult::Null,
-                    }
+                match result {
+                    Some(triedb_result) => rlp_decode_account(triedb_result)
+                        .map(|account| {
+                            TriedbResult::Account(
+                                account.nonce,
+                                account.balance,
+                                account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            error!("Decoding account error");
+                            TriedbResult::Error
+                        }),
+                    None => TriedbResult::Null,
                 }
-                Err(e) => {
-                    error!("Error awaiting result: {e}");
-                    TriedbResult::Error
-                }
-            },
+            }
             Err(e) => {
-                error!("Error when receiving response from polling thread: {e}");
+                error!("Error awaiting result: {e}");
                 TriedbResult::Error
             }
         }
@@ -263,31 +252,25 @@ impl TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result.await {
-                Ok(result) => {
-                    // sanity check to ensure completed_counter is equal to 1
-                    if completed_counter.load(SeqCst) != 1 {
-                        error!("Unexpected completed_counter value");
-                        return TriedbResult::Error;
-                    }
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
 
-                    match result {
-                        Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
-                            .map(TriedbResult::Storage)
-                            .unwrap_or_else(|| {
-                                error!("Decoding storage slot error");
-                                TriedbResult::Error
-                            }),
-                        None => TriedbResult::Null,
-                    }
+                match result {
+                    Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
+                        .map(TriedbResult::Storage)
+                        .unwrap_or_else(|| {
+                            error!("Decoding storage slot error");
+                            TriedbResult::Error
+                        }),
+                    None => TriedbResult::Null,
                 }
-                Err(e) => {
-                    error!("Error awaiting result: {e}");
-                    TriedbResult::Error
-                }
-            },
+            }
             Err(e) => {
-                error!("Error when receiving response from polling thread: {e}");
+                error!("Error awaiting result: {e}");
                 TriedbResult::Error
             }
         }
@@ -317,26 +300,20 @@ impl TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result.await {
-                Ok(result) => {
-                    // sanity check to ensure completed_counter is equal to 1
-                    if completed_counter.load(SeqCst) != 1 {
-                        error!("Unexpected completed_counter value");
-                        return TriedbResult::Error;
-                    }
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
 
-                    match result {
-                        Some(code) => TriedbResult::Code(code),
-                        None => TriedbResult::Null,
-                    }
+                match result {
+                    Some(code) => TriedbResult::Code(code),
+                    None => TriedbResult::Null,
                 }
-                Err(e) => {
-                    error!("Error awaiting result: {e}");
-                    TriedbResult::Error
-                }
-            },
+            }
             Err(e) => {
-                error!("Error when receiving response from polling thread: {e}");
+                error!("Error awaiting result: {e}");
                 TriedbResult::Error
             }
         }
@@ -366,26 +343,20 @@ impl TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(result) => match result.await {
-                Ok(result) => {
-                    // sanity check to ensure completed_counter is equal to 1
-                    if completed_counter.load(SeqCst) != 1 {
-                        error!("Unexpected completed_counter value");
-                        return TriedbResult::Error;
-                    }
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
 
-                    match result {
-                        Some(receipt) => TriedbResult::Receipt(receipt),
-                        None => TriedbResult::Null,
-                    }
+                match result {
+                    Some(receipt) => TriedbResult::Receipt(receipt),
+                    None => TriedbResult::Null,
                 }
-                Err(e) => {
-                    error!("Error awaiting result: {e}");
-                    TriedbResult::Error
-                }
-            },
+            }
             Err(e) => {
-                error!("Error when receiving response from polling thread: {e}");
+                error!("Error awaiting result: {e}");
                 TriedbResult::Error
             }
         }
