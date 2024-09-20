@@ -6,7 +6,6 @@ use std::{
     },
 };
 
-use decode::rlp_decode_storage_slot;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
@@ -14,10 +13,7 @@ use monad_triedb::TriedbHandle;
 use monad_types::SeqNum;
 use tracing::{debug, warn};
 
-use crate::{
-    decode::rlp_decode_account,
-    key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
-};
+use crate::{decode::rlp_decode_account, key::create_addr_key};
 
 pub mod decode;
 pub mod key;
@@ -101,36 +97,6 @@ impl TriedbReader {
         }
 
         Some(block_on(eth_account_receivers))
-    }
-
-    pub fn get_storage_at(
-        &self,
-        eth_address: &[u8; 20],
-        storage_key: &[u8; 32],
-        block_id: u64,
-    ) -> Option<[u8; 32]> {
-        let (triedb_key, key_len_nibbles) = create_storage_at_key(eth_address, storage_key);
-
-        let result = self.handle.read(&triedb_key, key_len_nibbles, block_id);
-
-        let Some(storage_rlp) = result else {
-            debug!("storage {:?} not found at {:?}", eth_address, block_id);
-            return None;
-        };
-
-        rlp_decode_storage_slot(storage_rlp)
-    }
-
-    pub fn get_code(&self, code_hash: &[u8; 32], block_id: u64) -> Option<Vec<u8>> {
-        let (triedb_key, key_len_nibbles) = create_code_key(code_hash);
-
-        self.handle.read(&triedb_key, key_len_nibbles, block_id)
-    }
-
-    pub fn get_receipt(&self, txn_index: u64, block_id: u64) -> Option<Vec<u8>> {
-        let (triedb_key, key_len_nibbles) = create_receipt_key(txn_index);
-
-        self.handle.read(&triedb_key, key_len_nibbles, block_id)
     }
 }
 

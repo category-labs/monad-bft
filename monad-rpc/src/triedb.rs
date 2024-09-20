@@ -106,7 +106,7 @@ fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
         BlockTags::Latest => triedb_handle.latest_block(),
     };
 
-    // read_async will send back a future to request_receiver of tokio oneshot channel
+    // read_async will send back a future to request_receiver of oneshot channel
     triedb_handle.read_async(
         &async_request.triedb_key,
         async_request.key_len_nibbles,
