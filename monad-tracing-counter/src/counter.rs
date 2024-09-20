@@ -50,7 +50,7 @@ pub fn counter_get(
     span_prefix: Option<&'static str>,
     field: &'static str,
 ) -> Option<usize> {
-    let field_postfix = span_prefix.map_or(String::new(), |s| s.to_string()) + field;
+    let field_postfix = span_prefix.map_or(String::new(), ToString::to_string) + field;
     let mut count: Option<usize> = None;
     for (k, v) in counter.read().unwrap().iter() {
         let v = v.load(Ordering::Acquire);
@@ -118,9 +118,7 @@ impl<'a> Visitor<'a> {
             }
         }
         let mut lock = self.counts.write().unwrap();
-        let metric = lock
-            .entry(key.to_string())
-            .or_insert_with(|| AtomicUsize::new(0));
+        let metric = lock.entry(key.to_string()).or_default();
         metric.fetch_add(value, Ordering::Release);
     }
 

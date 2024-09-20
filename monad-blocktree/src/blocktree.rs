@@ -363,21 +363,21 @@ where
                         Err(BlockTreeError::BlockNotCoherent(block.get_id()))
                     }
                 };
-            } else {
-                self.tree.entry(next_block).and_modify(|entry| {
-                    entry.is_coherent = true;
-                });
-
-                // Can check coherency of children blocks now
-                block_ids_to_update.extend(
-                    self.tree
-                        .get(&next_block)
-                        .expect("should be in tree")
-                        .children_blocks
-                        .iter()
-                        .cloned(),
-                );
             }
+
+            self.tree.entry(next_block).and_modify(|entry| {
+                entry.is_coherent = true;
+            });
+
+            // Can check coherency of children blocks now
+            block_ids_to_update.extend(
+                self.tree
+                    .get(&next_block)
+                    .expect("should be in tree")
+                    .children_blocks
+                    .iter()
+                    .cloned(),
+            );
         }
         Ok(())
     }

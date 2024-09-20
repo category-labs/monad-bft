@@ -203,7 +203,7 @@ impl BlsAggregatePubKey {
         self.as_pubkey().validate()
     }
 
-    /// Create an AggregatePubKey from an slice of PubKeys
+    /// Create an AggregatePubKey from a slice of PubKeys
     pub fn aggregate(pks: &[&BlsPubKey]) -> Result<Self, BlsError> {
         let pks = pks.iter().map(|p| &p.0).collect::<Vec<_>>();
         blst_core::AggregatePublicKey::aggregate(pks.as_ref(), false)
@@ -216,7 +216,7 @@ impl BlsAggregatePubKey {
         self.0.add_public_key(&other.0, false).map_err(BlsError)
     }
 
-    /// Aggregate a AggregatePubKey to self
+    /// Aggregate an AggregatePubKey to self
     pub fn add_assign_aggregate(&mut self, other: &Self) {
         self.0.add_aggregate(&other.0)
     }

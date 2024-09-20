@@ -8,7 +8,7 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub type Nonce = u64;
 pub type Balance = u128;
 
-// FIXME reth types shouldn't be leaked
+// FIXME alloy types shouldn't be leaked
 /// A 20-byte Eth address
 #[derive(
     Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,

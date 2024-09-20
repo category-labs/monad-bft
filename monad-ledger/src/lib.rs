@@ -123,21 +123,21 @@ where
 
     fn create_eth_block(&mut self, block: &MonadBlock<SCT>) -> EthBlock {
         assert!(!block.is_empty_block());
-        if let TransactionPayload::List(txns) = &block.payload.txns {
-            // use the full transactions to create the eth block body
-            let block_body = generate_block_body(txns);
-
-            // the payload inside the monad block will be used to generate the eth header
-
-            let header = generate_header(&self.header_param, block, &block_body);
-
-            let mut header_bytes = Vec::default();
-            header.encode(&mut header_bytes);
-
-            block_body.create_block(header)
-        } else {
+        let TransactionPayload::List(txns) = &block.payload.txns else {
             unreachable!()
-        }
+        };
+
+        // use the full transactions to create the eth block body
+        let block_body = generate_block_body(txns);
+
+        // the payload inside the monad block will be used to generate the eth header
+
+        let header = generate_header(&self.header_param, block, &block_body);
+
+        let mut header_bytes = Vec::default();
+        header.encode(&mut header_bytes);
+
+        block_body.create_block(header)
     }
 }
 

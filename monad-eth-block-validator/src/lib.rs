@@ -44,72 +44,67 @@ impl EthValidator {
         &self,
         payload: &Payload,
     ) -> Result<(ValidatedTxns, NonceMap, CarriageCostMap), BlockValidationError> {
-        if matches!(payload.txns, TransactionPayload::Null) {
-            return Err(BlockValidationError::HeaderPayloadMismatchError);
-        }
-
-        match &payload.txns {
-            TransactionPayload::List(txns_rlp) => {
-                // RLP decodes the txns
-                let Ok(eth_txns) =
-                    Vec::<EthSignedTransaction>::decode(&mut txns_rlp.bytes().as_ref())
-                else {
-                    return Err(BlockValidationError::TxnError);
-                };
-
-                // recovering the signers verifies that these are valid signatures
-                let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
-                    .ok_or(BlockValidationError::TxnError)?;
-
-                // recover the account nonces and carriage cost usage in this block
-                let mut nonces = BTreeMap::new();
-                let mut carriage_costs = BTreeMap::new();
-
-                let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
-
-                for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
-                    if static_validate_transaction(&eth_txn, self.chain_id).is_err() {
-                        return Err(BlockValidationError::TxnError);
-                    }
-
-                    // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
-                    // update this when base fee is included in consensus proposal
-                    if eth_txn.max_fee_per_gas() < 1000 {
-                        return Err(BlockValidationError::TxnError);
-                    }
-
-                    let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
-                    // txn iteration is following the same order as they are in the
-                    // block. A block is invalid if we see a smaller or equal nonce
-                    // after the first or if there is a nonce gap
-                    if let Some(old_nonce) = maybe_old_nonce {
-                        if eth_txn.nonce() != old_nonce + 1 {
-                            return Err(BlockValidationError::TxnError);
-                        }
-                    }
-
-                    let carriage_cost_entry = carriage_costs.entry(EthAddress(signer)).or_insert(0);
-                    *carriage_cost_entry += compute_txn_carriage_cost(&eth_txn);
-                    validated_txns.push(eth_txn.with_signer(signer));
-                }
-
-                if validated_txns.len() > self.tx_limit {
-                    return Err(BlockValidationError::TxnError);
-                }
-
-                let total_gas = validated_txns
-                    .iter()
-                    .fold(0, |acc, tx| acc + tx.gas_limit());
-                if total_gas > self.block_gas_limit {
-                    return Err(BlockValidationError::TxnError);
-                }
-
-                Ok((validated_txns, nonces, carriage_costs))
-            }
+        let txns_rlp = match &payload.txns {
             TransactionPayload::Null => {
-                unreachable!();
+                return Err(BlockValidationError::HeaderPayloadMismatchError)
             }
+            TransactionPayload::List(txns_rlp) => txns_rlp,
+        };
+
+        // RLP decodes the txns
+        let Ok(eth_txns) = Vec::<EthSignedTransaction>::decode(&mut txns_rlp.bytes().as_ref())
+        else {
+            return Err(BlockValidationError::TxnError);
+        };
+
+        // recovering the signers verifies that these are valid signatures
+        let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
+            .ok_or(BlockValidationError::TxnError)?;
+
+        // recover the account nonces and carriage cost usage in this block
+        let mut nonces = BTreeMap::new();
+        let mut carriage_costs = BTreeMap::new();
+
+        let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
+
+        for (eth_txn, signer) in eth_txns.into_iter().zip(signers) {
+            if static_validate_transaction(&eth_txn, self.chain_id).is_err() {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+            // update this when base fee is included in consensus proposal
+            if eth_txn.max_fee_per_gas() < 1000 {
+                return Err(BlockValidationError::TxnError);
+            }
+
+            let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
+            // txn iteration is following the same order as they are in the
+            // block. A block is invalid if we see a smaller or equal nonce
+            // after the first or if there is a nonce gap
+            if let Some(old_nonce) = maybe_old_nonce {
+                if eth_txn.nonce() != old_nonce + 1 {
+                    return Err(BlockValidationError::TxnError);
+                }
+            }
+
+            let carriage_cost_entry = carriage_costs.entry(EthAddress(signer)).or_insert(0);
+            *carriage_cost_entry += compute_txn_carriage_cost(&eth_txn);
+            validated_txns.push(eth_txn.with_signer(signer));
         }
+
+        if validated_txns.len() > self.tx_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        let total_gas = validated_txns
+            .iter()
+            .fold(0, |acc, tx| acc + tx.gas_limit());
+        if total_gas > self.block_gas_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
+        Ok((validated_txns, nonces, carriage_costs))
     }
 
     fn validate_block_header<SCT: SignatureCollection>(
@@ -130,6 +125,7 @@ impl EthValidator {
             warn!("Invalid randao_reveal signature, reason: {:?}", e);
             return Err(BlockValidationError::RandaoError);
         };
+
         Ok(())
     }
 }

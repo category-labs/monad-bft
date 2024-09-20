@@ -58,15 +58,19 @@ impl KDFModule {
         let mut decryption_key = [0_u8; 32];
 
         match &self.params {
-            KDFParams::Scrypt(scrypt_params) => {
-                let salt = scrypt_params.salt.clone();
-                let key_len = scrypt_params.key_len as usize;
-                let log_n = scrypt_params.n.ilog2() as u8;
-                let r = scrypt_params.r;
-                let p = scrypt_params.p;
+            KDFParams::Scrypt(ScryptParams {
+                salt,
+                key_len,
+                n,
+                r,
+                p,
+            }) => {
+                let salt = salt.clone();
+                let key_len = *key_len as usize;
+                let log_n = n.ilog2() as u8;
 
                 let params =
-                    Params::new(log_n, r, p, key_len).map_err(|_| KDFError::InvalidParams)?;
+                    Params::new(log_n, *r, *p, key_len).map_err(|_| KDFError::InvalidParams)?;
 
                 scrypt(password, &salt, &params, &mut decryption_key)
                     .map_err(|_| KDFError::InvalidOutputLen)?;

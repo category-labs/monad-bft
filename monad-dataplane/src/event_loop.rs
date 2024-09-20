@@ -427,12 +427,7 @@ impl DataplaneEventLoop {
     }
 
     fn handle_rx(&mut self) -> Option<usize> {
-        let recvs = match self.udp_socket.recvmmsg() {
-            Some(r) => r,
-            None => {
-                return None;
-            }
-        };
+        let recvs = self.udp_socket.recvmmsg()?;
 
         let mut total_recv_bytes = 0;
 
@@ -868,50 +863,52 @@ impl DataplaneEventLoop {
     }
 
     fn tcp_outgoing_start_message(&mut self, addr: &SocketAddr, msg: Bytes) {
-        match self.tcp_outgoing_get_free_connection_slot() {
-            None => warn!(
+        let Some(slot) = self.tcp_outgoing_get_free_connection_slot() else {
+            warn!(
                 ?addr,
                 ?TCP_OUTGOING_MAX_CONNECTIONS,
                 "no slot available for connection, dropping"
-            ),
-            Some(slot) => {
-                trace!(?addr, ?slot, "assigning TCP connection");
+            );
+            return;
+        };
 
-                let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
-                    .expect("outgoing TCP socket");
-                socket.set_nonblocking(true).expect("set nonblocking");
+        trace!(?addr, ?slot, "assigning TCP connection");
 
-                match socket.connect(&(*addr).into()) {
-                    Err(err) if err.raw_os_error() == Some(libc::EINPROGRESS) => {
-                        self.epoll
-                            .register_pollout(
-                                Self::tcp_outgoing_slot_data_epoll_token(slot),
-                                RawFd(socket.as_raw_fd()),
-                            )
-                            .unwrap();
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
+            .expect("outgoing TCP socket");
+        socket.set_nonblocking(true).expect("set nonblocking");
 
-                        self.tcp_outgoing_connections[slot] = Some(
-                            OutgoingConnection::new_connecting(msg, TcpStream::from(socket)),
-                        );
-                        self.tcp_outgoing_arm_timer(slot, TCP_MESSAGE_TIMEOUT);
-                    }
-                    Err(err) => {
-                        warn!(?err, ?addr, "error on outgoing TCP connection, closing");
-                    }
-                    Ok(_) => {
-                        self.epoll
-                            .register_pollout(
-                                Self::tcp_outgoing_slot_data_epoll_token(slot),
-                                RawFd(socket.as_raw_fd()),
-                            )
-                            .unwrap();
+        match socket.connect(&(*addr).into()) {
+            Err(err) if err.raw_os_error() == Some(libc::EINPROGRESS) => {
+                self.epoll
+                    .register_pollout(
+                        Self::tcp_outgoing_slot_data_epoll_token(slot),
+                        RawFd(socket.as_raw_fd()),
+                    )
+                    .unwrap();
 
-                        self.tcp_outgoing_connections[slot] = Some(
-                            OutgoingConnection::new_connected(msg, TcpStream::from(socket)),
-                        );
-                        self.tcp_outgoing_arm_timer(slot, TCP_MESSAGE_TIMEOUT);
-                    }
-                }
+                self.tcp_outgoing_connections[slot] = Some(OutgoingConnection::new_connecting(
+                    msg,
+                    TcpStream::from(socket),
+                ));
+                self.tcp_outgoing_arm_timer(slot, TCP_MESSAGE_TIMEOUT);
+            }
+            Err(err) => {
+                warn!(?err, ?addr, "error on outgoing TCP connection, closing");
+            }
+            Ok(_) => {
+                self.epoll
+                    .register_pollout(
+                        Self::tcp_outgoing_slot_data_epoll_token(slot),
+                        RawFd(socket.as_raw_fd()),
+                    )
+                    .unwrap();
+
+                self.tcp_outgoing_connections[slot] = Some(OutgoingConnection::new_connected(
+                    msg,
+                    TcpStream::from(socket),
+                ));
+                self.tcp_outgoing_arm_timer(slot, TCP_MESSAGE_TIMEOUT);
             }
         }
     }

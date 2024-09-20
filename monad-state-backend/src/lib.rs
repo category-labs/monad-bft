@@ -96,6 +96,7 @@ impl InMemoryStateInner {
             execution_delay,
         }))
     }
+
     pub fn new(
         max_reserve_balance: Balance,
         execution_delay: SeqNum,

@@ -121,6 +121,7 @@ impl<PT: PubKey> LatencyTransformer<PT> {
 
 impl<PT: PubKey, M> Transformer<M> for LatencyTransformer<PT> {
     type NodeIdPubKey = PT;
+
     fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         TransformerStream::Continue(vec![(self.0, message)])
     }

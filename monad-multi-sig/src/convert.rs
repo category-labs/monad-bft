@@ -12,7 +12,7 @@ impl<S: CertificateSignatureRecoverable> From<&MultiSig<S>> for ProtoMultiSig {
             sigs: value
                 .sigs
                 .iter()
-                .map(|v| certificate_signature_to_proto(v))
+                .map(certificate_signature_to_proto)
                 .collect::<Vec<_>>(),
         }
     }
@@ -26,7 +26,7 @@ impl<S: CertificateSignatureRecoverable> TryFrom<ProtoMultiSig> for MultiSig<S> 
             sigs: value
                 .sigs
                 .into_iter()
-                .map(|v| proto_to_certificate_signature(v))
+                .map(proto_to_certificate_signature)
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }

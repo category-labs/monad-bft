@@ -143,7 +143,7 @@ impl SecpSignature {
         assert!((0..=3).contains(&recid.to_i32()));
         let mut sig_vec = sig.to_vec();
         sig_vec.push(recid.to_i32() as u8);
-        sig_vec.try_into().unwrap()
+        sig_vec.try_into().expect("65 bytes")
     }
 
     /// Deserialize the signature

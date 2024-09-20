@@ -182,6 +182,7 @@ where
         });
     }
 }
+
 fn validate_ethtx(bytes: &mut &[u8]) -> bool {
     match EthSignedTransaction::decode(bytes) {
         Ok(_) => true,

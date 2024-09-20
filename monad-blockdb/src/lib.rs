@@ -213,7 +213,7 @@ impl BlockDb {
             .expect("block_tag commit failed");
     }
 
-    pub fn write_genesis_block(&self, block: EthBlock, bft_block_id: monad_types::BlockId) {
+    fn write_genesis_block(&self, block: EthBlock, bft_block_id: monad_types::BlockId) {
         let block_table_key = BlockTableKey(bft_block_id);
 
         self.write_txn_hashes(&block, &block_table_key);

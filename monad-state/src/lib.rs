@@ -1,11 +1,7 @@
 use std::{fmt::Debug, ops::Deref};
 
 use async_state_verify::AsyncStateVerifyChildState;
-use blocksync::BlockSyncChildState;
 use bytes::Bytes;
-use consensus::ConsensusChildState;
-use epoch::EpochChildState;
-use mempool::MempoolChildState;
 use monad_async_state_verify::AsyncStateVerifyProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -50,7 +46,12 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::blocksync::BlockSync;
+use crate::{
+    blocksync::{BlockSync, BlockSyncChildState},
+    consensus::ConsensusChildState,
+    epoch::EpochChildState,
+    mempool::MempoolChildState,
+};
 
 mod async_state_verify;
 mod blocksync;

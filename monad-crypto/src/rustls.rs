@@ -141,13 +141,12 @@ impl<ST: CertificateSignatureRecoverable> TlsVerifier<ST> {
         cert: &X509Certificate<'_>,
     ) -> Result<CertificateSignaturePubKey<ST>, rustls::Error> {
         // only 1 extension - the one containing the key is allowed
-        if cert.extensions().len() != 1 {
+        let [extension] = cert.extensions() else {
             return Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::InvalidPurpose,
             ));
-        }
+        };
 
-        let extension = &cert.extensions()[0];
         // extension OID must match
         if extension.oid != Oid::from(&Self::OID_MONAD_EXTENSION).expect("oid is valid") {
             return Err(rustls::Error::InvalidCertificate(

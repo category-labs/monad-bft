@@ -246,32 +246,34 @@ where
 
         match self.consensus_update_config {
             AsyncStateVerifyUpdateConfig::Local => {}
-            AsyncStateVerifyUpdateConfig::Quorum(compute_update_threshold) => {
-                if !block_state.update_sent {
-                    let update_threshold = compute_update_threshold(validators.get_total_stake());
-                    while validators.has_threshold_votes(
-                        &pending_roots.keys().copied().collect::<Vec<_>>(),
-                        update_threshold,
-                    ) {
-                        match SCT::new(
-                            pending_roots.iter().map(|(node, sig)| (*node, *sig)),
-                            validator_mapping,
-                            info_hash.as_ref(),
-                        ) {
-                            Ok(_) => {
-                                cmds.push(AsyncStateVerifyCommand::StateRootUpdate(info));
-                                block_state.update_sent = true;
-                                break;
-                            }
+            AsyncStateVerifyUpdateConfig::Quorum(compute_update_threshold)
+                if !block_state.update_sent =>
+            {
+                let update_threshold = compute_update_threshold(validators.get_total_stake());
 
-                            Err(err) => cmds.extend(handle_invalid_signature_collection_creation(
-                                err,
-                                pending_roots,
-                            )),
+                while validators.has_threshold_votes(
+                    &pending_roots.keys().copied().collect::<Vec<_>>(),
+                    update_threshold,
+                ) {
+                    match SCT::new(
+                        pending_roots.iter().map(|(node, sig)| (*node, *sig)),
+                        validator_mapping,
+                        info_hash.as_ref(),
+                    ) {
+                        Ok(_) => {
+                            cmds.push(AsyncStateVerifyCommand::StateRootUpdate(info));
+                            block_state.update_sent = true;
+                            break;
                         }
+
+                        Err(err) => cmds.extend(handle_invalid_signature_collection_creation(
+                            err,
+                            pending_roots,
+                        )),
                     }
                 }
             }
+            AsyncStateVerifyUpdateConfig::Quorum(_) => {}
         }
 
         // Do not try to recreate a quorum if a quorum has been formed, because creating a

@@ -20,31 +20,44 @@ use crate::{
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
+    let hash = value.block_id();
+
+    let BlockValue {
+        block:
+            reth_primitives::Block {
+                header,
+                body,
+                ommers,
+                withdrawals,
+            },
+        ..
+    } = value;
+
     // parse block header
     let header = Header {
-        hash: Some(value.block_id()),
-        parent_hash: value.block.header.parent_hash,
-        uncles_hash: value.block.header.ommers_hash,
-        miner: value.block.header.beneficiary,
-        state_root: value.block.header.state_root,
-        transactions_root: value.block.header.transactions_root,
-        receipts_root: value.block.header.receipts_root,
-        withdrawals_root: value.block.header.withdrawals_root,
-        number: Some(U256::from(value.block.header.number)),
-        gas_used: U256::from(value.block.header.gas_used),
-        gas_limit: U256::from(value.block.header.gas_limit),
-        extra_data: value.block.header.clone().extra_data,
-        logs_bloom: value.block.header.logs_bloom,
+        hash: Some(hash),
+        parent_hash: header.parent_hash,
+        uncles_hash: header.ommers_hash,
+        miner: header.beneficiary,
+        state_root: header.state_root,
+        transactions_root: header.transactions_root,
+        receipts_root: header.receipts_root,
+        withdrawals_root: header.withdrawals_root,
+        number: Some(U256::from(header.number)),
+        gas_used: U256::from(header.gas_used),
+        gas_limit: U256::from(header.gas_limit),
+        extra_data: header.clone().extra_data,
+        logs_bloom: header.logs_bloom,
         // timestamp in block header is in Unix milliseconds but we parse it
         // to be in Unix seconds here for integration compatability
-        timestamp: U256::from(value.block.header.timestamp.div(1000)),
-        difficulty: value.block.header.difficulty,
-        mix_hash: Some(value.block.header.mix_hash),
-        nonce: Some(value.block.header.nonce.to_be_bytes().into()),
-        base_fee_per_gas: value.block.header.base_fee_per_gas.map(U256::from),
-        blob_gas_used: value.block.header.blob_gas_used.map(U64::from),
-        excess_blob_gas: value.block.header.excess_blob_gas.map(U64::from),
-        parent_beacon_block_root: value.block.header.parent_beacon_block_root,
+        timestamp: U256::from(header.timestamp.div(1000)),
+        difficulty: header.difficulty,
+        mix_hash: Some(header.mix_hash),
+        nonce: Some(header.nonce.to_be_bytes().into()),
+        base_fee_per_gas: header.base_fee_per_gas.map(U256::from),
+        blob_gas_used: header.blob_gas_used.map(U64::from),
+        excess_blob_gas: header.excess_blob_gas.map(U64::from),
+        parent_beacon_block_root: header.parent_beacon_block_root,
     };
 
     // NOTE: depends on our staking logic
@@ -66,21 +79,18 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
     };
 
     // parse transactions
-    let transactions: BlockTransactions = match return_full_txns {
-        true => {
-            let transactions = value
-                .block
-                .body
-                .iter()
-                .enumerate()
-                .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap_or_default())
-                .collect();
-            BlockTransactions::Full(transactions)
-        }
-        false => {
-            let transactions = value.block.body.iter().map(|tx| tx.hash()).collect();
-            BlockTransactions::Hashes(transactions)
-        }
+    let transactions: BlockTransactions = if return_full_txns {
+        let transactions = value
+            .block
+            .body
+            .iter()
+            .enumerate()
+            .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap_or_default())
+            .collect();
+        BlockTransactions::Full(transactions)
+    } else {
+        let transactions = value.block.body.iter().map(|tx| tx.hash()).collect();
+        BlockTransactions::Hashes(transactions)
     };
 
     let retval = Block {
