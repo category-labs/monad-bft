@@ -31,14 +31,32 @@ mod utils;
 const MAX_TXPOOL_SIZE: usize = 30_000;
 const MAX_PROPOSAL_CHECKED_TXS: usize = 10_000;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EthTxPool {
     /// pool is transient, garbage collected after creating a proposal
     pool: Pool,
     garbage: Vec<Pool>,
+    do_local_insert: bool,
+}
+
+impl Default for EthTxPool {
+    fn default() -> Self {
+        Self {
+            pool: Default::default(),
+            garbage: Default::default(),
+            do_local_insert: true,
+        }
+    }
 }
 
 impl EthTxPool {
+    pub fn new(do_local_insert: bool) -> Self {
+        Self {
+            do_local_insert,
+            ..Default::default()
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.pool.is_empty()
     }
@@ -130,7 +148,9 @@ impl EthTxPool {
         // mempool
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
-        self.pool.add_tx(sender, eth_tx, ratio);
+        if self.do_local_insert {
+            self.pool.add_tx(sender, eth_tx, ratio);
+        }
         trace!(
             "ReserveBalance insert_tx 1 \
                             reserve balance: {:?} \

@@ -7,7 +7,7 @@ use monad_dataplane::network::MONAD_GSO_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::build_messages,
-    util::{BuildTarget, EpochValidators, Validator},
+    util::{BuildTarget, EpochValidators, FullNodes, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -53,6 +53,7 @@ pub fn encoder_error() {
         .collect();
 
     let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
+    let full_nodes = FullNodes::new(Vec::new());
 
     const GSO_SIZE: u16 = 1500;
 
@@ -63,7 +64,7 @@ pub fn encoder_error() {
         1, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 }

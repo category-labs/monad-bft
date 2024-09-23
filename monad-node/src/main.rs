@@ -7,7 +7,7 @@ use std::{
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
-use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
+use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
@@ -27,6 +27,8 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+#[cfg(feature = "full-node")]
+use monad_router_filter::FullNodeRouterFilter;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
@@ -164,17 +166,21 @@ async fn run(
         .count()
         > 1
     {
-        Updater::boxed(
-            build_raptorcast_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-            >(
-                node_state.node_config.network.clone(),
-                node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-            )
-            .await,
+        let raptor_router = build_raptorcast_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        >(
+            node_state.node_config.network.clone(),
+            node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
+            &node_state.node_config.fullnode.identities,
         )
+        .await;
+
+        #[cfg(feature = "full-node")]
+        let raptor_router = FullNodeRouterFilter::new(raptor_router);
+
+        <_ as Updater<_>>::boxed(raptor_router)
     } else {
         let gossip = MockGossipConfig {
             all_peers: checkpoint_validators_first
@@ -188,20 +194,22 @@ async fn run(
         }
         .build()
         .boxed();
-
-        Updater::boxed(
-            build_mockgossip_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-                _,
-            >(
-                node_state.node_config.network.clone(),
-                &node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-                gossip,
-            )
-            .await,
+        let mock_router = build_mockgossip_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+            _,
+        >(
+            node_state.node_config.network.clone(),
+            &node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
+            gossip,
         )
+        .await;
+
+        #[cfg(feature = "full-node")]
+        let mock_router = FullNodeRouterFilter::new(mock_router);
+
+        <_ as Updater<_>>::boxed(mock_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
@@ -301,7 +309,10 @@ async fn run(
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        transaction_pool: EthTxPool::default(),
+        #[cfg(feature = "full-node")]
+        transaction_pool: EthTxPool::new(false),
+        #[cfg(not(feature = "full-node"))]
+        transaction_pool: EthTxPool::new(true),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
@@ -500,6 +511,7 @@ async fn build_raptorcast_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
+    full_nodes: &[FullNodeIdentityConfig],
 ) -> RaptorCast<SignatureType, M, OM>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
@@ -516,6 +528,10 @@ where
         known_addresses: peers
             .iter()
             .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
+            .collect(),
+        full_nodes: full_nodes
+            .iter()
+            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
             .collect(),
         redundancy: 3,
         local_addr: SocketAddr::V4(SocketAddrV4::new(

@@ -111,6 +111,7 @@ fn service(
             rt.spawn(async move {
                 let service_config = RaptorCastConfig {
                     key,
+                    full_nodes: Default::default(),
                     known_addresses,
                     redundancy: 2,
                     local_addr: server_address.to_string(),

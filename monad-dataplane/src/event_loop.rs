@@ -203,7 +203,7 @@ impl Dataplane {
         let (udp_ing_producer, udp_ing_consumer) = make_producer_consumer(12_800);
         let (tcp_ing_producer, tcp_ing_consumer) = make_producer_consumer(32);
 
-        let (egr_bcast_send, egr_bcast_recv) = RingBuffer::<BroadcastMsg>::new(1024);
+        let (egr_bcast_send, egr_bcast_recv) = RingBuffer::<BroadcastMsg>::new(2048);
         let (egr_ucast_send, egr_ucast_recv) = RingBuffer::<UnicastMsg>::new(1024);
         let (egr_tcp_send, egr_tcp_recv) = RingBuffer::<(SocketAddr, Bytes)>::new(1024);
 

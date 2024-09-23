@@ -16,7 +16,7 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::{build_messages, build_messages_with_length},
-    util::{BuildTarget, EpochValidators, Validator},
+    util::{BuildTarget, EpochValidators, FullNodes, Validator},
     RaptorCast, RaptorCastConfig,
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -60,6 +60,7 @@ pub fn different_symbol_sizes() {
         };
 
         let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+        let full_nodes = FullNodes::new(Vec::new());
 
         let messages = build_messages::<SignatureType>(
             &tx_keypair,
@@ -68,7 +69,7 @@ pub fn different_symbol_sizes() {
             2, // redundancy,
             0, // epoch_no
             0, // unix_ts_ms
-            BuildTarget::Raptorcast(epoch_validators),
+            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         );
 
@@ -116,6 +117,7 @@ pub fn buffer_count_overflow() {
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let full_nodes = FullNodes::new(Vec::new());
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
@@ -124,7 +126,7 @@ pub fn buffer_count_overflow() {
         2, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 
@@ -169,6 +171,7 @@ pub fn oversized_message() {
     };
 
     let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let full_nodes = FullNodes::new(Vec::new());
 
     let messages = build_messages_with_length::<SignatureType>(
         &tx_keypair,
@@ -180,7 +183,7 @@ pub fn oversized_message() {
         2, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators),
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 
@@ -281,6 +284,7 @@ pub fn set_up_test(
         rt.spawn(async move {
             let service_config = RaptorCastConfig {
                 key: rx_keypair,
+                full_nodes: Default::default(),
                 known_addresses,
                 redundancy: 2,
                 local_addr: rx_addr,

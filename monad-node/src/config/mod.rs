@@ -11,6 +11,10 @@ pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
 pub mod consensus;
 pub use consensus::NodeConsensusConfig;
 
+mod fullnode;
+use fullnode::FullNodeConfig;
+pub use fullnode::FullNodeIdentityConfig;
+
 mod network;
 pub use network::NodeNetworkConfig;
 
@@ -42,6 +46,7 @@ pub struct NodeConfig {
     pub statesync_request_timeout_ms: u16,
 
     pub bootstrap: NodeBootstrapConfig,
+    pub fullnode: FullNodeConfig,
     pub network: NodeNetworkConfig,
 
     // TODO split network-wide configuration into separate file

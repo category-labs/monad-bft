@@ -345,6 +345,7 @@ where
                         RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
                             key: keypair,
                             known_addresses: known_addresses.clone(),
+                            full_nodes: Default::default(),
                             redundancy: 3,
                             local_addr: address.parse::<SocketAddr>().unwrap().to_string(),
                             up_bandwidth_mbps: 1_000,

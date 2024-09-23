@@ -118,6 +118,16 @@ impl<S: CertificateSignatureRecoverable, M> Unverified<S, M> {
     }
 }
 
+impl<S, SCT> Unverified<S, Unvalidated<ConsensusMessage<SCT>>>
+where
+    S: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<S>>,
+{
+    pub fn is_proposal(&self) -> bool {
+        matches!(&self.obj.obj.message, ProtocolMessage::Proposal(_))
+    }
+}
+
 impl<S: CertificateSignatureRecoverable, M> Unverified<S, Unvalidated<M>> {
     /// Test only getter. Never use in production
     /// Returns underlying object bypassing the access control rule

@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     net::SocketAddr,
@@ -21,7 +22,7 @@ use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serial
 
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, Validator};
+use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -31,6 +32,7 @@ where
 {
     // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     pub key: ST::KeyPairType,
     /// amount of redundancy to send
@@ -53,6 +55,8 @@ where
     redundancy: u8,
 
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
+    // TODO support dynamic updating
+    full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     current_epoch: Epoch,
@@ -78,6 +82,7 @@ where
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
             epoch_validators: Default::default(),
+            full_nodes: FullNodes::new(config.full_nodes),
             known_addresses: config.known_addresses,
 
             key: config.key,
@@ -237,13 +242,16 @@ where
                                 continue;
                             }
 
+                            let full_nodes_view = self.full_nodes.view();
+
                             let build_target = match &target {
                                 RouterTarget::Broadcast(_) => {
                                     BuildTarget::Broadcast(epoch_validators_without_self)
                                 }
-                                RouterTarget::Raptorcast(_) => {
-                                    BuildTarget::Raptorcast(epoch_validators_without_self)
-                                }
+                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast((
+                                    epoch_validators_without_self,
+                                    full_nodes_view,
+                                )),
                                 _ => unreachable!(),
                             };
 
@@ -331,25 +339,46 @@ where
             return Poll::Ready(Some(event));
         }
 
+        let full_node_addrs = this
+            .full_nodes
+            .list
+            .iter()
+            .filter_map(|node_id| this.known_addresses.get(node_id).copied())
+            .collect::<Vec<_>>();
+
         loop {
             // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
                 break;
             };
 
-            let decoded_app_messages = this.udp_state.handle_message(
-                &mut this.epoch_validators,
-                |targets, payload| {
-                    // this is the callback used for rebroadcasting
-                    let targets = targets
-                        .into_iter()
-                        .filter_map(|validator| this.known_addresses.get(&validator).copied())
-                        .collect();
-                    this.dataplane
-                        .udp_write_broadcast(BroadcastMsg { targets, payload })
-                },
-                message,
-            );
+            let decoded_app_messages = {
+                // FIXME: pass dataplane as arg to handle_message
+                let dataplane = RefCell::new(&mut this.dataplane);
+                this.udp_state.handle_message(
+                    &mut this.epoch_validators,
+                    |targets, payload| {
+                        // this is the callback used for rebroadcasting
+                        let target_addrs = targets
+                            .into_iter()
+                            .filter_map(|target| this.known_addresses.get(&target).copied())
+                            .collect();
+
+                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                            targets: target_addrs,
+                            payload,
+                        });
+                    },
+                    |payload| {
+                        // callback for forwarding chunks to full nodes
+                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                            targets: full_node_addrs.clone(),
+                            payload,
+                        });
+                    },
+                    message,
+                )
+            };
             let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
                 |(from, decoded)| match handle_message::<ST, M>(&decoded) {
                     Ok(inbound) => match inbound {
