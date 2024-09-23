@@ -83,18 +83,12 @@ impl Progress {
         if self.num_prefixes.is_none() {
             self.num_prefixes = Some(2_usize.pow(8).pow(request.prefix_bytes.into()) as u64);
         }
-        let old_target = if request.old_target == u64::MAX {
-            // execution uses u64::MAX for uninitialized
-            0
-        } else {
-            request.old_target
-        };
         if self.start_target.is_none() {
-            self.start_target = Some(SeqNum(old_target));
+            self.start_target = Some(SeqNum(request.from));
         }
         if self.current_progress.is_none() {
             self.current_progress =
-                Some(old_target * self.num_prefixes.expect("num_prefixes was set"));
+                Some(request.from * self.num_prefixes.expect("num_prefixes was set"));
         }
         *self
             .current_progress
