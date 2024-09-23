@@ -1,0 +1,14 @@
+[package]
+name = "monad-router-filter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-state = { path = "../monad-state" }
+
+futures = { workspace = true }
+itertools = { workspace = true }

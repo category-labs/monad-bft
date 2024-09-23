@@ -27,6 +27,8 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+#[cfg(feature = "full-node")]
+use monad_router_filter::FullNodeRouterFilter;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
@@ -164,17 +166,20 @@ async fn run(
         .count()
         > 1
     {
-        <_ as Updater<_>>::boxed(
-            build_raptorcast_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-            >(
-                node_state.node_config.network.clone(),
-                node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-            )
-            .await,
+        let raptor_router = build_raptorcast_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        >(
+            node_state.node_config.network.clone(),
+            node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
         )
+        .await;
+
+        #[cfg(feature = "full-node")]
+        let raptor_router = FullNodeRouterFilter::new(raptor_router);
+
+        <_ as Updater<_>>::boxed(raptor_router)
     } else {
         let gossip = MockGossipConfig {
             all_peers: checkpoint_validators_first
@@ -188,20 +193,22 @@ async fn run(
         }
         .build()
         .boxed();
-
-        <_ as Updater<_>>::boxed(
-            build_mockgossip_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-                _,
-            >(
-                node_state.node_config.network.clone(),
-                &node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-                gossip,
-            )
-            .await,
+        let mock_router = build_mockgossip_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+            _,
+        >(
+            node_state.node_config.network.clone(),
+            &node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
+            gossip,
         )
+        .await;
+
+        #[cfg(feature = "full-node")]
+        let mock_router = FullNodeRouterFilter::new(mock_router);
+
+        <_ as Updater<_>>::boxed(mock_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable

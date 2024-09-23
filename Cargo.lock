@@ -4078,6 +4078,7 @@ dependencies = [
  "monad-ledger",
  "monad-quic",
  "monad-raptorcast",
+ "monad-router-filter",
  "monad-secp",
  "monad-state",
  "monad-statesync",
@@ -4190,6 +4191,19 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-router-filter"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "itertools 0.10.5",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-state",
 ]
 
 [[package]]

@@ -32,11 +32,15 @@ monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
 monad-quic = { path = "../monad-quic" }
 monad-raptorcast = { path = "../monad-raptorcast" }
+monad-router-filter = { path = "../monad-router-filter", optional = true }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-statesync = { path = "../monad-statesync" }
 monad-types = { path = "../monad-types" }
-monad-updaters = { path = "../monad-updaters", features = ["monad-triedb", "tokio"] }
+monad-updaters = { path = "../monad-updaters", features = [
+    "monad-triedb",
+    "tokio",
+] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 monad-triedb-cache = { path = "../monad-triedb-cache" }
@@ -59,3 +63,6 @@ toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+
+[features]
+full-node = ["monad-router-filter"]
