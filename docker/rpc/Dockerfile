@@ -1,10 +1,8 @@
 # Builder
 FROM ubuntu:24.04 AS base
 
-RUN apt update
-RUN apt upgrade -y
-RUN apt-get update
-RUN apt install -y ca-certificates curl pkg-config gnupg software-properties-common wget cgroup-tools
+RUN apt update && apt upgrade -y
+RUN apt update && apt install -y binutils ca-certificates curl iproute2 pkg-config gnupg software-properties-common wget cgroup-tools
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest
@@ -86,7 +84,7 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     cp `ls -Lt $(find target/release | grep -e "lib${TRIEDB_TARGET}.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "lib${ETH_CALL_TARGET}.so") | awk -F/ '!seen[$NF]++'` . 
 
-RUN apt install -y binutils && strip \
+RUN strip \
     rpc \
     *.so \
     *.so.*

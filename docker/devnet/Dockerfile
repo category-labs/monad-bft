@@ -2,7 +2,7 @@ FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
 RUN apt-get update && apt-get upgrade -y
-RUN apt-get update && apt-get install -y clang curl make ca-certificates pkg-config gnupg software-properties-common wget cgroup-tools
+RUN apt-get update && apt-get install -y binutils iproute2 clang curl make ca-certificates pkg-config gnupg software-properties-common wget cgroup-tools
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest
@@ -84,7 +84,7 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
 
-RUN apt install -y binutils && strip \
+RUN strip \
     node \
     keystore \
     debug-node \
