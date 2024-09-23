@@ -27,6 +27,13 @@ pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unc
 pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 
+// We assume an MTU of at least 1280 (the IPv6 minimum MTU), and, assuming a Merkle tree depth
+// of 8 (which is a little more than our current default of 6), this gives a symbol size of 980
+// bytes, which we will use as the minimum chunk length for received packets, and we'll drop
+// received chunks that are smaller than this, to avoid attacks involving e.g. a peer sending
+// us a message as a very large set of 1-byte chunks.
+const MIN_CHUNK_LENGTH: usize = 980;
+
 // Drop a message to be transmitted if it would lead to more than this number of packets
 // to be transmitted.  This can happen in Broadcast mode when the message is large or
 // if we have many peers to transmit the message to.
@@ -99,6 +106,15 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     continue;
                 }
             };
+
+            if parsed_message.chunk.len() < MIN_CHUNK_LENGTH {
+                tracing::debug!(
+                    chunk_length = parsed_message.chunk.len(),
+                    MIN_CHUNK_LENGTH,
+                    "dropping undersized received message",
+                );
+                continue;
+            }
 
             if parsed_message.broadcast {
                 let Some(epoch_validators) = epoch_validators.get_mut(&Epoch(parsed_message.epoch))
