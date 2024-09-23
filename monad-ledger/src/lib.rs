@@ -3,7 +3,7 @@ use std::{
     fs::{self, File},
     io::{ErrorKind, Write},
     marker::PhantomData,
-    ops::Deref,
+    ops::{Deref, Div},
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
@@ -361,7 +361,9 @@ fn generate_header<SCT: SignatureCollection>(
         number: seq_num.0,
         gas_limit: header_param.gas_limit,
         gas_used: 0,
-        timestamp: monad_block.get_timestamp(),
+        // timestamp in consensus proposal is in Unix milliseconds
+        // but we commit the block in Unix seconds for integration compatibility
+        timestamp: monad_block.get_timestamp().div(1000),
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
         // TODO: calculate base fee according to EIP1559

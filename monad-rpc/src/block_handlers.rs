@@ -1,5 +1,3 @@
-use std::ops::Div;
-
 use alloy_primitives::aliases::{U256, U64};
 use monad_rpc_docs::rpc;
 use reth_primitives::Block as EthBlock;
@@ -32,9 +30,7 @@ fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block
         gas_limit: U256::from(value.header.gas_limit),
         extra_data: value.header.clone().extra_data,
         logs_bloom: value.header.logs_bloom,
-        // timestamp in block header is in Unix milliseconds but we parse it
-        // to be in Unix seconds here for integration compatability
-        timestamp: U256::from(value.header.timestamp.div(1000)),
+        timestamp: U256::from(value.header.timestamp),
         difficulty: value.header.difficulty,
         mix_hash: Some(value.header.mix_hash),
         nonce: Some(value.header.nonce.to_be_bytes().into()),
