@@ -95,6 +95,7 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
 
 #[cfg(test)]
 mod tests {
+    use crate::gas_oracle::MockOracle;
     use actix_http::{ws, ws::Frame};
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
@@ -109,6 +110,7 @@ mod tests {
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender,
             blockdb_reader: None,
+            gas_oracle: Some(std::sync::Arc::new(MockOracle {})),
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,

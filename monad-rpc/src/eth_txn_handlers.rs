@@ -5,7 +5,7 @@ use alloy_primitives::{
     Address, FixedBytes,
 };
 use monad_blockdb::{BlockValue, EthTxKey};
-use monad_blockdb_utils::BlockDbEnv;
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use monad_rpc_docs::rpc;
 use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{

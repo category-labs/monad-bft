@@ -2,7 +2,7 @@ use std::{ops::Sub, path::Path};
 
 use alloy_primitives::{U256, U64};
 use monad_blockdb::BlockTagKey;
-use monad_blockdb_utils::BlockDbEnv;
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use reth_primitives::{Transaction, TransactionKind};
@@ -15,6 +15,7 @@ use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, BlockTags, MonadFeeHistory, Quantity,
     },
+    gas_oracle::GasOracle,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{TriedbEnv, TriedbResult},
 };
@@ -199,16 +200,13 @@ pub async fn monad_eth_estimateGas(
     Ok(Quantity(upper_bound_gas_limit))
 }
 
-pub async fn suggested_priority_fee(blockdb_env: &BlockDbEnv) -> Result<u64, JsonRpcError> {
-    // TODO: hardcoded as 2 gwei for now, need to implement gas oracle
-    // Refer to <https://github.com/ethereum/pm/issues/328#issuecomment-853234014>
-    Ok(2000000000)
-}
-
 #[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_gasPrice(
+    blockdb_env: &BlockDbEnv,
+    gas_oracle: &std::sync::Arc<dyn GasOracle>,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
     let block = match blockdb_env
@@ -226,9 +224,7 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quant
     let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default();
 
     // Obtain suggested priority fee
-    let priority_fee = suggested_priority_fee(blockdb_env)
-        .await
-        .unwrap_or_default();
+    let priority_fee = gas_oracle.tip().unwrap_or_default();
 
     Ok(Quantity(base_fee_per_gas + priority_fee))
 }
@@ -236,13 +232,11 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quant
 #[rpc(method = "eth_maxPriorityFeePerGas")]
 #[allow(non_snake_case)]
 /// Returns the current maxPriorityFeePerGas per gas in wei.
-pub async fn monad_eth_maxPriorityFeePerGas(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_maxPriorityFeePerGas(
+    gas_oracle: &std::sync::Arc<dyn GasOracle>,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_maxPriorityFeePerGas");
-
-    let priority_fee = suggested_priority_fee(blockdb_env)
-        .await
-        .unwrap_or_default();
-    Ok(Quantity(priority_fee))
+    Ok(Quantity(gas_oracle.tip().unwrap_or_default()))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

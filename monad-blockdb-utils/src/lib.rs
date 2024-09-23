@@ -13,7 +13,23 @@ pub enum BlockTags {
     Default(BlockTagKey),
 }
 
-// FIXME: make a blockdb trait
+pub trait BlockDB {
+    fn get_latest_block(
+        &self,
+    ) -> impl std::future::Future<Output = Option<BlockNumTableKey>> + Send;
+    fn get_txn(
+        &self,
+        key: EthTxKey,
+    ) -> impl std::future::Future<Output = Option<EthTxValue>> + Send;
+    fn get_block_by_hash(
+        &self,
+        key: BlockTableKey,
+    ) -> impl std::future::Future<Output = Option<BlockValue>> + Send;
+    fn get_block_by_tag(
+        &self,
+        tag: BlockTags,
+    ) -> impl std::future::Future<Output = Option<BlockValue>> + Send;
+}
 
 #[derive(Clone)]
 pub struct BlockDbEnv {
@@ -71,8 +87,10 @@ impl BlockDbEnv {
             }
         }
     }
+}
 
-    pub async fn get_latest_block(&self) -> Option<BlockNumTableKey> {
+impl BlockDB for BlockDbEnv {
+    async fn get_latest_block(&self) -> Option<BlockNumTableKey> {
         let env = self.blockdb_env.clone();
         let block_tag_dbi = self.block_tag_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
@@ -89,7 +107,7 @@ impl BlockDbEnv {
         recv.await.expect("rayon panic get_latest_block")
     }
 
-    pub async fn get_txn(&self, key: EthTxKey) -> Option<EthTxValue> {
+    async fn get_txn(&self, key: EthTxKey) -> Option<EthTxValue> {
         let env = self.blockdb_env.clone();
         let dbi = self.txn_hash_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
@@ -106,7 +124,7 @@ impl BlockDbEnv {
         recv.await.expect("rayon panic get_txn")
     }
 
-    pub async fn get_block_by_hash(&self, key: BlockTableKey) -> Option<BlockValue> {
+    async fn get_block_by_hash(&self, key: BlockTableKey) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
         let dbi = self.block_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
@@ -123,7 +141,7 @@ impl BlockDbEnv {
         recv.await.expect("rayon panic get_block_by_hash")
     }
 
-    pub async fn get_block_by_tag(&self, tag: BlockTags) -> Option<BlockValue> {
+    async fn get_block_by_tag(&self, tag: BlockTags) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
         let block_num_dbi = self.block_num_dbi;
         let block_tag_dbi = self.block_tag_dbi;

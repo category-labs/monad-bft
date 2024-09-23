@@ -1,6 +1,6 @@
 use alloy_rlp::Encodable;
 use monad_blockdb::EthTxKey;
-use monad_blockdb_utils::BlockDbEnv;
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use monad_rpc_docs::rpc;
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};

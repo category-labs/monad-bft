@@ -2,7 +2,7 @@ use std::ops::Div;
 
 use alloy_primitives::aliases::{U256, U64};
 use monad_blockdb::BlockValue;
-use monad_blockdb_utils::BlockDbEnv;
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use monad_rpc_docs::rpc;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::{Deserialize, Serialize};

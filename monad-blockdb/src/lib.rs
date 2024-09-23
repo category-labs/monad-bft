@@ -42,7 +42,7 @@ pub struct BlockTableKey(
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlockValue {
     // this can be deleted once BlockId is hash of eth block
-    key: BlockTableKey,
+    pub key: BlockTableKey,
     pub block: EthBlock,
 }
 

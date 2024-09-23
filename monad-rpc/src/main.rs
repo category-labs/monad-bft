@@ -29,7 +29,8 @@ use eth_txn_handlers::{
     monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
-use monad_blockdb_utils::BlockDbEnv;
+use gas_oracle::{GasOracle, PollingGasOracle};
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
@@ -70,6 +71,7 @@ pub mod docs;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod gas_handlers;
+mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
@@ -422,20 +424,17 @@ async fn rpc_select(
             .map(serialize_result)?
         }
         "eth_gasPrice" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_gasPrice(reader).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let gas_oracle = app_state.gas_oracle.as_ref().method_not_supported()?;
+            monad_eth_gasPrice(reader, gas_oracle)
+                .await
+                .map(serialize_result)?
         }
         "eth_maxPriorityFeePerGas" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_maxPriorityFeePerGas(reader)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let gas_oracle = app_state.gas_oracle.as_ref().method_not_supported()?;
+            monad_eth_maxPriorityFeePerGas(gas_oracle)
+                .await
+                .map(serialize_result)?
         }
         "eth_feeHistory" => {
             if let Some(reader) = &app_state.blockdb_reader {
@@ -525,6 +524,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     blockdb_reader: Option<BlockDbEnv>,
+    gas_oracle: Option<std::sync::Arc<dyn GasOracle>>,
     triedb_reader: Option<TriedbEnv>,
     execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
@@ -544,6 +544,7 @@ impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
         blockdb_reader: Option<BlockDbEnv>,
+        gas_oracle: Option<std::sync::Arc<dyn GasOracle>>,
         triedb_reader: Option<TriedbEnv>,
         execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
@@ -553,6 +554,7 @@ impl MonadRpcResources {
         Self {
             mempool_sender,
             blockdb_reader,
+            gas_oracle,
             triedb_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
@@ -657,9 +659,23 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
+    // Create a gas oracle if rpc was started with a blockdb
+    // Temporary until blockdb is removed
+    let gas_oracle = if let Some(blockdb_env) = blockdb_env.clone() {
+        let current_height = blockdb_env
+            .get_latest_block()
+            .await
+            .expect("could not get latest block")
+            .0;
+        Some(PollingGasOracle::new(blockdb_env, current_height, None).unwrap())
+    } else {
+        None
+    };
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         blockdb_env,
+        gas_oracle.map(|oracle| std::sync::Arc::new(oracle) as std::sync::Arc<dyn GasOracle>),
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
         args.execution_ledger_path,
         args.chain_id,
@@ -726,6 +742,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::gas_oracle::MockOracle;
     use actix_http::Request;
     use actix_web::{
         body::{to_bytes, MessageBody},
@@ -754,6 +771,7 @@ mod tests {
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             blockdb_reader: None,
+            gas_oracle: Some(std::sync::Arc::new(MockOracle {})),
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,

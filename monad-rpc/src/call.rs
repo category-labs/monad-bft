@@ -1,7 +1,7 @@
 use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
-use monad_blockdb_utils::BlockDbEnv;
+use monad_blockdb_utils::{BlockDB, BlockDbEnv};
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use reth_primitives::Block;
