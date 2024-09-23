@@ -17,6 +17,8 @@ impl Decoder {
 
             if (num_buffers_received % 100) == 0 {
                 tracing::debug!(?num_buffers_received, "received_encoded_symbol");
+            } else {
+                tracing::trace!(?num_buffers_received, "received_encoded_symbol");
             }
         }
 
