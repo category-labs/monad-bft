@@ -22,10 +22,134 @@
 #include <quill/Quill.h>
 
 #include <filesystem>
+#include <map>
 #include <vector>
 
 using namespace monad;
 
+namespace monad
+{
+    quill::Logger *tracer = nullptr;
+}
+
+// monad_evmc_result functions
+
+int64_t get_status_code(monad_evmc_result const *result)
+{
+    return result->status_code;
+}
+
+bytes get_output_data(monad_evmc_result const *result)
+{
+    return result->output_data;
+}
+
+uint64_t get_output_size(monad_evmc_result const *result)
+{
+    return result->output_size;
+}
+
+char const *get_message(monad_evmc_result const *result)
+{
+    return result->message;
+}
+
+int64_t get_gas_used(monad_evmc_result const *result)
+{
+    return result->gas_used;
+}
+
+int64_t get_gas_refund(monad_evmc_result const *result)
+{
+    return result->gas_refund;
+}
+
+// define real moand_state_override_set struct
+using cxx_bytes = std::vector<uint8_t>;
+
+struct monad_state_override_set
+{
+    struct monad_state_override_object
+    {
+        std::optional<cxx_bytes> balance{std::nullopt};
+        std::optional<uint64_t> nonce{std::nullopt};
+        std::optional<cxx_bytes> code{std::nullopt};
+        std::map<cxx_bytes, cxx_bytes> state{};
+        std::map<cxx_bytes, cxx_bytes> state_diff{};
+    };
+
+    std::map<cxx_bytes, monad_state_override_object> override_sets;
+};
+
+struct monad_state_override_set *create_empty_state_override_set()
+{
+    return new monad_state_override_set{};
+}
+
+void add_override_address(
+    monad_state_override_set *state_overrides, bytes address)
+{
+    cxx_bytes const cxx_address(address, address + sizeof(Address));
+
+    auto &override_sets = state_overrides->override_sets;
+    MONAD_ASSERT(override_sets.find(cxx_address) == override_sets.end());
+    override_sets.emplace(
+        cxx_address, monad_state_override_set::monad_state_override_object{});
+}
+
+void set_override_balance(
+    monad_state_override_set *state_overrides, bytes address, bytes balance,
+    uint64_t balance_len)
+{
+    cxx_bytes const cxx_address(address, address + sizeof(Address));
+    cxx_bytes const cxx_balance(balance, balance + balance_len);
+
+    auto &override_sets = state_overrides->override_sets;
+    MONAD_ASSERT(override_sets.find(cxx_address) != override_sets.end());
+    override_sets[cxx_address].balance = cxx_balance;
+}
+
+void set_override_nonce(
+    monad_state_override_set *state_overrides, bytes address, uint64_t nonce)
+{
+    cxx_bytes const cxx_address(address, address + sizeof(Address));
+
+    auto &override_sets = state_overrides->override_sets;
+    MONAD_ASSERT(override_sets.find(cxx_address) != override_sets.end());
+    override_sets[cxx_address].nonce = nonce;
+}
+
+void set_override_code(
+    monad_state_override_set *state_overrides, bytes address, bytes code,
+    uint64_t code_len)
+{
+    cxx_bytes const cxx_address(address, address + sizeof(Address));
+    cxx_bytes const cxx_code(code, code + code_len);
+
+    auto &override_sets = state_overrides->override_sets;
+    MONAD_ASSERT(override_sets.find(cxx_address) != override_sets.end());
+    override_sets[cxx_address].code = cxx_code;
+}
+
+void set_override_state_diff(
+    [[maybe_unused]] monad_state_override_set *state_overrides,
+    [[maybe_unused]] bytes address, [[maybe_unused]] bytes key,
+    [[maybe_unused]] bytes value)
+{
+    // TODO
+    return;
+}
+
+void set_override_state(
+    [[maybe_unused]] monad_state_override_set *state_overrides,
+    [[maybe_unused]] bytes address, [[maybe_unused]] bytes key,
+    [[maybe_unused]] bytes value)
+{
+    // TODO
+    return;
+}
+
+// eth_call implementation
 namespace
 {
     Result<evmc::Result> eth_call_impl(
@@ -33,7 +157,7 @@ namespace
         uint64_t const block_number, Address const &sender,
         BlockHashBuffer const &buffer,
         std::vector<std::filesystem::path> const &dbname_paths,
-        monad_state_override_set const &state_overrides)
+        monad_state_override_set *state_overrides)
     {
         constexpr evmc_revision rev = EVMC_SHANGHAI; // TODO
         MonadDevnet chain;
@@ -60,7 +184,7 @@ namespace
         Incarnation incarnation{block_number, Incarnation::LAST_TX - 1u};
         State state{block_state, incarnation};
 
-        for (auto const &[addr, state_delta] : state_overrides.override_sets) {
+        for (auto const &[addr, state_delta] : state_overrides->override_sets) {
             // address
             Address address{};
             std::memcpy(address.bytes, addr.data(), sizeof(Address));
@@ -149,118 +273,32 @@ namespace
             header.base_fee_per_gas.value_or(0),
             header.beneficiary);
     }
-
-}
-
-namespace monad
-{
-    quill::Logger *tracer = nullptr;
-}
-
-int monad_evmc_result::get_status_code() const
-{
-    return status_code;
-}
-
-std::vector<uint8_t> monad_evmc_result::get_output_data() const
-{
-    return output_data;
-}
-
-std::string monad_evmc_result::get_message() const
-{
-    return message;
-}
-
-int64_t monad_evmc_result::get_gas_used() const
-{
-    return gas_used;
-}
-
-int64_t monad_evmc_result::get_gas_refund() const
-{
-    return gas_refund;
-}
-
-struct monad_state_override_set *create_empty_state_override_set()
-{
-    return new monad_state_override_set{};
-}
-
-void add_override_address(monad_state_override_set *, bytes address)
-{
-    MONAD_ASSERT(override_sets.find(address) == override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    override_sets.emplace(address, monad_state_override_object());
-}
-
-void set_override_balance(
-    monad_state_override_set *, bytes address, bytes balance)
-{
-    MONAD_ASSERT(override_sets.find(address) != override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    override_sets[address].balance = balance;
-}
-
-void set_override_nonce(
-    monad_state_override_set *, bytes address, uint64_t nonce)
-{
-    MONAD_ASSERT(override_sets.find(address) != override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    override_sets[address].nonce = nonce;
-}
-
-void set_override_code(monad_state_override_set *, bytes address, bytes code)
-{
-    MONAD_ASSERT(override_sets.find(address) != override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    override_sets[address].code = code;
-}
-
-void set_override_state_diff(
-    monad_state_override_set *, bytes address, bytes key, bytes value)
-{
-    MONAD_ASSERT(override_sets.find(address) != override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    auto &object = override_sets[address].state_diff;
-    MONAD_ASSERT(object.find(key) == object.end());
-    MONAD_ASSERT(key.size() == sizeof(bytes32_t));
-    object.emplace(key, value);
-}
-
-void set_override_state(
-    monad_state_override_set *, bytes address, bytes key, bytes value)
-{
-    MONAD_ASSERT(override_sets.find(address) != override_sets.end());
-    MONAD_ASSERT(address.size() == sizeof(Address));
-    auto &object = override_sets[address].state;
-    MONAD_ASSERT(object.find(key) == object.end());
-    MONAD_ASSERT(key.size() == sizeof(bytes32_t));
-    object.emplace(key, value);
 }
 
 monad_evmc_result eth_call(
     bytes rlp_txn, uint64_t txn_len, bytes rlp_header, uint64_t header_len,
-    bytes rlp_sender, uint64_t const block_number, char const *triedb_path,
-    char const *blockdb_path, monad_state_override_set const &state_overrides)
+    bytes sender, uint64_t const block_number, char const *triedb_path,
+    char const *blockdb_path, monad_state_override_set *state_overrides)
 {
-    byte_string_view rlp_txn_view(rlp_txn, rlp_txn.end());
-    auto const txn_result = rlp::decode_transaction(rlp_txn_view);
+    cxx_bytes cxx_rlp_txn(rlp_txn, rlp_txn + txn_len);
+    byte_string_view cxx_rlp_txn_view(cxx_rlp_txn.begin(), cxx_rlp_txn.end());
+    auto const txn_result = rlp::decode_transaction(cxx_rlp_txn_view);
+    MONAD_ASSERT(cxx_rlp_txn_view.empty());
     MONAD_ASSERT(!txn_result.has_error());
-    MONAD_ASSERT(rlp_txn_view.empty());
     auto const txn = txn_result.value();
 
-    byte_string_view rlp_header_view(rlp_header.begin(), rlp_header.end());
-    auto const block_header_result = rlp::decode_block_header(rlp_header_view);
-    MONAD_ASSERT(rlp_header_view.empty());
+    cxx_bytes cxx_rlp_header(rlp_header, rlp_header + header_len);
+    byte_string_view cxx_rlp_header_view(
+        cxx_rlp_header.begin(), cxx_rlp_header.end());
+    auto const block_header_result =
+        rlp::decode_block_header(cxx_rlp_header_view);
+    MONAD_ASSERT(cxx_rlp_header_view.empty());
     MONAD_ASSERT(!block_header_result.has_error());
     auto const block_header = block_header_result.value();
 
-    byte_string_view rlp_sender_view(rlp_sender.begin(), rlp_sender.end());
-    auto const sender_result = rlp::decode_address(rlp_sender_view);
-    MONAD_ASSERT(rlp_sender_view.empty());
-    MONAD_ASSERT(!sender_result.has_error());
-    auto const sender = sender_result.value();
+    cxx_bytes cxx_sender(sender, sender + sizeof(Address));
+    Address sender_addr{};
+    std::memcpy(sender_addr.bytes, cxx_sender.data(), sizeof(Address));
 
     BlockHashBuffer buffer{};
     for (size_t i = block_number < 256 ? 1 : block_number - 255;
@@ -296,21 +334,29 @@ monad_evmc_result eth_call(
         txn,
         block_header,
         block_number,
-        sender,
+        sender_addr,
         buffer,
         paths,
         state_overrides);
     monad_evmc_result ret;
     if (MONAD_UNLIKELY(result.has_error())) {
-        ret.status_code = INT_MAX;
-        ret.message = result.error().message().c_str();
+        ret.status_code = -1;
+        std::string const error_message(
+            result.assume_error().message().data(),
+            result.assume_error().message().size());
+        ret.message = new char[error_message.size() + 1];
+        std::strcpy(ret.message, error_message.c_str());
     }
     else {
         int64_t const gas_used = static_cast<int64_t>(txn.gas_limit) -
                                  result.assume_value().gas_left;
         ret.status_code = result.assume_value().status_code;
-        ret.output_data = result.assume_value().output_data;
         ret.output_size = result.assume_value().output_size;
+        ret.output_data = new uint8_t[ret.output_size];
+        std::memcpy(
+            ret.output_data,
+            result.assume_value().output_data,
+            ret.output_size);
         ret.gas_used = gas_used;
         ret.gas_refund = result.assume_value().gas_refund;
     }

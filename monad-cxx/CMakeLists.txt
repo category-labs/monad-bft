@@ -21,11 +21,13 @@ if(CMAKE_BUILD_TARGET STREQUAL "monad_rpc")
   add_subdirectory("monad-execution")
   add_library(
     monad_rpc SHARED
-    "include/test_db.hpp"
-    "src/test_db.cpp")
-  target_include_directories(monad_rpc_test PUBLIC ${PROJECT_SOURCE_DIR}/include)
+    "${PROJECT_SOURCE_DIR}/include/eth_call.h"
+    "${PROJECT_SOURCE_DIR}/include/test_db.h"
+    "${PROJECT_SOURCE_DIR}/src/eth_call.cpp"
+    "${PROJECT_SOURCE_DIR}/src/test_db.cpp")
+  target_include_directories(monad_rpc PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
-  monad_compile_options(monad_rpc_test)
+  monad_compile_options(monad_rpc)
 
-  target_link_libraries(monad_rpc_test PRIVATE -Wl,--whole-archive monad_rpc -Wl,--no-whole-archive monad_execution)
+  target_link_libraries(monad_rpc PUBLIC monad_execution)
 endif()

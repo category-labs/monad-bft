@@ -4,7 +4,7 @@
 
 // monad_evmc_result functions
 
-int get_status_code(const struct monad_evmc_result *result)
+int64_t get_status_code(const struct monad_evmc_result *result)
 {
     return result->status_code;
 }
@@ -44,38 +44,21 @@ struct monad_state_override_set *create_empty_state_override_set()
     return nullptr;
 }
 
-void add_override_address(monad_state_override_set *, bytes address) {}
+void add_override_address(monad_state_override_set *, bytes) {}
 
-void set_override_balance(
-    monad_state_override_set *, bytes address, bytes balance,
-    uint64_t balance_len)
-{
-}
+void set_override_balance(monad_state_override_set *, bytes, bytes, uint64_t) {}
 
-void set_override_nonce(
-    monad_state_override_set *, bytes address, uint64_t nonce)
-{
-}
+void set_override_nonce(monad_state_override_set *, bytes, uint64_t) {}
 
-void set_override_code(
-    monad_state_override_set *, bytes address, bytes code, uint64_t code_len)
-{
-}
+void set_override_code(monad_state_override_set *, bytes, bytes, uint64_t) {}
 
-void set_override_state_diff(
-    monad_state_override_set *, bytes address, bytes key, bytes value)
-{
-}
+void set_override_state_diff(monad_state_override_set *, bytes, bytes, bytes) {}
 
-void set_override_state(
-    monad_state_override_set *, bytes address, bytes key, bytes value)
-{
-}
+void set_override_state(monad_state_override_set *, bytes, bytes, bytes) {}
 
 monad_evmc_result eth_call(
-    bytes rlp_txn, uint64_t txn_len, bytes rlp_header, uint64_t header_len,
-    bytes rlp_sender, uint64_t const block_number, char const *triedb_path,
-    char const *blockdb_path, monad_state_override_set *state_overrides)
+    bytes, uint64_t, bytes, uint64_t, bytes, uint64_t const, char const *,
+    char const *, monad_state_override_set *)
 {
     static constexpr auto N = 32;
     std::array<uint8_t, N> data = {

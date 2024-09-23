@@ -1,6 +1,9 @@
 #![allow(unused_imports)]
 
-use std::{collections::HashMap, ffi::CStr, ffi::CString, ops::Deref, path::Path, pin::pin, slice};
+use std::{
+    collections::HashMap, ffi::CStr, ffi::CString, ops::Deref, path::Path, path::PathBuf, pin::pin,
+    slice,
+};
 
 use alloy_primitives::{
     bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
@@ -13,7 +16,7 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/eth_call.rs"));
 }
 
-pub const EVMC_SUCCESS: i32 = 0;
+pub const EVMC_SUCCESS: i64 = 0;
 
 pub enum CallResult {
     Success(SuccessCallResult),
@@ -92,6 +95,7 @@ pub fn eth_call(
 
     for (address, state_override_object) in state_override_set {
         unsafe {
+            // sizeof address is fixed 20, so we don't need to pass in len anymore
             bindings::add_override_address(c_state_override_set, address.as_ptr());
         }
 
@@ -184,7 +188,7 @@ pub fn eth_call(
             rlp_encoded_tx.len() as u64,
             rlp_encoded_block_header.as_ptr(),
             rlp_encoded_block_header.len() as u64,
-            rlp_encoded_sender.as_ptr(),
+            sender.as_ptr(),
             block_number,
             triedb_cstring.as_ptr(),
             blockdb_cstring.as_ptr(),
@@ -192,7 +196,7 @@ pub fn eth_call(
         )
     };
 
-    let status_code = unsafe { bindings::get_status_code(&result) as i32 };
+    let status_code = unsafe { bindings::get_status_code(&result) as i64 };
     let output_data = unsafe {
         slice::from_raw_parts(
             bindings::get_output_data(&result),
@@ -200,10 +204,13 @@ pub fn eth_call(
         )
         .to_vec()
     };
+
+    println!("Output data is: {:?}", output_data);
+
     let message = unsafe {
         CStr::from_ptr(bindings::get_message(&result))
             .to_str()
-            .unwrap()
+            .unwrap_or_default()
     };
     let gas_used = unsafe { bindings::get_gas_used(&result) as u64 };
     let gas_refund = unsafe { bindings::get_gas_refund(&result) as u64 };
@@ -283,12 +290,32 @@ mod tests {
     #[cfg(triedb)]
     #[test]
     fn test_callenv() {
-        let db = ffi::make_testdb();
+        println!("In test callenv");
+
+        let db = unsafe { bindings::make_testdb() };
+        if db.is_null() {
+            panic!("make_testdb() returned a null pointer.");
+        }
+        println!("TestDb instance created: {:?}", db);
+
         let path = unsafe {
-            ffi::testdb_load_callenv(db);
-            let testdb_path = ffi::testdb_path(db).to_string();
-            Path::new(&testdb_path).to_owned()
+            bindings::testdb_load_callenv(db);
+            let testdb_path = bindings::testdb_path(db);
+
+            if testdb_path.is_null() {
+                panic!("testdb_path() returned a null pointer.");
+            }
+
+            println!(
+                "Test db path: {}",
+                CStr::from_ptr(testdb_path).to_str().unwrap()
+            );
+            let testdb_path_string = CStr::from_ptr(testdb_path).to_str().unwrap();
+            Path::new(&testdb_path_string).to_owned()
         };
+
+        println!("Path is: {}", path.display());
+
         let result = eth_call(
             reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
                 chain_id: Some(41454),
@@ -314,7 +341,7 @@ mod tests {
             &StateOverrideSet::new(),
         );
         unsafe {
-            ffi::destroy_testdb(db);
+            bindings::destroy_testdb(db);
         };
 
         match result {
@@ -330,11 +357,12 @@ mod tests {
     #[cfg(triedb)]
     #[test]
     fn test_transfer() {
-        let db = ffi::make_testdb();
+        let db = unsafe { bindings::make_testdb() };
         let path = unsafe {
-            ffi::testdb_load_transfer(db);
-            let testdb_path = ffi::testdb_path(db).to_string();
-            Path::new(&testdb_path).to_owned()
+            bindings::testdb_load_callenv(db);
+            let testdb_path = bindings::testdb_path(db);
+            let testdb_path_string = CStr::from_ptr(testdb_path).to_str().unwrap();
+            Path::new(&testdb_path_string).to_owned()
         };
 
         let txn: reth_primitives::transaction::Transaction =
@@ -422,18 +450,19 @@ mod tests {
         }
 
         unsafe {
-            ffi::destroy_testdb(db);
+            bindings::destroy_testdb(db);
         };
     }
 
     #[cfg(triedb)]
     #[test]
     fn test_callcontract() {
-        let db = ffi::make_testdb();
+        let db = unsafe { bindings::make_testdb() };
         let path = unsafe {
-            ffi::testdb_load_callcontract(db);
-            let testdb_path = ffi::testdb_path(db).to_string();
-            Path::new(&testdb_path).to_owned()
+            bindings::testdb_load_callenv(db);
+            let testdb_path = bindings::testdb_path(db);
+            let testdb_path_string = CStr::from_ptr(testdb_path).to_str().unwrap();
+            Path::new(&testdb_path_string).to_owned()
         };
 
         let mut txn: reth_primitives::transaction::Transaction =
@@ -521,7 +550,7 @@ mod tests {
         }
 
         unsafe {
-            ffi::destroy_testdb(db);
+            bindings::destroy_testdb(db);
         };
     }
 

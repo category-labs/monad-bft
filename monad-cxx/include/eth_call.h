@@ -11,7 +11,7 @@ typedef uint8_t const *bytes;
 // eth_call return type
 struct monad_evmc_result
 {
-    int status_code;
+    int64_t status_code;
     uint8_t *output_data;
     // we need this because output_data is bytes
     uint64_t output_size;
@@ -20,7 +20,7 @@ struct monad_evmc_result
     int64_t gas_refund;
 };
 
-int get_status_code(const struct monad_evmc_result *);
+int64_t get_status_code(const struct monad_evmc_result *);
 bytes get_output_data(const struct monad_evmc_result *);
 uint64_t get_output_size(const struct monad_evmc_result *);
 char const *get_message(const struct monad_evmc_result *);
