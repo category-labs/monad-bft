@@ -17,4 +17,5 @@ serde = { workspace = true, features = ["derive"] }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 test-case = { workspace = true }

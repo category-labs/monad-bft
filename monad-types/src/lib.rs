@@ -439,6 +439,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use monad_crypto::NopPubKey;
+    use serde_json::from_str;
     use test_case::test_case;
 
     use super::*;
@@ -454,5 +456,109 @@ mod test {
         val_set_update_interval: SeqNum,
     ) {
         assert_eq!(seq_num.to_epoch(val_set_update_interval), expected_epoch);
+    }
+
+    #[test]
+    fn test_round_arithmetic() {
+        let r1 = Round(1);
+        let r2 = Round(2);
+        let mut r3 = Round(3);
+
+        assert!(r1.0 == 1);
+        assert!(r2.0 == 2);
+        assert!(r1 + r2 == Round(3));
+
+        r3 += r1;
+        assert!(r3 == Round(4));
+    }
+
+    #[test]
+    fn test_seqnum_arithmetic() {
+        let s1 = SeqNum(8);
+        let s2 = SeqNum(4);
+        assert!(s1 / s2 == SeqNum(2));
+    }
+
+    #[test]
+    fn test_stake_arithmetic() {
+        let s1 = Stake(1);
+        let s2 = Stake(2);
+        assert!(s1 + s2 == Stake(3));
+        assert!(s2 - s1 == Stake(1));
+
+        let mut s3 = Stake(3);
+        s3 -= s1;
+        assert!(s3 == Stake(2));
+    }
+
+    #[test]
+    fn test_epoch_calcs() {
+        let val_set_update_interval = SeqNum(100);
+
+        let seq_num = SeqNum(100);
+        assert!(seq_num.is_epoch_end(val_set_update_interval));
+        assert!(seq_num.get_locked_epoch(val_set_update_interval) == Epoch(3));
+
+        let seq_num = SeqNum(200);
+        assert!(seq_num.is_epoch_end(val_set_update_interval));
+        assert!(seq_num.get_locked_epoch(val_set_update_interval) == Epoch(4));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_locked_epoch_non_epoch_end() {
+        let val_set_update_interval = SeqNum(100);
+        let seq_num = SeqNum(150);
+        seq_num.get_locked_epoch(val_set_update_interval);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_locked_epoch_genesis() {
+        let val_set_update_interval = SeqNum(100);
+        let seq_num = SeqNum(0);
+        seq_num.get_locked_epoch(val_set_update_interval);
+    }
+
+    #[test]
+    fn test_deserialize_missing_hex_prefix() {
+        let json = r#"{"node_id": "0011223344556677"}"#;
+        let result = from_str::<NodeId<NopPubKey>>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_pubkey() {
+        let test_bytes = [3u8; 32];
+        let test_pubkey = NopPubKey::from_bytes(&test_bytes).unwrap();
+        let node_id = NodeId::new(test_pubkey);
+
+        let serialized = Serializable::serialize(&node_id);
+        assert_eq!(serialized, node_id);
+    }
+
+    #[test]
+    fn test_deserialize_pubkey() {
+        let test_bytes = [3u8; 32];
+        let test_pubkey = NopPubKey::from_bytes(&test_bytes).unwrap();
+
+        let deserialized = NopPubKey::deserialize(&test_pubkey).unwrap();
+        assert_eq!(deserialized, NopPubKey::from_bytes(&test_bytes).unwrap());
+    }
+
+    #[test]
+    fn test_drop_timer_drops() {
+        let timer = DropTimer::start(Duration::from_millis(10), |_| {
+            panic!();
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_drop_time_elapses() {
+        let timer = DropTimer::start(Duration::from_millis(10), |_| {
+            panic!();
+        });
+        std::thread::sleep(Duration::from_millis(20));
     }
 }

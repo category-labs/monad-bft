@@ -31,3 +31,32 @@ impl CompressionAlgo for NopCompression {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::{fs::File, io::Read};
+
+    use super::*;
+    #[test]
+    fn test_lossless_compression() {
+        let mut data = Vec::new();
+        File::open("examples/txbatch.rlp")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+
+        let algo = NopCompression::new(6, 0, Vec::new());
+
+        let mut compressed = Vec::new();
+        assert!(algo.compress(&data, &mut compressed).is_ok());
+
+        let mut decompressed = Vec::new();
+        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
+        assert_eq!(data, decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_nop_compression_format() {
+        assert_eq!(format!("{}", NopCompressionError), "NopCompressionError");
+    }
+}
