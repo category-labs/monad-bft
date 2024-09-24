@@ -424,7 +424,9 @@ async fn rpc_select(
         "eth_feeHistory" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_feeHistory(params).await.map(serialize_result)?
+                monad_eth_feeHistory(triedb_env, params)
+                    .await
+                    .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }

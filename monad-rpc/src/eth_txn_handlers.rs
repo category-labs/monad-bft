@@ -2,13 +2,14 @@ use std::cmp::min;
 
 use alloy_primitives::{
     aliases::{U128, U256, U64},
-    Address, FixedBytes,
+    FixedBytes,
 };
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use reth_primitives::{transaction::TransactionKind, Header, ReceiptWithBloom, TransactionSigned};
 use reth_rpc_types::{
-    AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
+    AccessListItem, BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Parity,
+    Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
@@ -16,8 +17,8 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     block_handlers::block_receipts,
     eth_json_types::{
-        BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
-        Quantity, UnformattedData,
+        BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity,
+        UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{get_block_num_from_tag, TransactionLocation, Triedb},
@@ -185,75 +186,15 @@ impl From<FilterError> for JsonRpcError {
     }
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(transparent)]
 pub struct MonadEthGetLogsParams {
-    filters: Vec<FilterParams>,
-}
-
-#[derive(Debug, schemars::JsonSchema)]
-pub struct FilterParams {
-    filter: LogFilter,
-    address: AddressValueOrArray,
-    topics: Option<Vec<EthHash>>,
-}
-
-// Must use this impl instead of derive because serde does not support default with flatten: https://github.com/serde-rs/serde/issues/1626
-impl<'de> Deserialize<'de> for FilterParams {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        pub struct ParamsHelper {
-            #[serde(flatten)]
-            filter: Option<LogFilter>,
-            address: AddressValueOrArray,
-            topics: Option<Vec<EthHash>>,
-        }
-
-        let result = ParamsHelper::deserialize(deserializer)?;
-
-        Ok(Self {
-            filter: result.filter.unwrap_or_default(),
-            address: result.address,
-            topics: result.topics,
-        })
-    }
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-pub enum LogFilter {
-    Range {
-        from_block: BlockTags,
-        to_block: BlockTags,
-    },
-    BlockHash {
-        block_hash: EthHash,
-    },
-}
-
-impl Default for LogFilter {
-    fn default() -> Self {
-        Self::Range {
-            from_block: BlockTags::default(),
-            to_block: BlockTags::default(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum AddressValueOrArray {
-    Address(Option<EthAddress>),
-    Addresses(Vec<EthAddress>),
+    filters: Vec<Filter>,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 
-#[rpc(method = "eth_getLogs")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs<T: Triedb>(
@@ -265,45 +206,48 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     let mut logs = Vec::new();
 
     for req in p.filters {
-        let mut filter = Filter::new();
-
-        match req.address {
-            AddressValueOrArray::Address(Some(address)) => {
-                filter = filter.address(Address::from_slice(&address.0));
-            }
-            AddressValueOrArray::Addresses(addresses) => {
-                filter = filter.address(
-                    addresses
-                        .iter()
-                        .map(|a| Address::from_slice(&a.0))
-                        .collect::<Vec<_>>(),
-                );
-            }
-            _ => {}
-        }
-
-        if let Some(topics) = req.topics {
-            for topic in topics {
-                filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
-            }
-        }
-
-        let (from_block, to_block) = match req.filter {
-            LogFilter::Range {
+        let filter: Filter = req.clone();
+        let (from_block, to_block) = match req.block_option {
+            FilterBlockOption::Range {
                 from_block,
                 to_block,
             } => {
-                let from_block = get_block_num_from_tag(triedb_env, from_block).await?;
-                let to_block = get_block_num_from_tag(triedb_env, to_block).await?;
-                filter = filter.from_block(from_block);
-                filter = filter.to_block(to_block);
+                let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
+                    match block {
+                        None => BlockTags::default(),
+                        Some(b) => match b {
+                            BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
+                            _ => BlockTags::Latest,
+                        },
+                    }
+                };
+                let from_block_tag = into_block_tag(from_block);
+                let to_block_tag = into_block_tag(to_block);
+
+                let from_block = get_block_num_from_tag(triedb_env, from_block_tag)
+                    .await
+                    .map_err(|_| {
+                        JsonRpcError::internal_error(
+                            "could not get starting block range".to_string(),
+                        )
+                    })?;
+                let to_block = get_block_num_from_tag(triedb_env, to_block_tag)
+                    .await
+                    .map_err(|_| {
+                        JsonRpcError::internal_error("could not get ending block range".to_string())
+                    })?;
                 (from_block, to_block)
             }
-            LogFilter::BlockHash { block_hash } => {
-                filter = filter.at_block_hash(Into::<FixedBytes<32>>::into(block_hash.0));
-                let Some(block_num) = triedb_env.get_block_number_by_hash(block_hash.0).await?
-                else {
-                    return Ok(MonadEthGetLogsResult(vec![]));
+            FilterBlockOption::AtBlockHash(block_hash) => {
+                let block = triedb_env
+                    .get_block_number_by_hash(block_hash.into())
+                    .await
+                    .map_err(|_| {
+                        JsonRpcError::internal_error("could not get block hash".to_string())
+                    })?;
+                let block_num = match block {
+                    Some(block_num) => block_num,
+                    None => return Ok(MonadEthGetLogsResult(vec![])),
                 };
                 (block_num, block_num)
             }
@@ -317,8 +261,6 @@ pub async fn monad_eth_getLogs<T: Triedb>(
         }
 
         let filtered_params = FilteredParams::new(Some(filter.clone()));
-        let address_filter = FilteredParams::address_filter(&filter.address);
-        let topics_filter = FilteredParams::topics_filter(&filter.topics);
 
         for block_num in from_block..=to_block {
             let header = match triedb_env.get_block_header(block_num).await? {
@@ -331,30 +273,31 @@ pub async fn monad_eth_getLogs<T: Triedb>(
             };
             let transactions = triedb_env.get_transactions(block_num).await?;
 
-            let header_logs_bloom = header.header.logs_bloom;
+            // TODO: check block's log_bloom against the filter
+            let block_receipts =
+                block_receipts(triedb_env, &header.header, header.hash, &transactions).await?;
+            let mut receipt_logs: Vec<Log> = block_receipts
+                .into_iter()
+                .flat_map(|receipt| {
+                    let logs: Vec<Log> = receipt
+                        .logs
+                        .into_iter()
+                        .filter(|log: &Log| {
+                            if filtered_params.filter.is_some()
+                                && (!filtered_params.filter_address(log)
+                                    || !filtered_params.filter_topics(log))
+                            {
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .collect();
+                    logs
+                })
+                .collect();
 
-            if FilteredParams::matches_address(header_logs_bloom, &address_filter)
-                || FilteredParams::matches_topics(header_logs_bloom, &topics_filter)
-            {
-                let block_receipts =
-                    block_receipts(triedb_env, &header.header, header.hash, &transactions).await?;
-                let mut receipt_logs: Vec<Log> = block_receipts
-                    .into_iter()
-                    .flat_map(|receipt| {
-                        let logs: Vec<Log> = receipt
-                            .logs
-                            .into_iter()
-                            .filter(|log| {
-                                filtered_params.filter_address(log)
-                                    && filtered_params.filter_topics(log)
-                            })
-                            .collect();
-                        logs
-                    })
-                    .collect();
-
-                logs.append(&mut receipt_logs);
-            }
+            logs.append(&mut receipt_logs);
         }
     }
 

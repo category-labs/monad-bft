@@ -1,4 +1,7 @@
-use std::{ops::Sub, path::Path};
+use std::{
+    ops::{Div, Sub},
+    path::Path,
+};
 
 use alloy_primitives::{U256, U64};
 use monad_cxx::StateOverrideSet;
@@ -236,14 +239,47 @@ pub struct MonadEthHistoryParams {
 #[allow(non_snake_case)]
 /// Transaction fee history
 /// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
-pub async fn monad_eth_feeHistory(params: MonadEthHistoryParams) -> JsonRpcResult<MonadFeeHistory> {
+pub async fn monad_eth_feeHistory<T: Triedb>(
+    triedb_env: &T,
+    params: MonadEthHistoryParams,
+) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
 
-    let block_count: u64 = params.block_count.0;
-    if block_count == 0 {
-        return Ok(MonadFeeHistory(FeeHistory::default()));
+    // Between 1 and 1024 blocks are supported
+    let block_count = params.block_count.0;
+    if !(1..=1024).contains(&block_count) {
+        return Err(JsonRpcError::custom(
+            "block count must be between 1 and 1024".to_string(),
+        ));
     }
 
-    // TODO: retrieve fee parameters from historical blocks
-    Ok(MonadFeeHistory(FeeHistory::default()))
+    let block_num = get_block_num_from_tag(triedb_env, params.newest_block).await?;
+    let header = match triedb_env.get_block_header(block_num).await? {
+        Some(header) => header,
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "Unable to retrieve latest block".into(),
+            ))
+        }
+    };
+
+    let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
+    let gas_used_ratio = (header.header.gas_used as f64).div(header.header.gas_limit as f64);
+
+    let reward = if params.reward_percentiles.is_empty() {
+        None
+    } else {
+        Some(vec![
+            vec![U256::ZERO; params.reward_percentiles.len()];
+            block_count as usize
+        ])
+    };
+
+    // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default
+    Ok(MonadFeeHistory(FeeHistory {
+        base_fee_per_gas: vec![U256::from(base_fee_per_gas); (block_count + 1) as usize],
+        gas_used_ratio: vec![gas_used_ratio; block_count as usize],
+        reward,
+        oldest_block: U256::from(header.header.number.saturating_sub(block_count)),
+    }))
 }
