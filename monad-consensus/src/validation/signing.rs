@@ -8,7 +8,7 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
     validation::Error,
-    voting::ValidatorMapping,
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{
@@ -361,24 +361,10 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
         self,
         epoch_manager: &EpochManager,
     ) -> Result<Validated<VoteMessage<SCT>>, Error> {
-        self.valid_commit_result()?;
+        validate_commit_result(&self.obj.vote)?;
         self.verify_epoch(epoch_manager)?;
 
         Ok(Validated { message: self })
-    }
-
-    fn valid_commit_result(&self) -> Result<(), Error> {
-        let consecutive = consecutive(
-            self.obj.vote.vote_info.round,
-            self.obj.vote.vote_info.parent_round,
-        );
-        let commit = self.obj.vote.ledger_commit_info == CommitResult::Commit;
-
-        if consecutive == commit {
-            Ok(())
-        } else {
-            Err(Error::InvalidVoteMessage)
-        }
     }
 
     /// Check local epoch manager record for vote.round is equal to vote.epoch
@@ -480,6 +466,17 @@ impl<SCT: SignatureCollection> From<&Unvalidated<PeerStateRootMessage<SCT>>>
     }
 }
 
+fn validate_commit_result(vote: &Vote) -> Result<(), Error> {
+    let consecutive = consecutive(vote.vote_info.round, vote.vote_info.parent_round);
+    let commit = vote.ledger_commit_info == CommitResult::Commit;
+
+    if consecutive == commit {
+        Ok(())
+    } else {
+        Err(Error::InvalidVote)
+    }
+}
+
 fn verify_certificates<SCT, VTF, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
@@ -507,6 +504,9 @@ where
             .ok_or(Error::ValidatorSetDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
+
+    // validate commit result is consistent with vote info in QC
+    validate_commit_result(&qc.info.vote)?;
 
     let qc_epoch = qc.get_epoch();
     let local_qc_epoch = epoch_manager
@@ -686,13 +686,14 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, BlockKind},
         ledger::CommitResult,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        state_root_hash::StateRootHash,
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
         validation::Error,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -1142,22 +1143,27 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
 
+        let payload = Payload {
+            txns: TransactionPayload::List(FullTransactionList::empty()),
+        };
         let block = Block::<SignatureCollectionType>::new(
             NodeId::new(author.pubkey()),
             0,
             Epoch(2), // wrong epoch: should be 1
             Round(1),
-            &Payload {
-                txns: TransactionPayload::List(FullTransactionList::empty()),
-                header: ExecutionArtifacts::zero(),
+            &ExecutionProtocol {
+                state_root: StateRootHash::default(),
                 seq_num: GENESIS_SEQ_NUM + SeqNum(1),
                 beneficiary: EthAddress::from_bytes([0x00_u8; 20]),
                 randao_reveal: RandaoReveal::new::<SignatureType>(Round(1), author_cert_key),
             },
+            payload.get_id(),
+            BlockKind::Executable,
             &QuorumCertificate::genesis_qc(),
         );
         let proposal = ProposalMessage {
             block,
+            payload,
             last_round_tc: None,
         };
 
@@ -1365,5 +1371,56 @@ mod test {
         assert_eq!(qc_verify_result, Ok(()));
         let tc_verify_result = verify_certificates(&epoch_manager, &val_epoch_map, &Some(tc), &qc);
         assert_eq!(tc_verify_result, Err(Error::InvalidEpoch));
+    }
+
+    #[test]
+    fn qc_invalid_commit_result() {
+        let (_keys, cert_keys, valset, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let validator_stakes = Vec::from_iter(valset.get_members().clone());
+
+        // VoteInfo round is not consecutive with parent_round
+        let vi = VoteInfo {
+            id: BlockId(Hash([0x09_u8; 32])),
+            epoch: Epoch(1),
+            round: Round(10),
+            parent_id: BlockId(Hash([0x0a_u8; 32])),
+            parent_round: Round(8),
+            seq_num: SeqNum(7),
+            timestamp: 0,
+        };
+
+        let qcinfo = QcInfo {
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit, // inconsistent with VoteInfo
+            },
+        };
+
+        let msg = HasherType::hash_object(&qcinfo.vote);
+        let mut sigs = Vec::new();
+        for ck in cert_keys.iter() {
+            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+
+            for (node_id, pubkey) in valmap.map.iter() {
+                if *pubkey == ck.pubkey() {
+                    sigs.push((*node_id, sig));
+                }
+            }
+        }
+
+        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg.as_ref()).unwrap();
+
+        // moved here because of valmap ownership
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
+
+        let qc = QuorumCertificate::new(qcinfo, sigcol);
+        let verify_result = verify_certificates(&epoch_manager, &val_epoch_map, &None, &qc);
+        assert_eq!(verify_result, Err(Error::InvalidVote));
     }
 }

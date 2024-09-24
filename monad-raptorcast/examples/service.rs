@@ -15,7 +15,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_secp::SecpSignature;
-use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
@@ -150,7 +150,7 @@ fn service(
         let message = MockMessage::new(broadcast_id, message_len);
         tx_router
             .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast(Epoch(0), Round(0)),
+                target: RouterTarget::Broadcast(Epoch(0)),
                 message,
             })
             .expect("reader should never be dropped");

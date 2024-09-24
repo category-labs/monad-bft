@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, fmt::Debug, time::Duration};
 
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
@@ -8,12 +8,13 @@ use monad_updaters::ledger::MockableLedger;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 
-type FetchMetricFunction = fn(&Metrics) -> (u64, &str);
+type FetchMetricFunction = fn(&Metrics) -> u64;
+type MetricName = &'static str;
 
 #[macro_export]
 macro_rules! fetch_metric {
     ( $( $k:ident ).+ ) => {{
-        |s: &Metrics| { (s.$($k).+, stringify!($($k).+)) }
+        (stringify!($($k).+), |s: &Metrics| { s.$($k).+ })
     }};
 }
 
@@ -40,23 +41,35 @@ enum ExpectedMetric {
     Maximum(u64),
 }
 
-#[derive(Debug)]
 pub struct MockSwarmVerifier<S: SwarmRelation> {
     tick: ExpectedTick,
-
-    metrics: Vec<(
-        ID<CertificateSignaturePubKey<S::SignatureType>>,
-        FetchMetricFunction,
-        ExpectedMetric,
-    )>,
+    metrics: BTreeMap<
+        (ID<CertificateSignaturePubKey<S::SignatureType>>, MetricName),
+        (FetchMetricFunction, ExpectedMetric),
+    >,
 }
 
 impl<S: SwarmRelation> Default for MockSwarmVerifier<S> {
     fn default() -> Self {
         Self {
             tick: ExpectedTick::None,
-            metrics: Vec::new(),
+            metrics: BTreeMap::new(),
         }
+    }
+}
+
+impl<S: SwarmRelation> std::fmt::Debug for MockSwarmVerifier<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_map = BTreeMap::new();
+
+        for ((id, metric_name), (_, expected)) in &self.metrics {
+            debug_map.insert((id, metric_name), expected);
+        }
+
+        f.debug_struct("MockSwarmVerifier")
+            .field("tick", &self.tick)
+            .field("metrics", &debug_map)
+            .finish()
     }
 }
 
@@ -80,12 +93,14 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_exact(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: FetchMetricFunction,
+        fetch_metric: (MetricName, FetchMetricFunction),
         value: u64,
     ) -> &mut Self {
         for node_id in node_ids {
-            self.metrics
-                .push((*node_id, fetch_metric, ExpectedMetric::Exact(value)));
+            self.metrics.insert(
+                (*node_id, fetch_metric.0),
+                (fetch_metric.1, ExpectedMetric::Exact(value)),
+            );
         }
         self
     }
@@ -93,13 +108,15 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_range(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: FetchMetricFunction,
+        fetch_metric: (MetricName, FetchMetricFunction),
         lower: u64,
         upper: u64,
     ) -> &mut Self {
         for node_id in node_ids {
-            self.metrics
-                .push((*node_id, fetch_metric, ExpectedMetric::Range(lower, upper)));
+            self.metrics.insert(
+                (*node_id, fetch_metric.0),
+                (fetch_metric.1, ExpectedMetric::Range(lower, upper)),
+            );
         }
         self
     }
@@ -107,12 +124,14 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_minimum(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: FetchMetricFunction,
+        fetch_metric: (MetricName, FetchMetricFunction),
         minimum: u64,
     ) -> &mut Self {
         for node_id in node_ids {
-            self.metrics
-                .push((*node_id, fetch_metric, ExpectedMetric::Minimum(minimum)));
+            self.metrics.insert(
+                (*node_id, fetch_metric.0),
+                (fetch_metric.1, ExpectedMetric::Minimum(minimum)),
+            );
         }
         self
     }
@@ -120,12 +139,14 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_maximum(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: FetchMetricFunction,
+        fetch_metric: (MetricName, FetchMetricFunction),
         maximum: u64,
     ) -> &mut Self {
         for node_id in node_ids {
-            self.metrics
-                .push((*node_id, fetch_metric, ExpectedMetric::Maximum(maximum)));
+            self.metrics.insert(
+                (*node_id, fetch_metric.0),
+                (fetch_metric.1, ExpectedMetric::Maximum(maximum)),
+            );
         }
         self
     }
@@ -218,8 +239,10 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             // ledger should have genesis block
             assert!(ledger_len > 0);
 
-            let blocks_proposed: Vec<_> =
-                ledger.values().filter(|b| (b.author == *peer_id)).collect();
+            let blocks_proposed: Vec<_> = ledger
+                .values()
+                .filter(|b| (b.block.author == *peer_id))
+                .collect();
             // number of blocks authored in the ledger <= number of rounds as leader
             // NOTE: '<=' is used since blocks can be rejected
             let num_blocks_authored = blocks_proposed.len() as u64;
@@ -312,9 +335,9 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             ExpectedTick::None => {}
         }
 
-        for (node_id, fetch_metric, expected_metric) in self.metrics.iter() {
+        for ((node_id, metric_name), (fetch_metric, expected_metric)) in self.metrics.iter() {
             let node = swarm.states.get(node_id).unwrap();
-            let (actual_metric, metric_name) = fetch_metric(node.state.metrics());
+            let actual_metric = fetch_metric(node.state.metrics());
             match expected_metric {
                 ExpectedMetric::Exact(metric) => {
                     if actual_metric != *metric {

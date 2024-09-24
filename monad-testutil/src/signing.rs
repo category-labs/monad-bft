@@ -2,8 +2,7 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
-    block::Block,
-    payload::TransactionPayload,
+    block::{Block, BlockKind},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -105,27 +104,22 @@ pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.timestamp.as_bytes());
         hasher.update(b.epoch);
         hasher.update(b.round);
-        match &b.payload.txns {
-            TransactionPayload::List(rlp) => {
+        hasher.update(b.execution.state_root);
+        hasher.update(b.execution.seq_num.as_bytes());
+        hasher.update(b.execution.beneficiary.0.as_bytes());
+        hasher.update(b.execution.randao_reveal.0.as_bytes());
+        hasher.update(b.payload_id.0.as_bytes());
+        match &b.block_kind {
+            BlockKind::Executable => {
                 // EnumDiscriminant(1)
                 hasher.update(1_i32.to_le_bytes());
-                hasher.update(rlp.bytes())
             }
-            TransactionPayload::Empty => {
+            BlockKind::Null => {
                 // EnumDiscriminant(2)
                 hasher.update(2_i32.to_le_bytes());
             }
         }
-        hasher.update(b.payload.header.parent_hash);
-        hasher.update(b.payload.header.state_root);
-        hasher.update(b.payload.header.transactions_root);
-        hasher.update(b.payload.header.receipts_root);
-        hasher.update(b.payload.header.logs_bloom);
-        hasher.update(b.payload.header.gas_used);
-        hasher.update(b.payload.seq_num.as_bytes());
         hasher.update(b.qc.get_block_id().0);
-        hasher.update(b.payload.beneficiary.0.as_bytes());
-        hasher.update(b.payload.randao_reveal.0.as_bytes());
         hasher.update(b.qc.signatures.get_hash());
 
         hasher.hash()
@@ -180,6 +174,19 @@ impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
         let sig = ST::sign(msg.as_ref(), key);
 
         Unverified::new(Unvalidated::new(o), sig)
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
+    pub fn sign_incorrect_object<T: Hashable>(
+        signed_object: T,
+        unsigned_object: T,
+        key: &ST::KeyPairType,
+    ) -> Unverified<ST, Unvalidated<T>> {
+        let msg = HasherType::hash_object(&signed_object);
+        let sig = ST::sign(msg.as_ref(), key);
+
+        Unverified::new(Unvalidated::new(unsigned_object), sig)
     }
 }
 

@@ -6,7 +6,7 @@ use monad_proto::{error::ProtoError, proto::event::*};
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
     MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    ValidatorEvent,
+    StateSyncUpsertType, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -401,6 +401,11 @@ where
                     ProtoGetValidatorSetEvent {},
                 )),
             },
+            ControlPanelEvent::GetMetricsEvent => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::GetMetricsEvent(
+                    ProtoGetMetricsEvent {},
+                )),
+            },
             ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
                     ProtoClearMetricsEvent {},
@@ -416,6 +421,13 @@ where
                     )),
                 }
             }
+            ControlPanelEvent::UpdateLogFilter(filter) => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::UpdateLogFilter(
+                    ProtoUpdateLogFilter {
+                        filter: filter.clone(),
+                    },
+                )),
+            },
         }
     }
 }
@@ -435,6 +447,9 @@ where
                 proto_control_panel_event::Event::GetValidatorSetEvent(_) => {
                     ControlPanelEvent::GetValidatorSet
                 }
+                proto_control_panel_event::Event::GetMetricsEvent(_) => {
+                    ControlPanelEvent::GetMetricsEvent
+                }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent
                 }
@@ -452,6 +467,9 @@ where
                             .try_into()?,
                     ))
                 }
+                proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
+                    ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)
+                }
             }
         })
     }
@@ -459,7 +477,7 @@ where
 
 impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequest {
     fn from(request: &StateSyncRequest) -> Self {
-        monad_proto::proto::message::ProtoStateSyncRequest {
+        Self {
             prefix: request.prefix,
             prefix_bytes: request.prefix_bytes.into(),
             target: request.target,
@@ -470,18 +488,42 @@ impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequ
     }
 }
 
+impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncUpsertType {
+    fn from(upsert_type: &StateSyncUpsertType) -> Self {
+        match upsert_type {
+            StateSyncUpsertType::Code => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Code
+            }
+            StateSyncUpsertType::Account => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Account
+            }
+            StateSyncUpsertType::Storage => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::Storage
+            }
+            StateSyncUpsertType::AccountDelete => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::AccountDelete
+            }
+            StateSyncUpsertType::StorageDelete => {
+                monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete
+            }
+        }
+    }
+}
+
 impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncResponse {
     fn from(response: &StateSyncResponse) -> Self {
-        monad_proto::proto::message::ProtoStateSyncResponse {
+        Self {
             request: Some((&response.request).into()),
             upserts: response
                 .response
                 .iter()
                 .map(
-                    |(code, key, value)| monad_proto::proto::message::ProtoStateSyncUpsert {
-                        code: *code,
-                        key: Bytes::copy_from_slice(key),
-                        value: Bytes::copy_from_slice(value),
+                    |(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
+                        r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
+                            upsert_type,
+                        )
+                        .into(),
+                        data: Bytes::copy_from_slice(data),
                     },
                 )
                 .collect(),
@@ -563,6 +605,28 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
     }
 }
 
+impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUpsertType {
+    fn from(upsert_type: monad_proto::proto::message::ProtoStateSyncUpsertType) -> Self {
+        match upsert_type {
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Code => {
+                StateSyncUpsertType::Code
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Account => {
+                StateSyncUpsertType::Account
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::Storage => {
+                StateSyncUpsertType::Storage
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::AccountDelete => {
+                StateSyncUpsertType::AccountDelete
+            }
+            monad_proto::proto::message::ProtoStateSyncUpsertType::StorageDelete => {
+                StateSyncUpsertType::StorageDelete
+            }
+        }
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -589,8 +653,18 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                     response: response
                         .upserts
                         .into_iter()
-                        .map(|upsert| (upsert.code, upsert.key.into(), upsert.value.into()))
-                        .collect(),
+                        .map(|upsert| {
+                            let upsert_type =
+                                monad_proto::proto::message::ProtoStateSyncUpsertType::try_from(
+                                    upsert.r#type,
+                                )
+                                .map_err(|_| {
+                                    ProtoError::DeserializeError("unknown upsert type".to_owned())
+                                })?
+                                .into();
+                            Ok((upsert_type, Vec::from(upsert.data)))
+                        })
+                        .collect::<Result<_, ProtoError>>()?,
                     response_n: response.n,
                 }))
             }
@@ -692,8 +766,8 @@ mod test {
         let mempool_event_bytes: Bytes = mempool_event.serialize();
         assert_eq!(
             mempool_event_bytes,
-            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType,SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
-        )
+            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType, SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
+            )
         )
     }
 }

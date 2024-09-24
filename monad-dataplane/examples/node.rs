@@ -1,8 +1,14 @@
-use std::{net::SocketAddr, ops::DerefMut, pin::Pin, task::Poll, time::Instant};
+use std::{
+    net::SocketAddr,
+    ops::DerefMut,
+    pin::{pin, Pin},
+    task::Poll,
+    time::Instant,
+};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::{executor, Stream};
-use futures_util::{FutureExt, StreamExt};
+use futures_util::FutureExt;
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, RecvMsg};
 use rand::Rng;
 
@@ -43,6 +49,8 @@ fn main() {
                 break;
             }
         }
+
+        std::thread::sleep(std::time::Duration::from_secs(5));
     });
 
     let mut rng = rand::thread_rng();
@@ -57,11 +65,16 @@ fn main() {
 
         println!("START: {:?}", Instant::now());
         for i in 0..num_pkts {
-            tx.network.broadcast(BroadcastMsg {
+            tx.network.udp_write_broadcast(BroadcastMsg {
                 targets: vec![tx.target],
                 payload: b.slice(i * pkt_size..(i + 1) * pkt_size),
             })
         }
+
+        tx.network
+            .tcp_write(tx.target, Bytes::from(&b"Hello world"[..]));
+
+        std::thread::sleep(std::time::Duration::from_secs(5));
     });
 
     t1.join().unwrap();
@@ -93,8 +106,9 @@ impl Stream for Node {
     ) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        futures::future::select_all(vec![this.network.next().boxed_local()])
-            .map(|(event, _, _)| event)
-            .poll_unpin(cx)
+        if let Poll::Ready(message) = pin!(this.network.udp_read()).poll_unpin(cx) {
+            return Poll::Ready(Some(message));
+        }
+        Poll::Pending
     }
 }

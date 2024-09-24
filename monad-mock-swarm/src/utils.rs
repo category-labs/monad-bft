@@ -11,12 +11,13 @@ pub mod test_tool {
         },
     };
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, BlockKind},
         ledger::CommitResult,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
+            ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
+        state_root_hash::StateRootHash,
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
     };
@@ -71,21 +72,37 @@ pub mod test_tool {
         )
     }
 
-    pub fn fake_block(round: Round) -> Block<SC> {
-        let payload = Payload {
-            txns: TransactionPayload::List(FullTransactionList::empty()),
-            header: ExecutionArtifacts::zero(),
+    pub fn fake_block(round: Round) -> (Block<SC>, Payload) {
+        let execution = ExecutionProtocol {
+            state_root: StateRootHash::default(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
+        let payload = Payload {
+            txns: TransactionPayload::List(FullTransactionList::empty()),
+        };
 
-        Block::new(fake_node_id(), 0, Epoch(1), round, &payload, &fake_qc())
+        (
+            Block::new(
+                fake_node_id(),
+                0,
+                Epoch(1),
+                round,
+                &execution,
+                payload.get_id(),
+                BlockKind::Executable,
+                &fake_qc(),
+            ),
+            payload,
+        )
     }
 
     pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
+        let (block, payload) = fake_block(round);
         let internal_msg = ProposalMessage {
-            block: fake_block(round),
+            block,
+            payload,
             last_round_tc: None,
         };
         ConsensusMessage {

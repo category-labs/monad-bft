@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use monad_consensus_types::{
-    block::Block,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    block::{Block, BlockKind},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::EthValidatedBlock;
+use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
@@ -65,18 +67,22 @@ pub fn generate_random_block_with_txns(
     let full_txn_list = FullTransactionList::new(eth_full_tx_list.rlp_encode());
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
+    let payload = Payload {
+        txns: TransactionPayload::List(full_txn_list),
+    };
     let block = Block::new(
         NodeId::new(keypair.pubkey()),
         0,
         Epoch(1),
         Round(1),
-        &Payload {
-            txns: TransactionPayload::List(full_txn_list),
-            header: ExecutionArtifacts::zero(),
+        &ExecutionProtocol {
+            state_root: Default::default(),
             seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },
+        payload.get_id(),
+        BlockKind::Executable,
         &QuorumCertificate::genesis_qc(),
     );
     let validated_txns: Vec<_> = eth_txn_list
@@ -88,10 +94,20 @@ pub fn generate_random_block_with_txns(
         .map(|t| (EthAddress(t.signer()), t.nonce()))
         .collect();
 
+    let carriage_costs = validated_txns
+        .iter()
+        .map(|t| (EthAddress(t.signer()), compute_txn_carriage_cost(t)))
+        .fold(BTreeMap::new(), |mut costs, (address, cost)| {
+            *costs.entry(address).or_insert(0) += cost;
+            costs
+        });
+
     EthValidatedBlock {
         block,
+        orig_payload: payload,
         validated_txns,
         nonces,
+        carriage_costs,
     }
 }
 

@@ -229,7 +229,9 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
         validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, Self::SignatureType>> {
-        assert_eq!(self.signers.len(), validator_mapping.map.len());
+        if self.signers.len() != validator_mapping.map.len() {
+            return Err(SignatureCollectionError::InvalidSignaturesVerify);
+        }
 
         let mut aggpk = BlsAggregatePubKey::infinity();
         let mut signers = Vec::new();
@@ -805,5 +807,38 @@ mod test {
                 unreachable!()
             }
         };
+    }
+
+    // Verifying a QC with unexpected signer bitvec length should not panic
+    #[test]
+    fn test_verify_invalid_no_crash() {
+        let (mal_keys, mal_voting_keys, _, mal_valmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(
+                5,
+                ValidatorSetFactory::default(),
+            );
+        let voting_keys: Vec<_> = mal_keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .map(NodeId::new)
+            .zip(mal_voting_keys)
+            .collect();
+
+        let msg_hash = Hash([129_u8; 32]);
+
+        let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
+        let sigcol = SignatureCollectionType::new(sigs, &mal_valmap, msg_hash.as_ref()).unwrap();
+
+        let (_, _, _, valmap) = create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(
+            4,
+            ValidatorSetFactory::default(),
+        );
+
+        assert_ne!(sigcol.signers.len(), valmap.map.len());
+
+        assert!(matches!(
+            sigcol.verify(&valmap, msg_hash.as_ref()),
+            Err(SignatureCollectionError::InvalidSignaturesVerify)
+        ));
     }
 }

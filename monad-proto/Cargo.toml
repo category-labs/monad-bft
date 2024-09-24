@@ -17,3 +17,6 @@ serde = { workspace = true, features = ["derive"] }
 pbjson-build = { workspace = true }
 prost-build = { workspace = true }
 protobuf-src = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["pbjson", "serde"]

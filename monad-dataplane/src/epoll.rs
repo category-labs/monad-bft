@@ -1,8 +1,6 @@
 use core::time;
 use std::mem;
 
-use log::debug;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RawFd(pub i32);
 
@@ -62,6 +60,30 @@ impl<const N: usize> EpollFd<N> {
         };
 
         let ret = unsafe { libc::epoll_ctl(self.fd, libc::EPOLL_CTL_ADD, fd.0, &mut ev) };
+        if ret == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn register_pollout(&self, token: EpollToken, fd: RawFd) -> std::io::Result<()> {
+        let mut ev = libc::epoll_event {
+            events: libc::EPOLLOUT as u32,
+            u64: token.0,
+        };
+
+        let ret = unsafe { libc::epoll_ctl(self.fd, libc::EPOLL_CTL_ADD, fd.0, &mut ev) };
+        if ret == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn unregister(&self, fd: RawFd) -> std::io::Result<()> {
+        let ret =
+            unsafe { libc::epoll_ctl(self.fd, libc::EPOLL_CTL_DEL, fd.0, std::ptr::null_mut()) };
         if ret == -1 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -133,7 +155,6 @@ impl EventFd {
                 libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>())
             })
         };
-        debug!("got tx event");
 
         (n, s)
     }
@@ -173,16 +194,17 @@ impl TimerFd {
         let interval_data = &interval as *const libc::itimerspec;
 
         let s = unsafe { libc::timerfd_settime(self.fd, 0, interval_data, std::ptr::null_mut()) };
-
-        Ok(())
+        if s == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn handle_event(&self) -> isize {
         let mut n: u64 = 0;
         let data = &mut n as *mut u64;
-        let s = unsafe { libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>()) };
-        debug!("handled timer");
-        s
+        unsafe { libc::read(self.fd, data as *mut libc::c_void, mem::size_of::<u64>()) }
     }
 
     pub fn get_fd(&self) -> RawFd {

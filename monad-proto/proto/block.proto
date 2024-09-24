@@ -6,13 +6,11 @@ import "basic.proto";
 import "quorum_certificate.proto";
 import "state_root_hash.proto";
 
-message ProtoExecutionArtifacts {
-  monad_proto.state_root_hash.ProtoStateRootHash parent_hash = 1;
-  monad_proto.state_root_hash.ProtoStateRootHash state_root = 2;
-  monad_proto.basic.ProtoHash transactions_root = 3;
-  monad_proto.basic.ProtoHash receipts_root = 4;
-  monad_proto.basic.ProtoBloom logs_bloom = 5;
-  monad_proto.basic.ProtoGas gas_used = 6;
+message ProtoExecutionProtocol{
+  monad_proto.state_root_hash.ProtoStateRootHash state_root = 1;
+  monad_proto.basic.ProtoSeqNum seq_num = 2;
+  bytes beneficiary = 3;
+  bytes randao_reveal = 4;
 }
 
 
@@ -28,17 +26,25 @@ message ProtoTransactionPayload {
 
 message ProtoPayload {
   ProtoTransactionPayload txns = 1;
-  ProtoExecutionArtifacts header = 2;
-  monad_proto.basic.ProtoSeqNum seq_num = 3;
-  bytes beneficiary = 4;
-  bytes randao_reveal = 5;
+}
+
+enum ProtoBlockKind {
+  EXECUTABLE = 0;
+  NULL = 1;
 }
 
 message ProtoBlock {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
   monad_proto.basic.ProtoRound round = 3;
-  ProtoPayload payload = 4;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 5;
-  uint64 timestamp = 6;
+  ProtoExecutionProtocol execution = 4;
+  monad_proto.basic.ProtoPayloadId payload_id = 5;
+  ProtoBlockKind block_kind = 6;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 7;
+  uint64 timestamp = 8;
+}
+
+message ProtoFullBlock {
+    ProtoBlock block = 1;
+    ProtoPayload payload = 2;
 }

@@ -18,7 +18,6 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-proto = { path = "../monad-proto" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
@@ -34,12 +33,8 @@ tracing = { workspace = true }
 monad-bls = { path = "../monad-bls" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-secp = { path = "../monad-secp" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-testutil = { path = "../monad-testutil" }
-
 
 test-case = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-core = { workspace = true }
-tracing-subscriber = { workspace = true }

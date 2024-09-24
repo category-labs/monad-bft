@@ -10,7 +10,6 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
 
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 zeroize = { workspace = true }

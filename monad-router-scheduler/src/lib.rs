@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -20,6 +21,7 @@ pub trait RouterSchedulerBuilder {
 }
 
 /// RouterScheduler describes HOW gossip messages get delivered
+#[auto_impl(Box)]
 pub trait RouterScheduler {
     type NodeIdPublicKey: PubKey;
 
@@ -48,43 +50,6 @@ pub trait RouterScheduler {
         &mut self,
         until: Duration,
     ) -> Option<RouterEvent<Self::NodeIdPublicKey, Self::InboundMessage, Self::TransportMessage>>;
-}
-
-impl<T: RouterScheduler + ?Sized> RouterScheduler for Box<T> {
-    type NodeIdPublicKey = T::NodeIdPublicKey;
-    type TransportMessage = T::TransportMessage;
-    type InboundMessage = T::InboundMessage;
-    type OutboundMessage = T::OutboundMessage;
-
-    fn process_inbound(
-        &mut self,
-        time: Duration,
-        from: NodeId<Self::NodeIdPublicKey>,
-        message: Self::TransportMessage,
-    ) {
-        (**self).process_inbound(time, from, message)
-    }
-
-    fn send_outbound(
-        &mut self,
-        time: Duration,
-        to: RouterTarget<Self::NodeIdPublicKey>,
-        message: Self::OutboundMessage,
-    ) {
-        (**self).send_outbound(time, to, message)
-    }
-
-    fn peek_tick(&self) -> Option<Duration> {
-        (**self).peek_tick()
-    }
-
-    fn step_until(
-        &mut self,
-        until: Duration,
-    ) -> Option<RouterEvent<Self::NodeIdPublicKey, Self::InboundMessage, Self::TransportMessage>>
-    {
-        (**self).step_until(until)
-    }
 }
 
 pub struct NoSerRouterScheduler<PT: PubKey, IM, OM> {
@@ -163,14 +128,14 @@ where
                 .unwrap_or(Duration::ZERO)
         );
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }
@@ -274,14 +239,14 @@ where
         );
         let message = message.serialize();
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 self.events.extend(
                     self.all_peers
                         .iter()
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }

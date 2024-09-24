@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse,
+    StateSyncResponse, StateSyncUpsertType,
 };
 use monad_state_backend::InMemoryState;
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -89,7 +89,7 @@ where
                         target: state_root_hash.seq_num.0,
                         from: 0,
                         prefix: 0,
-                        prefix_bytes: 0,
+                        prefix_bytes: 1,
                         until: 0,
                         old_target: 0,
                     };
@@ -109,7 +109,7 @@ where
                                 let serialized = serde_json::to_vec(&*state).unwrap();
                                 let response = StateSyncResponse {
                                     request,
-                                    response: vec![(false, serialized, Vec::new())],
+                                    response: vec![(StateSyncUpsertType::Code, serialized)],
                                     response_n: 1,
                                 };
                                 self.events.push_back(MonadEvent::StateSyncEvent(

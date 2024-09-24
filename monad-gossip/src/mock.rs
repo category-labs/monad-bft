@@ -14,11 +14,6 @@ pub struct MockGossipConfig<PT: PubKey> {
 
 impl<PT: PubKey> MockGossipConfig<PT> {
     pub fn build(self) -> MockGossip<PT> {
-        assert!(
-            self.all_peers.len() == 1 || self.message_delay.is_zero(),
-            "Message delay only enabled for single node"
-        );
-
         MockGossip {
             config: self,
 
@@ -75,7 +70,7 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
     fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.current_tick = time;
         match to {
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
                 for to in &self.config.all_peers {
                     if to == &self.config.me {
                         self.events.push(
@@ -90,7 +85,7 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
                     }
                 }
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.config.me {
                     self.events.push(
                         GossipEvent::Emit(self.config.me, message)

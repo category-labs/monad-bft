@@ -13,10 +13,11 @@ bench = false
 [dependencies]
 bytes = { workspace = true }
 env_logger = { workspace = true }
-log = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
 rand = { workspace = true }
 rtrb = { workspace = true }
 socket2 = { workspace = true }
+tracing = { workspace = true }
+zerocopy = { workspace = true }

@@ -16,7 +16,6 @@ hex = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 sha2 = { workspace = true }
 zerocopy = { workspace = true }
-zeroize = { workspace = true }
 
 ring = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }

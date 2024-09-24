@@ -86,6 +86,11 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     cp `ls -Lt $(find target/release | grep -e "lib${TRIEDB_TARGET}.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "lib${ETH_CALL_TARGET}.so") | awk -F/ '!seen[$NF]++'` . 
 
+RUN apt install -y binutils && strip \
+    rpc \
+    *.so \
+    *.so.*
+
 # Runner
 FROM base AS runner
 WORKDIR /usr/src/monad-bft

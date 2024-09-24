@@ -1,11 +1,15 @@
-use std::{pin::pin, time::Instant};
+use std::{
+    collections::VecDeque,
+    pin::pin,
+    time::{Duration, Instant},
+};
 
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncUpsertType};
 use monad_types::NodeId;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
 
@@ -38,12 +42,12 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
 pub enum ExecutionMessage {
     SyncTarget(bindings::monad_sync_target),
     SyncRequest(bindings::monad_sync_request),
-    SyncUpsert(bindings::monad_sync_upsert_header, Vec<u8>, Vec<u8>),
+    SyncUpsert(StateSyncUpsertType, Vec<u8>),
     SyncDone(bindings::monad_sync_done),
 }
 
 impl<PT: PubKey> StateSyncIpc<PT> {
-    pub fn new(uds_path: &str) -> Self {
+    pub fn new(uds_path: &str, request_timeout: Duration) -> Self {
         let listener = UnixListener::bind(uds_path)
             .unwrap_or_else(|e| panic!("invalid UDS path={:?}, err={:?}", uds_path, e));
 
@@ -60,8 +64,8 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                         stream
                     };
                     let drain_fut = async {
-                        // this future exists to make sure that the response channel is drained
-                        // while waiting for requests
+                        // this future exists to make sure that the request channel is drained
+                        // while waiting for execution to connect
                         loop {
                             let _request: (NodeId<PT>, StateSyncRequest) =
                                 request_tx_reader.recv().await.expect("request_tx dropped");
@@ -76,6 +80,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                 };
 
                 let mut stream_state = StreamState::new(
+                    request_timeout,
                     execution_stream,
                     &mut request_tx_reader,
                     &mut response_rx_writer,
@@ -94,25 +99,49 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 }
 
 struct StreamState<'a, PT: PubKey> {
-    stream: UnixStream,
+    /// drop pending requests older than this
+    request_timeout: Duration,
+    stream: BufReader<UnixStream>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
 
-    inbound_request: Option<(NodeId<PT>, StateSyncResponse, Instant)>,
+    pending_requests: VecDeque<PendingRequest<PT>>,
+    wip_response: Option<WipResponse<PT>>,
+}
+
+#[derive(Debug)]
+struct PendingRequest<PT: PubKey> {
+    from: NodeId<PT>,
+    rx_time: Instant,
+    request: StateSyncRequest,
+}
+
+#[derive(Debug)]
+struct WipResponse<PT: PubKey> {
+    from: NodeId<PT>,
+    rx_time: Instant,
+    service_start_time: Instant,
+    response: StateSyncResponse,
 }
 
 impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
+        request_timeout: Duration,
         stream: UnixStream,
         request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
     ) -> Self {
         Self {
-            stream,
+            request_timeout,
+            stream: BufReader::with_capacity(
+                1024 * 1024, // 1 MB
+                stream,
+            ),
             request_tx_reader,
             response_rx_writer,
 
-            inbound_request: Default::default(),
+            pending_requests: Default::default(),
+            wip_response: Default::default(),
         }
     }
 
@@ -136,13 +165,13 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             Event::Execution(maybe_msg_type) => {
                 let msg_type = maybe_msg_type?;
                 let execution_message = self.read_execution_message(msg_type).await?;
-                self.handle_execution_message(execution_message)
+                self.handle_execution_message(execution_message).await
             }
             Event::Request((from, request)) => self.handle_request(from, request).await,
         }
     }
 
-    fn handle_execution_message(
+    async fn handle_execution_message(
         &mut self,
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
@@ -153,36 +182,36 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
             }
-            ExecutionMessage::SyncUpsert(upsert, key, value) => {
-                assert_eq!(upsert.key_size, key.len() as u64);
-                assert_eq!(upsert.value_size, value.len() as u64);
-                let (_, inbound_request, _) = self
-                    .inbound_request
+            ExecutionMessage::SyncUpsert(upsert_type, data) => {
+                let wip_response = self
+                    .wip_response
                     .as_mut()
-                    .expect("SyncUpsert with no pending request");
-                inbound_request.response.push((upsert.code, key, value));
+                    .expect("SyncUpsert with no pending_response");
+                wip_response.response.response.push((upsert_type, data));
             }
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
                 // requests upserts point to
-                let (from, mut inbound_request, start) = self
-                    .inbound_request
+                let mut wip_response = self
+                    .wip_response
                     .take()
-                    .expect("syncdone received with no pending request");
+                    .expect("syncdone received with no pending_response");
                 tracing::debug!(
-                    elapsed =? start.elapsed(),
-                    ?from,
+                    rx_elapsed =? wip_response.rx_time.elapsed(),
+                    service_elapsed =? wip_response.service_start_time.elapsed(),
+                    from =? wip_response.from,
                     ?done,
                     "received SyncDone"
                 );
                 if done.success {
-                    assert_eq!(inbound_request.request.prefix, done.prefix);
-                    inbound_request.response_n = done.n;
-                    self.write_response(from, inbound_request);
+                    assert_eq!(wip_response.response.request.prefix, done.prefix);
+                    wip_response.response.response_n = done.n;
+                    self.write_response(wip_response.from, wip_response.response);
                 } else {
                     // request failed, so don't send back a response. we've dropped the
-                    // inbound_request at this point.
+                    // wip_response at this point.
                 }
+                self.try_queue_response().await?;
             }
         };
         Ok(())
@@ -193,34 +222,65 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         from: NodeId<PT>,
         request: StateSyncRequest,
     ) -> Result<(), tokio::io::Error> {
-        if self.inbound_request.is_some() {
+        self.pending_requests.retain(|pending_request| {
+            // delete any requests from this peer for an old target
+            pending_request.from != from || pending_request.request.target != request.target
+        });
+        self.pending_requests.push_back(PendingRequest {
+            from,
+            request,
+            rx_time: Instant::now(),
+        });
+        self.try_queue_response().await
+    }
+
+    async fn try_queue_response(&mut self) -> Result<(), tokio::io::Error> {
+        if self.wip_response.is_some() {
             // we already are servicing a pending request, so ignore
-            tracing::debug!("dropping state-sync request, already servicing one");
             return Ok(());
         }
-        self.write_execution_message(ExecutionMessage::SyncRequest(
-            bindings::monad_sync_request {
-                prefix: request.prefix,
-                prefix_bytes: request.prefix_bytes,
-                target: request.target,
-                from: request.from,
-                until: request.until,
-                old_target: request.old_target,
-            },
-        ))
-        .await?;
 
-        self.inbound_request = Some((
-            from,
-            StateSyncResponse {
-                request,
+        let request = loop {
+            let Some(request) = self.pending_requests.pop_front() else {
+                // no more pending requests
+                return Ok(());
+            };
+
+            if request.rx_time.elapsed() > self.request_timeout {
+                tracing::debug!(
+                    ?request,
+                    request_timeout =? self.request_timeout,
+                    "dropping stale request"
+                );
+                continue;
+            }
+
+            break request;
+        };
+
+        self.wip_response = Some(WipResponse {
+            from: request.from,
+            rx_time: request.rx_time,
+            service_start_time: Instant::now(),
+            response: StateSyncResponse {
+                request: request.request,
                 response: Vec::new(),
 
                 // this gets set in handle_execution_message(ExecutionMessage::SyncDone(_))
                 response_n: 0,
             },
-            Instant::now(),
-        ));
+        });
+
+        self.write_execution_request(bindings::monad_sync_request {
+            prefix: request.request.prefix,
+            prefix_bytes: request.request.prefix_bytes,
+            target: request.request.target,
+            from: request.request.from,
+            until: request.request.until,
+            old_target: request.request.old_target,
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -245,18 +305,35 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     std::mem::transmute(buf)
                 })
             }
-            bindings::monad_sync_type_SyncTypeUpsertHeader => {
-                let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_upsert_header>()];
-                self.stream.read_exact(&mut buf).await?;
-                let upsert_header: bindings::monad_sync_upsert_header = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(buf)
-                };
-                let mut key = vec![0_u8; upsert_header.key_size as usize];
-                self.stream.read_exact(&mut key).await?;
-                let mut value = vec![0_u8; upsert_header.value_size as usize];
-                self.stream.read_exact(&mut value).await?;
-                ExecutionMessage::SyncUpsert(upsert_header, key, value)
+            bindings::monad_sync_type_SyncTypeUpsertCode => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Code, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertAccount => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Account, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertStorage => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::Storage, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertAccountDelete => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::AccountDelete, data)
+            }
+            bindings::monad_sync_type_SyncTypeUpsertStorageDelete => {
+                let data_len = self.stream.read_u64_le().await?;
+                let mut data = vec![0_u8; data_len as usize];
+                self.stream.read_exact(&mut data).await?;
+                ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
             }
             bindings::monad_sync_type_SyncTypeDone => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_done>()];
@@ -271,54 +348,18 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         Ok(execution_msg)
     }
 
-    async fn write_execution_message(
+    async fn write_execution_request(
         &mut self,
-        message: ExecutionMessage,
+        request: bindings::monad_sync_request,
     ) -> Result<(), tokio::io::Error> {
-        match message {
-            ExecutionMessage::SyncTarget(target) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeTarget)
-                    .await?;
-                let target: [u8; std::mem::size_of::<bindings::monad_sync_target>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(target)
-                };
-                self.stream.write_all(&target).await?;
-            }
-            ExecutionMessage::SyncRequest(request) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeRequest)
-                    .await?;
-                let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(request)
-                };
-                self.stream.write_all(&request).await?;
-            }
-            ExecutionMessage::SyncUpsert(header, key, value) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeUpsertHeader)
-                    .await?;
-                let upsert_header: [u8; std::mem::size_of::<bindings::monad_sync_upsert_header>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(header)
-                };
-                self.stream.write_all(&upsert_header).await?;
-                self.stream.write_all(&key).await?;
-                self.stream.write_all(&value).await?;
-            }
-            ExecutionMessage::SyncDone(done) => {
-                self.stream
-                    .write_u8(bindings::monad_sync_type_SyncTypeDone)
-                    .await?;
-                let done: [u8; std::mem::size_of::<bindings::monad_sync_done>()] = unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(done)
-                };
-                self.stream.write_all(&done).await?;
-            }
+        self.stream
+            .write_u8(bindings::monad_sync_type_SyncTypeRequest)
+            .await?;
+        let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
+            std::mem::transmute(request)
         };
+        self.stream.write_all(&request).await?;
         Ok(())
     }
 

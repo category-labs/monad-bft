@@ -1,8 +1,7 @@
 mod common;
 
 use std::{
-    collections::{BTreeSet, HashMap},
-    sync::{Arc, RwLock},
+    collections::BTreeSet,
     time::{Duration, Instant},
 };
 
@@ -28,7 +27,6 @@ use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_tracing_counter::counter::{counter_get, CounterLayer};
 use monad_transformer::{
     BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer, ID,
 };
@@ -37,7 +35,7 @@ use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use tracing_subscriber::{prelude::*, Registry};
+use tracing_subscriber::Registry;
 
 #[test]
 fn two_nodes_noser() {
@@ -237,10 +235,7 @@ fn two_nodes_quic_latency() {
 
 #[test]
 fn two_nodes_quic_bw() {
-    let counter = Arc::new(RwLock::new(HashMap::new()));
-    let counter_layer = CounterLayer::new(Arc::clone(&counter));
-
-    let subscriber = Registry::default().with(counter_layer);
+    let subscriber = Registry::default();
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
     let zero_instant = Instant::now();
@@ -336,7 +331,7 @@ fn two_nodes_quic_bw() {
     // this is empirical, don't want to spend too much time figuring out a
     // degenerative case
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(114), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(121), Duration::from_secs(1));
     assert!(verifier.verify(&swarm));
 
     let node_ids = swarm.states().keys().copied().collect_vec();
@@ -356,7 +351,4 @@ fn two_nodes_quic_bw() {
             fetch_metric!(consensus_events.created_vote),
             min_ledger_len as u64 - max_block_sync_requests,
         );
-
-    let dropped_msg = counter_get(counter, None, "bwtransformer_dropped_msg");
-    assert!(dropped_msg.is_some());
 }

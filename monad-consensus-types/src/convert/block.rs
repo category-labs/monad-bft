@@ -2,19 +2,64 @@ use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
     proto::{
-        basic::{ProtoBloom, ProtoGas},
+        basic::{ProtoBloom, ProtoGas, ProtoPayloadId},
         block::*,
     },
 };
 
 use crate::{
-    block::Block,
+    block::{Block, BlockKind, FullBlock},
     payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
+        Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
         TransactionPayload,
     },
     signature_collection::SignatureCollection,
 };
+
+impl From<&BlockKind> for i32 {
+    fn from(kind: &BlockKind) -> Self {
+        match kind {
+            BlockKind::Executable => 0,
+            BlockKind::Null => 1,
+        }
+    }
+}
+
+impl TryFrom<i32> for BlockKind {
+    type Error = ProtoError;
+    fn try_from(kind: i32) -> Result<Self, Self::Error> {
+        match kind {
+            0 => Ok(BlockKind::Executable),
+            1 => Ok(BlockKind::Null),
+            _ => Err(ProtoError::DeserializeError(
+                "unknown block kind".to_owned(),
+            )),
+        }
+    }
+}
+
+impl From<&PayloadId> for ProtoPayloadId {
+    fn from(value: &PayloadId) -> Self {
+        Self {
+            pid: Some((&(value.0)).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoPayloadId> for PayloadId {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoPayloadId) -> Result<Self, Self::Error> {
+        Ok(Self(
+            value
+                .pid
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ProtoPayloadId.pid".to_owned(),
+                ))?
+                .try_into()?,
+        ))
+    }
+}
 
 impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {
@@ -22,7 +67,9 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
             author: Some((&value.author).into()),
             epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
-            payload: Some((&value.payload).into()),
+            execution: Some((&value.execution).into()),
+            payload_id: Some((&value.payload_id).into()),
+            block_kind: (&value.block_kind).into(),
             qc: Some((&value.qc).into()),
             timestamp: value.timestamp,
         }
@@ -54,11 +101,18 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 ))?
                 .try_into()?,
             &value
-                .payload
+                .execution
                 .ok_or(Self::Error::MissingRequiredField(
-                    "Block<AggregateSignatures>.payload".to_owned(),
+                    "Block<AggregateSignatures>.execution".to_owned(),
                 ))?
                 .try_into()?,
+            value
+                .payload_id
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.payload_id".to_owned(),
+                ))?
+                .try_into()?,
+            value.block_kind.try_into()?,
             &value
                 .qc
                 .ok_or(Self::Error::MissingRequiredField(
@@ -66,6 +120,36 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 ))?
                 .try_into()?,
         ))
+    }
+}
+
+impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoFullBlock {
+    fn from(value: &FullBlock<SCT>) -> Self {
+        Self {
+            block: Some((&value.block).into()),
+            payload: Some((&value.payload).into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoFullBlock> for FullBlock<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoFullBlock) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block: value
+                .block
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.block".to_owned(),
+                ))?
+                .try_into()?,
+            payload: value
+                .payload
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.payload".to_owned(),
+                ))?
+                .try_into()?,
+        })
     }
 }
 
@@ -99,59 +183,41 @@ impl TryFrom<ProtoBloom> for Bloom {
     }
 }
 
-impl From<&ExecutionArtifacts> for ProtoExecutionArtifacts {
-    fn from(value: &ExecutionArtifacts) -> Self {
+impl From<&ExecutionProtocol> for ProtoExecutionProtocol {
+    fn from(value: &ExecutionProtocol) -> Self {
         Self {
-            parent_hash: Some((&(value.parent_hash)).into()),
             state_root: Some((&(value.state_root)).into()),
-            transactions_root: Some((&(value.transactions_root)).into()),
-            receipts_root: Some((&(value.receipts_root)).into()),
-            logs_bloom: Some((&(value.logs_bloom)).into()),
-            gas_used: Some((&(value.gas_used)).into()),
+            seq_num: Some((&(value.seq_num)).into()),
+            beneficiary: value.beneficiary.0.to_vec().into(),
+            randao_reveal: value.randao_reveal.0.to_vec().into(),
         }
     }
 }
 
-impl TryFrom<ProtoExecutionArtifacts> for ExecutionArtifacts {
+impl TryFrom<ProtoExecutionProtocol> for ExecutionProtocol {
     type Error = ProtoError;
-    fn try_from(value: ProtoExecutionArtifacts) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoExecutionProtocol) -> Result<Self, Self::Error> {
         Ok(Self {
-            parent_hash: value
-                .parent_hash
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.parent_hash".to_owned(),
-                ))?
-                .try_into()?,
             state_root: value
                 .state_root
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.state_root".to_owned(),
+                    "ExecutionProtocol.state_root".to_owned(),
                 ))?
                 .try_into()?,
-            transactions_root: value
-                .transactions_root
+            seq_num: value
+                .seq_num
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.transactions_root".to_owned(),
+                    "Payload.seq_num".to_owned(),
                 ))?
                 .try_into()?,
-            receipts_root: value
-                .receipts_root
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.receipts_root".to_owned(),
-                ))?
-                .try_into()?,
-            logs_bloom: value
-                .logs_bloom
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.logs_bloom".to_owned(),
-                ))?
-                .try_into()?,
-            gas_used: value
-                .gas_used
-                .ok_or(Self::Error::MissingRequiredField(
-                    "ExecutionArtifacts.gas_used".to_owned(),
-                ))?
-                .try_into()?,
+            beneficiary: EthAddress::from_bytes(
+                value
+                    .beneficiary
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
+            ),
+            randao_reveal: RandaoReveal(value.randao_reveal.to_vec()),
         })
     }
 }
@@ -162,7 +228,7 @@ impl From<&TransactionPayload> for ProtoTransactionPayload {
             TransactionPayload::List(txns) => {
                 proto_transaction_payload::Txns::List(txns.bytes().clone())
             }
-            TransactionPayload::Empty => {
+            TransactionPayload::Null => {
                 proto_transaction_payload::Txns::Empty(ProtoEmptyBlockTransactionList {})
             }
         });
@@ -181,7 +247,7 @@ impl TryFrom<ProtoTransactionPayload> for TransactionPayload {
             proto_transaction_payload::Txns::List(txns) => {
                 TransactionPayload::List(FullTransactionList::new(txns))
             }
-            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Empty,
+            proto_transaction_payload::Txns::Empty(_) => TransactionPayload::Null,
         };
         Ok(txn_payload)
     }
@@ -191,10 +257,6 @@ impl From<&Payload> for ProtoPayload {
     fn from(value: &Payload) -> Self {
         ProtoPayload {
             txns: Some((&(value.txns)).into()),
-            header: Some((&(value.header)).into()),
-            seq_num: Some((&(value.seq_num)).into()),
-            beneficiary: value.beneficiary.0.to_vec().into(),
-            randao_reveal: value.randao_reveal.0.to_vec().into(),
         }
     }
 }
@@ -207,26 +269,6 @@ impl TryFrom<ProtoPayload> for Payload {
                 .txns
                 .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
                 .try_into()?,
-            header: value
-                .header
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Payload.header".to_owned(),
-                ))?
-                .try_into()?,
-            seq_num: value
-                .seq_num
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Payload.seq_num".to_owned(),
-                ))?
-                .try_into()?,
-            beneficiary: EthAddress::from_bytes(
-                value
-                    .beneficiary
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
-            ),
-            randao_reveal: RandaoReveal(value.randao_reveal.to_vec()),
         })
     }
 }

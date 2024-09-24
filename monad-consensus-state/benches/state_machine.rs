@@ -11,10 +11,11 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
+    block::BlockKind,
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
+        ExecutionProtocol, FullTransactionList, NopStateRoot, StateRootValidator,
         TransactionPayload,
     },
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -104,15 +105,15 @@ where
             &self.epoch_manager,
             &self.val_epoch_map,
             &self.election,
-            TransactionPayload::Empty,
-            ExecutionArtifacts::zero(),
+            TransactionPayload::Null,
+            StateRootHash::default(),
         )
     }
 
     fn next_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionArtifacts,
+        state_root: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.proposal_gen.next_proposal(
             &self.keys,
@@ -121,7 +122,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(txn_list),
-            execution_hdr,
+            state_root,
         )
     }
 
@@ -134,7 +135,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(FullTransactionList::new(vec![5].into())),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         )
     }
 
@@ -142,7 +143,7 @@ where
     fn branch_proposal(
         &mut self,
         txn_list: FullTransactionList,
-        execution_hdr: ExecutionArtifacts,
+        state_root: StateRootHash,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         self.malicious_proposal_gen.next_proposal(
             &self.keys,
@@ -151,7 +152,7 @@ where
             &self.val_epoch_map,
             &self.election,
             TransactionPayload::List(txn_list),
-            execution_hdr,
+            state_root,
         )
     }
 
@@ -263,8 +264,8 @@ where
         self.wrapped_state().handle_vote_message(author, p)
     }
 
-    fn handle_block_sync(&mut self, p: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
-        self.wrapped_state().handle_block_sync(p)
+    fn handle_block_sync(&mut self, b: Block<SCT>, p: Payload) -> Vec<ConsensusCommand<ST, SCT>> {
+        self.wrapped_state().handle_block_sync(b, p)
     }
 }
 
@@ -351,7 +352,7 @@ fn setup<
 
                 state_root_validator: state_root(),
                 block_validator: EthValidator::new(10_000, u64::MAX, 1337),
-                block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 0, 1337),
+                block_policy: EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 0, 1337),
                 state_backend: InMemoryStateInner::genesis(u128::MAX, SeqNum(0)),
                 block_timestamp: BlockTimestamp::new(
                     100,
@@ -477,22 +478,12 @@ fn init(seed_mempool: bool) -> BenchTuple {
         );
     }
     let (author, _, proposal_message) = env
-        .next_proposal(
-            encoded_txns.clone(),
-            ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: Default::default(),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Default::default(),
-            },
-        )
+        .next_proposal(encoded_txns.clone(), StateRootHash::default())
         .destructure();
     assert_eq!(author, leader);
     (encoded_txns, env, ctx, author, proposal_message)
 }
-fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT> {
+fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> (Block<SCT>, Payload) {
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
@@ -504,26 +495,24 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
         &txns_encoded,
     )));
 
-    Block::new(
-        NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
-        0,
-        Epoch(1),
-        Round(1),
-        &Payload {
-            txns,
-            header: ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: Default::default(),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Default::default(),
+    let payload = Payload { txns };
+    (
+        Block::new(
+            NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
+            0,
+            Epoch(1),
+            Round(1),
+            &ExecutionProtocol {
+                state_root: StateRootHash::default(),
+                seq_num: SeqNum(0),
+                beneficiary: Default::default(),
+                randao_reveal: Default::default(),
             },
-            seq_num: SeqNum(0),
-            beneficiary: Default::default(),
-            randao_reveal: Default::default(),
-        },
-        &QuorumCertificate::<SCT>::genesis_qc(),
+            payload.get_id(),
+            BlockKind::Executable,
+            &QuorumCertificate::<SCT>::genesis_qc(),
+        ),
+        payload,
     )
 }
 
@@ -618,14 +607,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (author, _, proposal_message) = env
                     .next_proposal(
                         encoded_txns,
-                        ExecutionArtifacts {
-                            parent_hash: Default::default(),
-                            state_root: Default::default(),
-                            transactions_root: Default::default(),
-                            receipts_root: Default::default(),
-                            logs_bloom: Bloom::zero(),
-                            gas_used: Default::default(),
-                        },
+                        StateRootHash::default(),
                     )
                     .destructure();
                 assert_eq!(&author, &leader);

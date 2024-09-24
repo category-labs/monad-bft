@@ -1,7 +1,11 @@
 use std::marker::PhantomData;
 
-use monad_consensus::messages::{
-    consensus_message::ProtocolMessage, message::RequestBlockSyncMessage,
+use monad_consensus::{
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::{ProposalMessage, RequestBlockSyncMessage},
+    },
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
@@ -27,6 +31,7 @@ use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use tracing::info;
 
 use crate::{
     handle_validation_error, BlockTimestamp, ConsensusMode, MonadState, MonadVersion,
@@ -116,9 +121,126 @@ where
         &mut self,
         event: ConsensusEvent<ST, SCT>,
     ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
+        let live = match self.consensus {
+            ConsensusMode::Live(live) => live,
+            ConsensusMode::Sync {
+                block_buffer,
+                updating_target,
+                ..
+            } => {
+                let mut cmds = Vec::new();
+                if let ConsensusEvent::Message {
+                    sender,
+                    unverified_message,
+                } = event.clone()
+                {
+                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
+                        Self::verify_and_validate_consensus_message(
+                            self.epoch_manager,
+                            self.val_epoch_map,
+                            self.version,
+                            self.metrics,
+                            sender,
+                            unverified_message,
+                        )
+                    {
+                        if let Some((new_root, new_high_qc)) =
+                            block_buffer.handle_proposal(author, proposal)
+                        {
+                            if !*updating_target {
+                                // used for deduplication, because RequestStateSync isn't synchronous
+                                *updating_target = true;
+                                info!(
+                                    ?new_root,
+                                    consensus_tip =? new_high_qc.get_seq_num(),
+                                    "setting new statesync target",
+                                );
+                                cmds.push(WrappedConsensusCommand {
+                                    state_root_delay: self.state_root_validator.get_delay(),
+                                    command: ConsensusCommand::RequestStateSync {
+                                        root: new_root,
+                                        high_qc: new_high_qc,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
+                return cmds;
+            }
+        };
+
+        let mut consensus = ConsensusStateWrapper {
+            consensus: live,
+
+            metrics: self.metrics,
+            tx_pool: self.txpool,
+            epoch_manager: self.epoch_manager,
+            block_policy: self.block_policy,
+            state_backend: self.state_backend,
+
+            val_epoch_map: self.val_epoch_map,
+            election: self.leader_election,
+            version: self.version.protocol_version,
+
+            state_root_validator: self.state_root_validator,
+            block_timestamp: self.block_timestamp,
+            block_validator: self.block_validator,
+            beneficiary: self.beneficiary,
+            nodeid: self.nodeid,
+            config: self.consensus_config,
+
+            keypair: self.keypair,
+            cert_keypair: self.cert_keypair,
+        };
+
+        let consensus_cmds = match event {
+            ConsensusEvent::Message {
+                sender,
+                unverified_message,
+            } => {
+                match Self::verify_and_validate_consensus_message(
+                    consensus.epoch_manager,
+                    consensus.val_epoch_map,
+                    self.version,
+                    consensus.metrics,
+                    sender,
+                    unverified_message,
+                ) {
+                    Ok((author, ProtocolMessage::Proposal(msg))) => {
+                        consensus.handle_proposal_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::Vote(msg))) => {
+                        consensus.handle_vote_message(author, msg)
+                    }
+                    Ok((author, ProtocolMessage::Timeout(msg))) => {
+                        consensus.handle_timeout_message(author, msg)
+                    }
+                    Err(evidence) => evidence,
+                }
+            }
+            ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
+            ConsensusEvent::BlockSync { block, payload } => {
+                consensus.handle_block_sync(block, payload)
+            }
+        };
+        consensus_cmds
+            .into_iter()
+            .map(|cmd| WrappedConsensusCommand {
+                state_root_delay: consensus.state_root_validator.get_delay(),
+                command: cmd,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub(super) fn handle_validated_proposal(
+        &mut self,
+        author: NodeId<CertificateSignaturePubKey<ST>>,
+        validated_proposal: ProposalMessage<SCT>,
+    ) -> Vec<WrappedConsensusCommand<ST, SCT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
-            tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
-            return vec![];
+            unreachable!("handle_validated_proposal when not live")
         };
 
         let mut consensus = ConsensusStateWrapper {
@@ -145,54 +267,8 @@ where
             cert_keypair: self.cert_keypair,
         };
 
-        let vec = match event {
-            ConsensusEvent::Message {
-                sender,
-                unverified_message,
-            } => {
-                let verified_message = match unverified_message.verify(
-                    consensus.epoch_manager,
-                    consensus.val_epoch_map,
-                    &sender.pubkey(),
-                ) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        handle_validation_error(e, consensus.metrics);
-                        // TODO-2: collect evidence
-                        let evidence_cmds = vec![];
-                        return evidence_cmds;
-                    }
-                };
+        let consensus_cmds = consensus.handle_proposal_message(author, validated_proposal);
 
-                let (author, _, verified_message) = verified_message.destructure();
-
-                // Validated message according to consensus protocol spec
-                let validated_mesage = match verified_message.validate(
-                    consensus.epoch_manager,
-                    consensus.val_epoch_map,
-                    consensus.version,
-                ) {
-                    Ok(m) => m.into_inner(),
-                    Err(e) => {
-                        handle_validation_error(e, consensus.metrics);
-                        // TODO-2: collect evidence
-                        let evidence_cmds = vec![];
-                        return evidence_cmds;
-                    }
-                };
-
-                match validated_mesage {
-                    ProtocolMessage::Proposal(msg) => {
-                        consensus.handle_proposal_message(author, msg)
-                    }
-                    ProtocolMessage::Vote(msg) => consensus.handle_vote_message(author, msg),
-                    ProtocolMessage::Timeout(msg) => consensus.handle_timeout_message(author, msg),
-                }
-            }
-            ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
-            ConsensusEvent::BlockSync(block) => consensus.handle_block_sync(block),
-        };
-        let consensus_cmds = vec;
         consensus_cmds
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
@@ -200,6 +276,40 @@ where
                 command: cmd,
             })
             .collect::<Vec<_>>()
+    }
+
+    fn verify_and_validate_consensus_message(
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        version: &MonadVersion,
+        metrics: &mut Metrics,
+
+        sender: NodeId<CertificateSignaturePubKey<ST>>,
+        message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+    ) -> Result<
+        (NodeId<CertificateSignaturePubKey<ST>>, ProtocolMessage<SCT>),
+        Vec<ConsensusCommand<ST, SCT>>,
+    > {
+        let verified_message = message
+            .verify(epoch_manager, val_epoch_map, &sender.pubkey())
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        let (author, _, verified_message) = verified_message.destructure();
+
+        // Validated message according to consensus protocol spec
+        let validated_mesage = verified_message
+            .validate(epoch_manager, val_epoch_map, version.protocol_version)
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        Ok((author, validated_mesage.into_inner()))
     }
 }
 

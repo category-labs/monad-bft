@@ -149,6 +149,24 @@ impl EthTxPool {
                 .get(eth_address)
                 .expect("account_base_nonces must be populated");
 
+            if tracing::event_enabled!(tracing::Level::TRACE) {
+                transaction_group
+                    .transactions
+                    .iter()
+                    .filter(|&(nonce, _)| *nonce < lowest_valid_nonce)
+                    .for_each(|(nonce, txn)| {
+                        trace!(
+                            "validate_nonces_and_cariage_fee \
+                        txn {:?} will be excluded \
+                        nonce is : {:?} < lowest_valid_nonce {:?} \
+                        ",
+                            txn.0.hash(),
+                            nonce,
+                            lowest_valid_nonce
+                        )
+                    })
+            }
+
             // Remove transactions with nonces lower than the lowest valid nonce
             transaction_group
                 .transactions
@@ -499,13 +517,13 @@ mod test {
     type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
 
     fn make_test_block_policy() -> EthBlockPolicy {
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 0, 1337)
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 1337)
     }
 
     #[test]
     #[traced_test]
     fn test_create_proposal_with_insufficient_tx_limit() {
-        let tx = make_tx(B256::repeat_byte(0xAu8), 1000, GAS_LIMIT, 0, 10);
+        let tx = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, GAS_LIMIT, 0, 10);
         let mut pool = EthTxPool::default();
         let eth_block_policy = make_test_block_policy();
         let acc = std::iter::once((EthAddress(tx.recover_signer().unwrap()), 0));
@@ -1262,7 +1280,7 @@ mod test {
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
         // eth block policy has a different chain id than the transaction
-        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 0, 1);
+        let eth_block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 1);
         let state_backend = InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),

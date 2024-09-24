@@ -9,7 +9,7 @@ use std::{
 };
 
 use chrono::{DateTime, TimeDelta, Utc};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -51,14 +51,20 @@ struct Args {
     mode: ModeCommand,
 }
 
+#[derive(Debug, ClapArgs)]
+#[clap(group(ArgGroup::new("method").required(true).args(&["stdout", "file"])))]
+struct Output {
+    #[arg(long, value_name = "STDOUT")]
+    stdout: bool,
+    #[arg(long, value_name = "FILE")]
+    file: Option<PathBuf>,
+}
+
 #[derive(Debug, Default, Subcommand)]
 enum ModeCommand {
     #[default]
     View,
-    Stat {
-        #[arg(long)]
-        output: PathBuf,
-    },
+    Stat(Output),
 }
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -550,11 +556,20 @@ fn main() -> Result<()> {
             tui_restore()?;
             app_result
         }
-        ModeCommand::Stat { output } => {
+        ModeCommand::Stat(output) => {
             let stat = StatExtractor::new(args.wal_path, args.start, args.end).extract();
-            let file = fs::File::create(output).unwrap();
-            let writer = BufWriter::new(file);
-            serde_json::to_writer(writer, &stat).unwrap();
+            match (output.stdout, output.file) {
+                (true, None) => {
+                    let writer = BufWriter::new(stdout());
+                    serde_json::to_writer(writer, &stat)?;
+                }
+                (false, Some(file)) => {
+                    let file = fs::File::create(file)?;
+                    let writer = BufWriter::new(file);
+                    serde_json::to_writer(writer, &stat)?;
+                }
+                _ => unreachable!(),
+            }
             Ok(())
         }
     }

@@ -40,4 +40,7 @@ pub struct Cli {
     /// Set the max response size in bytes
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
+
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
 }

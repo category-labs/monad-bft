@@ -1,9 +1,9 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockKind, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -16,7 +16,6 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
 // test utility if you only wish for simple block
@@ -112,6 +111,10 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
     fn get_qc(&self) -> &QuorumCertificate<SCT> {
         unimplemented!()
     }
+
+    fn get_full_block(self) -> monad_consensus_types::block::FullBlock<SCT> {
+        unimplemented!()
+    }
 }
 
 impl<PT: PubKey> std::fmt::Debug for MockBlock<PT> {
@@ -126,13 +129,13 @@ pub fn setup_block<ST, SCT>(
     qc_round: Round,
     parent_id: BlockId,
     txns: TransactionPayload,
-    execution_header: ExecutionArtifacts,
+    execution: ExecutionProtocol,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
     validator_mapping: &ValidatorMapping<
         CertificateSignaturePubKey<ST>,
         SignatureCollectionKeyPairType<SCT>,
     >,
-) -> Block<SCT>
+) -> (Block<SCT>, Payload)
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -166,21 +169,28 @@ where
     }
 
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
-
     let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
 
-    Block::<SCT>::new(
-        author,
-        0,
-        Epoch(1),
-        block_round,
-        &Payload {
-            txns,
-            header: execution_header,
-            seq_num: SeqNum(1),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
-        },
-        &qc,
+    let block_kind = match txns {
+        TransactionPayload::List(_) => BlockKind::Executable,
+        TransactionPayload::Null => BlockKind::Null,
+    };
+    let payload = Payload { txns };
+
+    (
+        Block::<SCT>::new(
+            author,
+            0,
+            Epoch(1),
+            block_round,
+            &ExecutionProtocol {
+                randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
+                ..execution
+            },
+            payload.get_id(),
+            block_kind,
+            &qc,
+        ),
+        payload,
     )
 }

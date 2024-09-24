@@ -1,16 +1,21 @@
 #![allow(unused_imports)]
 
-use std::{ops::Deref, path::Path, pin::pin};
+use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
-use alloy_primitives::{bytes::BytesMut, private::alloy_rlp::Encodable, Bytes};
+use alloy_primitives::{
+    bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
+};
 use autocxx::{block, moveit::moveit, WithinBox};
 use futures::pin_mut;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, to_string, Value};
 
 autocxx::include_cpp! {
     #include "eth_call.hpp"
     #include "test_db.hpp"
     safety!(unsafe)
     generate!("monad_evmc_result")
+    generate!("monad_state_override_set")
     generate!("eth_call")
     generate!("make_testdb")
     generate!("testdb_load_callenv")
@@ -38,6 +43,29 @@ pub struct FailureCallResult {
     pub data: Option<String>,
 }
 
+// ensure that only one of {State, StateDiff} can be set
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StorageOverride {
+    State(HashMap<B256, B256>),
+    StateDiff(HashMap<B256, B256>),
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateOverrideObject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<U256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<U64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<Bytes>,
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub storage_override: Option<StorageOverride>,
+}
+
+pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
+
 pub fn eth_call(
     transaction: reth_primitives::Transaction,
     block_header: reth_primitives::Header,
@@ -45,11 +73,12 @@ pub fn eth_call(
     block_number: u64,
     triedb_path: &Path,
     blockdb_path: &Path,
+    state_override_set: &StateOverrideSet,
 ) -> CallResult {
     // TODO: move the buffer copying into C++ for the reserve/push idiom
     let rlp_encoded_tx: Bytes = {
         let mut buf = BytesMut::new();
-        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, true);
+        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
         buf.freeze().into()
     };
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
@@ -76,13 +105,103 @@ pub fn eth_call(
     cxx::let_cxx_string!(blockdb_path = blockdb_path.to_str().unwrap().to_string());
 
     moveit! {
+        let mut cxx_state_override_set = ffi::monad_state_override_set::new();
+    }
+
+    for (address, state_override_object) in state_override_set {
+        let mut cxx_address: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+        for byte in address {
+            cxx_address.pin_mut().push(*byte);
+        }
+        cxx_state_override_set
+            .as_mut()
+            .add_override_address(&cxx_address);
+
+        if let Some(balance) = &state_override_object.balance {
+            let mut cxx_balance = cxx::CxxVector::new();
+
+            // Big Endianess is to match with decode in eth_call.cpp (intx::be::load)
+            for byte in balance.to_be_bytes_vec() {
+                cxx_balance.pin_mut().push(byte);
+            }
+
+            cxx_state_override_set
+                .as_mut()
+                .set_override_balance(&cxx_address, &cxx_balance);
+        }
+
+        if let Some(nonce) = state_override_object.nonce {
+            cxx_state_override_set
+                .as_mut()
+                .set_override_nonce(&cxx_address, &nonce.as_limbs()[0]);
+        }
+
+        if let Some(code) = &state_override_object.code {
+            let mut cxx_code = cxx::CxxVector::new();
+
+            for byte in code {
+                cxx_code.pin_mut().push(*byte);
+            }
+
+            cxx_state_override_set
+                .as_mut()
+                .set_override_code(&cxx_address, &cxx_code);
+        }
+
+        if let Some(StorageOverride::State(override_state)) =
+            &state_override_object.storage_override
+        {
+            for (key, value) in override_state {
+                let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+                let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+
+                for byte in key {
+                    cxx_key.pin_mut().push(*byte);
+                }
+
+                for byte in value {
+                    cxx_value.pin_mut().push(*byte);
+                }
+
+                cxx_state_override_set.as_mut().set_override_state(
+                    &cxx_address,
+                    &cxx_key,
+                    &cxx_value,
+                );
+            }
+        } else if let Some(StorageOverride::StateDiff(override_state_diff)) =
+            &state_override_object.storage_override
+        {
+            for (key, value) in override_state_diff {
+                let mut cxx_key: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+                let mut cxx_value: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
+
+                for byte in key {
+                    cxx_key.pin_mut().push(*byte);
+                }
+
+                for byte in value {
+                    cxx_value.pin_mut().push(*byte);
+                }
+
+                cxx_state_override_set.as_mut().set_override_state_diff(
+                    &cxx_address,
+                    &cxx_key,
+                    &cxx_value,
+                );
+            }
+        }
+    }
+
+    moveit! {
         let result = ffi::eth_call(
         &cxx_rlp_encoded_tx,
         &cxx_rlp_encoded_block_header,
         &cxx_rlp_encoded_sender,
         block_number,
         &triedb_path,
-        &blockdb_path);
+        &blockdb_path,
+        &cxx_state_override_set);
     }
 
     let status_code = result.deref().get_status_code().0 as i32;
@@ -148,7 +267,7 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use alloy_primitives::private::alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
@@ -157,6 +276,11 @@ mod test {
 
     use super::*;
     use crate::eth_call;
+
+    #[derive(Deserialize)]
+    struct TestStateOverrideSetParam {
+        state_override_set: StateOverrideSet,
+    }
 
     #[cfg(triedb)]
     #[test]
@@ -188,6 +312,7 @@ mod test {
             0,
             path.as_path(),
             Path::new(""),
+            &StateOverrideSet::new(),
         );
         unsafe {
             ffi::destroy_testdb(db);
@@ -212,8 +337,9 @@ mod test {
             let testdb_path = ffi::testdb_path(db).to_string();
             Path::new(&testdb_path).to_owned()
         };
-        let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
+
+        let txn: reth_primitives::transaction::Transaction =
+            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
                 chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
@@ -221,32 +347,83 @@ mod test {
                 to: reth_primitives::TransactionKind::Call(
                     hex!("0000000000000000000002000000000000000000").into(),
                 ),
-                value: TxValue::from(10),
+                value: TxValue::from(10000),
                 input: Default::default(),
-            }),
-            reth_primitives::Header {
-                number: 1,
-                beneficiary: hex!("0102030405010203040501020304050102030405").into(),
-                ..Default::default()
-            },
-            hex!("0000000000000000000001000000000000000000").into(),
-            0,
-            path.as_path(),
-            Path::new(""),
-        );
+            });
+
+        let header: reth_primitives::Header = reth_primitives::Header {
+            number: 1,
+            beneficiary: hex!("0102030405010203040501020304050102030405").into(),
+            ..Default::default()
+        };
+
+        let sender: Address = hex!("0000000000000000000001000000000000000000").into();
+        let block_number = 0;
+        let triedb_path: &Path = path.as_path();
+        let blockdb_path = Path::new("");
+
+        // without override, passing
+        {
+            let state_overrides: StateOverrideSet = StateOverrideSet::new();
+            let result = eth_call(
+                txn.clone(),
+                header.clone(),
+                sender,
+                block_number,
+                triedb_path,
+                blockdb_path,
+                &state_overrides,
+            );
+
+            match result {
+                CallResult::Failure(msg) => {
+                    panic!("Call failed: {}", msg.message);
+                }
+                CallResult::Success(res) => {
+                    assert_eq!(hex::encode(res.output_data), "");
+                    assert_eq!(res.gas_used, 21000)
+                }
+            }
+        }
+
+        // with balance override, failing
+        {
+            let state_overrides_string =
+                "{\"state_override_set\": {\"0x0000000000000000000001000000000000000000\" : {
+                \"balance\" : \"0x100\"
+            } } }";
+
+            let state_overrides_object: TestStateOverrideSetParam =
+                match serde_json::from_str(&state_overrides_string) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        panic!("Can't parse string into json object!");
+                    }
+                };
+
+            let result = eth_call(
+                txn,
+                header,
+                sender,
+                block_number,
+                triedb_path,
+                blockdb_path,
+                &state_overrides_object.state_override_set,
+            );
+
+            match result {
+                CallResult::Failure(msg) => {
+                    assert_eq!("insufficient balance", msg.message);
+                }
+                CallResult::Success(_res) => {
+                    panic!("Expected Failure due to insufficient balance");
+                }
+            }
+        }
+
         unsafe {
             ffi::destroy_testdb(db);
         };
-
-        match result {
-            CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg.message);
-            }
-            CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "");
-                assert_eq!(res.gas_used, 21000)
-            }
-        }
     }
 
     #[cfg(triedb)]
@@ -258,8 +435,9 @@ mod test {
             let testdb_path = ffi::testdb_path(db).to_string();
             Path::new(&testdb_path).to_owned()
         };
-        let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
+
+        let mut txn: reth_primitives::transaction::Transaction =
+            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
                 chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
@@ -269,24 +447,75 @@ mod test {
                 ),
                 value: Default::default(),
                 input: hex!("ff01").into(),
-            }),
-            Default::default(),
-            hex!("0000000000000000000000000000000000000000").into(),
-            0,
-            path.as_path(),
-            Path::new(""),
-        );
+            });
+
+        let sender: Address = hex!("0000000000000000000000000000000000000000").into();
+        let block_number = 0;
+        let triedb_path: &Path = path.as_path();
+        let blockdb_path = Path::new("");
+
+        {
+            let result = eth_call(
+                txn.clone(),
+                Default::default(), // header
+                sender,
+                block_number,
+                triedb_path,
+                blockdb_path,
+                &StateOverrideSet::new(),
+            );
+            match result {
+                CallResult::Failure(msg) => {
+                    panic!("Call failed: {}", msg.message);
+                }
+                CallResult::Success(res) => {
+                    assert_eq!(hex::encode(res.output_data), "ffee")
+                }
+            }
+        }
+
+        // Code override: this should produce the same result as the above call
+        {
+            if let reth_primitives::Transaction::Legacy(ref mut legacy_tx) = txn {
+                legacy_tx.to = reth_primitives::TransactionKind::Call(
+                    hex!("000000000000000000000000000000000000000a").into(),
+                );
+            }
+
+            let state_overrides_string = "{\"state_override_set\" : {\"0x000000000000000000000000000000000000000a\" : {
+                \"code\" : \"0x366002146022577177726f6e672d63616c6c6461746173697a656000526012600efd5b60003560f01c61ff01146047576d77726f6e672d63616c6c64617461600052600e6012fd5b61ffee6000526002601ef3\"
+            } } }";
+
+            let state_overrides_object: TestStateOverrideSetParam =
+                match serde_json::from_str(&state_overrides_string) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        panic!("Can't parse string into json object!");
+                    }
+                };
+
+            let result = eth_call(
+                txn,
+                Default::default(), // header
+                sender,
+                block_number,
+                triedb_path,
+                blockdb_path,
+                &state_overrides_object.state_override_set,
+            );
+            match result {
+                CallResult::Failure(msg) => {
+                    panic!("Call failed: {}", msg.message);
+                }
+                CallResult::Success(res) => {
+                    assert_eq!(hex::encode(res.output_data), "ffee")
+                }
+            }
+        }
+
         unsafe {
             ffi::destroy_testdb(db);
         };
-        match result {
-            CallResult::Failure(msg) => {
-                panic!("Call failed: {}", msg.message);
-            }
-            CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "ffee")
-            }
-        }
     }
 
     #[ignore]
@@ -310,6 +539,7 @@ mod test {
             0,
             Path::new("/home/rgarc/test.db"),
             temp_blockdb_file.path(),
+            &StateOverrideSet::new(), // state overrides
         );
 
         match result {

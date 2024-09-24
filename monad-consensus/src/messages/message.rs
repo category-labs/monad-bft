@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockType, FullBlock},
+    payload::Payload,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
@@ -85,6 +86,7 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<SCT: SignatureCollection> {
     pub block: Block<SCT>,
+    pub payload: Payload,
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
@@ -113,7 +115,7 @@ impl Hashable for RequestBlockSyncMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
-    BlockFound(Block<SCT>),
+    BlockFound(FullBlock<SCT>),
     NotAvailable(BlockId),
 }
 

@@ -22,4 +22,3 @@ monad-updaters = { version = "0.1.0", path = "../monad-updaters" }
 
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
-tracing = { workspace = true }

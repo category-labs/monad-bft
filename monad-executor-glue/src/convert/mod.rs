@@ -22,8 +22,11 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
             ConsensusEvent::Timeout => {
                 proto_consensus_event::Event::Timeout(ProtoPaceMakerTimeout {})
             }
-            ConsensusEvent::BlockSync(block) => {
-                proto_consensus_event::Event::BlockSync(block.into())
+            ConsensusEvent::BlockSync { block, payload } => {
+                proto_consensus_event::Event::BlockSync(ProtoBlockSyncWithPayload {
+                    block: Some(block.into()),
+                    payload: Some(payload.into()),
+                })
             }
         };
         Self { event: Some(event) }
@@ -52,8 +55,22 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                     .try_into()?,
             },
             Some(proto_consensus_event::Event::Timeout(_tmo)) => ConsensusEvent::Timeout,
-            Some(proto_consensus_event::Event::BlockSync(block)) => {
-                ConsensusEvent::BlockSync(block.try_into()?)
+            Some(proto_consensus_event::Event::BlockSync(event)) => {
+                //ConsensusEvent::BlockSync(block.try_into()?)
+                ConsensusEvent::BlockSync {
+                    block: event
+                        .block
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::blocksync.block".to_owned(),
+                        ))?
+                        .try_into()?,
+                    payload: event
+                        .payload
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::blocksync.payload".to_owned(),
+                        ))?
+                        .try_into()?,
+                }
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),

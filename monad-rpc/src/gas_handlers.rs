@@ -3,26 +3,30 @@ use std::{ops::Sub, path::Path};
 use alloy_primitives::{U256, U64};
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockDbEnv;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
+use monad_cxx::StateOverrideSet;
+use monad_rpc_docs::rpc;
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
-use serde_json::Value;
 use tracing::{debug, trace};
 
 use crate::{
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{
-        deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
+        deserialize_block_tags, deserialize_quantity, BlockTags, MonadFeeHistory, Quantity,
     },
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
-#[derive(Deserialize, Debug)]
-struct MonadEthEstimateGasParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthEstimateGasParams {
     tx: CallRequest,
     #[serde(default, deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
+    #[serde(default)]
+    state_override_set: StateOverrideSet,
 }
 
 // TODO: bump reth-primitives to use the setter method from library
@@ -43,23 +47,19 @@ fn set_gas_limit(tx: &mut Transaction, gas_limit: u64) {
     }
 }
 
+#[rpc(method = "eth_estimateGas", ignore = "chain_id")]
 #[allow(non_snake_case)]
+/// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas(
     blockdb_env: &BlockDbEnv,
-    triedb_path: &Path,
+    triedb_env: &TriedbEnv,
     execution_ledger_path: &Path,
     chain_id: u64,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthEstimateGasParams,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_estimateGas: {params:?}");
+    let mut params = params;
 
-    let mut params: MonadEthEstimateGasParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
     params.tx.input.input = match (params.tx.input.input.take(), params.tx.input.data.take()) {
         (Some(input), Some(data)) => {
             if input != data {
@@ -70,7 +70,7 @@ pub async fn monad_eth_estimateGas(
         (None, data) | (data, None) => data,
     };
 
-    let triedb_env = TriedbEnv::new(triedb_path);
+    let state_override_set = &params.state_override_set;
 
     let block_number = match params.block {
         BlockTags::Default(_) => {
@@ -101,7 +101,7 @@ pub async fn monad_eth_estimateGas(
     ))?;
 
     let allowance: Option<u64> = if params.tx.gas.is_none() {
-        Some(sender_gas_allowance(&triedb_env, &block_header.block, &params.tx).await?)
+        Some(sender_gas_allowance(triedb_env, &block_header.block, &params.tx).await?)
     } else {
         None
     };
@@ -118,7 +118,7 @@ pub async fn monad_eth_estimateGas(
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
 
     if matches!(txn.kind(), TransactionKind::Call(_)) && txn.input().is_empty() {
-        return serialize_result(format!("0x{:x}", 21_000));
+        return Ok(Quantity(21_000));
     }
 
     let (gas_used, gas_refund) = match monad_cxx::eth_call(
@@ -126,8 +126,9 @@ pub async fn monad_eth_estimateGas(
         block_header.block.header.clone(),
         sender,
         block_number,
-        triedb_path,
+        &triedb_env.path(),
         execution_ledger_path,
+        state_override_set,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
             gas_used,
@@ -149,8 +150,9 @@ pub async fn monad_eth_estimateGas(
                 block_header.block.header.clone(),
                 sender,
                 block_number,
-                triedb_path,
+                &triedb_env.path(),
                 execution_ledger_path,
+                state_override_set,
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
                     gas_used, ..
@@ -181,8 +183,9 @@ pub async fn monad_eth_estimateGas(
             block_header.block.header.clone(),
             sender,
             block_number,
-            triedb_path,
+            &triedb_env.path(),
             execution_ledger_path,
+            state_override_set,
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
@@ -193,7 +196,7 @@ pub async fn monad_eth_estimateGas(
         };
     }
 
-    serialize_result(format!("0x{:x}", upper_bound_gas_limit))
+    Ok(Quantity(upper_bound_gas_limit))
 }
 
 pub async fn suggested_priority_fee(blockdb_env: &BlockDbEnv) -> Result<u64, JsonRpcError> {
@@ -202,8 +205,10 @@ pub async fn suggested_priority_fee(blockdb_env: &BlockDbEnv) -> Result<u64, Jso
     Ok(2000000000)
 }
 
+#[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
-pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
+/// Returns the current price per gas in wei.
+pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
     let block = match blockdb_env
@@ -225,23 +230,23 @@ pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonR
         .await
         .unwrap_or_default();
 
-    serialize_result(format!("0x{:x}", base_fee_per_gas + priority_fee))
+    Ok(Quantity(base_fee_per_gas + priority_fee))
 }
 
+#[rpc(method = "eth_maxPriorityFeePerGas")]
 #[allow(non_snake_case)]
-pub async fn monad_eth_maxPriorityFeePerGas(
-    blockdb_env: &BlockDbEnv,
-) -> Result<Value, JsonRpcError> {
+/// Returns the current maxPriorityFeePerGas per gas in wei.
+pub async fn monad_eth_maxPriorityFeePerGas(blockdb_env: &BlockDbEnv) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_maxPriorityFeePerGas");
 
     let priority_fee = suggested_priority_fee(blockdb_env)
         .await
         .unwrap_or_default();
-    serialize_result(format!("0x{:x}", priority_fee))
+    Ok(Quantity(priority_fee))
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthHistoryParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthHistoryParams {
     #[serde(deserialize_with = "deserialize_quantity")]
     block_count: Quantity,
     #[serde(deserialize_with = "deserialize_block_tags")]
@@ -249,26 +254,21 @@ struct MonadEthHistoryParams {
     reward_percentiles: Vec<f64>,
 }
 
+#[rpc(method = "eth_feeHistory")]
 #[allow(non_snake_case)]
+/// Transaction fee history
+/// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
 pub async fn monad_eth_feeHistory(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthHistoryParams,
+) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
 
-    let p: MonadEthHistoryParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let block_count: u64 = p.block_count.0;
+    let block_count: u64 = params.block_count.0;
     if block_count == 0 {
-        return serialize_result(FeeHistory::default());
+        return Ok(MonadFeeHistory(FeeHistory::default()));
     }
 
     // TODO: retrieve fee parameters from historical blocks
-    serialize_result(FeeHistory::default())
+    Ok(MonadFeeHistory(FeeHistory::default()))
 }

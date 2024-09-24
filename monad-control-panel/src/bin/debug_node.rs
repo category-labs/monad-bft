@@ -2,14 +2,15 @@ use std::{io::Error, path::PathBuf};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
+use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     signature_collection::SignatureCollection, validator_data::ParsedValidatorData,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetValidatorSet, ReadCommand, UpdateValidatorSet,
-    WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetMetrics, GetValidatorSet, ReadCommand,
+    UpdateValidatorSet, WriteCommand,
 };
 use monad_secp::SecpSignature;
 use tokio::net::{
@@ -52,6 +53,8 @@ enum Commands {
         #[arg(short, long, value_name = "FILE")]
         path: PathBuf,
     },
+    /// Gets snapshot of current metrics
+    Metrics,
     /// Clears the metrics
     ClearMetrics,
     /// Update the logging filter
@@ -127,6 +130,12 @@ fn main() -> Result<(), Error> {
                             )));
                         }
                     },
+                    r => {
+                        return Err(Error::other(format!(
+                            "expected validator set response, got {:?}",
+                            r
+                        )));
+                    }
                 },
                 r => {
                     return Err(Error::other(format!(
@@ -167,7 +176,33 @@ fn main() -> Result<(), Error> {
             println!("{}", serde_json::to_string(&response).unwrap());
         }
 
-        Commands::UpdateLogFilter(_) => todo!("UpdateLogFilter not implemented"),
+        Commands::UpdateLogFilter(filter) => match (filter.filter, filter.file) {
+            (Some(filter), None) => {
+                rt.block_on(write.send(Command::Write(WriteCommand::UpdateLogFilter(filter))))?;
+
+                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                println!("{}", serde_json::to_string(&response).unwrap());
+            }
+            (None, Some(file)) => {
+                rt.block_on(
+                    write.send(Command::Write(WriteCommand::UpdateLogFilter(
+                        std::fs::read_to_string(file)?
+                            .split("\n")
+                            .filter(|s| !s.is_empty())
+                            .join(","),
+                    ))),
+                )?;
+
+                let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+                println!("{}", serde_json::to_string(&response).unwrap());
+            }
+            _ => unreachable!(),
+        },
+        Commands::Metrics => {
+            rt.block_on(write.send(Command::Read(ReadCommand::GetMetrics(GetMetrics::Request))))?;
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+            println!("{}", serde_json::to_string(&response).unwrap());
+        }
     }
 
     Ok(())

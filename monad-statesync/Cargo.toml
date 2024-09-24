@@ -20,6 +20,14 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+tempfile = { workspace = true }
+
 [build-dependencies]
 bindgen = { workspace = true }
 cmake = { workspace = true }
+
+[[bench]]
+name = "ipc_bench"
+harness = false

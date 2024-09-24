@@ -10,7 +10,7 @@ use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, FullBlock},
     payload::TransactionPayload,
     signature_collection::SignatureCollection,
 };
@@ -34,7 +34,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<Round, Block<SCT>>,
+    blocks: BTreeMap<Round, FullBlock<SCT>>,
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
@@ -161,7 +161,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, Block<SCT>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
         &self.blocks
     }
 }

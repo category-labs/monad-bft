@@ -66,11 +66,16 @@ message ProtoTimestampUpdate {
    uint64 update = 1;
 }
 
+message ProtoBlockSyncWithPayload {
+  monad_proto.block.ProtoBlock block = 1;
+  monad_proto.block.ProtoPayload payload = 2;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     ProtoPaceMakerTimeout timeout = 2;
-    monad_proto.block.ProtoBlock block_sync = 3;
+    ProtoBlockSyncWithPayload block_sync = 3;
   }
 }
 
@@ -127,12 +132,19 @@ message ProtoMetricsTimeout {}
 
 message ProtoGetValidatorSetEvent {}
 message ProtoClearMetricsEvent {}
+message ProtoUpdateLogFilter {
+  string filter = 1;
+}
+
+message ProtoGetMetricsEvent {}
 
 message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
     ProtoClearMetricsEvent clear_metrics_event = 2;
     ProtoUpdateValidatorsEvent update_validators_event = 3;
+    ProtoUpdateLogFilter update_log_filter = 4;
+    ProtoGetMetricsEvent get_metrics_event = 5;
   }
 }
 
@@ -169,7 +181,7 @@ message ProtoStateSyncEvent {
     ProtoOutboundStateMessage outbound = 2;
     ProtoDoneSync done_sync = 3;
     ProtoRequestSync request_sync = 4;
-    monad_proto.block.ProtoBlock block_sync = 5;
+    monad_proto.block.ProtoFullBlock block_sync = 5;
   }
 }
 

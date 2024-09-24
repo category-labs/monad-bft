@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_consensus::messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage};
 use monad_consensus_types::{
-    block::{Block, BlockPolicy},
+    block::{BlockPolicy, FullBlock},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
@@ -78,7 +78,7 @@ pub(crate) enum BlockSyncCommand<SCT: SignatureCollection> {
     /// Fetch the block from consensus ledger
     FetchBlock(BlockId),
     /// Response to a BlockSyncEvent::SelfRequest
-    Emit(BlockSyncSelfRequester, Block<SCT>),
+    Emit(BlockSyncSelfRequester, FullBlock<SCT>),
 }
 
 pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -166,7 +166,7 @@ where
                     // use retrieved block if currently cached in pending block tree
                     cmds.push(BlockSyncCommand::SendResponse {
                         to: sender,
-                        response: BlockSyncResponseMessage::BlockFound(block.clone()),
+                        response: BlockSyncResponseMessage::BlockFound(block),
                     })
                 } else if !self.block_sync.self_requests.contains_key(&block_id) {
                     // ask ledger
@@ -352,14 +352,17 @@ where
             BlockSyncCommand::FetchBlock(block_id) => {
                 vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(block_id))]
             }
-            BlockSyncCommand::Emit(requester, block) => {
+            BlockSyncCommand::Emit(requester, full_block) => {
                 vec![Command::LoopbackCommand(LoopbackCommand::Forward(
                     match requester {
                         BlockSyncSelfRequester::StateSync => {
-                            MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync(block))
+                            MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync(full_block))
                         }
                         BlockSyncSelfRequester::Consensus => {
-                            MonadEvent::ConsensusEvent(ConsensusEvent::BlockSync(block))
+                            MonadEvent::ConsensusEvent(ConsensusEvent::BlockSync {
+                                block: full_block.block,
+                                payload: full_block.payload,
+                            })
                         }
                     },
                 ))]

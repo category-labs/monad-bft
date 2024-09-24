@@ -8,7 +8,8 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::network::MONAD_GSO_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    build_messages, parse_message, BuildTarget, EpochValidators, Validator, SIGNATURE_CACHE_SIZE,
+    udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
+    util::{BuildTarget, EpochValidators, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -51,10 +52,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
+                MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
                 message.clone(),
                 2, // redundancy,
                 0, // epoch_no
-                0, // round_no
+                0, // unix_ts_ms
                 BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
             );
@@ -91,10 +93,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let messages = build_messages::<SecpSignature>(
             &keys[0],
+            MONAD_GSO_SIZE.try_into().unwrap(), // gso_size
             message.clone(),
             2, // redundancy,
             0, // epoch_no
-            0, // round_no
+            0, // unix_ts_ms
             BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         )

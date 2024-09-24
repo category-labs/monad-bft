@@ -153,10 +153,10 @@ where
                 info,
                 sig,
                 epoch,
-                round,
+                round: _,
             } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::Broadcast(epoch, round),
+                    target: RouterTarget::Broadcast(epoch),
                     message: VerifiedMonadMessage::PeerStateRootMessage(Validated::new(
                         PeerStateRootMessage { peer, info, sig },
                     )),

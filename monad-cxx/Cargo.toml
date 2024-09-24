@@ -16,6 +16,8 @@ futures = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
 reth-primitives = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 monad-eth-tx = { path = "../monad-eth-tx" }
 
@@ -25,5 +27,4 @@ tempfile = { workspace = true }
 
 [build-dependencies]
 autocxx-build = { workspace = true }
-cc = { workspace = true }
 cmake = { workspace = true }

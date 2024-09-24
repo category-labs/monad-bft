@@ -72,15 +72,26 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin debug-node --example wal2json && \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-keystore --bin debug-node --example wal2json --example wal-tool && \
     mv target/release/monad-node node && \
+    mv target/release/monad-keystore keystore && \
     mv target/release/debug-node debug-node && \
     mv target/release/examples/wal2json wal2json && \
+    mv target/release/examples/wal-tool wal-tool && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libmonad_statesync.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libevmone.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libquill.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` .
+
+RUN apt install -y binutils && strip \
+    node \
+    keystore \
+    debug-node \
+    wal2json \
+    wal-tool \
+    *.so \
+    *.so.*
 
 # Runner
 FROM base AS runner
@@ -88,8 +99,10 @@ WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
+COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
 COPY --from=builder /usr/src/monad-bft/debug-node /usr/local/bin/debug-node
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
+COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 

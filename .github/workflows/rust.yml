@@ -16,17 +16,24 @@ jobs:
     steps:
       - name: Generate a token
         id: generate_token
-        uses: actions/create-github-app-token@v1
+        uses: tibdex/github-app-token@v1
         with:
-          app-id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private-key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          repositories: "monad,monad-bft,evmone,thread-safe-lru"
+          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
+          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
+          permissions: >-
+            {"contents": "read"}
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
       - run: rustup toolchain install nightly-2024-07-21 --profile minimal --component rustfmt
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-shear
+        run: cargo binstall --no-confirm cargo-shear
+      - name: Lint unused dependencies
+        run: cargo shear
       - name: Format
         run: cargo +nightly-2024-07-21 fmt --all --check
       - uses: Swatinem/rust-cache@v2
@@ -62,6 +69,3 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger
-      - run: cargo install cargo-udeps --locked
-      - name: Lint unused deps
-        run: cargo +nightly-2024-07-21 udeps --all-targets --all-features

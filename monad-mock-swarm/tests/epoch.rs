@@ -123,7 +123,7 @@ mod test {
             }
             let update_block = update_block.unwrap();
 
-            let update_block_round = update_block.round;
+            let update_block_round = update_block.block.round;
             let epoch_manager = node.state.epoch_manager();
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
 
@@ -611,15 +611,15 @@ mod test {
         let max_ledger_blocks = ledgers.iter().map(|ledger| ledger.len()).max().unwrap();
 
         for ledger in ledgers {
-            for block in ledger {
-                if block.round < epoch_3_start_round {
+            for full_block in ledger {
+                if full_block.block.round < epoch_3_start_round {
                     // the first two epochs both have genesis validators as the
                     // validator set
-                    assert!(genesis_validators.contains(&block.author));
-                } else if block.round < epoch_4_start_round {
-                    assert!(validators_epoch_3.contains(&block.author));
+                    assert!(genesis_validators.contains(&full_block.block.author));
+                } else if full_block.block.round < epoch_4_start_round {
+                    assert!(validators_epoch_3.contains(&full_block.block.author));
                 } else {
-                    assert!(validators_epoch_4.contains(&block.author));
+                    assert!(validators_epoch_4.contains(&full_block.block.author));
                 }
             }
         }

@@ -6,7 +6,7 @@ use rand::{prelude::SliceRandom, thread_rng, Rng, RngCore};
 const SYMBOL_LEN: usize = 4;
 
 fn test_single_decode(src: Vec<u8>) {
-    let encoder: Encoder<SYMBOL_LEN> = Encoder::new(&src).unwrap();
+    let encoder: Encoder = Encoder::new(&src, SYMBOL_LEN).unwrap();
 
     let num_source_symbols = encoder.num_source_symbols();
 
@@ -17,15 +17,15 @@ fn test_single_decode(src: Vec<u8>) {
 
     for esi in &esis {
         let mut buf: Box<[u8]> = vec![0; SYMBOL_LEN].into_boxed_slice();
-        encoder.encode_symbol(<&mut [u8; SYMBOL_LEN]>::try_from(&mut *buf).unwrap(), *esi);
+        encoder.encode_symbol(&mut buf, *esi);
 
         // We feed some encoded symbols back into the decoder twice to test the
         // Redundant buffer handling paths.
         if rand::thread_rng().gen_ratio(1, 100) {
-            decoder.received_encoded_symbol(&buf[..], *esi);
+            decoder.received_encoded_symbol(&buf, *esi);
         }
 
-        decoder.received_encoded_symbol(&buf[..], *esi);
+        decoder.received_encoded_symbol(&buf, *esi);
 
         if decoder.try_decode() {
             break;

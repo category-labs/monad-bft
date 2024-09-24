@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use log::debug;
+use tracing::warn;
 
 pub const MAX_UDP_PKT: usize = 65535;
 const MAX_IPV4_HDR: usize = 20;
@@ -50,6 +50,8 @@ pub struct NetworkSocket<'a> {
 
     pub recv_ctrl: RecvCtrl<'a>,
     pub send_ctrl: SendCtrl,
+
+    pub next_transmit: std::time::Instant,
 }
 
 pub struct RecvCtrl<'a> {
@@ -161,6 +163,7 @@ impl<'a> NetworkSocket<'a> {
                 bufs: send_bufs,
                 iovecs,
             },
+            next_transmit: std::time::Instant::now(),
         }
     }
 
@@ -224,7 +227,6 @@ impl<'a> NetworkSocket<'a> {
                             &mut stride,
                             1,
                         );
-                        debug!("cmsg_data = {}", stride);
 
                         assert!(stride as usize <= MONAD_GSO_SIZE);
                     }
@@ -238,8 +240,6 @@ impl<'a> NetworkSocket<'a> {
                 src_addr: NetworkSocket::get_addr(self.recv_ctrl.name[i]),
                 stride,
             });
-            debug!("from: {}", NetworkSocket::get_addr(self.recv_ctrl.name[i]));
-            debug!("received: {}", msglen);
         }
 
         Some(retval)
@@ -332,14 +332,12 @@ impl<'a> NetworkSocket<'a> {
         self.sendmmsg(sendmmsg_len)
     }
 
-    pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) -> Option<()> {
+    pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) {
         if msg.is_empty() {
-            return None;
+            return;
         }
 
-        assert!(msg.len() < NUM_TX_MSGHDR);
-
-        let msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
+        let _msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
 
         let mut i = 0;
         for (to, mut payload) in msg {
@@ -363,10 +361,16 @@ impl<'a> NetworkSocket<'a> {
                     unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
 
                 i += 1;
+                if i == NUM_TX_MSGHDR {
+                    self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"));
+                    i = 0;
+                }
             }
         }
 
-        self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"))
+        if i != 0 {
+            self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"));
+        }
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {
@@ -374,6 +378,11 @@ impl<'a> NetworkSocket<'a> {
 
         unsafe {
             for i in 0..num_msgs as usize {
+                let now = std::time::Instant::now();
+                if self.next_transmit > now {
+                    std::thread::sleep(self.next_transmit - now);
+                }
+
                 // TODO instead of 1 sendmmsg per msg, we should create 1 sendmmsg per 65k of data
                 let r = super::retry_eintr(|| {
                     libc::sendmmsg(
@@ -390,13 +399,16 @@ impl<'a> NetworkSocket<'a> {
                     // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
                     // IP_MTU and include the returned value in the log message.
                     if e.kind() == std::io::ErrorKind::InvalidInput {
-                        debug!("sendmmsg error {}", e);
+                        warn!("sendmmsg error {}", e);
                     } else {
                         panic!("sendmmsg error {}", e);
                     }
                 }
 
-                std::thread::sleep(std::time::Duration::from_micros(750));
+                let sleep = std::time::Duration::from_micros(
+                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 / 1000,
+                );
+                self.next_transmit = std::time::Instant::now() + sleep;
             }
         }
         // // TODO try sending the stuff that wasn't sent

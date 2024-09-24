@@ -15,7 +15,5 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
-
-alloy-primitives = { workspace = true }
 rand = { workspace = true }
 reth-primitives = { workspace = true }

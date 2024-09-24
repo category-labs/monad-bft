@@ -4,6 +4,8 @@ pub mod wal;
 
 use std::{error::Error, fmt::Debug, io};
 
+use auto_impl::auto_impl;
+
 pub trait PersistenceLoggerBuilder {
     type PersistenceLogger: PersistenceLogger;
 
@@ -29,20 +31,13 @@ pub trait PersistenceLoggerBuilder {
 ///
 /// the persistence layer only accepts one type of message
 /// we can refactor M to Verified/Unverified type if we write to WAL after verifying the message
+#[auto_impl(Box)]
 pub trait PersistenceLogger {
     /// The Event type to be logged
     type Event;
 
     /// Add an event to the log
     fn push(&mut self, message: &Self::Event) -> Result<(), WALError>;
-}
-
-impl<T: PersistenceLogger + ?Sized> PersistenceLogger for Box<T> {
-    type Event = T::Event;
-
-    fn push(&mut self, message: &Self::Event) -> Result<(), WALError> {
-        (**self).push(message)
-    }
 }
 
 #[derive(Debug)]

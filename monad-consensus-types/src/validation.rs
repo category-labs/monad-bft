@@ -16,8 +16,8 @@ pub enum Error {
     InvalidSeqNum,
     /// Required validator set (or cert pubkeys) not in validators epoch mapping
     ValidatorSetDataUnavailable,
-    /// VoteMessage does not contain a valid commit condition
-    InvalidVoteMessage,
+    /// Vote does not contain a valid commit condition
+    InvalidVote,
     /// Consensus Message version must match
     InvalidVersion,
     /// Epoch number in message doesn't match local records

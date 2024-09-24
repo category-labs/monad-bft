@@ -265,7 +265,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
     fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.update_tick(time);
         match to {
-            RouterTarget::Broadcast(_, _) => {
+            RouterTarget::Broadcast(_) => {
                 self.events
                     .push_back(GossipEvent::Emit(self.me, message.clone()));
 
@@ -282,7 +282,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                     });
                 self.events.extend(messages);
             }
-            RouterTarget::Raptorcast(_, _) => {
+            RouterTarget::Raptorcast(_) => {
                 self.events
                     .push_back(GossipEvent::Emit(self.me, message.clone()));
 
@@ -297,7 +297,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                 // same AppMessage.
                 self.insert_chunker(chunker);
             }
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.me {
                     self.events.push_back(GossipEvent::Emit(self.me, message))
                 } else {

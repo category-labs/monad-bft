@@ -11,14 +11,12 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+auto_impl = { workspace = true }
 tracing = { workspace = true }
-zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
-tracing-subscriber = "0.3.18"

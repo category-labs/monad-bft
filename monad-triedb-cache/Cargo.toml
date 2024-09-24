@@ -7,13 +7,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-crypto = { path = "../monad-crypto" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
-
-alloy-rlp = { workspace = true }
-bytes = { workspace = true }
 itertools = { workspace = true }
-rand = { workspace = true }
 tracing = { workspace = true }

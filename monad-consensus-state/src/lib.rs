@@ -11,12 +11,12 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
+    block::{Block, BlockKind, BlockPolicy, BlockType, FullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::{
-        ExecutionArtifacts, Payload, RandaoReveal, StateRootResult, StateRootValidator,
+        ExecutionProtocol, Payload, RandaoReveal, StateRootResult, StateRootValidator,
         TransactionPayload,
     },
     quorum_certificate::{QuorumCertificate, Rank},
@@ -177,7 +177,7 @@ pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash
     Propose(StateRootHash),
     /// Create an empty block proposal
-    ProposeEmpty,
+    ProposeNull,
 }
 
 /// Actions after state root validation
@@ -254,10 +254,10 @@ where
 
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
-    pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
+    pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<FullBlock<SCT>> {
         self.pending_block_tree
             .get_block(bid)
-            .map(|b| b.get_unvalidated_block_ref())
+            .map(|b| b.clone().get_full_block()) //TODO revisit
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT> {
@@ -385,7 +385,10 @@ where
             .map
             .get(&author)
             .expect("proposal author exists in validator_mapping");
-        let block = match self.block_validator.validate(p.block, author_pubkey) {
+        let block = match self
+            .block_validator
+            .validate(p.block, p.payload, author_pubkey)
+        {
             Ok(block) => block,
             Err(BlockValidationError::TxnError) => {
                 warn!("Transaction validation failed");
@@ -396,6 +399,16 @@ where
                 self.metrics
                     .consensus_events
                     .failed_verify_randao_reveal_sig += 1;
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderPayloadMismatchError) => {
+                // TODO: this is malicious behaviour?
+                return cmds;
+            }
+            Err(BlockValidationError::PayloadError) => {
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderError) => {
                 return cmds;
             }
         };
@@ -590,7 +603,11 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
-    pub fn handle_block_sync(&mut self, block: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
+    pub fn handle_block_sync(
+        &mut self,
+        block: Block<SCT>,
+        payload: Payload,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
 
         let author_pubkey = self
@@ -602,8 +619,10 @@ where
             .expect("blocksync'd block author should be in validator set");
         let block = self
             .block_validator
-            .validate(block, author_pubkey)
-            .expect("majority extended invalid block");
+            .validate(block, payload, author_pubkey)
+            .expect("majority extended invalid block"); //FIXME: header payload could mismatch if
+                                                        //they respond with incorrect thing. DONT
+                                                        //UNWRAP THIS
         if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
             let removed = self.consensus.block_sync_requests.remove(&block.get_id());
             if removed.is_none() {
@@ -769,7 +788,7 @@ where
 
                 let unvalidated_blocks = blocks_to_commit
                     .into_iter()
-                    .map(|b| b.get_unvalidated_block())
+                    .map(|b| b.get_full_block())
                     .collect();
                 cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
                     unvalidated_blocks,
@@ -1119,21 +1138,20 @@ where
         let try_propose_seq_num = seq_num_qc + SeqNum(1);
 
         let proposer_builder =
-            |txns: TransactionPayload,
+            |block_kind: BlockKind,
+             txns: TransactionPayload,
              hash: StateRootHash,
              seq_num: SeqNum,
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
-                let mut header = ExecutionArtifacts::zero();
-                header.state_root = hash;
+                let payload = Payload { txns };
                 let b = Block::new(
                     node_id,
                     self.block_timestamp
                         .get_valid_block_timestamp(high_qc.get_timestamp()),
                     epoch,
                     round,
-                    &Payload {
-                        txns,
-                        header,
+                    &ExecutionProtocol {
+                        state_root: hash,
                         seq_num,
                         beneficiary: *self.beneficiary,
                         randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
@@ -1141,11 +1159,14 @@ where
                             self.cert_keypair,
                         ),
                     },
+                    payload.get_id(),
+                    block_kind,
                     &high_qc,
                 );
 
                 let p = ProposalMessage {
                     block: b,
+                    payload,
                     last_round_tc,
                 };
                 let msg = ConsensusMessage {
@@ -1156,7 +1177,7 @@ where
 
                 vec![
                     ConsensusCommand::Publish {
-                        target: RouterTarget::Raptorcast(epoch, round),
+                        target: RouterTarget::Raptorcast(epoch),
                         message: msg,
                     },
                     ConsensusCommand::ClearMempool,
@@ -1195,6 +1216,7 @@ where
                     Ok(prop_txns) => {
                         self.metrics.consensus_events.creating_proposal += 1;
                         proposer_builder(
+                            BlockKind::Executable,
                             TransactionPayload::List(prop_txns),
                             propose_state_root_hash,
                             try_propose_seq_num,
@@ -1213,7 +1235,8 @@ where
                             .get_block_state_root(&high_qc.get_block_id())
                             .expect("parent block is coherent");
                         proposer_builder(
-                            TransactionPayload::Empty,
+                            BlockKind::Null,
+                            TransactionPayload::Null,
                             srh_qc,
                             seq_num_qc,
                             last_round_tc,
@@ -1221,7 +1244,7 @@ where
                     }
                 }
             }
-            ConsensusAction::ProposeEmpty => {
+            ConsensusAction::ProposeNull => {
                 tracing::info_span!("create_proposal_empty_span", ?round);
                 // Don't have the necessary state root hash ready so propose
                 // a NULL block
@@ -1242,7 +1265,13 @@ where
                     .pending_block_tree
                     .get_block_state_root(&high_qc.get_block_id())
                     .expect("parent block is coherent");
-                proposer_builder(TransactionPayload::Empty, srh_qc, seq_num_qc, last_round_tc)
+                proposer_builder(
+                    BlockKind::Null,
+                    TransactionPayload::Null,
+                    srh_qc,
+                    seq_num_qc,
+                    last_round_tc,
+                )
             }
         }
     }
@@ -1255,7 +1284,7 @@ where
             .get_next_state_root(proposed_seq_num)
         else {
             // propose empty also needs a state root hash with it
-            return ConsensusAction::ProposeEmpty;
+            return ConsensusAction::ProposeNull;
         };
 
         ConsensusAction::Propose(h)
@@ -1298,7 +1327,7 @@ where
         }
         match self
             .state_root_validator
-            .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
+            .validate(p.block.get_seq_num(), p.block.get_state_root())
         {
             // TODO-1 execution lagging too far behind should be a trigger for
             // something to try and catch up faster. For now, just wait
@@ -1380,14 +1409,14 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{Block, BlockPolicy, BlockType, PassthruBlockPolicy},
+        block::{Block, BlockKind, BlockPolicy, BlockType, PassthruBlockPolicy},
         block_validator::{BlockValidator, MockValidator},
         checkpoint::RootInfo,
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
-            Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
-            NopStateRoot, StateRoot, StateRootValidator, TransactionPayload,
+            FullTransactionList, MissingNextStateRoot, NopStateRoot, Payload, StateRoot,
+            StateRootValidator, TransactionPayload,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1546,8 +1575,12 @@ mod test {
             self.wrapped_state().handle_vote_message(author, p)
         }
 
-        fn handle_block_sync(&mut self, p: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
-            self.wrapped_state().handle_block_sync(p)
+        fn handle_block_sync(
+            &mut self,
+            b: Block<SCT>,
+            p: Payload,
+        ) -> Vec<ConsensusCommand<ST, SCT>> {
+            self.wrapped_state().handle_block_sync(b, p)
         }
     }
 
@@ -1581,15 +1614,15 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                TransactionPayload::Empty,
-                ExecutionArtifacts::zero(),
+                TransactionPayload::Null,
+                StateRootHash::default(),
             )
         }
 
         fn next_proposal(
             &mut self,
             txn_list: FullTransactionList,
-            execution_hdr: ExecutionArtifacts,
+            state_root: StateRootHash,
         ) -> Verified<ST, ProposalMessage<SCT>> {
             self.proposal_gen.next_proposal(
                 &self.keys,
@@ -1598,7 +1631,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 TransactionPayload::List(txn_list),
-                execution_hdr,
+                state_root,
             )
         }
 
@@ -1611,7 +1644,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 TransactionPayload::List(FullTransactionList::new(vec![5].into())),
-                ExecutionArtifacts::zero(),
+                StateRootHash::default(),
             )
         }
 
@@ -1619,7 +1652,7 @@ mod test {
         fn branch_proposal(
             &mut self,
             txn_list: FullTransactionList,
-            execution_hdr: ExecutionArtifacts,
+            state_root: StateRootHash,
         ) -> Verified<ST, ProposalMessage<SCT>> {
             self.malicious_proposal_gen.next_proposal(
                 &self.keys,
@@ -1628,7 +1661,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 TransactionPayload::List(txn_list),
-                execution_hdr,
+                state_root,
             )
         }
 
@@ -1818,7 +1851,7 @@ mod test {
         cmds.iter()
             .find_map(|c| match c {
                 ConsensusCommand::Publish {
-                    target: RouterTarget::Raptorcast(_, _),
+                    target: RouterTarget::Raptorcast(_),
                     message,
                 } => match &message.deref().deref().message {
                     ProtocolMessage::Proposal(p) => Some(p.clone()),
@@ -1989,7 +2022,7 @@ mod test {
             || NopStateRoot,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
-        let p1 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let p1 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
 
         // local timeout for state in Round 1
         assert_eq!(
@@ -2418,11 +2451,12 @@ mod test {
         // effect is that nodes send votes for B to the next leader who thinks that
         // the "correct" proposal is A.
 
-        let cp1 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp1 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let mp1 = env.mal_proposal_empty();
 
         let (author_1, _, proposal_message_1) = cp1.destructure();
         let block_1 = proposal_message_1.block.clone();
+        let payload_1 = proposal_message_1.payload.clone();
         let cmds1 = n1.handle_proposal_message(author_1, proposal_message_1.clone());
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
@@ -2468,9 +2502,10 @@ mod test {
         // use the correct proposal gen to make next proposal and send it to second_state
         // this should cause it to emit the RequestBlockSync Message because the the QC parent
         // points to a different proposal (second_state has the malicious proposal in its blocktree)
-        let cp2 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp2 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_2, _, proposal_message_2) = cp2.destructure();
         let block_2 = proposal_message_2.block.clone();
+        let payload_2 = proposal_message_2.payload.clone();
         let cmds2 = n2.handle_proposal_message(author_2, proposal_message_2.clone());
         // Blocksync already requested with the created QC
         assert!(find_blocksync_request(&cmds2).is_none());
@@ -2480,9 +2515,10 @@ mod test {
         assert!(find_blocksync_request(&cmds1).is_none());
 
         // next correct proposal is created and we send it to the first two states.
-        let cp3 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp3 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_3, _, proposal_message_3) = cp3.destructure();
         let block_3 = proposal_message_3.block.clone();
+        let payload_3 = proposal_message_3.payload.clone();
 
         let cmds2 = n2.handle_proposal_message(author_3, proposal_message_3.clone());
         let cmds1 = n1.handle_proposal_message(author_3, proposal_message_3);
@@ -2497,10 +2533,10 @@ mod test {
         assert!(find_commit_cmd(&cmds1).is_some());
 
         // a block sync request arrived, helping second state to recover
-        let _ = n2.handle_block_sync(block_1);
+        let _ = n2.handle_block_sync(block_1, payload_1);
 
         // in the next round, second_state should recover and able to commit
-        let cp4 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp4 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_4, _, proposal_message_4) = cp4.destructure();
 
         let cmds2 = n2.handle_proposal_message(author_4, proposal_message_4.clone());
@@ -2528,7 +2564,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let cmds3 = n3.handle_block_sync(block_3.clone());
+        let cmds3 = n3.handle_block_sync(block_3.clone(), payload_3.clone());
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
         let res = find_blocksync_request(&cmds3);
@@ -2536,7 +2572,7 @@ mod test {
             panic!("request sync is not found")
         };
         // repeated handling of the requested block should be ignored
-        let cmds3 = n3.handle_block_sync(block_3);
+        let cmds3 = n3.handle_block_sync(block_3, payload_3);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
         assert!(find_blocksync_request(&cmds3).is_none());
@@ -2555,7 +2591,7 @@ mod test {
         }
 
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = n3.handle_block_sync(block_2);
+        let cmds3 = n3.handle_block_sync(block_2, payload_2);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
@@ -2623,12 +2659,12 @@ mod test {
 
         env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
 
         let p1 = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
 
         let (author, _, verified_message) = p1.destructure();
@@ -2689,7 +2725,7 @@ mod test {
 
         // prepare 5 blocks
         for _ in 0..5 {
-            let p = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let p = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, p) = p.destructure();
             let _cmds = wrapped_state.handle_proposal_message(author, p);
         }
@@ -2707,10 +2743,7 @@ mod test {
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
         let p = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts {
-                state_root: StateRootHash(Hash([0x06_u8; 32])),
-                ..ExecutionArtifacts::zero()
-            },
+            StateRootHash(Hash([0x06_u8; 32])),
         );
         let (author, _, p) = p.destructure();
 
@@ -2802,7 +2835,7 @@ mod test {
             // after 2f + 1 votes, we expect that an empty proposal is created
             if i == 2 {
                 let p = extract_proposal_broadcast(cmds);
-                assert_eq!(p.block.payload.txns, TransactionPayload::Empty);
+                assert_eq!(p.payload.txns, TransactionPayload::Null);
                 assert_eq!(
                     next_leader
                         .metrics
@@ -2841,21 +2874,14 @@ mod test {
 
         // delay gap in setup is 1
 
-        let p0 = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let p0 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author, _, verified_message) = p0.destructure();
 
         let _ = node.handle_proposal_message(author, verified_message);
 
         let p1 = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: StateRootHash(Hash([0x99; 32])),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Gas(0),
-            },
+            StateRootHash(Hash([0x99; 32])),
         );
         let (author, _, verified_message) = p1.destructure();
         // p1 has seq_num 1 and therefore requires state_root 0
@@ -2869,14 +2895,7 @@ mod test {
 
         let p2 = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: StateRootHash(Hash([0xbb; 32])),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Gas(0),
-            },
+            StateRootHash(Hash([0xbb; 32])),
         );
 
         let (author, _, verified_message) = p2.destructure();
@@ -2888,14 +2907,7 @@ mod test {
 
         let p3 = env.next_proposal(
             FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts {
-                parent_hash: Default::default(),
-                state_root: StateRootHash(Hash([0xcc; 32])),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Bloom::zero(),
-                gas_used: Gas(0),
-            },
+            StateRootHash(Hash([0xcc; 32])),
         );
 
         let (author, _, verified_message) = p3.destructure();
@@ -2961,7 +2973,7 @@ mod test {
         // you can also receive a branch, which would cause pending block tree retrieval to also be valid
         let bp1 = env.branch_proposal(
             FullTransactionList::new(vec![13, 32].into()),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
 
         let (author, _, verified_message) = bp1.destructure();
@@ -3032,7 +3044,7 @@ mod test {
         );
 
         for i in 0..8 {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
                 let cmds = node.handle_proposal_message(author, verified_message.clone());
@@ -3062,7 +3074,7 @@ mod test {
         let mut votes = vec![];
         let mut proposal_10_blockid = BlockId(Hash::default());
         for j in 0..2 {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for (i, node) in ctx.iter_mut().enumerate() {
                 if node.nodeid != next_leader {
@@ -3131,7 +3143,7 @@ mod test {
         );
         let mut blocks = vec![];
         for _ in 0..4 {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
 
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut().skip(1) {
@@ -3195,11 +3207,11 @@ mod test {
         );
         let mut blocks = vec![];
         for _ in 0..4 {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (_, _, verified_message) = cp.destructure();
             blocks.push(verified_message.block);
         }
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
 
         let (author, _, verified_message) = cp.destructure();
         let node = &mut ctx[1];
@@ -3289,7 +3301,7 @@ mod test {
             if i >= (num_state * 2 / 3) {
                 let proposal_exists = cmds.into_iter().any(|c| match c {
                     ConsensusCommand::Publish {
-                        target: RouterTarget::Broadcast(_, _),
+                        target: RouterTarget::Broadcast(_),
                         message,
                     } => matches!(
                         &message.deref().deref().message,
@@ -3373,11 +3385,14 @@ mod test {
             0,
             epoch,
             p2.block.round,
-            &p2.block.payload,
+            &p2.block.execution,
+            p2.payload.get_id(),
+            BlockKind::Executable,
             &p2.block.qc,
         );
         let invalid_p2 = ProposalMessage {
             block: invalid_b2,
+            payload: p2.payload,
             last_round_tc: None,
         };
 
@@ -3423,7 +3438,7 @@ mod test {
 
         // handle update_block + 2 proposals to commit the update_block
         for _ in 0..(update_block_round.0 + 2) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
                 let cmds = node.handle_proposal_message(author, verified_message.clone());
@@ -3492,7 +3507,7 @@ mod test {
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
 
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -3599,7 +3614,7 @@ mod test {
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
                 let cmds = node.handle_proposal_message(author, verified_message.clone());
@@ -3653,7 +3668,7 @@ mod test {
         }
 
         // proposal for Round(expected_epoch_start_round)
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author, _, verified_message) = cp.destructure();
         let node = &mut ctx[0];
         // observe TC to advance round and epoch
@@ -3697,7 +3712,7 @@ mod test {
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
                 let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> =
@@ -3739,7 +3754,7 @@ mod test {
 
         // handle proposals until the last round of the epoch
         for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
                 let cmds = node.handle_proposal_message(author, verified_message.clone());
@@ -3813,7 +3828,7 @@ mod test {
         // handle blocks until update_block - 1
         for _ in 0..(update_block_round.0 - 1) {
             let proposal =
-                env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+                env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = proposal.destructure();
             for node in ctx.iter_mut() {
                 let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> =
@@ -3829,8 +3844,8 @@ mod test {
         // handle 3 blocks for only state 0
         for _ in (update_block_round.0 - 1)..(update_block_round.0 + 2) {
             let proposal =
-                env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
-            println!("proposal seq num {:?}", proposal.block.payload.seq_num);
+                env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
+            println!("proposal seq num {:?}", proposal.block.execution.seq_num);
             let (author, _, verified_message) = proposal.destructure();
 
             let state = &mut ctx[0];
@@ -3839,7 +3854,7 @@ mod test {
             // state should not request blocksync
             assert!(extract_blocksync_requests(cmds).is_empty());
 
-            block_sync_blocks.push(verified_message.block);
+            block_sync_blocks.push((verified_message.block, verified_message.payload));
         }
         let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
 
@@ -3903,9 +3918,9 @@ mod test {
         let val_set = env.val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let nodeid_0 = ctx[0].nodeid;
         let state1 = &mut ctx[1];
-        for block in block_sync_blocks.into_iter().rev() {
+        for (block, payload) in block_sync_blocks.into_iter().rev() {
             // blocksync response for state 2
-            let _ = state1.handle_block_sync(block);
+            let _ = state1.handle_block_sync(block, payload);
         }
 
         // blocks are committed immediately after blocksync is finished
@@ -3965,7 +3980,7 @@ mod test {
 
         // handle proposals until expected_epoch_start_round - 1
         for _ in 0..(expected_epoch_start_round.0 - 1) {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
 
             let (author, _, verified_message) = cp.destructure();
             for node in ctx.iter_mut() {
@@ -4032,10 +4047,10 @@ mod test {
 
         // skip block on round expected_epoch_start_round
         let _unused_proposal =
-            env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         ();
         // generate proposal for expected_epoch_start_round + 1
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         ();
 
         let (author, _, verified_message) = cp.destructure();
@@ -4080,7 +4095,7 @@ mod test {
         // there's no child block in the blocktree, so this must be ignored
         // (because invariant is broken)
         let mut wrapped_state = ctx[0].wrapped_state();
-        let cmds = wrapped_state.handle_block_sync(p1.block.clone());
+        let cmds = wrapped_state.handle_block_sync(p1.block.clone(), p1.payload.clone());
         assert!(cmds.is_empty());
 
         // assert that consensus state wasn't mutated by comparing it against an unchanged
@@ -4220,7 +4235,7 @@ mod test {
         );
         let mut blocks = vec![];
 
-        // Sequence number of the block after which state sync should be triggered
+        // Sequence number of the block after which statesync should be triggered
         let state_sync_threshold_block = ctx[0].consensus_config.state_sync_threshold;
         // Round number of that block is the same as its sequence number (NO TCs in between)
         let state_sync_threshold_round = Round(state_sync_threshold_block.0);
@@ -4229,7 +4244,7 @@ mod test {
 
         // handle proposals for 3 states until state_sync_threshold
         for _ in 0..state_sync_threshold_round.0 {
-            let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+            let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for node in other_states.iter_mut() {
                 let cmds = node.handle_proposal_message(author, verified_message.clone());
@@ -4240,11 +4255,11 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author, _, verified_message) = cp.destructure();
         let _cmds = n1.handle_proposal_message(author, verified_message);
 
-        // Should trigger state sync (only metric assertion for now)
+        // Should trigger statesync (only metric assertion for now)
         assert_eq!(n1.metrics.consensus_events.trigger_state_sync, 1);
     }
 
@@ -4285,7 +4300,7 @@ mod test {
         let (n2, _) = other_states.split_first_mut().unwrap();
 
         // state receives block 1
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
 
@@ -4303,12 +4318,12 @@ mod test {
         assert!(block_1_blocktree_entry.is_coherent);
 
         // generate block 2
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_id = proposal_message_2.block.get_id();
 
         // generate block 3
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_3, _, proposal_message_3) = cp.destructure();
         let block_3_id = proposal_message_3.block.get_id();
 
@@ -4328,7 +4343,7 @@ mod test {
         // state receives block 2
         if through_blocksync {
             // blocksync response for state 2
-            let _ = n1.handle_block_sync(proposal_message_2.block);
+            let _ = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
         } else {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
@@ -4390,7 +4405,7 @@ mod test {
         let (n2, _) = other_states.split_first_mut().unwrap();
 
         // state receives block 1
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
 
@@ -4408,17 +4423,17 @@ mod test {
         assert!(block_1_blocktree_entry.is_coherent);
 
         // generate block 2
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_id = proposal_message_2.block.get_id();
 
         // generate block 3
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_3, _, proposal_message_3) = cp.destructure();
         let block_3_id = proposal_message_3.block.get_id();
 
         // generate block 4
-        let cp = env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+        let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_4, _, proposal_message_4) = cp.destructure();
         let block_4_id = proposal_message_4.block.get_id();
 
@@ -4438,7 +4453,7 @@ mod test {
         // state receives block 3
         if through_blocksync {
             // blocksync response for state 3
-            let cmds = n1.handle_block_sync(proposal_message_3.block);
+            let cmds = n1.handle_block_sync(proposal_message_3.block, proposal_message_3.payload);
             // request blocksync for block 2
             assert!(find_blocksync_request(&cmds).is_some());
         } else {
@@ -4467,7 +4482,7 @@ mod test {
         // state receives block 2
         if through_blocksync {
             // blocksync response for state 2
-            let cmds = n1.handle_block_sync(proposal_message_2.block);
+            let cmds = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
             assert!(find_blocksync_request(&cmds).is_none());
             assert!(find_commit_cmd(&cmds).is_some());
             if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
@@ -4537,7 +4552,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4559,7 +4573,7 @@ mod test {
         // state receives block 1
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_zero]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
@@ -4604,7 +4618,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4628,7 +4641,7 @@ mod test {
             // first nonce from an account should be 0. this tx list is invalid since the transaction
             // has nonce = 1
             generate_full_tx_list(vec![txn_nonce_one]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
@@ -4672,7 +4685,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4694,7 +4706,7 @@ mod test {
         // state receives block 1
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_zero]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
@@ -4714,7 +4726,7 @@ mod test {
         let cp = env.next_proposal(
             // next nonce from this account must be 1. this tx is invalid since it has nonce = 0
             generate_full_tx_list(vec![txn_nonce_zero_prime]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_id = proposal_message_2.block.get_id();
@@ -4763,7 +4775,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4785,7 +4796,7 @@ mod test {
         // state receives block 1 with nonce zero txn
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_zero]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
@@ -4804,7 +4815,7 @@ mod test {
         // state receives block 2 with txns with nonce one and two
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_one, txn_nonce_two]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_id = proposal_message_2.block.get_id();
@@ -4823,7 +4834,7 @@ mod test {
         // state receives block 3 with txns with nonce three
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_three]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_3, _, proposal_message_3) = cp.destructure();
         let block_3_id = proposal_message_3.block.get_id();
@@ -4887,7 +4898,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -4909,7 +4919,7 @@ mod test {
         // state receives block 1 with nonce zero txn
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_nonce_zero]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
@@ -4928,7 +4938,7 @@ mod test {
         // state receives block 2 with nonce one txn
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_1_nonce_one]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_2, _, proposal_message_2) = cp.destructure();
         let block_2_round_2_id = proposal_message_2.block.get_id();
@@ -4950,7 +4960,7 @@ mod test {
         // state receives block 2 (in round 3) with nonce one txn
         let cp = env.next_proposal(
             generate_full_tx_list(vec![txn_2_nonce_one]),
-            ExecutionArtifacts::zero(),
+            StateRootHash::default(),
         );
         let (author_3, _, proposal_message_3) = cp.destructure();
         let block_2_round_3_id = proposal_message_3.block.get_id();
@@ -5006,7 +5016,6 @@ mod test {
                     GENESIS_SEQ_NUM,
                     u128::MAX,
                     NopStateRoot {}.get_delay().0,
-                    0,
                     1337,
                 )
             },
@@ -5026,7 +5035,7 @@ mod test {
         let mut proposals = Vec::new();
         while proposals.len() < 2 * epoch_length.0 as usize {
             let proposal =
-                env.next_proposal(FullTransactionList::empty(), ExecutionArtifacts::zero());
+                env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             proposals.push(proposal);
         }
 

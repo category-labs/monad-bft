@@ -109,7 +109,7 @@ mod test {
             SimpleRoundRobin::default,
             EthTxPool::default,
             || EthValidator::new(10_000, 1_000_000, 1337),
-            || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 0, 1337),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(
                     Balance::MAX,
@@ -180,7 +180,7 @@ mod test {
                     TransactionPayload::List(rlp) => {
                         Vec::<EthSignedTransaction>::decode(&mut rlp.as_ref()).unwrap()
                     }
-                    TransactionPayload::Empty => Vec::new(),
+                    TransactionPayload::Null => Vec::new(),
                 };
 
                 let decoded_txn_hashes: HashSet<_> =

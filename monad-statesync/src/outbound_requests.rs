@@ -30,16 +30,21 @@ impl OutboundRequests {
         self.pending_requests.is_empty() && self.in_flight_requests.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        tracing::debug!("about to set new target, clearing outstanding requests");
+        self.pending_requests.clear();
+        self.in_flight_requests.clear();
+    }
+
     pub fn queue_request(&mut self, request: StateSyncRequest) {
         tracing::debug!(?request, "queueing request");
-        if self
+        if let Some(current_target) = self
             .pending_requests
             .first()
             .or(self.in_flight_requests.keys().next())
-            .is_some_and(|old_request| old_request.target != request.target)
+            .map(|request| request.target)
         {
-            self.pending_requests.clear();
-            self.in_flight_requests.clear();
+            assert_eq!(current_target, request.target);
         }
         let _batch_size = 256_usize.pow(request.prefix_bytes.into());
         self.pending_requests.insert(request);

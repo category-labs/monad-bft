@@ -1,8 +1,8 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockKind},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -13,7 +13,6 @@ use monad_crypto::{
     hasher::{Hashable, Hasher, HasherType},
     NopKeyPair, NopSignature,
 };
-use monad_eth_types::EthAddress;
 use monad_multi_sig::MultiSig;
 use monad_testutil::signing::*;
 use monad_types::*;
@@ -200,23 +199,21 @@ fn proposal_msg_hash() {
         MockSignatures::with_pubkeys(&[]),
     );
 
+    let payload = Payload { txns };
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
         0,
         epoch,
         round,
-        &Payload {
-            txns,
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
+        &ExecutionProtocol::dont_care(),
+        payload.get_id(),
+        BlockKind::Executable,
         &qc,
     );
 
     let proposal: ProposalMessage<MockSignatures<SignatureType>> = ProposalMessage {
         block: block.clone(),
+        payload,
         last_round_tc: None,
     };
 

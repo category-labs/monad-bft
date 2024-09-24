@@ -11,9 +11,6 @@ pub enum NodeSetupError {
     Custom { kind: ErrorKind, msg: String },
 
     #[error(transparent)]
-    EnvLoggerError(log::SetLoggerError),
-
-    #[error(transparent)]
     FromHexError(#[from] hex::FromHexError),
 
     #[error(transparent)]
@@ -49,7 +46,6 @@ impl NodeSetupError {
         match self {
             NodeSetupError::ClapError(e) => e.kind(),
             NodeSetupError::Custom { kind, msg: _ } => kind.to_owned(),
-            NodeSetupError::EnvLoggerError(_) => ErrorKind::Io,
             NodeSetupError::FromHexError(_) => ErrorKind::ValueValidation,
             NodeSetupError::IoError(_) => ErrorKind::Io,
             NodeSetupError::Secp256k1(_) => ErrorKind::ValueValidation,

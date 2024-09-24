@@ -1,19 +1,18 @@
 use std::{
+    cmp::Ordering,
     ffi::CString,
     path::Path,
     ptr::{null, null_mut},
+    sync::{
+        atomic::{AtomicUsize, Ordering::SeqCst},
+        Arc,
+    },
 };
 
-use alloy_primitives::{keccak256, B256};
-use alloy_rlp::Decodable;
-use key::create_addr_key;
-use monad_eth_types::{EthAccount, EthAddress};
-use monad_state_backend::StateBackend;
-use monad_types::SeqNum;
-use tracing::{debug, error};
+use futures::channel::oneshot::{self, Receiver, Sender};
+use tracing::debug;
 
-pub mod key;
-
+#[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
@@ -24,6 +23,41 @@ const STATE_NIBBLE: u8 = 0x0;
 #[derive(Clone, Debug)]
 pub struct Handle {
     db_ptr: *mut bindings::triedb,
+}
+
+pub struct SenderContext {
+    sender: Sender<Option<Vec<u8>>>,
+    completed_counter: Arc<AtomicUsize>,
+}
+
+/// # Safety
+/// This should be used only as a callback for async TrieDB calls
+///
+/// This function is called by TrieDB once it proceses a single read async call
+pub unsafe extern "C" fn read_async_callback(
+    value_ptr: *const u8,
+    value_len: i32,
+    sender_context: *mut std::ffi::c_void,
+) {
+    // Unwrap the sender context struct
+    let sender_context = unsafe { Box::from_raw(sender_context as *mut SenderContext) };
+    // Increment the completed counter
+    sender_context.completed_counter.fetch_add(1, SeqCst);
+
+    let result = match value_len.cmp(&0) {
+        Ordering::Less => None,
+        Ordering::Equal => Some(Vec::new()),
+        Ordering::Greater => {
+            let value =
+                unsafe { std::slice::from_raw_parts(value_ptr, value_len as usize).to_vec() };
+            unsafe { bindings::triedb_finalize(value_ptr) };
+            Some(value)
+        }
+    };
+
+    // Send the retrieved result through the channel
+    let sender_result = sender_context.sender.send(result);
+    assert!(sender_result.is_ok());
 }
 
 impl Handle {
@@ -41,31 +75,6 @@ impl Handle {
         }
 
         Some(Self { db_ptr })
-    }
-
-    fn create_addr_key(addr: &EthAddress) -> (Vec<u8>, u8) {
-        let mut key_nibbles: Vec<u8> = vec![];
-
-        let state_nibble = 0_u8;
-
-        key_nibbles.push(state_nibble);
-
-        let hashed_addr = keccak256(addr);
-        for byte in &hashed_addr {
-            key_nibbles.push(*byte >> 4);
-            key_nibbles.push(*byte & 0xF);
-        }
-
-        let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
-        if num_nibbles % 2 != 0 {
-            key_nibbles.push(0);
-        }
-        let key: Vec<_> = key_nibbles
-            .chunks(2)
-            .map(|chunk| (chunk[0] << 4) | chunk[1])
-            .collect();
-
-        (key, num_nibbles)
     }
 
     pub fn read(&self, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {
@@ -102,6 +111,61 @@ impl Handle {
         Some(value)
     }
 
+    /// This is used to make an async read call to TrieDB.
+    /// It creates a oneshot channel and Boxes its sender and the completed_counter
+    /// into a context struct and passes it to TrieDB. When TrieDB completes processing
+    /// the call, it will call the `read_async_callback` which will unwrap the context
+    /// struct, increment the completed_counter, and send the retrieved TrieDB value
+    /// through the channel.
+    /// The user needs to poll TrieDB using the `triedb_poll` function to pump the async
+    /// reads and wait on the returned receiver for the value.
+    /// NOTE: the returned receiver must be resolved before key is dropped
+    pub fn read_async(
+        &self,
+        key: &[u8],
+        key_len_nibbles: u8,
+        block_id: u64,
+        completed_counter: Arc<AtomicUsize>,
+    ) -> Receiver<Option<Vec<u8>>> {
+        assert!(key_len_nibbles < u8::MAX - 1); // make sure doesn't overflow
+        assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
+
+        // Create a channel to send the value from TrieDB
+        let (sender, receiver) = oneshot::channel();
+        // Wrap the sender and completed_counter in a context struct
+        let sender_context = Box::new(SenderContext {
+            sender,
+            completed_counter,
+        });
+
+        unsafe {
+            // Convert the struct into a raw pointer which will be sent to the callback function
+            let sender_context_ptr = Box::into_raw(sender_context);
+
+            bindings::triedb_async_read(
+                self.db_ptr,
+                key.as_ptr(),
+                key_len_nibbles,
+                block_id,
+                Some(read_async_callback), // TrieDB read async callback
+                sender_context_ptr as *mut std::ffi::c_void,
+            );
+        }
+
+        receiver
+    }
+
+    /// Used to pump async reads in TrieDB
+    /// if blocking is true, the thread will sleep atleast until 1 completion is availabe to process
+    /// if blocking is false, poll will return if no completion is available to process
+    /// max_completions is used as a bound for maximum completions to process in this poll
+    ///
+    /// Returns the number of completions processed
+    /// NOTE: could call poll internally: number of calls to this functions != number of completions processed
+    pub fn triedb_poll(&self, blocking: bool, max_completions: usize) -> usize {
+        unsafe { bindings::triedb_poll(self.db_ptr, blocking, max_completions) }
+    }
+
     pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
         let key: Vec<u8> = vec![STATE_NIBBLE];
         let mut value_ptr = null();
@@ -136,85 +200,12 @@ impl Handle {
     pub fn latest_block(&self) -> u64 {
         unsafe { bindings::triedb_latest_block(self.db_ptr) }
     }
-
-    pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
-        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
-
-        let result = self.read(&triedb_key, key_len_nibbles, block_id);
-
-        let Some(account_rlp) = result else {
-            debug!("account {:?} not found at {:?}", eth_address, block_id);
-            return None;
-        };
-
-        let mut buf = account_rlp.as_slice();
-        let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
-            error!("rlp decode failed: {:?}", buf);
-            return None;
-        };
-
-        // address (currently not needed)
-        let Ok(_) = <[u8; 20]>::decode(&mut buf) else {
-            error!("rlp address decode failed: {:?}", buf);
-            return None;
-        };
-
-        // account incarnation decode (currently not needed)
-        let Ok(_) = u64::decode(&mut buf) else {
-            error!("rlp incarnation decode failed: {:?}", buf);
-            return None;
-        };
-
-        let Ok(nonce) = u64::decode(&mut buf) else {
-            error!("rlp nonce decode failed: {:?}", buf);
-
-            return None;
-        };
-        let Ok(balance) = u128::decode(&mut buf) else {
-            error!("rlp balance decode failed: {:?}", buf);
-            return None;
-        };
-
-        let code_hash = if buf.is_empty() {
-            None
-        } else {
-            match <[u8; 32]>::decode(&mut buf) {
-                Ok(x) => Some(x),
-                Err(e) => {
-                    error!("rlp code_hash decode failed: {:?}", e);
-                    return None;
-                }
-            }
-        };
-
-        Some(EthAccount {
-            nonce,
-            balance,
-            code_hash: code_hash.map(B256::from),
-        })
-    }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
         let result = unsafe { bindings::triedb_close(self.db_ptr) };
         assert_eq!(result, 0);
-    }
-}
-
-impl StateBackend for Handle {
-    // TODO implement custom StateBackend::get_account_statuses using async api
-
-    fn raw_read_account(&self, block: SeqNum, address: &EthAddress) -> Option<EthAccount> {
-        self.get_account(address.as_ref(), block.0)
-    }
-
-    fn raw_read_earliest_block(&self) -> SeqNum {
-        SeqNum(self.earliest_block())
-    }
-
-    fn raw_read_latest_block(&self) -> SeqNum {
-        SeqNum(self.latest_block())
     }
 }
 

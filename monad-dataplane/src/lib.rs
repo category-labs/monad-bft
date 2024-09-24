@@ -4,7 +4,7 @@ pub mod network;
 
 // Helper logic to automatically restart system calls when EINTR is returned.
 // Inspired by cvt() / cvt_r() in sys::std::unix.
-trait IsMinusOne {
+pub(crate) trait IsMinusOne {
     fn is_minus_one(&self) -> bool;
 }
 
@@ -18,7 +18,7 @@ macro_rules! impl_is_minus_one {
 
 impl_is_minus_one! { i8 i16 i32 i64 isize }
 
-pub fn retry_eintr<T, F>(mut f: F) -> T
+pub(crate) fn retry_eintr<T, F>(mut f: F) -> T
 where
     T: IsMinusOne,
     F: FnMut() -> T,

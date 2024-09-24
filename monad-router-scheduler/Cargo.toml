@@ -14,4 +14,5 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }
 
+auto_impl = { workspace = true }
 bytes = { workspace = true }

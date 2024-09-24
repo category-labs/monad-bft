@@ -1,6 +1,22 @@
-use std::{cmp::Ordering, io::Error, iter};
+use std::{
+    cmp::Ordering,
+    io::{Error, ErrorKind},
+    iter,
+};
+
+use bitvec::prelude::*;
 
 use crate::r10::nonsystematic::decoder::{BufferId, Decoder};
+
+// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
+// encoded symbols.
+//
+// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
+// will be discarded, as a protection against DoS and algorithmic complexity attacks.
+//
+// We pick 7 because that is the largest value that works for all values of K, as K
+// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
+const MAX_REDUNDANCY: usize = 7;
 
 // We switch from doing peeling only to performing inactivation decoding when
 // num_received_encoded_symbols >= (MULTIPLIER * num_source_symbols) >> SHIFT .
@@ -72,6 +88,8 @@ impl BufferSet {
 #[derive(Debug)]
 pub struct ManagedDecoder {
     num_source_symbols: usize,
+    max_encoded_symbols: usize,
+    seen_esis: BitVec<usize, Lsb0>,
     symbol_len: usize,
     decoder: Decoder,
     buffer_set: BufferSet,
@@ -79,12 +97,18 @@ pub struct ManagedDecoder {
 
 impl ManagedDecoder {
     pub fn new(num_source_symbols: usize, symbol_len: usize) -> Result<ManagedDecoder, Error> {
-        let decoder = Decoder::new(num_source_symbols)?;
+        let max_encoded_symbols = MAX_REDUNDANCY * num_source_symbols;
+
+        let seen_esis = bitvec![usize, Lsb0; 0; max_encoded_symbols];
+
+        let decoder = Decoder::with_capacity(num_source_symbols, max_encoded_symbols)?;
 
         let buffer_set = BufferSet::new(decoder.num_temp_buffers_required(), symbol_len);
 
         Ok(ManagedDecoder {
             num_source_symbols,
+            max_encoded_symbols,
+            seen_esis,
             symbol_len,
             decoder,
             buffer_set,
@@ -94,13 +118,48 @@ impl ManagedDecoder {
     // TODO: Explore accepting Bytes as data, making rx_buffers a vector of enums
     // designating either an owned Box<[u8]> or an un-owned Bytes, and converting
     // un-owned to owned buffers whenever they are targeted for XORing.
-    pub fn received_encoded_symbol(&mut self, data: &[u8], encoding_symbol_id: usize) {
+    pub fn received_encoded_symbol(
+        &mut self,
+        data: &[u8],
+        encoding_symbol_id: usize,
+    ) -> Result<(), Error> {
+        if self.symbol_len != data.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ManagedDecoder with symbol_len = {} given symbol of length {}",
+                    self.symbol_len,
+                    data.len()
+                ),
+            ));
+        }
+
+        if encoding_symbol_id >= self.max_encoded_symbols {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "ManagedDecoder with max_encoded_symbols = {} received ESI {}",
+                    self.max_encoded_symbols, encoding_symbol_id,
+                ),
+            ));
+        }
+
+        if self.seen_esis[encoding_symbol_id] {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("ManagedDecoder already saw ESI {}", encoding_symbol_id,),
+            ));
+        }
+        self.seen_esis.set(encoding_symbol_id, true);
+
         let buf: Box<[u8]> = data.into();
 
         self.buffer_set.push_buffer(buf);
 
         self.decoder
             .received_encoded_symbol(encoding_symbol_id, |a, b| self.buffer_set.xor_buffers(a, b));
+
+        Ok(())
     }
 
     pub fn num_source_symbols(&self) -> usize {

@@ -3,19 +3,20 @@ use std::ops::Div;
 use alloy_primitives::aliases::{U256, U64};
 use monad_blockdb::BlockValue;
 use monad_blockdb_utils::BlockDbEnv;
-use monad_triedb_utils::{TriedbEnv, TriedbResult};
+use monad_rpc_docs::rpc;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
-use serde::Deserialize;
-use serde_json::Value;
-use tracing::{debug, trace};
+use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::{
     eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthHash,
+        deserialize_block_tags, deserialize_fixed_data, BlockTags, EthHash, MonadBlock,
+        MonadTransactionReceipt, Quantity,
     },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
@@ -95,141 +96,134 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
     Some(retval)
 }
 
+#[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]
-pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
+/// Returns the number of most recent block.
+pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_blockNumber");
 
     match triedb_env.get_latest_block().await {
-        TriedbResult::BlockNum(num) => serialize_result(format!("0x{:x}", num)),
+        TriedbResult::BlockNum(num) => Ok(Quantity(num)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
 
+#[rpc(method = "eth_chainId", ignore = "chain_id")]
 #[allow(non_snake_case)]
-pub async fn monad_eth_chainId(chain_id: u64) -> Result<Value, JsonRpcError> {
+/// Returns the chain ID of the current network.
+pub async fn monad_eth_chainId(chain_id: u64) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_chainId");
 
-    serialize_result(format!("0x{:x}", chain_id))
+    Ok(Quantity(chain_id))
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockByHashParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
     return_full_txns: bool,
 }
 
-#[allow(non_snake_case)]
-pub async fn monad_eth_getBlockByHash(
-    blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getBlockByHash: {params:?}");
-
-    let p: MonadEthGetBlockByHashParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let key = p.block_hash.into();
-    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(None::<Block>);
-    };
-
-    let retval = parse_block_content(&value, p.return_full_txns);
-    serialize_result(retval)
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlock {
+    #[serde(flatten)]
+    block: MonadBlock,
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockByNumberParams {
+#[rpc(method = "eth_getBlockByHash")]
+#[allow(non_snake_case)]
+/// Returns information about a block by hash.
+pub async fn monad_eth_getBlockByHash(
+    blockdb_env: &BlockDbEnv,
+    params: MonadEthGetBlockByHashParams,
+) -> JsonRpcResult<Option<MonadEthGetBlock>> {
+    trace!("monad_eth_getBlockByHash: {params:?}");
+
+    let key = params.block_hash.into();
+    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
+        return Ok(None);
+    };
+
+    let retval = parse_block_content(&value, params.return_full_txns);
+    Ok(retval.map(|block| MonadEthGetBlock {
+        block: MonadBlock(block),
+    }))
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockByNumberParams {
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_number: BlockTags,
     return_full_txns: bool,
 }
 
+#[rpc(method = "eth_getBlockByNumber")]
 #[allow(non_snake_case)]
+/// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetBlockByNumberParams,
+) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
 
-    let p: MonadEthGetBlockByNumberParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
+    let Some(value) = blockdb_env
+        .get_block_by_tag(params.block_number.into())
+        .await
+    else {
+        return Ok(None);
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number.into()).await else {
-        return serialize_result(None::<Block>);
-    };
-
-    let retval = parse_block_content(&value, p.return_full_txns);
-    serialize_result(retval)
+    let retval = parse_block_content(&value, params.return_full_txns);
+    Ok(retval.map(|block| MonadEthGetBlock {
+        block: MonadBlock(block),
+    }))
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockTransactionCountByHashParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockTransactionCountByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
 }
 
+#[rpc(method = "eth_getBlockTransactionCountByHash")]
 #[allow(non_snake_case)]
+/// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetBlockTransactionCountByHashParams,
+) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
 
-    let p: MonadEthGetBlockTransactionCountByHashParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let key = p.block_hash.into();
+    let key = params.block_hash.into();
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(format!("0x{:x}", 0));
+        return Ok(None);
     };
 
     let count = value.block.body.len() as u64;
-    serialize_result(format!("0x{:x}", count))
+    Ok(Some(format!("0x{:x}", count)))
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockTransactionCountByNumberParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockTransactionCountByNumberParams {
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
 }
 
+#[rpc(method = "eth_getBlockTransactionCountByNumber")]
 #[allow(non_snake_case)]
+/// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber(
     blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetBlockTransactionCountByNumberParams,
+) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
 
-    let p: MonadEthGetBlockTransactionCountByNumberParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
-        return serialize_result(format!("0x{:x}", 0));
+    let Some(value) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
+        return Ok(None);
     };
 
     let count = value.block.body.len() as u64;
-    serialize_result(format!("0x{:x}", count))
+    Ok(Some(format!("0x{:x}", count)))
 }
 
 pub async fn block_receipts(
@@ -273,36 +267,31 @@ pub async fn block_receipts(
     Ok(block_receipts)
 }
 
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockReceiptsParams {
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockReceiptsParams {
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
 }
 
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
+
+#[rpc(method = "eth_getBlockReceipts")]
 #[allow(non_snake_case)]
+/// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts(
     blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
+    params: MonadEthGetBlockReceiptsParams,
+) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    let p: MonadEthGetBlockReceiptsParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
+    let Some(block) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
+        return Ok(None);
     };
 
-    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag.into()).await else {
-        return serialize_result(None::<Vec<TransactionReceipt>>);
-    };
-
-    let block_receipts = block_receipts(triedb_env, block).await?;
-    if block_receipts.is_empty() {
-        serialize_result(None::<Vec<TransactionReceipt>>)
-    } else {
-        serialize_result(Some(block_receipts))
-    }
+    let receipts = block_receipts(triedb_env, block).await?;
+    Ok(Some(MonadEthGetBlockReceiptsResult(
+        receipts.into_iter().map(MonadTransactionReceipt).collect(),
+    )))
 }

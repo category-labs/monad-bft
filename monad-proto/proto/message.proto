@@ -21,7 +21,7 @@ message ProtoRequestBlockSyncMessage {
 
 message ProtoBlockSyncMessage {
   oneof OneofMessage {
-    monad_proto.block.ProtoBlock block_found = 1;
+    monad_proto.block.ProtoFullBlock block_found = 1;
     monad_proto.basic.ProtoBlockId not_available = 2;
   }
 }
@@ -33,7 +33,8 @@ message ProtoTimeoutMessage {
 
 message ProtoProposalMessage {
   monad_proto.block.ProtoBlock block = 1;
-  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
+  monad_proto.block.ProtoPayload payload = 2;
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 3;
 }
 
 message ProtoUnverifiedConsensusMessage {
@@ -65,10 +66,17 @@ message ProtoStateSyncRequest {
   uint64 old_target = 6;
 }
 
+enum ProtoStateSyncUpsertType {
+  CODE = 0;
+  ACCOUNT = 1;
+  STORAGE = 2;
+  ACCOUNT_DELETE = 3;
+  STORAGE_DELETE = 4;
+}
+
 message ProtoStateSyncUpsert {
-  bool code = 1;
-  bytes key = 2;
-  bytes value = 3;
+  ProtoStateSyncUpsertType type = 1;
+  bytes data = 2;
 }
 
 message ProtoStateSyncResponse {

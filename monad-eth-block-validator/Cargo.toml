@@ -8,11 +8,12 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-testutil = { path = "../monad-eth-testutil" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 tracing = { workspace = true }

@@ -12,7 +12,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
-use monad_types::{Epoch, NodeId, Round, RouterTarget};
+use monad_types::{Epoch, NodeId, RouterTarget};
 use rand::Rng;
 
 use super::Gossip;
@@ -284,7 +284,6 @@ pub fn test_broadcast<G: Gossip>(
         let target = RouterTarget::Raptorcast(
             // FIXME
             Epoch(0),
-            Round(0),
         );
 
         for rx_peer in &peer_ids {

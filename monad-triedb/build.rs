@@ -2,6 +2,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=triedb-driver");
+    println!("cargo:rerun-if-changed=../monad-cxx/monad-execution");
     println!("cargo:rerun-if-env-changed=TRIEDB_TARGET");
     let target = env::var("TRIEDB_TARGET").unwrap_or("triedb_driver_mock".to_owned());
     let dst = cmake::Config::new("triedb-driver")

@@ -2,16 +2,22 @@ use std::collections::BTreeMap;
 
 use alloy_rlp::Decodable;
 use monad_consensus_types::{
-    block::{Block, BlockPolicy, BlockType},
+    block::{Block, BlockKind, BlockPolicy, BlockType},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::TransactionPayload,
+    payload::{Payload, TransactionPayload},
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_eth_block_policy::{static_validate_transaction, EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{
+    compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+};
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, Nonce};
 use monad_state_backend::StateBackend;
 use tracing::warn;
+
+type NonceMap = BTreeMap<EthAddress, Nonce>;
+type CarriageCostMap = BTreeMap<EthAddress, u128>;
+type ValidatedTxns = Vec<EthTransaction>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
@@ -33,21 +39,16 @@ impl EthValidator {
             chain_id,
         }
     }
-}
 
-// FIXME: add specific error returns for the different failures
-impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
-where
-    SCT: SignatureCollection,
-    SBT: StateBackend,
-{
-    fn validate(
+    fn validate_payload(
         &self,
-        block: Block<SCT>,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
-    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
-    {
-        match &block.payload.txns {
+        payload: &Payload,
+    ) -> Result<(ValidatedTxns, NonceMap, CarriageCostMap), BlockValidationError> {
+        if matches!(payload.txns, TransactionPayload::Null) {
+            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+
+        match &payload.txns {
             TransactionPayload::List(txns_rlp) => {
                 // RLP decodes the txns
                 let Ok(eth_txns) =
@@ -60,8 +61,9 @@ where
                 let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
                     .ok_or(BlockValidationError::TxnError)?;
 
-                // recover the account nonces in this block
+                // recover the account nonces and carriage cost usage in this block
                 let mut nonces = BTreeMap::new();
+                let mut carriage_costs = BTreeMap::new();
 
                 let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
@@ -79,12 +81,15 @@ where
                     let maybe_old_nonce = nonces.insert(EthAddress(signer), eth_txn.nonce());
                     // txn iteration is following the same order as they are in the
                     // block. A block is invalid if we see a smaller or equal nonce
-                    // after the first
+                    // after the first or if there is a nonce gap
                     if let Some(old_nonce) = maybe_old_nonce {
-                        if old_nonce >= eth_txn.nonce() {
+                        if eth_txn.nonce() != old_nonce + 1 {
                             return Err(BlockValidationError::TxnError);
                         }
                     }
+
+                    let carriage_cost_entry = carriage_costs.entry(EthAddress(signer)).or_insert(0);
+                    *carriage_cost_entry += compute_txn_carriage_cost(&eth_txn);
                     validated_txns.push(eth_txn.with_signer(signer));
                 }
 
@@ -99,36 +104,160 @@ where
                     return Err(BlockValidationError::TxnError);
                 }
 
-                if let Err(e) = block
-                    .payload
-                    .randao_reveal
-                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-                {
-                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
-                    return Err(BlockValidationError::RandaoError);
-                };
-
-                Ok(EthValidatedBlock {
-                    block,
-                    validated_txns,
-                    nonces, // (address -> highest txn nonce) in the block
-                })
+                Ok((validated_txns, nonces, carriage_costs))
             }
-            TransactionPayload::Empty => {
-                if let Err(e) = block
-                    .payload
-                    .randao_reveal
-                    .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-                {
-                    warn!("Invalid randao_reveal signature, reason: {:?}", e);
-                    return Err(BlockValidationError::RandaoError);
-                };
-                Ok(EthValidatedBlock {
-                    block,
-                    validated_txns: Default::default(),
-                    nonces: Default::default(), // (address -> highest txn nonce) in the block
-                })
+            TransactionPayload::Null => {
+                unreachable!();
             }
         }
+    }
+
+    fn validate_block_header<SCT: SignatureCollection>(
+        &self,
+        block: &Block<SCT>,
+        payload: &Payload,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<(), BlockValidationError> {
+        if block.payload_id != payload.get_id() {
+            return Err(BlockValidationError::HeaderPayloadMismatchError);
+        }
+
+        if let Err(e) = block
+            .execution
+            .randao_reveal
+            .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+        {
+            warn!("Invalid randao_reveal signature, reason: {:?}", e);
+            return Err(BlockValidationError::RandaoError);
+        };
+        Ok(())
+    }
+}
+
+// FIXME: add specific error returns for the different failures
+impl<SCT, SBT> BlockValidator<SCT, EthBlockPolicy, SBT> for EthValidator
+where
+    SCT: SignatureCollection,
+    SBT: StateBackend,
+{
+    fn validate(
+        &self,
+        block: Block<SCT>,
+        payload: Payload,
+        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
+    {
+        match block.block_kind {
+            BlockKind::Executable => {
+                self.validate_block_header(&block, &payload, author_pubkey)?;
+
+                if let Ok((validated_txns, nonces, carriage_costs)) =
+                    self.validate_payload(&payload)
+                {
+                    Ok(EthValidatedBlock {
+                        block,
+                        orig_payload: payload,
+                        validated_txns,
+                        nonces,
+                        carriage_costs,
+                    })
+                } else {
+                    Err(BlockValidationError::PayloadError)
+                }
+            }
+            BlockKind::Null => {
+                match self.validate_block_header(&block, &payload, author_pubkey) {
+                    Ok(_) => {
+                        Ok(EthValidatedBlock {
+                            block,
+                            orig_payload: payload,
+                            validated_txns: Default::default(),
+                            nonces: Default::default(), // (address -> highest txn nonce) in the block
+                            carriage_costs: Default::default(), // (address -> carriage cost) in the block
+                        })
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use alloy_primitives::B256;
+    use monad_consensus_types::payload::FullTransactionList;
+    use monad_eth_testutil::make_tx;
+    use monad_eth_tx::EthFullTransactionList;
+
+    use super::*;
+
+    #[test]
+    fn test_invalid_block_with_nonce_gap() {
+        let block_validator = EthValidator::new(10, 100_000, 1337);
+
+        // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 3, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_over_gas_limit() {
+        let block_validator = EthValidator::new(10, 100_000, 1337);
+
+        // total gas used is 120_000 which is higher than block gas limit
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 2, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_over_tx_limit() {
+        let block_validator = EthValidator::new(1, 100_000, 1337);
+
+        // tx limit per block is 1
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 2, 10);
+
+        // create a block with the above transactions
+        let mut txs = Vec::new();
+        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
+        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+        let full_txn_list = FullTransactionList::new(full_tx_list);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 }

@@ -9,7 +9,7 @@ use std::{
 use futures::Stream;
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, FullBlock},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -27,7 +27,7 @@ pub trait MockableLedger:
     type Event;
 
     fn ready(&self) -> bool;
-    fn get_blocks(&self) -> &BTreeMap<Round, Block<Self::SignatureCollection>>;
+    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>>;
 }
 
 impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
@@ -38,7 +38,7 @@ impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
         (**self).ready()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, Block<Self::SignatureCollection>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<Self::SignatureCollection>> {
         (**self).get_blocks()
     }
 }
@@ -48,7 +48,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    blocks: BTreeMap<Round, Block<SCT>>,
+    blocks: BTreeMap<Round, FullBlock<SCT>>,
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
@@ -166,7 +166,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_blocks(&self) -> &BTreeMap<Round, Block<SCT>> {
+    fn get_blocks(&self) -> &BTreeMap<Round, FullBlock<SCT>> {
         &self.blocks
     }
 }

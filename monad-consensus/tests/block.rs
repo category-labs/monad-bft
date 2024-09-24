@@ -1,8 +1,9 @@
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockKind},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
+    state_root_hash::StateRootHash,
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -33,18 +34,20 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
+    let payload = Payload { txns };
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
         0,
         epoch,
         round,
-        &Payload {
-            txns,
-            header: ExecutionArtifacts::zero(),
+        &ExecutionProtocol {
+            state_root: StateRootHash(Hash([0xfc_u8; 32])),
             seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
+            beneficiary: EthAddress::from_bytes([0x0a_u8; 20]),
             randao_reveal: RandaoReveal::default(),
         },
+        payload.get_id(),
+        BlockKind::Executable,
         &qc,
     );
 

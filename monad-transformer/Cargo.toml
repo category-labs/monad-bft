@@ -12,10 +12,9 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 
+auto_impl = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-tracing = { workspace = true }

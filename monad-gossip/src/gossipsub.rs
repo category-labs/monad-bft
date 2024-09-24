@@ -109,7 +109,7 @@ impl<PT: PubKey> Gossip for UnsafeGossipsub<PT> {
         self.current_tick = time;
         match to {
             // when self.handle_message is called, the broadcast actually happens
-            RouterTarget::Broadcast(_, _) | RouterTarget::Raptorcast(_, _) => self.handle_message(
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => self.handle_message(
                 self.config.me,
                 MessageHeader {
                     id: {
@@ -123,7 +123,7 @@ impl<PT: PubKey> Gossip for UnsafeGossipsub<PT> {
                 },
                 message,
             ),
-            RouterTarget::PointToPoint(to) => {
+            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
                 if to == self.config.me {
                     self.events.push_back(GossipEvent::Emit(to, message));
                 } else {

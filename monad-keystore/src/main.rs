@@ -90,7 +90,7 @@ fn main() {
                 args.password.unwrap()
             } else {
                 Input::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Provide a password to encrypt generated key.")
+                    .with_prompt("Provide a password to decrypt generated key.")
                     .allow_empty(true)
                     .interact_text()
                     .unwrap()
@@ -100,8 +100,22 @@ fn main() {
             let result = Keystore::load_key(&keystore_path, &password);
             let private_key = match result {
                 Ok(private_key) => private_key,
-                Err(_) => {
-                    println!("Unable to recover private key, make sure keystore format is correct");
+                Err(err) => {
+                    println!("Unable to recover private key");
+                    match err {
+                        keystore::KeystoreError::InvalidJSONFormat => {
+                            println!("Invalid JSON format")
+                        }
+                        keystore::KeystoreError::KDFError(kdf_err) => {
+                            println!("KDFError {:?}", kdf_err)
+                        }
+                        keystore::KeystoreError::ChecksumError(chksum_err) => {
+                            println!("ChecksumError {:?}", chksum_err)
+                        }
+                        keystore::KeystoreError::FileIOError(io_err) => {
+                            println!("IO Error {:?}", io_err)
+                        }
+                    }
                     return;
                 }
             };

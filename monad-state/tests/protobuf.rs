@@ -7,7 +7,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -26,7 +26,7 @@ use monad_state::{
     MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetFactory, ValidatorSetType},
@@ -227,7 +227,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let qcinfo = QcInfo {
         vote: Vote {
             vote_info: vi,
-            ledger_commit_info: CommitResult::NoCommit,
+            ledger_commit_info: CommitResult::Commit,
         },
     };
 
@@ -318,18 +318,19 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
-    let blk = setup_block::<ST, SCT>(
+    let (blk, payload) = setup_block::<ST, SCT>(
         NodeId::new(author_keypair.pubkey()),
         Round(233),
         Round(232),
         BlockId(Hash([43_u8; 32])),
         TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
-        ExecutionArtifacts::zero(),
+        ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
     );
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: blk,
+        payload,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
@@ -379,13 +380,13 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
-    let blk = setup_block::<ST, SCT>(
+    let (blk, payload) = setup_block::<ST, SCT>(
         NodeId::new(author_keypair.pubkey()),
         Round(233),
         Round(231),
         BlockId(Hash([43_u8; 32])),
         TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into())),
-        ExecutionArtifacts::zero(),
+        ExecutionProtocol::dont_care(),
         cert_keys.as_slice(),
         validator_mapping,
     );
@@ -406,6 +407,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
 
     let proposal_msg = ProtocolMessage::Proposal(ProposalMessage {
         block: blk,
+        payload,
         last_round_tc: Some(tc),
     });
     let con_msg = ConsensusMessage {

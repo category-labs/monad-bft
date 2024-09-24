@@ -23,7 +23,7 @@ pub use buffer_weight_map::BufferWeightMap;
 pub use intermediate_symbol::IntermediateSymbol;
 pub use managed_decoder::ManagedDecoder;
 
-use crate::r10::{lt::MAX_TRIPLES, CodeParameters};
+use crate::r10::CodeParameters;
 
 #[derive(Debug)]
 pub struct Decoder {
@@ -39,10 +39,10 @@ pub struct Decoder {
     intermediate_symbol_state: Vec<IntermediateSymbol>,
 
     // Usable and Active buffers ordered according to their Active/Used intermediate symbol weight.
-    buffers_active_usable: BufferWeightMap<MAX_TRIPLES>,
+    buffers_active_usable: BufferWeightMap,
 
     // Inactivated buffers ordered according to their total intermediate symbol weight.
-    buffers_inactivated: BufferWeightMap<MAX_TRIPLES>,
+    buffers_inactivated: BufferWeightMap,
 
     // The number of buffers we have that are in the Redundant state.
     num_redundant_buffers: u16,

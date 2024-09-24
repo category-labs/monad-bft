@@ -33,6 +33,7 @@ pub struct NodeState {
     pub blockdb_path: PathBuf,
     pub triedb_path: PathBuf,
     pub otel_endpoint: Option<String>,
+    pub record_otel_traces: bool,
     pub record_metrics_interval: Option<Duration>,
     pub node_name: String,
     pub network_name: String,
@@ -111,6 +112,7 @@ impl NodeState {
             control_panel_ipc_path: cli.control_panel_ipc_path,
             statesync_ipc_path: cli.statesync_ipc_path,
             otel_endpoint: cli.otel_endpoint,
+            record_otel_traces: cli.record_otel_traces,
             record_metrics_interval: cli
                 .record_metrics_interval_seconds
                 .and_then(|s| Some(Duration::from_secs(s))),

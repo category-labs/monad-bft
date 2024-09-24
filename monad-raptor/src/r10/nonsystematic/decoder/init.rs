@@ -12,6 +12,10 @@ use crate::r10::{
 
 impl Decoder {
     pub fn new(num_source_symbols: usize) -> Result<Decoder, Error> {
+        Self::with_capacity(num_source_symbols, MAX_TRIPLES)
+    }
+
+    pub fn with_capacity(num_source_symbols: usize, capacity: usize) -> Result<Decoder, Error> {
         if !(SOURCE_SYMBOLS_MIN..=SOURCE_SYMBOLS_MAX).contains(&num_source_symbols) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -90,14 +94,14 @@ impl Decoder {
             intermediate_symbol_state[intermediate_symbol_id].active_push(buffer_index);
         }
 
-        let mut buffers_active_usable = BufferWeightMap::<MAX_TRIPLES>::new();
+        let mut buffers_active_usable = BufferWeightMap::with_capacity(capacity);
 
         for (i, buffer_state) in buffer_state.iter().enumerate() {
             buffers_active_usable
                 .insert_buffer_weight(i, NonZeroU16::new(buffer_state.active_used_weight).unwrap());
         }
 
-        let buffers_inactivated = BufferWeightMap::<MAX_TRIPLES>::new();
+        let buffers_inactivated = BufferWeightMap::with_capacity(capacity);
 
         let decoder = Decoder {
             params,

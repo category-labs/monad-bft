@@ -9,23 +9,18 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
-
-bytes = { workspace = true }
-prost = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
-monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 
 test-case = { workspace = true }
