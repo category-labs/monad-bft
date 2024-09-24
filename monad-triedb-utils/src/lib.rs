@@ -120,6 +120,15 @@ impl TriedbReader {
         rlp_decode_storage_slot(storage_rlp)
     }
 
+    pub fn get_storage_keys(
+        &self,
+        eth_address: &[u8; 20],
+        block_id: u64,
+    ) -> Option<Vec<([u8; 32], [u8; 32])>> {
+        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
+        self.handle.traverse(&triedb_key, key_len_nibbles, block_id)
+    }
+
     pub fn get_code(&self, code_hash: &[u8; 32], block_id: u64) -> Option<Vec<u8>> {
         let (triedb_key, key_len_nibbles) = create_code_key(code_hash);
 

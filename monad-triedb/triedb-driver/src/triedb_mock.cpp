@@ -50,6 +50,10 @@ int triedb_read_data(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *valu
     return 0;
 }
 
+void triedb_traverse_state(triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id, void* context, state_callback callback) {
+    return;
+}
+
 int triedb_finalize(bytes value)
 {
     delete value;

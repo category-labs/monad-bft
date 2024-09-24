@@ -9,6 +9,7 @@ bench = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+alloy-primitives = { workspace = true, features = ["rlp"] }
 futures = { workspace = true }
 tracing = { workspace = true }
 

@@ -17,6 +17,8 @@ pub enum TriedbResult {
     // (nonce, balance, code_hash)
     Account(u64, u128, [u8; 32]),
     Storage([u8; 32]),
+    // storage slot key, storage value
+    StorageKeys(Vec<([u8; 32], [u8; 32])>),
     Code(Vec<u8>),
     Receipt(Vec<u8>),
     BlockNum(u64),
@@ -119,6 +121,41 @@ impl TriedbEnv {
             });
         });
         recv.await.expect("rayon panic get_storage_at")
+    }
+
+    pub async fn get_storage_keys(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
+        let triedb_path = self.triedb_path.clone();
+        let (send, recv) = tokio::sync::oneshot::channel();
+
+        rayon::spawn(move || {
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
+                });
+
+                let block_num = match block_tag {
+                    BlockTags::Number(q) => q,
+
+                    BlockTags::Default(t) => match t {
+                        BlockTagKey::Latest => db.get_latest_block(),
+
+                        BlockTagKey::Finalized => db.get_latest_block(),
+                    },
+                };
+
+                match db.get_storage_keys(&addr, block_num) {
+                    Some(storage_keys) => {
+                        let _ = send.send(TriedbResult::StorageKeys(storage_keys));
+                    }
+
+                    None => {
+                        let _ = send.send(TriedbResult::Null);
+                    }
+                }
+            });
+        });
+
+        recv.await.expect("rayon panic get_storage_keys")
     }
 
     pub async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {

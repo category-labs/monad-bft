@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use alloy_primitives::private::alloy_rlp::Decodable;
 use futures::channel::oneshot::{self, Receiver, Sender};
 use tracing::debug;
 
@@ -60,6 +61,60 @@ pub unsafe extern "C" fn read_async_callback(
     assert!(sender_result.is_ok());
 }
 
+#[derive(Debug)]
+pub struct Storage {
+    data: std::sync::Mutex<Vec<([u8; 32], [u8; 32])>>,
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn callback(context: *mut std::ffi::c_void, value_ptr: *const u8, value_len: usize) {
+    let storage = unsafe { &*(context as *mut Storage) };
+
+    let value = unsafe {
+        let value = std::slice::from_raw_parts(value_ptr, value_len).to_vec();
+        value
+    };
+
+    // Expected storage value: rlp::list(rlp::zeroless_view(key), rlp::zeroless_view(value)
+    let Ok(res) = <Vec<alloy_primitives::U256>>::decode(&mut value.as_slice()) else {
+        return;
+    };
+
+    if res.len() != 2 {
+        return;
+    }
+
+    let mut res = res.into_iter();
+
+    let mut key_value = [0_u8; 32];
+    for (byte, key) in res
+        .next()
+        .expect("expect key in rlp list")
+        .to_be_bytes_vec()
+        .into_iter()
+        .zip(key_value.iter_mut())
+    {
+        *key = byte;
+    }
+
+    let mut storage_value = [0_u8; 32];
+    for (byte, storage) in res
+        .next()
+        .expect("expect value in rlp list")
+        .to_be_bytes_vec()
+        .into_iter()
+        .zip(storage_value.iter_mut())
+    {
+        *storage = byte;
+    }
+
+    storage
+        .data
+        .lock()
+        .expect("acquire lock")
+        .push((key_value, storage_value));
+}
+
 impl Handle {
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
@@ -75,6 +130,47 @@ impl Handle {
         }
 
         Some(Self { db_ptr })
+    }
+
+    pub fn traverse(
+        &self,
+        key: &[u8],
+        key_len_nibbles: u8,
+        block_id: u64,
+    ) -> Option<Vec<([u8; 32], [u8; 32])>> {
+        assert!(key_len_nibbles < u8::MAX - 1);
+        assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
+
+        let storage = Arc::new(Storage {
+            data: std::sync::Mutex::new(Vec::new()),
+        });
+
+        let result = unsafe {
+            let context = std::sync::Arc::into_raw(storage) as *mut std::ffi::c_void;
+            bindings::triedb_traverse_state(
+                self.db_ptr,
+                key.as_ptr(),
+                key_len_nibbles,
+                block_id,
+                context,
+                Some(callback),
+            );
+
+            std::sync::Arc::from_raw(context as *const Storage)
+        };
+
+        let mut storage_slots = Vec::new();
+
+        match result.data.lock().ok() {
+            Some(data) => {
+                for (key, value) in data.iter() {
+                    storage_slots.push((*key, *value));
+                }
+            }
+            None => return None,
+        }
+
+        Some(storage_slots)
     }
 
     pub fn read(&self, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {

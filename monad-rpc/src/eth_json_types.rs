@@ -362,7 +362,7 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     }
 }
 
-impl Serialize for EthHash {
+impl<const N: usize> Serialize for FixedData<N> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

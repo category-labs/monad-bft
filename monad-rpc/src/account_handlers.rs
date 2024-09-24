@@ -8,7 +8,7 @@ use tracing::trace;
 use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_u256, serialize_result,
-        BlockTags, EthAddress, EthHash, MonadU256,
+        BlockTagKey, BlockTags, EthAddress, EthHash, FixedData, MonadU256,
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -192,4 +192,46 @@ pub async fn monad_eth_getProof(
 ) -> JsonRpcResult<MonadEthGetProofResult> {
     trace!("monad_eth_getProof");
     Err(JsonRpcError::method_not_supported())
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MonadStorageKeysParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    address: EthAddress,
+}
+
+#[derive(Serialize, Debug)]
+pub struct MonadStorageKeysResult {
+    pub key: FixedData<32>,
+    pub value: FixedData<32>,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_listStorageKeys(
+    triedb_env: &TriedbEnv,
+    params: MonadStorageKeysParams,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_listStorageKeys");
+
+    let result = triedb_env
+        .get_storage_keys(
+            params.address.0,
+            BlockTags::Default(BlockTagKey::Latest).into(),
+        )
+        .await;
+
+    match result {
+        TriedbResult::Null => serialize_result(serde_json::Value::Array(vec![])),
+        TriedbResult::StorageKeys(keys) => {
+            let keys: Vec<MonadStorageKeysResult> = keys
+                .into_iter()
+                .map(|(key, value)| MonadStorageKeysResult {
+                    key: FixedData::<32>(key),
+                    value: FixedData::<32>(value),
+                })
+                .collect();
+            serialize_result(keys)
+        }
+        _ => Err(JsonRpcError::internal_error()),
+    }
 }

@@ -160,6 +160,11 @@ async fn rpc_select(
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     match method {
+        "monad_listStorageKeys" => {
+            let reader = &app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            account_handlers::monad_listStorageKeys(reader, params).await
+        }
         "debug_getRawBlock" => {
             let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
