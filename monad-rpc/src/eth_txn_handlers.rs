@@ -193,8 +193,8 @@ pub struct MonadEthGetLogsParams {
 #[derive(Debug, schemars::JsonSchema)]
 pub struct FilterParams {
     filter: LogFilter,
-    address: AddressValueOrArray,
-    topics: Option<Vec<EthHash>>,
+    address: ValueOrArray<EthAddress>,
+    topics: ValueOrArray<Vec<EthHash>>,
 }
 
 // Must use this impl instead of derive because serde does not support default with flatten: https://github.com/serde-rs/serde/issues/1626
@@ -207,8 +207,10 @@ impl<'de> Deserialize<'de> for FilterParams {
         pub struct ParamsHelper {
             #[serde(flatten)]
             filter: Option<LogFilter>,
-            address: AddressValueOrArray,
-            topics: Option<Vec<EthHash>>,
+            #[serde(default)]
+            address: ValueOrArray<EthAddress>,
+            #[serde(default)]
+            topics: ValueOrArray<Vec<EthHash>>,
         }
 
         let result = ParamsHelper::deserialize(deserializer)?;
@@ -222,7 +224,7 @@ impl<'de> Deserialize<'de> for FilterParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(untagged, rename_all_fields = "camelCase")]
+#[serde(untagged, rename_all = "camelCase")]
 pub enum LogFilter {
     Range {
         #[serde(deserialize_with = "deserialize_block_tags")]
@@ -247,9 +249,16 @@ impl Default for LogFilter {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
-pub enum AddressValueOrArray {
-    Address(Option<EthAddress>),
-    Addresses(Vec<EthAddress>),
+pub enum ValueOrArray<T> {
+    None,
+    Single(T),
+    Array(Vec<T>),
+}
+
+impl<T> Default for ValueOrArray<T> {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -271,10 +280,10 @@ pub async fn monad_eth_getLogs(
         let mut filter = Filter::new();
 
         match req.address {
-            AddressValueOrArray::Address(Some(address)) => {
+            ValueOrArray::Single(address) => {
                 filter = filter.address(Address::from_slice(&address.0));
             }
-            AddressValueOrArray::Addresses(addresses) => {
+            ValueOrArray::Array(addresses) => {
                 filter = filter.address(
                     addresses
                         .iter()
@@ -282,13 +291,22 @@ pub async fn monad_eth_getLogs(
                         .collect::<Vec<_>>(),
                 );
             }
-            _ => {}
+            ValueOrArray::None => {}
         }
 
-        if let Some(topics) = req.topics {
-            for topic in topics {
-                filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
+        match req.topics {
+            ValueOrArray::Single(topics) => {
+                for topic in topics {
+                    filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
+                }
             }
+            ValueOrArray::Array(topics) => {
+                let topics = topics.into_iter().flatten().collect::<Vec<_>>();
+                for topic in topics {
+                    filter = filter.event_signature(FixedBytes::<32>::from(&topic.0));
+                }
+            }
+            ValueOrArray::None => {}
         }
 
         let (from_block, to_block) = match req.filter {

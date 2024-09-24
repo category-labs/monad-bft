@@ -9,7 +9,7 @@ use crate::{
         BlockTagKey, BlockTags, EthAddress, EthHash, MonadBlock, MonadLog, MonadTransaction,
         MonadTransactionReceipt, MonadU256, Quantity, UnformattedData,
     },
-    eth_txn_handlers::{AddressValueOrArray, FilterParams, LogFilter},
+    eth_txn_handlers::{FilterParams, LogFilter},
     trace::{TraceCallObject, Tracer, TracerObject},
 };
 
@@ -96,11 +96,6 @@ pub fn as_openrpc() -> OpenRpc {
     components
         .schemas
         .insert("FilterParams".to_string(), filter_params);
-    let mut address_value_or_array = schemars::schema_for!(AddressValueOrArray).schema.into();
-    clean_schema_refs(&mut address_value_or_array);
-    components
-        .schemas
-        .insert("AddressValueOrArray".to_string(), address_value_or_array);
     let mut log_filter = schemars::schema_for!(LogFilter).schema.into();
     clean_schema_refs(&mut log_filter);
     components
