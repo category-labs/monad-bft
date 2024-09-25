@@ -4203,6 +4203,8 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "clap 4.4.10",
+ "glob",
  "itertools 0.10.5",
  "monad-async-state-verify",
  "monad-blocktree",
@@ -4214,6 +4216,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor-glue",
  "monad-multi-sig",
+ "monad-node",
  "monad-proto",
  "monad-secp",
  "monad-state-backend",

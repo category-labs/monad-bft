@@ -33,10 +33,10 @@ pub(crate) struct BlockBuffer<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> BlockBuffer<SCT> {
-    pub fn new(state_root_delay: SeqNum, root: SeqNum) -> Self {
+    pub fn new(state_root_delay: SeqNum, root: SeqNum, resync_threshold: SeqNum) -> Self {
         Self {
-            max_buffered_proposals: (NUM_BLOCK_HASH + state_root_delay).0 as usize,
-            resync_threshold: SeqNum((NUM_BLOCK_HASH + state_root_delay).0 / 2),
+            max_buffered_proposals: resync_threshold.0 as usize,
+            resync_threshold,
             state_root_delay,
 
             root,

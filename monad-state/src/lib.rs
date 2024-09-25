@@ -796,6 +796,7 @@ where
             5 * delta,
             self.consensus_config.timestamp_latency_estimate_ms,
         );
+        let statesync_threshold = self.consensus_config.state_sync_threshold;
         let mut monad_state = MonadState {
             keypair: self.key,
             cert_keypair: self.certkey,
@@ -808,6 +809,7 @@ where
                 BlockBuffer::new(
                     self.state_root_validator.get_delay(),
                     self.forkpoint.root.seq_num,
+                    statesync_threshold,
                 ),
             ),
             block_sync: BlockSync::default(),
@@ -975,7 +977,11 @@ where
                         //      specificially for ConsensusMode::Live -> Sync transition
 
                         let block_buffer = match &mut self.consensus {
-                            ConsensusMode::Live(_) => BlockBuffer::new(delay, root_seq_num),
+                            ConsensusMode::Live(_) => BlockBuffer::new(
+                                delay,
+                                root_seq_num,
+                                self.consensus_config.state_sync_threshold,
+                            ),
                             ConsensusMode::Sync { block_buffer, .. } => {
                                 block_buffer.clone().re_root(root_seq_num)
                             }

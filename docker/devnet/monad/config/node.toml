@@ -9,11 +9,16 @@
 # Node-specific configuration
 #########################################################
 beneficiary = "0x0000000000000000000000000000000000000000"
-
+name = "dev-node"
+network_name = "devnet"
 ipc_tx_batch_size = 500
 ipc_max_queued_batches = 6
 # must be <= ipc_max_queued_batches
 ipc_queued_batches_watermark = 3
+
+statesync_threshold = 600
+statesync_max_concurrent_requests = 5
+statesync_request_timeout_ms = 2000
 
 #########################################################
 # Network-wide configuration
@@ -31,7 +36,7 @@ peers = []
 
 [network]
 bind_address_host = "0.0.0.0"
-bind_address_port = 8888
+bind_address_port = 8000
 max_rtt_ms = 300
 max_mbps = 1000
 

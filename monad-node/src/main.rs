@@ -197,7 +197,7 @@ async fn run(
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
-    let state_sync_bound: usize = 300; // TODO configurable
+    let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
     _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
@@ -255,9 +255,12 @@ async fn run(
                 .map(|validator| validator.node_id)
                 .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
                 .collect(),
-            5,                      // max num concurrent requests TODO configurable
-            Duration::from_secs(5), // statesync request_timeout TODO configurable
-            Duration::from_secs(5), // statesync incoming_request_timeout TODO configurable
+            node_state
+                .node_config
+                .statesync_max_concurrent_requests
+                .into(),
+            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
+            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
             node_state
                 .statesync_ipc_path
                 .to_str()
@@ -307,7 +310,7 @@ async fn run(
         state_root_validator: StateRoot::new(SeqNum(
             node_state.node_config.consensus.execution_delay,
         )),
-        async_state_verify: PeerAsyncStateVerify::new(majority_threshold, state_sync_bound),
+        async_state_verify: PeerAsyncStateVerify::new(majority_threshold, statesync_threshold),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
@@ -318,7 +321,7 @@ async fn run(
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
-            state_sync_threshold: SeqNum(state_sync_bound as u64),
+            state_sync_threshold: SeqNum(statesync_threshold as u64),
             timestamp_latency_estimate_ms: 20,
         },
     };
