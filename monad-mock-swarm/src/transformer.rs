@@ -62,6 +62,7 @@ where
             VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
             VerifiedMonadMessage::ForwardedTx(_) => false,
             VerifiedMonadMessage::StateSyncMessage(_) => false,
+            VerifiedMonadMessage::DiscoveryMessage(_) => false,
         };
 
         if should_drop {
@@ -160,6 +161,7 @@ where
                 TwinsCapture::Drop
             }
             VerifiedMonadMessage::StateSyncMessage(_) => TwinsCapture::Spread(pid),
+            VerifiedMonadMessage::DiscoveryMessage(_) => TwinsCapture::Spread(pid),
         };
 
         match capture {

@@ -36,11 +36,12 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
-    ValidatorEvent, WriteCommand,
+    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, BootstrapPeer, ClearMetrics,
+    Command, ConsensusEvent, ControlPanelCommand, ControlPanelEvent, DiscoveryEvent,
+    DiscoveryNetworkMessage, DiscoveryRequest, DiscoveryResponse, GetMetrics, GetPeers,
+    GetValidatorSet, InboundDiscoveryMessage, LedgerCommand, MempoolEvent, Message, MonadEvent,
+    MonadNameRecord, OutboundDiscoveryMessage, ReadCommand, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -51,13 +52,15 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use statesync::BlockBuffer;
+use tracing::{info, warn};
 
-use crate::blocksync::BlockSync;
+use crate::{blocksync::BlockSync, discovery::Discovery};
 
 mod async_state_verify;
 mod blocksync;
 mod consensus;
 pub mod convert;
+mod discovery;
 mod epoch;
 mod mempool;
 mod statesync;
@@ -486,6 +489,9 @@ where
     state_backend: SBT,
     beneficiary: EthAddress,
 
+    /// Peer discovery state
+    discovery: Discovery<SCT::NodeIdPubKey>,
+
     /// Metrics counters for events and errors
     metrics: Metrics,
 
@@ -559,6 +565,7 @@ where
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
     StateSyncMessage(StateSyncNetworkMessage),
+    DiscoveryMessage(DiscoveryNetworkMessage<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -594,6 +601,9 @@ where
 
     /// State Sync msgs
     StateSyncMessage(StateSyncNetworkMessage),
+
+    /// Discovery msgs
+    DiscoveryMessage(DiscoveryNetworkMessage<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -621,6 +631,7 @@ where
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::DiscoveryMessage(msg) => MonadMessage::DiscoveryMessage(msg),
         }
     }
 }
@@ -652,6 +663,7 @@ where
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::DiscoveryMessage(msg) => MonadMessage::DiscoveryMessage(msg),
         }
     }
 }
@@ -704,6 +716,12 @@ where
             MonadMessage::StateSyncMessage(msg) => {
                 MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
             }
+            MonadMessage::DiscoveryMessage(msg) => {
+                MonadEvent::DiscoveryEvent(DiscoveryEvent::Inbound(InboundDiscoveryMessage {
+                    sender: from,
+                    message: msg,
+                }))
+            }
         }
     }
 }
@@ -742,6 +760,8 @@ where
     pub beneficiary: EthAddress,
 
     pub consensus_config: ConsensusConfig,
+    pub local_name_record: MonadNameRecord<SCT::NodeIdPubKey>,
+    pub bootstrap_peers: Vec<BootstrapPeer<SCT::NodeIdPubKey>>,
 }
 
 impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -827,6 +847,7 @@ where
             state_backend: self.state_backend,
             beneficiary: self.beneficiary,
 
+            discovery: Discovery::new(self.local_name_record),
             metrics: Metrics::default(),
             version: self.version,
         };
@@ -848,6 +869,10 @@ where
         tracing::info!(?root, ?high_qc, "starting up, syncing");
         init_cmds.extend(monad_state.update(MonadEvent::StateSyncEvent(
             StateSyncEvent::RequestSync { root, high_qc },
+        )));
+
+        init_cmds.extend(monad_state.update(MonadEvent::DiscoveryEvent(
+            DiscoveryEvent::BootstrapPeers(self.bootstrap_peers),
         )));
 
         (monad_state, init_cmds)
@@ -1127,10 +1152,124 @@ where
                         WriteCommand::UpdateLogFilter(filter),
                     ))]
                 }
+                ControlPanelEvent::GetPeers => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                        ReadCommand::GetPeers(GetPeers::Response(self.discovery.peers())),
+                    ))]
+                }
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);
                 vec![]
+            }
+            MonadEvent::DiscoveryEvent(discovery) => {
+                match discovery {
+                    DiscoveryEvent::Inbound(InboundDiscoveryMessage { sender, message }) => {
+                        match message {
+                            DiscoveryNetworkMessage::Request(request) => {
+                                // TODO(rene)
+                                info!(receiver = ?self.nodeid, sender = ?sender, request = ?request, "DiscoveryNetworkMessage::Request");
+
+                                let peer = request.sender;
+                                self.discovery.add_peer(peer.clone());
+
+                                // TODO(rene): differentiate between staked peer list and full node list here
+                                let mut peers = self.discovery.peers();
+                                peers.push(self.discovery.local_name_record());
+
+                                vec![
+                                    Command::RouterCommand(RouterCommand::AddPeer {
+                                        node_id: peer.node_id,
+                                        endpoint: peer.endpoint,
+                                    }),
+                                    Command::RouterCommand(RouterCommand::Publish {
+                                        target: RouterTarget::TcpPointToPoint(peer.node_id),
+                                        message: VerifiedMonadMessage::DiscoveryMessage(
+                                            DiscoveryNetworkMessage::Response(DiscoveryResponse {
+                                                peers,
+                                            }),
+                                        ),
+                                    }),
+                                ]
+                            }
+                            DiscoveryNetworkMessage::Response(response) => {
+                                // TODO(rene)
+                                info!(receiver = ?self.nodeid, sender = ?sender, response = ?response, "DiscoveryNetworkMessage::Response");
+
+                                let mut cmds = vec![];
+
+                                for peer in &response.peers {
+                                    match self.discovery.add_peer(peer.clone()) {
+                                        Some(old) => {
+                                            warn!(peer = ?old, "not adding duplicate peer");
+                                        }
+                                        None => {
+                                            cmds.extend(vec![
+                                                Command::RouterCommand(RouterCommand::AddPeer {
+                                                    node_id: peer.node_id,
+                                                    endpoint: peer.endpoint.clone(),
+                                                }),
+                                                Command::RouterCommand(RouterCommand::Publish {
+                                                    target: RouterTarget::TcpPointToPoint(
+                                                        peer.node_id,
+                                                    ),
+                                                    message: VerifiedMonadMessage::DiscoveryMessage(
+                                                        DiscoveryNetworkMessage::Request(
+                                                            DiscoveryRequest {
+                                                                sender: self
+                                                                    .discovery
+                                                                    .local_name_record(),
+                                                            },
+                                                        ),
+                                                    ),
+                                                }),
+                                            ]);
+                                        }
+                                    }
+                                }
+
+                                cmds
+                            }
+                        }
+                    }
+                    DiscoveryEvent::Outbound(OutboundDiscoveryMessage { recipient, message }) => {
+                        match message {
+                            DiscoveryNetworkMessage::Request(request) => {
+                                // TODO(rene)
+                                info!(receiver = ?self.nodeid, recipient = ?recipient, request = ?request, "DiscoveryNetworkMessage::Request");
+                                todo!()
+                            }
+                            DiscoveryNetworkMessage::Response(response) => {
+                                // TODO(rene)
+                                info!(receiver = ?self.nodeid, recipient = ?recipient, response = ?response, "DiscoveryNetworkMessage::Response");
+                                todo!()
+                            }
+                        }
+                    }
+                    DiscoveryEvent::BootstrapPeers(peers) => {
+                        // we dont add the bootstrap peers to discovery map, they will be added
+                        // when the bootstrap peer responds with the appropriate list
+                        peers
+                            .iter()
+                            .flat_map(|peer| {
+                                vec![
+                                    Command::RouterCommand(RouterCommand::AddPeer {
+                                        node_id: peer.node_id,
+                                        endpoint: peer.endpoint.clone(),
+                                    }),
+                                    Command::RouterCommand(RouterCommand::Publish {
+                                        target: RouterTarget::TcpPointToPoint(peer.node_id),
+                                        message: VerifiedMonadMessage::DiscoveryMessage(
+                                            DiscoveryNetworkMessage::Request(DiscoveryRequest {
+                                                sender: self.discovery.local_name_record(),
+                                            }),
+                                        ),
+                                    }),
+                                ]
+                            })
+                            .collect::<_>()
+                    }
+                }
             }
         }
     }

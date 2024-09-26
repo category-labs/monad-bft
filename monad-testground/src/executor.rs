@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    time::Duration,
+};
 
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
@@ -9,10 +12,13 @@ use monad_consensus_types::{
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
-    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthAddress;
-use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
+use monad_executor_glue::{
+    Command, MonadEvent, MonadNameRecord, NetworkEndpoint, RouterCommand, StateRootHashCommand,
+};
 use monad_gossip::{
     gossipsub::UnsafeGossipsubConfig,
     mock::MockGossipConfig,
@@ -214,6 +220,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    let pubkey = config.key.pubkey();
     MonadStateBuilder {
         version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
@@ -231,6 +238,15 @@ where
         beneficiary: EthAddress::default(),
         forkpoint: Forkpoint::genesis(config.validators, StateRootHash::default()),
         consensus_config: config.consensus_config,
+        // TODO(rene): is there a real name record I could actually put here
+        local_name_record: MonadNameRecord {
+            endpoint: NetworkEndpoint {
+                socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
+            },
+            node_id: NodeId::new(pubkey),
+            seq_num: SeqNum(0),
+        },
+        bootstrap_peers: vec![],
     }
     .build()
 }

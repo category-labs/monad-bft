@@ -381,6 +381,7 @@ where
                                     .entered();
                             this.gossip.send(current_time, target, message);
                         }
+                        RouterCommand::AddPeer { .. } => {}
                     }
                 }
                 continue;

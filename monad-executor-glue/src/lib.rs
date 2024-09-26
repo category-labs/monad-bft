@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::fmt::Debug;
+use std::{fmt::Debug, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -39,6 +39,10 @@ pub enum RouterCommand<PT: PubKey, OM> {
         validator_set: Vec<(NodeId<PT>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
+    AddPeer {
+        node_id: NodeId<PT>,
+        endpoint: NetworkEndpoint,
+    },
 }
 
 pub trait Message: Clone + Send + Sync {
@@ -107,10 +111,18 @@ pub enum GetMetrics {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GetPeers<SCT: SignatureCollection> {
+    Request,
+    Response(Vec<MonadNameRecord<SCT::NodeIdPubKey>>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ReadCommand<SCT: SignatureCollection + Clone> {
     #[serde(bound = "SCT: SignatureCollection")]
     GetValidatorSet(GetValidatorSet<SCT>),
     GetMetrics(GetMetrics),
+    #[serde(bound = "SCT: SignatureCollection")]
+    GetPeers(GetPeers<SCT>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -444,7 +456,7 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     /// Execution done syncing
     DoneSync(SeqNum),
 
-    // Statesync-requested block
+    /// Statesync-requested block
     BlockSync(FullBlock<SCT>),
 
     /// Consensus request sync
@@ -464,6 +476,61 @@ where
     ClearMetricsEvent,
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
     UpdateLogFilter(String),
+    GetPeers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NetworkEndpoint {
+    pub socket_addr: SocketAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapPeer<PT: PubKey> {
+    pub node_id: NodeId<PT>,
+    pub endpoint: NetworkEndpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MonadNameRecord<PT: PubKey> {
+    pub endpoint: NetworkEndpoint,
+    #[serde(bound = "PT: PubKey")]
+    pub node_id: NodeId<PT>,
+    pub seq_num: SeqNum,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryRequest<PT: PubKey> {
+    pub sender: MonadNameRecord<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryResponse<PT: PubKey> {
+    pub peers: Vec<MonadNameRecord<PT>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryNetworkMessage<PT: PubKey> {
+    Request(DiscoveryRequest<PT>),
+    Response(DiscoveryResponse<PT>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundDiscoveryMessage<PT: PubKey> {
+    pub sender: NodeId<PT>,
+    pub message: DiscoveryNetworkMessage<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundDiscoveryMessage<PT: PubKey> {
+    pub recipient: NodeId<PT>,
+    pub message: DiscoveryNetworkMessage<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryEvent<PT: PubKey> {
+    Inbound(InboundDiscoveryMessage<PT>),
+    Outbound(OutboundDiscoveryMessage<PT>),
+    BootstrapPeers(Vec<BootstrapPeer<PT>>),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -491,6 +558,8 @@ where
     TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<SCT>),
+    /// Events for peer discovery
+    DiscoveryEvent(DiscoveryEvent<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -557,6 +626,7 @@ where
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+            MonadEvent::DiscoveryEvent(_) => "DISCOVERY".to_string(),
         };
 
         write!(f, "{}", s)

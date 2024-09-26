@@ -133,6 +133,7 @@ where
                             .unwrap();
                     }
                 },
+                RouterCommand::AddPeer { .. } => {}
             }
         }
     }

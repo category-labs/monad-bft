@@ -34,6 +34,9 @@ where
                 VerifiedMonadMessage::StateSyncMessage(msg) => {
                     proto_monad_message::OneofMessage::StateSyncMessage(msg.into())
                 }
+                VerifiedMonadMessage::DiscoveryMessage(msg) => {
+                    proto_monad_message::OneofMessage::DiscoveryMessage(msg.into())
+                }
             }),
         }
     }
@@ -65,6 +68,9 @@ where
             }
             Some(proto_monad_message::OneofMessage::StateSyncMessage(msg)) => {
                 MonadMessage::StateSyncMessage(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::DiscoveryMessage(msg)) => {
+                MonadMessage::DiscoveryMessage(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

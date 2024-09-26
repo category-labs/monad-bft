@@ -4,6 +4,7 @@ package monad_proto.event;
 
 import "basic.proto";
 import "block.proto";
+import "discovery.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
@@ -63,7 +64,7 @@ message ProtoBlockSyncSelfRequest {
 }
 
 message ProtoTimestampUpdate {
-   uint64 update = 1;
+  uint64 update = 1;
 }
 
 message ProtoBlockSyncWithPayload {
@@ -138,6 +139,8 @@ message ProtoUpdateLogFilter {
 
 message ProtoGetMetricsEvent {}
 
+message ProtoGetPeersEvent {}
+
 message ProtoControlPanelEvent {
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
@@ -145,6 +148,7 @@ message ProtoControlPanelEvent {
     ProtoUpdateValidatorsEvent update_validators_event = 3;
     ProtoUpdateLogFilter update_log_filter = 4;
     ProtoGetMetricsEvent get_metrics_event = 5;
+    ProtoGetPeersEvent get_peers_event = 6;
   }
 }
 
@@ -185,6 +189,34 @@ message ProtoStateSyncEvent {
   }
 }
 
+
+message ProtoInboundDiscoveryMessage {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.message.ProtoDiscoveryNetworkMessage message = 2;
+}
+message ProtoOutboundDiscoveryMessage {
+  monad_proto.basic.ProtoNodeId recipient = 1;
+  monad_proto.message.ProtoDiscoveryNetworkMessage message = 2;
+}
+
+message ProtoBootstrapPeer {
+  monad_proto.discovery.ProtoNetworkEndpoint endpoint = 1;
+  monad_proto.basic.ProtoNodeId node_id = 2;
+}
+
+message ProtoBootstrapPeers {
+  repeated ProtoBootstrapPeer peers = 1;
+}
+
+
+message ProtoDiscoveryEvent {
+  oneof event {
+    ProtoInboundDiscoveryMessage inbound = 1;
+    ProtoOutboundDiscoveryMessage outbound = 2;
+    ProtoBootstrapPeers bootstrap_peers = 3;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -196,5 +228,6 @@ message ProtoMonadEvent{
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
+    ProtoDiscoveryEvent discovery_event = 10;
   }
 }

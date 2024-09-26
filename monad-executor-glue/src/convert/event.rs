@@ -1,12 +1,29 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use bytes::Bytes;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
-use monad_proto::{error::ProtoError, proto::event::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{
+        discovery::{
+            proto_ip_address::Address, ProtoIPv4, ProtoIpAddress, ProtoMonadNameRecord,
+            ProtoNetworkEndpoint,
+        },
+        event::*,
+        message::{
+            proto_discovery_network_message::OneofMessage, ProtoDiscoveryRequest,
+            ProtoDiscoveryResponse,
+        },
+    },
+};
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
-    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, BootstrapPeer,
+    ControlPanelEvent, DiscoveryEvent, DiscoveryNetworkMessage, DiscoveryRequest,
+    DiscoveryResponse, InboundDiscoveryMessage, MempoolEvent, MonadEvent, MonadNameRecord,
+    NetworkEndpoint, OutboundDiscoveryMessage, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -42,6 +59,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             }
             MonadEvent::StateSyncEvent(event) => {
                 proto_monad_event::Event::StateSyncEvent(event.into())
+            }
+            MonadEvent::DiscoveryEvent(event) => {
+                proto_monad_event::Event::DiscoveryEvent(event.into())
             }
         };
         Self { event: Some(event) }
@@ -87,6 +107,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::DiscoveryEvent(event)) => {
+                MonadEvent::DiscoveryEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -428,6 +451,11 @@ where
                     },
                 )),
             },
+            ControlPanelEvent::GetPeers => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::GetPeersEvent(
+                    ProtoGetPeersEvent {},
+                )),
+            },
         }
     }
 }
@@ -470,6 +498,7 @@ where
                 proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
                     ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)
                 }
+                proto_control_panel_event::Event::GetPeersEvent(_) => ControlPanelEvent::GetPeers,
             }
         })
     }
@@ -737,6 +766,224 @@ impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<S
                 }
             }
         })
+    }
+}
+
+impl From<&NetworkEndpoint> for ProtoNetworkEndpoint {
+    fn from(value: &NetworkEndpoint) -> Self {
+        match value.socket_addr {
+            SocketAddr::V4(ipv4) => Self {
+                ip: Some(ProtoIpAddress {
+                    address: Some(Address::Ipv4(ProtoIPv4 {
+                        address: ipv4.ip().to_bits(),
+                    })),
+                }),
+                port: ipv4.port() as u32,
+            },
+            SocketAddr::V6(ipv6) => {
+                todo!()
+            }
+        }
+    }
+}
+
+impl<PT: PubKey> From<&MonadNameRecord<PT>> for ProtoMonadNameRecord {
+    fn from(value: &MonadNameRecord<PT>) -> Self {
+        let MonadNameRecord {
+            endpoint,
+            node_id,
+            seq_num,
+        } = value.clone();
+        Self {
+            endpoint: Some((&endpoint).into()),
+            node_id: Some((&node_id).into()),
+            seq_num: Some((&seq_num).into()),
+        }
+    }
+}
+
+impl<PT: PubKey> From<&DiscoveryRequest<PT>>
+    for monad_proto::proto::message::ProtoDiscoveryRequest
+{
+    fn from(value: &DiscoveryRequest<PT>) -> Self {
+        Self {
+            self_: Some((&value.sender).into()),
+        }
+    }
+}
+
+impl<PT: PubKey> From<&DiscoveryNetworkMessage<PT>>
+    for monad_proto::proto::message::ProtoDiscoveryNetworkMessage
+{
+    fn from(value: &DiscoveryNetworkMessage<PT>) -> Self {
+        match value {
+            DiscoveryNetworkMessage::Request(request) => {
+                monad_proto::proto::message::ProtoDiscoveryNetworkMessage {
+                    oneof_message: Some(OneofMessage::Request(ProtoDiscoveryRequest {
+                        self_: Some((&request.sender).into()),
+                    })),
+                }
+            }
+            DiscoveryNetworkMessage::Response(response) => {
+                monad_proto::proto::message::ProtoDiscoveryNetworkMessage {
+                    oneof_message: Some(OneofMessage::Response(ProtoDiscoveryResponse {
+                        peers: response.peers.iter().map(Into::into).collect::<_>(),
+                    })),
+                }
+            }
+        }
+    }
+}
+
+impl TryFrom<ProtoNetworkEndpoint> for NetworkEndpoint {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoNetworkEndpoint) -> Result<Self, Self::Error> {
+        let proto_ip = value
+            .ip
+            .ok_or(ProtoError::MissingRequiredField(
+                "ProtoNetworkEndpoint.ip".to_owned(),
+            ))?
+            .address
+            .ok_or(ProtoError::MissingRequiredField(
+                "ProtoIpAddress.address".to_owned(),
+            ))?;
+
+        let ip = match proto_ip {
+            Address::Ipv4(ipv4) => Ipv4Addr::from(ipv4.address),
+            Address::Ipv6(_) => {
+                todo!()
+            }
+        };
+
+        Ok(Self {
+            socket_addr: SocketAddr::new(
+                IpAddr::from(ip),
+                value.port.try_into().map_err(|_| {
+                    ProtoError::DeserializeError("IP port overflowed a u16".to_owned())
+                })?,
+            ),
+        })
+    }
+}
+
+impl<PT: PubKey> TryFrom<ProtoMonadNameRecord> for MonadNameRecord<PT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoMonadNameRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            endpoint: value
+                .endpoint
+                .ok_or(ProtoError::MissingRequiredField(
+                    "ProtoMonadNameRecord.endpoint".to_owned(),
+                ))?
+                .try_into()?,
+            node_id: value
+                .node_id
+                .ok_or(ProtoError::MissingRequiredField(
+                    "ProtoMonadNameRecord.node_id".to_owned(),
+                ))?
+                .try_into()?,
+            seq_num: value
+                .seq_num
+                .ok_or(ProtoError::MissingRequiredField(
+                    "ProtoMonadNameRecord.seq_num".to_owned(),
+                ))?
+                .try_into()?,
+        })
+    }
+}
+
+impl<PT: PubKey> TryFrom<ProtoDiscoveryRequest> for DiscoveryRequest<PT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoDiscoveryRequest) -> Result<Self, Self::Error> {
+        let sender = value.self_.ok_or(ProtoError::MissingRequiredField(
+            "ProtoDiscoveryRequest.self".to_owned(),
+        ))?;
+        Ok(Self {
+            sender: sender.try_into()?,
+        })
+    }
+}
+impl<PT: PubKey> TryFrom<ProtoDiscoveryResponse> for DiscoveryResponse<PT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoDiscoveryResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            peers: value
+                .peers
+                .into_iter()
+                .map(|name_record| name_record.try_into())
+                .collect::<Result<_, ProtoError>>()?,
+        })
+    }
+}
+
+impl<PT: PubKey> TryFrom<monad_proto::proto::message::ProtoDiscoveryNetworkMessage>
+    for DiscoveryNetworkMessage<PT>
+{
+    type Error = ProtoError;
+    fn try_from(
+        value: monad_proto::proto::message::ProtoDiscoveryNetworkMessage,
+    ) -> Result<Self, Self::Error> {
+        let message = value.oneof_message.ok_or(ProtoError::MissingRequiredField(
+            "ProtoDiscoveryNetworkMessage.message".to_owned(),
+        ))?;
+        match message {
+            OneofMessage::Request(request) => {
+                Ok(DiscoveryNetworkMessage::Request(request.try_into()?))
+            }
+            OneofMessage::Response(response) => {
+                Ok(DiscoveryNetworkMessage::Response(response.try_into()?))
+            }
+        }
+    }
+}
+
+impl<PT: PubKey> From<&BootstrapPeer<PT>> for ProtoBootstrapPeer {
+    fn from(value: &BootstrapPeer<PT>) -> Self {
+        Self {
+            endpoint: Some((&value.endpoint).into()),
+            node_id: Some((&value.node_id).into()),
+        }
+    }
+}
+
+impl<PT: PubKey> From<&DiscoveryEvent<PT>> for ProtoDiscoveryEvent {
+    fn from(value: &DiscoveryEvent<PT>) -> Self {
+        match value {
+            DiscoveryEvent::Inbound(InboundDiscoveryMessage { sender, message }) => Self {
+                event: Some(proto_discovery_event::Event::Inbound(
+                    ProtoInboundDiscoveryMessage {
+                        sender: Some(sender.into()),
+                        message: Some(message.into()),
+                    },
+                )),
+            },
+            DiscoveryEvent::Outbound(OutboundDiscoveryMessage { recipient, message }) => Self {
+                event: Some(proto_discovery_event::Event::Outbound(
+                    ProtoOutboundDiscoveryMessage {
+                        recipient: Some(recipient.into()),
+                        message: Some(message.into()),
+                    },
+                )),
+            },
+            DiscoveryEvent::BootstrapPeers(peers) => Self {
+                event: Some(proto_discovery_event::Event::BootstrapPeers(
+                    ProtoBootstrapPeers {
+                        peers: peers.iter().map(Into::into).collect(),
+                    },
+                )),
+            },
+        }
+    }
+}
+
+impl<PT: PubKey> TryFrom<ProtoDiscoveryEvent> for DiscoveryEvent<PT> {
+    type Error = ProtoError;
+    fn try_from(value: ProtoDiscoveryEvent) -> Result<Self, Self::Error> {
+        todo!()
     }
 }
 

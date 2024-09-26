@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -10,13 +11,17 @@ use monad_consensus_types::{
     validator_data::{ValidatorData, ValidatorSetData},
     voting::ValidatorMapping,
 };
-use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    },
+    NopPubKey,
 };
 use monad_executor::Executor;
-use monad_executor_glue::MonadEvent;
+use monad_executor_glue::{MonadEvent, MonadNameRecord, NetworkEndpoint};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
+use monad_types::{NodeId, SeqNum};
 use monad_validator::validator_set::{
     BoxedValidatorSetTypeFactory, ValidatorSetType, ValidatorSetTypeFactory,
 };
@@ -126,6 +131,18 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
+                // TODO(rene): is there a real name record I could actually put here
+                local_name_record: MonadNameRecord {
+                    endpoint: NetworkEndpoint {
+                        socket_addr: SocketAddr::V4(SocketAddrV4::new(
+                            Ipv4Addr::new(0, 0, 0, 0),
+                            0,
+                        )),
+                    },
+                    node_id: NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
+                    seq_num: SeqNum(0),
+                },
+                bootstrap_peers: vec![],
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),

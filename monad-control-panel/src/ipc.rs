@@ -14,8 +14,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet, MonadEvent,
-    ReadCommand, UpdateValidatorSet, WriteCommand,
+    ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetPeers, GetValidatorSet,
+    MonadEvent, ReadCommand, UpdateValidatorSet, WriteCommand,
 };
 use tokio::{
     net::{unix::OwnedReadHalf, UnixListener},
@@ -156,6 +156,16 @@ where
                             };
                         }
                         m => error!("unhandled message {:?}", m),
+                    },
+                    ReadCommand::GetPeers(p) => match p {
+                        GetPeers::Request => {
+                            let event = MonadEvent::ControlPanelEvent(ControlPanelEvent::GetPeers);
+                            let Ok(_) = event_channel.send(event.clone()).await else {
+                                error!("failed to forward request {:?} to executor, closing connection", &event);
+                                break;
+                            };
+                        }
+                        p => error!("unhandled message {:?}", p),
                     },
                 },
                 ControlPanelCommand::Write(w) => {

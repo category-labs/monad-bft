@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    fmt::Debug,
     marker::PhantomData,
     net::SocketAddr,
     ops::DerefMut,
@@ -17,6 +18,7 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
+use tracing::{info, warn};
 
 pub mod udp;
 pub mod util;
@@ -28,7 +30,6 @@ pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     pub key: ST::KeyPairType,
@@ -61,6 +62,11 @@ where
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     _phantom: PhantomData<OM>,
+}
+
+#[derive(Debug)]
+enum RaptorError {
+    UnknownAddress,
 }
 
 impl<ST, M, OM> RaptorCast<ST, M, OM>
@@ -96,10 +102,11 @@ where
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         app_message: Bytes,
-    ) {
+    ) -> Result<(), RaptorError> {
         match self.known_addresses.get(to) {
             None => {
                 tracing::warn!(?to, "not sending message, address unknown");
+                Err(RaptorError::UnknownAddress)
             }
             Some(address) => {
                 // TODO make this more sophisticated
@@ -110,8 +117,9 @@ where
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
                 self.dataplane.tcp_write(*address, signed_message.freeze());
+                Ok(())
             }
-        };
+        }
     }
 }
 
@@ -119,7 +127,7 @@ impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    OM: Serializable<Bytes> + Into<M> + Clone + Debug,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -132,6 +140,10 @@ where
                     self.current_epoch = epoch;
                     while let Some(entry) = self.epoch_validators.first_entry() {
                         if *entry.key() + Epoch(1) < self.current_epoch {
+                            let validator_ids_to_remove =
+                                entry.get().validators.keys().collect::<HashSet<_>>();
+                            self.known_addresses
+                                .retain(|node_id, _| !validator_ids_to_remove.contains(node_id));
                             entry.remove();
                         } else {
                             break;
@@ -180,6 +192,8 @@ where
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")
                     });
+
+                    info!(target = ?target, message = ?message, "raptor send");
 
                     let udp_build = |epoch: &Epoch,
                                      build_target: BuildTarget<ST>,
@@ -271,11 +285,18 @@ where
                                 if let Some(waker) = self.waker.take() {
                                     waker.wake()
                                 }
-                            } else {
-                                self.tcp_build_and_send(to, app_message)
+                            } else if let Err(e) = self.tcp_build_and_send(to, app_message) {
+                                warn!(to = ?to, message = ?message, e = ?e, "dropping outbound raptor message");
                             }
                         }
                     };
+                }
+                RouterCommand::AddPeer { node_id, endpoint } => {
+                    info!(endpoint = ?endpoint, node_id = ?node_id, known_addresses = ?self.known_addresses, "AddPeer");
+                    self.known_addresses
+                        .entry(node_id)
+                        .or_insert(endpoint.socket_addr);
+                    // TODO(rene): have to do more connection-oriented stuff here?
                 }
             }
         }
@@ -289,8 +310,8 @@ where
 impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Debug,
+    OM: Serializable<Bytes> + Into<M> + Clone + Debug,
 
     Self: Unpin,
 {
@@ -367,7 +388,10 @@ where
                 }
             };
 
-            return Poll::Ready(Some(deserialized_message.event(NodeId::new(from))));
+            info!(from = ?from, deserialized_message= ?deserialized_message, "raptor receive");
+            let event = deserialized_message.event(NodeId::new(from));
+
+            return Poll::Ready(Some(event));
         }
 
         Poll::Pending

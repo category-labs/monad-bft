@@ -1,14 +1,20 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    time::Duration,
+};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::FullBlock, signature_collection::SignatureCollection, state_root_hash::StateRootHash,
     validator_data::ValidatorSetData,
 };
+use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::EthAddress;
+use monad_executor_glue::{MonadNameRecord, NetworkEndpoint};
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
-use monad_types::{Round, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -68,35 +74,50 @@ pub fn make_state_configs<S: SwarmRelation>(
 
     keys.into_iter()
         .zip(cert_keys)
-        .map(|(key, certkey)| MonadStateBuilder {
-            version: MonadVersion::new("MOCK_SWARM"),
-            validator_set_factory: validator_set_factory(),
-            leader_election: leader_election(),
-            transaction_pool: transaction_pool(),
-            block_validator: block_validator(),
-            block_policy: block_policy(),
-            state_backend: state_backend(),
-            state_root_validator: state_root_validator(),
-            async_state_verify: async_state_verify(
-                state_root_quorum_threshold,
-                state_sync_threshold.0 as usize,
-            ),
-            forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
+        .map(|(key, certkey)| {
+            let pubkey = key.pubkey();
+            MonadStateBuilder {
+                version: MonadVersion::new("MOCK_SWARM"),
+                validator_set_factory: validator_set_factory(),
+                leader_election: leader_election(),
+                transaction_pool: transaction_pool(),
+                block_validator: block_validator(),
+                block_policy: block_policy(),
+                state_backend: state_backend(),
+                state_root_validator: state_root_validator(),
+                async_state_verify: async_state_verify(
+                    state_root_quorum_threshold,
+                    state_sync_threshold.0 as usize,
+                ),
+                forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
-            key,
-            certkey,
+                key,
+                certkey,
 
-            val_set_update_interval,
-            epoch_start_delay,
-            beneficiary: EthAddress::default(),
+                val_set_update_interval,
+                epoch_start_delay,
+                beneficiary: EthAddress::default(),
 
-            consensus_config: ConsensusConfig {
-                proposal_txn_limit,
-                proposal_gas_limit: 30_000_000,
-                delta,
-                state_sync_threshold,
-                timestamp_latency_estimate_ms: 10,
-            },
+                consensus_config: ConsensusConfig {
+                    proposal_txn_limit,
+                    proposal_gas_limit: 30_000_000,
+                    delta,
+                    state_sync_threshold,
+                    timestamp_latency_estimate_ms: 10,
+                },
+                // TODO(rene): is there a real name record I could actually put here
+                local_name_record: MonadNameRecord {
+                    endpoint: NetworkEndpoint {
+                        socket_addr: SocketAddr::V4(SocketAddrV4::new(
+                            Ipv4Addr::new(0, 0, 0, 0),
+                            0,
+                        )),
+                    },
+                    node_id: NodeId::new(pubkey),
+                    seq_num: SeqNum(0),
+                },
+                bootstrap_peers: vec![],
+            }
         })
         .collect()
 }

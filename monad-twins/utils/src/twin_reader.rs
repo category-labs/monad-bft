@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     fs,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
 };
 
@@ -26,6 +27,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_eth_types::EthAddress;
+use monad_executor_glue::{MonadNameRecord, NetworkEndpoint};
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
@@ -118,6 +120,7 @@ where
         > + Clone,
 {
     fn clone(&self) -> Self {
+        let pubkey = self.state_config.key.pubkey();
         Self {
             id: self.id,
             state_config: MonadStateBuilder {
@@ -143,6 +146,17 @@ where
                 beneficiary: self.state_config.beneficiary,
 
                 consensus_config: self.state_config.consensus_config,
+                local_name_record: MonadNameRecord {
+                    endpoint: NetworkEndpoint {
+                        socket_addr: SocketAddr::V4(SocketAddrV4::new(
+                            Ipv4Addr::new(0, 0, 0, 0),
+                            0,
+                        )),
+                    },
+                    node_id: NodeId::new(pubkey),
+                    seq_num: SeqNum(0),
+                },
+                bootstrap_peers: vec![],
             },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
@@ -338,46 +352,61 @@ where
     let state_configs: Vec<_> = keys
         .into_iter()
         .zip(certkeys)
-        .map(|(key, certkey)| MonadStateBuilder::<
-            S::SignatureType,
-            S::SignatureCollectionType,
-            S::BlockPolicyType,
-            S::StateBackendType,
-            S::ValidatorSetTypeFactory,
-            S::LeaderElection,
-            S::TxPool,
-            S::BlockValidator,
-            S::StateRootValidator,
-            S::AsyncStateRootVerify,
-        > {
-            version: MonadVersion::new("TWINS_TEST"),
-            validator_set_factory: S::ValidatorSetTypeFactory::default(),
-            leader_election: S::LeaderElection::default(),
-            transaction_pool: S::TxPool::default(),
-            block_validator: S::BlockValidator::default(),
-            block_policy: S::BlockPolicyType::default(),
-            state_backend: InMemoryStateInner::genesis(
-                u128::MAX,
-                monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
-            ),
-            state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
-            async_state_verify: S::AsyncStateRootVerify::default(),
-            forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
+        .map(|(key, certkey)| {
+            let pubkey = key.pubkey();
+            MonadStateBuilder::<
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::BlockPolicyType,
+                S::StateBackendType,
+                S::ValidatorSetTypeFactory,
+                S::LeaderElection,
+                S::TxPool,
+                S::BlockValidator,
+                S::StateRootValidator,
+                S::AsyncStateRootVerify,
+            > {
+                version: MonadVersion::new("TWINS_TEST"),
+                validator_set_factory: S::ValidatorSetTypeFactory::default(),
+                leader_election: S::LeaderElection::default(),
+                transaction_pool: S::TxPool::default(),
+                block_validator: S::BlockValidator::default(),
+                block_policy: S::BlockPolicyType::default(),
+                state_backend: InMemoryStateInner::genesis(
+                    u128::MAX,
+                    monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
+                ),
+                state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
+                async_state_verify: S::AsyncStateRootVerify::default(),
+                forkpoint: Forkpoint::genesis(validator_data.clone(), StateRootHash::default()),
 
-            key,
-            certkey,
+                key,
+                certkey,
 
-            val_set_update_interval: SeqNum(2000),
-            epoch_start_delay: Round(50),
-            beneficiary: EthAddress::default(),
+                val_set_update_interval: SeqNum(2000),
+                epoch_start_delay: Round(50),
+                beneficiary: EthAddress::default(),
 
-            consensus_config: ConsensusConfig {
-                proposal_txn_limit: 10,
-                proposal_gas_limit: 30_000_000,
-                delta: Duration::from_millis(delta_ms),
-                state_sync_threshold: SeqNum(100),
-                timestamp_latency_estimate_ms: 10,
-            },
+                consensus_config: ConsensusConfig {
+                    proposal_txn_limit: 10,
+                    proposal_gas_limit: 30_000_000,
+                    delta: Duration::from_millis(delta_ms),
+                    state_sync_threshold: SeqNum(100),
+                    timestamp_latency_estimate_ms: 10,
+                },
+                // TODO(rene): figure out an actual record to put here
+                local_name_record: MonadNameRecord {
+                    endpoint: NetworkEndpoint {
+                        socket_addr: SocketAddr::V4(SocketAddrV4::new(
+                            Ipv4Addr::new(0, 0, 0, 0),
+                            0,
+                        )),
+                    },
+                    node_id: NodeId::new(pubkey),
+                    seq_num: SeqNum(0),
+                },
+                bootstrap_peers: vec![],
+            }
         })
         .collect();
 

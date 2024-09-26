@@ -179,7 +179,7 @@ fn service(
     unreachable!("timed out!");
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct MockMessage {
     id: u32,
     message_len: usize,

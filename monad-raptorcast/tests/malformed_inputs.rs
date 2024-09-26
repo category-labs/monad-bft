@@ -308,7 +308,7 @@ pub fn set_up_test(
     (rx_nodeid, tx_nodeid, tx_keypair, known_addresses)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct MockMessage {
     id: u32,
     message_len: usize,

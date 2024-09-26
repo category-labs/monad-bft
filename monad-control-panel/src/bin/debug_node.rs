@@ -1,4 +1,4 @@
-use std::{io::Error, path::PathBuf};
+use std::{fmt::Debug, io::Error, path::PathBuf};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
@@ -7,12 +7,14 @@ use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     signature_collection::SignatureCollection, validator_data::ParsedValidatorData,
 };
-use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetMetrics, GetValidatorSet, ReadCommand,
-    UpdateValidatorSet, WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetMetrics, GetPeers, GetValidatorSet, MonadNameRecord,
+    NetworkEndpoint, ReadCommand, UpdateValidatorSet, WriteCommand,
 };
 use monad_secp::SecpSignature;
+use monad_types::SeqNum;
+use serde::{Deserialize, Serialize};
 use tokio::net::{
     unix::{OwnedReadHalf, OwnedWriteHalf},
     UnixStream,
@@ -59,6 +61,8 @@ enum Commands {
     ClearMetrics,
     /// Update the logging filter
     UpdateLogFilter(UpdateLogFilter),
+    /// Get the set of peers
+    Peers,
 }
 
 struct Read {
@@ -202,6 +206,40 @@ fn main() -> Result<(), Error> {
             rt.block_on(write.send(Command::Read(ReadCommand::GetMetrics(GetMetrics::Request))))?;
             let response = rt.block_on(read.next::<SignatureCollectionType>())?;
             println!("{}", serde_json::to_string(&response).unwrap());
+        }
+        Commands::Peers => {
+            rt.block_on(write.send(Command::Read(ReadCommand::GetPeers(GetPeers::Request))))?;
+            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
+
+            #[derive(Debug, Serialize, Deserialize)]
+            struct Peer {
+                pub endpoint: NetworkEndpoint,
+                pub node_id: String,
+                pub seq_num: SeqNum,
+            }
+
+            impl<PT: PubKey + Debug> From<MonadNameRecord<PT>> for Peer {
+                fn from(value: MonadNameRecord<PT>) -> Self {
+                    let MonadNameRecord {
+                        endpoint,
+                        node_id,
+                        seq_num,
+                    } = value;
+                    Self {
+                        endpoint,
+                        node_id: format!("{:?}", node_id),
+                        seq_num,
+                    }
+                }
+            }
+
+            let peers: Option<Vec<Peer>> = match response {
+                ControlPanelCommand::Read(ReadCommand::GetPeers(GetPeers::Response(r))) => {
+                    Some(r.into_iter().map(Into::into).collect())
+                }
+                _ => None,
+            };
+            println!("{}", serde_json::to_string(&peers).unwrap());
         }
     }
 

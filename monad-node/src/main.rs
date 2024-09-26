@@ -21,7 +21,9 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message};
+use monad_executor_glue::{
+    BootstrapPeer, LogFriendlyMonadEvent, Message, MonadNameRecord, NetworkEndpoint,
+};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
@@ -298,6 +300,29 @@ async fn run(
     assert!(wal_events.is_empty(), "wal must be cleared after restart");
 
     let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
+    let pubkey = node_state.secp256k1_identity.pubkey();
+    let monad_name_record = {
+        let local_name_record = &node_state.node_config.network.local_name_record;
+        info!(address = ?local_name_record.address, node_id = ?local_name_record.secp256k1_pubkey, "rene");
+        let local_ip_address = local_name_record
+            .address
+            .to_socket_addrs()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "unable to resolve address={}, err={:?}",
+                    local_name_record.address, err
+                )
+            })
+            .next()
+            .unwrap_or_else(|| panic!("couldn't look up address={}", local_name_record.address));
+        MonadNameRecord {
+            endpoint: NetworkEndpoint {
+                socket_addr: local_ip_address,
+            },
+            node_id: NodeId::new(local_name_record.secp256k1_pubkey),
+            seq_num: local_name_record.seq_num,
+        }
+    };
     let builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
@@ -338,6 +363,34 @@ async fn run(
             state_sync_threshold: SeqNum(statesync_threshold as u64),
             timestamp_latency_estimate_ms: 20,
         },
+        local_name_record: monad_name_record,
+        bootstrap_peers: node_state
+            .node_config
+            .bootstrap
+            .peers
+            .iter()
+            .map(|bootstrap_peer| {
+                let address = bootstrap_peer
+                    .address
+                    .to_socket_addrs()
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "unable to resolve address={}, err={:?}",
+                            bootstrap_peer.address, err
+                        )
+                    })
+                    .next()
+                    .unwrap_or_else(|| {
+                        panic!("couldn't look up address={}", bootstrap_peer.address)
+                    });
+                BootstrapPeer {
+                    node_id: NodeId::new(bootstrap_peer.secp256k1_pubkey),
+                    endpoint: NetworkEndpoint {
+                        socket_addr: address,
+                    },
+                }
+            })
+            .collect::<_>(),
     };
 
     let (mut state, init_commands) = builder.build();
