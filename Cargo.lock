@@ -4221,6 +4221,7 @@ dependencies = [
  "futures",
  "futures-util",
  "monad-cxx",
+ "monad-eth-block-policy",
  "monad-rpc-docs",
  "monad-triedb",
  "monad-triedb-utils",

@@ -266,9 +266,13 @@ async fn rpc_select(
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_sendRawTransaction(app_state.mempool_sender.clone(), params)
-                .await
-                .map(serialize_result)?
+            monad_eth_sendRawTransaction(
+                app_state.mempool_sender.clone(),
+                params,
+                app_state.chain_id,
+            )
+            .await
+            .map(serialize_result)?
         }
         "eth_getLogs" => {
             let reader = app_state
@@ -763,7 +767,7 @@ mod tests {
             file_ledger_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
-            chain_id: 41454,
+            chain_id: 1337,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
         }))
@@ -777,7 +781,7 @@ mod tests {
             chain_id: Some(1337),
             nonce: 0,
             gas_price: 1000,
-            gas_limit: 21000,
+            gas_limit: 30000,
             to: TransactionKind::Call(Address::random()),
             value: 0.into(),
             input: input.into(),
@@ -798,9 +802,9 @@ mod tests {
         let transaction = Transaction::Eip1559(TxEip1559 {
             chain_id: 1337,
             nonce: 0,
-            max_fee_per_gas: 123,
-            max_priority_fee_per_gas: 456,
-            gas_limit: 21000,
+            max_fee_per_gas: 456,
+            max_priority_fee_per_gas: 123,
+            gas_limit: 30000,
             to: TransactionKind::Call(Address::random()),
             value: 0.into(),
             input: input.into(),

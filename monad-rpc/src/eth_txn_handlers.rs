@@ -5,6 +5,7 @@ use alloy_primitives::{
     Address, FixedBytes,
 };
 use bytes::Buf;
+use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use reth_primitives::{transaction::TransactionKind, Block as EthBlock, TransactionSigned};
 use reth_rpc_types::{
@@ -373,11 +374,23 @@ pub struct MonadEthSendRawTransactionParams {
 pub async fn monad_eth_sendRawTransaction(
     ipc: flume::Sender<TransactionSigned>,
     params: MonadEthSendRawTransactionParams,
+    chain_id: u64,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
     match TransactionSigned::decode_enveloped(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
+            // drop transactions that will fail consensus check
+            if let Err(err) = static_validate_transaction(&txn, chain_id) {
+                let error_message = match err {
+                    TransactionError::InvalidChainId => "Invalid chain ID",
+                    TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
+                    TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
+                    TransactionError::GasLimitTooLow => "Gas limit too low",
+                };
+                return Err(JsonRpcError::custom(error_message.to_string()));
+            }
+
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
@@ -541,7 +554,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => return Ok(None),
-        BlockResult::DecodeFailed(e) => return Ok(None),
+        BlockResult::DecodeFailed(_) => return Ok(None),
     };
 
     let Some(transaction) = block.body.get(params.index.0 as usize) else {
