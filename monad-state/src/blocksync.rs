@@ -1,27 +1,26 @@
 use std::{
-    collections::{hash_map::Entry, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     marker::PhantomData,
     time::Duration,
 };
 
 use itertools::Itertools;
-use monad_consensus::messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage};
+use monad_consensus::messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage};
 use monad_consensus_types::{
-    block::{BlockPolicy, FullBlock},
+    block::{BlockIdRange, BlockPolicy, FullBlock},
     block_validator::BlockValidator,
     metrics::Metrics,
-    payload::StateRootValidator,
+    payload::{PayloadId, StateRootValidator},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, BlockSyncSelfRequester, Command, ConsensusEvent, LedgerCommand,
-    LoopbackCommand, MonadEvent, RouterCommand, StateSyncEvent, TimerCommand,
+    BlockSyncEvent, BlockSyncSelfRequester, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, NodeId, RouterTarget};
 use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
@@ -66,19 +65,21 @@ impl<ST: CertificateSignatureRecoverable> Default for BlockSync<ST> {
 pub(crate) enum BlockSyncCommand<SCT: SignatureCollection> {
     SendRequest {
         to: NodeId<SCT::NodeIdPubKey>,
-        request: RequestBlockSyncMessage,
+        request: BlockSyncRequestMessage,
     },
-    ScheduleTimeout(BlockId),
-    ResetTimeout(BlockId),
+    ScheduleTimeout(BlockSyncRequestMessage),
+    ResetTimeout(BlockSyncRequestMessage),
     /// Respond to an external block sync request
     SendResponse {
         to: NodeId<SCT::NodeIdPubKey>,
         response: BlockSyncResponseMessage<SCT>,
     },
-    /// Fetch the block from consensus ledger
-    FetchBlock(BlockId),
+    /// Fetch block headers from consensus ledger
+    FetchHeaders(BlockIdRange),
+    /// Fetch a payload from consensus ledger
+    FetchPayload(PayloadId),
     /// Response to a BlockSyncEvent::SelfRequest
-    Emit(BlockSyncSelfRequester, FullBlock<SCT>),
+    Emit(BlockSyncSelfRequester, (BlockIdRange, Vec<FullBlock<SCT>>)),
 }
 
 pub(super) struct BlockSyncChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -155,150 +156,150 @@ where
         match event {
             BlockSyncEvent::Request {
                 sender,
-                request: RequestBlockSyncMessage { block_id },
+                request
             } => {
-                let consensus_cached_block = match &self.consensus {
-                    ConsensusMode::Sync { .. } => None,
-                    ConsensusMode::Live(consensus) => consensus.fetch_uncommitted_block(&block_id),
-                };
+                // let consensus_cached_block = match &self.consensus {
+                //     ConsensusMode::Sync { .. } => None,
+                //     ConsensusMode::Live(consensus) => consensus.fetch_uncommitted_block(&block_id),
+                // };
 
-                if let Some(block) = consensus_cached_block {
-                    // use retrieved block if currently cached in pending block tree
-                    cmds.push(BlockSyncCommand::SendResponse {
-                        to: sender,
-                        response: BlockSyncResponseMessage::BlockFound(block),
-                    })
-                } else if !self.block_sync.self_requests.contains_key(&block_id) {
-                    // ask ledger
-                    let entry = self.block_sync.requests.entry(block_id).or_default();
-                    entry.insert(sender);
-                    cmds.push(BlockSyncCommand::FetchBlock(block_id))
-                } else {
-                    cmds.push(BlockSyncCommand::SendResponse {
-                        to: sender,
-                        response: BlockSyncResponseMessage::NotAvailable(block_id),
-                    })
-                }
+                // if let Some(block) = consensus_cached_block {
+                //     // use retrieved block if currently cached in pending block tree
+                //     cmds.push(BlockSyncCommand::SendResponse {
+                //         to: sender,
+                //         response: BlockSyncResponseMessage::BlockFound(block),
+                //     })
+                // } else if !self.block_sync.self_requests.contains_key(&block_id) {
+                //     // ask ledger
+                //     let entry = self.block_sync.requests.entry(block_id).or_default();
+                //     entry.insert(sender);
+                //     cmds.push(BlockSyncCommand::FetchBlock(block_id))
+                // } else {
+                //     cmds.push(BlockSyncCommand::SendResponse {
+                //         to: sender,
+                //         response: BlockSyncResponseMessage::NotAvailable(block_id),
+                //     })
+                // }
             }
             BlockSyncEvent::SelfRequest {
                 requester,
-                request: RequestBlockSyncMessage { block_id },
+                block_id_range: BlockIdRange { from, to },
             } => {
-                if requester != self.block_sync.self_request_mode {
-                    self.block_sync.self_requests.clear();
-                    self.block_sync.self_request_mode = requester;
-                }
-                if let Entry::Vacant(entry) = self.block_sync.self_requests.entry(block_id) {
-                    entry.insert(SelfRequest {
-                        requester,
-                        to: None,
-                    });
-                    cmds.push(BlockSyncCommand::FetchBlock(block_id));
-                } else {
-                    // already have outstanding request, don't need to do anything
-                }
+                // if requester != self.block_sync.self_request_mode {
+                //     self.block_sync.self_requests.clear();
+                //     self.block_sync.self_request_mode = requester;
+                // }
+                // if let Entry::Vacant(entry) = self.block_sync.self_requests.entry(block_id) {
+                //     entry.insert(SelfRequest {
+                //         requester,
+                //         to: None,
+                //     });
+                //     cmds.push(BlockSyncCommand::FetchBlock(block_id));
+                // } else {
+                //     // already have outstanding request, don't need to do anything
+                // }
             }
             BlockSyncEvent::SelfCancelRequest {
                 requester,
-                request: RequestBlockSyncMessage { block_id },
+                block_id_range: BlockIdRange { from, to },
             } => {
-                if let Entry::Occupied(entry) = self.block_sync.self_requests.entry(block_id) {
-                    if entry.get().requester == requester {
-                        entry.remove();
-                    }
-                }
+                // if let Entry::Occupied(entry) = self.block_sync.self_requests.entry(block_id) {
+                //     if entry.get().requester == requester {
+                //         entry.remove();
+                //     }
+                // }
             }
 
             BlockSyncEvent::SelfResponse { response } => {
-                let block_id = response.get_block_id();
-                let requesters = self
-                    .block_sync
-                    .requests
-                    .remove(&block_id)
-                    .unwrap_or_default();
-                cmds.extend(requesters.into_iter().map(|requester| {
-                    BlockSyncCommand::SendResponse {
-                        to: requester,
-                        response: response.clone(),
-                    }
-                }));
+                // let block_id = response.get_block_id();
+                // let requesters = self
+                //     .block_sync
+                //     .requests
+                //     .remove(&block_id)
+                //     .unwrap_or_default();
+                // cmds.extend(requesters.into_iter().map(|requester| {
+                //     BlockSyncCommand::SendResponse {
+                //         to: requester,
+                //         response: response.clone(),
+                //     }
+                // }));
 
-                if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
-                    let self_request = entry.get_mut();
-                    if self_request.to.is_none() {
-                        match response {
-                            BlockSyncResponseMessage::BlockFound(block) => {
-                                assert_eq!(
-                                    self_request.requester,
-                                    self.block_sync.self_request_mode
-                                );
-                                cmds.push(BlockSyncCommand::Emit(self_request.requester, block));
-                                entry.remove();
-                            }
-                            BlockSyncResponseMessage::NotAvailable(_) => {
-                                let to = pick_peer();
-                                self_request.to = Some(to);
-                                self.metrics.blocksync_events.blocksync_request += 1;
-                                cmds.push(BlockSyncCommand::SendRequest {
-                                    to,
-                                    request: RequestBlockSyncMessage { block_id },
-                                });
-                                cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
-                            }
-                        };
-                    }
-                }
+                // if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
+                //     let self_request = entry.get_mut();
+                //     if self_request.to.is_none() {
+                //         match response {
+                //             BlockSyncResponseMessage::BlockFound(block) => {
+                //                 assert_eq!(
+                //                     self_request.requester,
+                //                     self.block_sync.self_request_mode
+                //                 );
+                //                 cmds.push(BlockSyncCommand::Emit(self_request.requester, block));
+                //                 entry.remove();
+                //             }
+                //             BlockSyncResponseMessage::NotAvailable(_) => {
+                //                 let to = pick_peer();
+                //                 self_request.to = Some(to);
+                //                 self.metrics.blocksync_events.blocksync_request += 1;
+                //                 cmds.push(BlockSyncCommand::SendRequest {
+                //                     to,
+                //                     request: RequestBlockSyncMessage { block_id },
+                //                 });
+                //                 cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
+                //             }
+                //         };
+                //     }
+                // }
             }
             BlockSyncEvent::Response { sender, response } => {
-                let block_id = response.get_block_id();
-                if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
-                    let self_request = entry.get_mut();
-                    if self_request.to == Some(sender) {
-                        cmds.push(BlockSyncCommand::ResetTimeout(block_id));
-                        match response {
-                            BlockSyncResponseMessage::BlockFound(block) => {
-                                self.metrics.blocksync_events.blocksync_response_successful += 1;
-                                assert_eq!(
-                                    self_request.requester,
-                                    self.block_sync.self_request_mode
-                                );
-                                cmds.push(BlockSyncCommand::Emit(self_request.requester, block));
-                                entry.remove();
-                            }
-                            BlockSyncResponseMessage::NotAvailable(_) => {
-                                self.metrics.blocksync_events.blocksync_response_failed += 1;
-                                let to = pick_peer();
-                                self_request.to = Some(to);
-                                self.metrics.blocksync_events.blocksync_request += 1;
-                                cmds.push(BlockSyncCommand::SendRequest {
-                                    to,
-                                    request: RequestBlockSyncMessage { block_id },
-                                });
-                                cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
-                            }
-                        };
-                    } else {
-                        self.metrics.blocksync_events.blocksync_response_unexpected += 1;
-                    }
-                } else {
-                    self.metrics.blocksync_events.blocksync_response_unexpected += 1;
-                }
+                // let block_id = response.get_block_id();
+                // if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
+                //     let self_request = entry.get_mut();
+                //     if self_request.to == Some(sender) {
+                //         cmds.push(BlockSyncCommand::ResetTimeout(block_id));
+                //         match response {
+                //             BlockSyncResponseMessage::BlockFound(block) => {
+                //                 self.metrics.blocksync_events.blocksync_response_successful += 1;
+                //                 assert_eq!(
+                //                     self_request.requester,
+                //                     self.block_sync.self_request_mode
+                //                 );
+                //                 cmds.push(BlockSyncCommand::Emit(self_request.requester, block));
+                //                 entry.remove();
+                //             }
+                //             BlockSyncResponseMessage::NotAvailable(_) => {
+                //                 self.metrics.blocksync_events.blocksync_response_failed += 1;
+                //                 let to = pick_peer();
+                //                 self_request.to = Some(to);
+                //                 self.metrics.blocksync_events.blocksync_request += 1;
+                //                 cmds.push(BlockSyncCommand::SendRequest {
+                //                     to,
+                //                     request: RequestBlockSyncMessage { block_id },
+                //                 });
+                //                 cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
+                //             }
+                //         };
+                //     } else {
+                //         self.metrics.blocksync_events.blocksync_response_unexpected += 1;
+                //     }
+                // } else {
+                //     self.metrics.blocksync_events.blocksync_response_unexpected += 1;
+                // }
             }
             BlockSyncEvent::Timeout(request) => {
-                let block_id = request.block_id;
-                if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
-                    let self_request = entry.get_mut();
-                    if self_request.to.is_some() {
-                        let to = pick_peer();
-                        self_request.to = Some(to);
-                        self.metrics.blocksync_events.blocksync_request += 1;
-                        cmds.push(BlockSyncCommand::SendRequest {
-                            to,
-                            request: RequestBlockSyncMessage { block_id },
-                        });
-                        cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
-                    }
-                }
+                // let block_id = request.block_id;
+                // if let Entry::Occupied(mut entry) = self.block_sync.self_requests.entry(block_id) {
+                //     let self_request = entry.get_mut();
+                //     if self_request.to.is_some() {
+                //         let to = pick_peer();
+                //         self_request.to = Some(to);
+                //         self.metrics.blocksync_events.blocksync_request += 1;
+                //         cmds.push(BlockSyncCommand::SendRequest {
+                //             to,
+                //             request: RequestBlockSyncMessage { block_id },
+                //         });
+                //         cmds.push(BlockSyncCommand::ScheduleTimeout(block_id));
+                //     }
+                // }
             }
         };
         cmds.into_iter()
@@ -329,18 +330,18 @@ where
                     message: VerifiedMonadMessage::BlockSyncRequest(request),
                 })]
             }
-            BlockSyncCommand::ScheduleTimeout(block_id) => {
+            BlockSyncCommand::ScheduleTimeout(blocksync_request) => {
                 vec![Command::TimerCommand(TimerCommand::Schedule {
                     duration: wrapped.request_timeout,
-                    variant: TimeoutVariant::BlockSync(block_id),
+                    variant: TimeoutVariant::BlockSync(blocksync_request),
                     on_timeout: MonadEvent::BlockSyncEvent(BlockSyncEvent::Timeout(
-                        RequestBlockSyncMessage { block_id },
+                        blocksync_request,
                     )),
                 })]
             }
-            BlockSyncCommand::ResetTimeout(block_id) => {
+            BlockSyncCommand::ResetTimeout(blocksync_request) => {
                 vec![Command::TimerCommand(TimerCommand::ScheduleReset(
-                    TimeoutVariant::BlockSync(block_id),
+                    TimeoutVariant::BlockSync(blocksync_request),
                 ))]
             }
             BlockSyncCommand::SendResponse { to, response } => {
@@ -349,19 +350,27 @@ where
                     message: VerifiedMonadMessage::BlockSyncResponse(response),
                 })]
             }
-            BlockSyncCommand::FetchBlock(block_id) => {
-                vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(block_id))]
+            // BlockSyncCommand::FetchBlock(block_id) => {
+            //     vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(block_id))]
+            // }
+            BlockSyncCommand::FetchHeaders(block_id_range) => {
+                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchHeaders(block_id_range))]
             }
-            BlockSyncCommand::Emit(requester, full_block) => {
+            BlockSyncCommand::FetchPayload(payload_id) => {
+                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchPayload(payload_id))]
+            }
+            BlockSyncCommand::Emit(requester, (block_id_range, full_blocks)) => {
                 vec![Command::LoopbackCommand(LoopbackCommand::Forward(
                     match requester {
                         BlockSyncSelfRequester::StateSync => {
-                            MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync(full_block))
+                            MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync {
+                                block_id_range, full_blocks
+                            })
                         }
                         BlockSyncSelfRequester::Consensus => {
                             MonadEvent::ConsensusEvent(ConsensusEvent::BlockSync {
-                                block: full_block.block,
-                                payload: full_block.payload,
+                                block_id_range,
+                                full_blocks,
                             })
                         }
                     },

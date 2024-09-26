@@ -28,9 +28,9 @@ pub enum ProtocolMessage<SCT: SignatureCollection> {
 impl<SCT: Debug + SignatureCollection> Debug for ProtocolMessage<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProtocolMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
-            ProtocolMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
-            ProtocolMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+            ProtocolMessage::Proposal(p) => f.debug_tuple("").field(p).finish(),
+            ProtocolMessage::Vote(v) => f.debug_tuple("").field(v).finish(),
+            ProtocolMessage::Timeout(t) => f.debug_tuple("").field(t).finish(),
         }
     }
 }

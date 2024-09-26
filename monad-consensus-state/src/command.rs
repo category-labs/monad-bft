@@ -10,7 +10,7 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::FullBlock,
+    block::{BlockIdRange, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -43,14 +43,14 @@ where
     ScheduleReset,
     /// Commit blocks to ledger
     LedgerCommit(Vec<FullBlock<SCT>>),
-    /// Requests BlockSync
+    /// Requests a range of blocks through BlockSync
     /// Serviced by block_sync in MonadState
-    RequestSync {
-        block_id: BlockId,
+    RequestRangeSync {
+        block_id_range: BlockIdRange,
     },
     /// Cancels BlockSync request
-    CancelSync {
-        block_id: BlockId,
+    CancelRangeSync {
+        block_id_range: BlockIdRange,
     },
     /// Too far behind, request StateSync with:
     /// 1. New blocktree root

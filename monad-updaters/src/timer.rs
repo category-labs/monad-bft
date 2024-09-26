@@ -7,8 +7,7 @@ use std::{
 
 use futures::Stream;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::TimerCommand;
-use monad_types::TimeoutVariant;
+use monad_executor_glue::{TimeoutVariant, TimerCommand};
 use tokio::task::{AbortHandle, JoinSet};
 
 /// This updater allows timer events to be scheduled to fire in the future

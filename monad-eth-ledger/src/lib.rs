@@ -104,21 +104,24 @@ where
                         }
                     }
                 }
-                LedgerCommand::LedgerFetch(block_id) => {
-                    self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: match self.block_ids.get(&block_id) {
-                            Some(round) => BlockSyncResponseMessage::BlockFound(
-                                self.blocks
-                                    .get(round)
-                                    .expect("block_id mapping inconsistent")
-                                    .clone(),
-                            ),
-                            None => BlockSyncResponseMessage::NotAvailable(block_id),
-                        },
-                    });
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake()
-                    }
+                LedgerCommand::LedgerFetchHeaders(block_id_range) => {
+                    // self.events.push_back(BlockSyncEvent::SelfResponse {
+                    //     response: match self.block_ids.get(&block_id) {
+                    //         Some(round) => BlockSyncResponseMessage::BlockFound(
+                    //             self.blocks
+                    //                 .get(round)
+                    //                 .expect("block_id mapping inconsistent")
+                    //                 .clone(),
+                    //         ),
+                    //         None => BlockSyncResponseMessage::NotAvailable(block_id),
+                    //     },
+                    // });
+                    // if let Some(waker) = self.waker.take() {
+                    //     waker.wake()
+                    // }
+                }
+                LedgerCommand::LedgerFetchPayload(payload_id) => {
+
                 }
             }
         }

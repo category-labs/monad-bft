@@ -175,6 +175,10 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         self.info.vote.vote_info.id
     }
 
+    pub fn get_parent_block_id(&self) -> BlockId {
+        self.info.vote.vote_info.parent_id
+    }
+
     pub fn get_seq_num(&self) -> SeqNum {
         self.info.vote.vote_info.seq_num
     }

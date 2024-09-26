@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
-    payload::Payload,
+    block::{Block, BlockIdRange, BlockType, FullBlock},
+    payload::{Payload, PayloadId},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
@@ -12,7 +12,8 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_types::{BlockId, EnumDiscriminant, NodeId};
+use monad_types::{EnumDiscriminant, NodeId};
+use zerocopy::AsBytes;
 
 /// Consensus protocol vote message
 ///
@@ -98,47 +99,97 @@ impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
     }
 }
 
-/// Request block sync message
+/// Request block sync message sent to a peer
 ///
-/// The node sends the block sync request to repair path from a block to the
-/// root in the block tree
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RequestBlockSyncMessage {
-    pub block_id: BlockId,
+/// The node sends the block sync request either missing blocks headers or
+/// a single payload
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum BlockSyncRequestMessage {
+    Headers(BlockIdRange),
+    Payload(PayloadId),
 }
 
-impl Hashable for RequestBlockSyncMessage {
+impl Hashable for BlockSyncRequestMessage {
     fn hash(&self, state: &mut impl Hasher) {
-        self.block_id.hash(state);
+        state.update(std::any::type_name::<Self>().as_bytes());
+        match self {
+            BlockSyncRequestMessage::Headers(block_id_range) => {
+                EnumDiscriminant(1).hash(state);
+                block_id_range.hash(state);
+            }
+            BlockSyncRequestMessage::Payload(payload_id) => {
+                EnumDiscriminant(2).hash(state);
+                state.update(payload_id.0.as_bytes());
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockSyncHeadersResponse<SCT: SignatureCollection> {
+    Found((BlockIdRange, Vec<Block<SCT>>)),
+    NotAvailable(BlockIdRange),
+}
+
+impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(std::any::type_name::<Self>().as_bytes());
+        match self {
+            BlockSyncHeadersResponse::Found((block_id_range, blocks)) => {
+                EnumDiscriminant(1).hash(state);
+                block_id_range.hash(state);
+                for block in blocks {
+                    block.hash(state);
+                }
+            }
+            BlockSyncHeadersResponse::NotAvailable(block_id_range) => {
+                EnumDiscriminant(2).hash(state);
+                block_id_range.hash(state);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockSyncPayloadResponse {
+    Found((PayloadId, Payload)),
+    NotAvailable(PayloadId),
+}
+
+impl Hashable for BlockSyncPayloadResponse {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(std::any::type_name::<Self>().as_bytes());
+        match self {
+            BlockSyncPayloadResponse::Found((payload_id, payload)) => {
+                EnumDiscriminant(1).hash(state);
+                state.update(payload_id.0.as_bytes());
+                payload.hash(state);
+            }
+            BlockSyncPayloadResponse::NotAvailable(payload_id) => {
+                EnumDiscriminant(2).hash(state);
+                state.update(payload_id.0.as_bytes());
+            }
+        }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
-    BlockFound(FullBlock<SCT>),
-    NotAvailable(BlockId),
+    HeadersResponse(BlockSyncHeadersResponse<SCT>),
+    PayloadResponse(BlockSyncPayloadResponse),
 }
 
-impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
-    pub fn get_block_id(&self) -> BlockId {
-        match self {
-            BlockSyncResponseMessage::BlockFound(b) => b.get_id(),
-            BlockSyncResponseMessage::NotAvailable(bid) => *bid,
-        }
-    }
-}
-
-impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
+impl<SCT: SignatureCollection> Hashable for BlockSyncResponseMessage<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(std::any::type_name::<Self>().as_bytes());
         match self {
-            BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
+            BlockSyncResponseMessage::HeadersResponse(headers_response) => {
                 EnumDiscriminant(1).hash(state);
-                unverified_full_block.hash(state);
+                headers_response.hash(state);
             }
-            BlockSyncResponseMessage::NotAvailable(bid) => {
+            BlockSyncResponseMessage::PayloadResponse(payload_response) => {
                 EnumDiscriminant(2).hash(state);
-                bid.hash(state)
+                payload_response.hash(state)
             }
         }
     }

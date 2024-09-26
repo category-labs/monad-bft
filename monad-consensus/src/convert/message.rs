@@ -11,8 +11,9 @@ use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
-            BlockSyncResponseMessage, PeerStateRootMessage, ProposalMessage,
-            RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+            BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncRequestMessage,
+            BlockSyncResponseMessage, PeerStateRootMessage, ProposalMessage, TimeoutMessage,
+            VoteMessage,
         },
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
@@ -107,61 +108,197 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
     }
 }
 
-impl From<&RequestBlockSyncMessage> for ProtoRequestBlockSyncMessage {
-    fn from(value: &RequestBlockSyncMessage) -> Self {
-        ProtoRequestBlockSyncMessage {
-            block_id: Some((&value.block_id).into()),
+impl From<&BlockSyncRequestMessage> for ProtoBlockSyncRequestMessage {
+    fn from(value: &BlockSyncRequestMessage) -> Self {
+        let request_type = match value {
+            BlockSyncRequestMessage::Headers(block_id_range) => {
+                proto_block_sync_request_message::RequestType::BlockIdRange(block_id_range.into())
+            }
+            BlockSyncRequestMessage::Payload(payload_id) => {
+                proto_block_sync_request_message::RequestType::PayloadId(payload_id.into())
+            }
+        };
+
+        Self {
+            request_type: Some(request_type),
         }
     }
 }
 
-impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
+impl TryFrom<ProtoBlockSyncRequestMessage> for BlockSyncRequestMessage {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoRequestBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(RequestBlockSyncMessage {
-            block_id: value
-                .block_id
-                .ok_or(Self::Error::MissingRequiredField(
-                    "RequestBlockSyncMessage.block_id".to_owned(),
-                ))?
-                .try_into()?,
-        })
+    fn try_from(value: ProtoBlockSyncRequestMessage) -> Result<Self, Self::Error> {
+        let request_message = match value.request_type {
+            Some(proto_block_sync_request_message::RequestType::BlockIdRange(block_id_range)) => {
+                BlockSyncRequestMessage::Headers(block_id_range.try_into()?)
+            }
+            Some(proto_block_sync_request_message::RequestType::PayloadId(payload_id)) => {
+                BlockSyncRequestMessage::Payload(payload_id.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockSyncRequestMessage.request_type".to_owned(),
+            ))?,
+        };
+
+        Ok(request_message)
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlockSyncMessage {
-    fn from(response: &BlockSyncResponseMessage<SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&BlockSyncHeadersResponse<SCT>>
+    for ProtoBlockSyncHeadersResponse
+{
+    fn from(value: &BlockSyncHeadersResponse<SCT>) -> Self {
         Self {
-            oneof_message: Some(match response {
-                BlockSyncResponseMessage::BlockFound(b) => {
-                    proto_block_sync_message::OneofMessage::BlockFound(b.into())
+            one_of_message: Some(match value {
+                BlockSyncHeadersResponse::Found((block_id_range, blocksync_headers)) => {
+                    proto_block_sync_headers_response::OneOfMessage::HeadersFound(
+                        ProtoBlockSyncHeaders {
+                            block_id_range: Some(block_id_range.into()),
+                            headers: blocksync_headers
+                                .iter()
+                                .map(|b| b.into())
+                                .collect::<Vec<_>>(),
+                        },
+                    )
                 }
-                BlockSyncResponseMessage::NotAvailable(bid) => {
-                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
+                BlockSyncHeadersResponse::NotAvailable(block_id_range) => {
+                    proto_block_sync_headers_response::OneOfMessage::NotAvailable(
+                        block_id_range.into(),
+                    )
                 }
             }),
         }
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncResponseMessage<SCT> {
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncHeadersResponse>
+    for BlockSyncHeadersResponse<SCT>
+{
     type Error = ProtoError;
 
-    fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
-        let msg = match value.oneof_message {
-            Some(proto_block_sync_message::OneofMessage::BlockFound(b)) => {
-                BlockSyncResponseMessage::BlockFound(b.try_into()?)
-            }
-            Some(proto_block_sync_message::OneofMessage::NotAvailable(bid)) => {
-                BlockSyncResponseMessage::NotAvailable(bid.try_into()?)
+    fn try_from(value: ProtoBlockSyncHeadersResponse) -> Result<Self, Self::Error> {
+        let blocksync_header_response = match value.one_of_message {
+            Some(proto_block_sync_headers_response::OneOfMessage::HeadersFound(
+                blocksync_headers,
+            )) => BlockSyncHeadersResponse::Found((
+                blocksync_headers
+                    .block_id_range
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "BlockSyncHeaders.block_id_range".to_owned(),
+                    ))?
+                    .try_into()?,
+                blocksync_headers
+                    .headers
+                    .into_iter()
+                    .map(|b| b.try_into())
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            Some(proto_block_sync_headers_response::OneOfMessage::NotAvailable(block_id_range)) => {
+                BlockSyncHeadersResponse::NotAvailable(block_id_range.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
-                "BlockSyncMessage.oneofmessage".to_owned(),
+                "BlockSyncHeadersResponse.one_of_message".to_owned(),
             ))?,
         };
 
-        Ok(msg)
+        Ok(blocksync_header_response)
+    }
+}
+
+impl From<&BlockSyncPayloadResponse> for ProtoBlockSyncPayloadResponse {
+    fn from(value: &BlockSyncPayloadResponse) -> Self {
+        Self {
+            one_of_message: Some(match value {
+                BlockSyncPayloadResponse::Found((payload_id, payload)) => {
+                    proto_block_sync_payload_response::OneOfMessage::PayloadFound(
+                        ProtoBlockSyncPayload {
+                            payload_id: Some(payload_id.into()),
+                            payload: Some(payload.into()),
+                        },
+                    )
+                }
+                BlockSyncPayloadResponse::NotAvailable(payload_id) => {
+                    proto_block_sync_payload_response::OneOfMessage::NotAvailable(payload_id.into())
+                }
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtoBlockSyncPayloadResponse> for BlockSyncPayloadResponse {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockSyncPayloadResponse) -> Result<Self, Self::Error> {
+        let blocksync_header_response = match value.one_of_message {
+            Some(proto_block_sync_payload_response::OneOfMessage::PayloadFound(
+                blocksync_payload,
+            )) => BlockSyncPayloadResponse::Found((
+                blocksync_payload
+                    .payload_id
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "BlockSyncPayload.payload_id".to_owned(),
+                    ))?
+                    .try_into()?,
+                blocksync_payload
+                    .payload
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "BlockSyncPayload.payload".to_owned(),
+                    ))?
+                    .try_into()?,
+            )),
+            Some(proto_block_sync_payload_response::OneOfMessage::NotAvailable(payload_id)) => {
+                BlockSyncPayloadResponse::NotAvailable(payload_id.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockSyncPayloadResponse.one_of_message".to_owned(),
+            ))?,
+        };
+
+        Ok(blocksync_header_response)
+    }
+}
+
+impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>>
+    for ProtoBlockSyncResponseMessage
+{
+    fn from(response: &BlockSyncResponseMessage<SCT>) -> Self {
+        Self {
+            blocksync_response: Some(match response {
+                BlockSyncResponseMessage::HeadersResponse(headers_response) => {
+                    proto_block_sync_response_message::BlocksyncResponse::HeadersResponse(
+                        headers_response.into(),
+                    )
+                }
+                BlockSyncResponseMessage::PayloadResponse(payload_response) => {
+                    proto_block_sync_response_message::BlocksyncResponse::PayloadResponse(
+                        payload_response.into(),
+                    )
+                }
+            }),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncResponseMessage>
+    for BlockSyncResponseMessage<SCT>
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockSyncResponseMessage) -> Result<Self, Self::Error> {
+        let blocksync_response_message = match value.blocksync_response {
+            Some(proto_block_sync_response_message::BlocksyncResponse::HeadersResponse(
+                headers_response,
+            )) => BlockSyncResponseMessage::HeadersResponse(headers_response.try_into()?),
+            Some(proto_block_sync_response_message::BlocksyncResponse::PayloadResponse(
+                payload_response,
+            )) => BlockSyncResponseMessage::PayloadResponse(payload_response.try_into()?),
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockSyncResponseMessage.blocksync_response".to_owned(),
+            ))?,
+        };
+
+        Ok(blocksync_response_message)
     }
 }
 

@@ -28,6 +28,11 @@ message ProtoPayload {
   ProtoTransactionPayload txns = 1;
 }
 
+message ProtoBlockIdRange {
+  monad_proto.basic.ProtoBlockId from = 1;
+  monad_proto.basic.ProtoBlockId to = 2;
+}
+
 enum ProtoBlockKind {
   EXECUTABLE = 0;
   NULL = 1;

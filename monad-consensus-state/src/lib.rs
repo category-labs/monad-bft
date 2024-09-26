@@ -11,7 +11,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockPolicy, BlockType, FullBlock},
+    block::{Block, BlockIdRange, BlockKind, BlockPolicy, BlockType, FullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
@@ -680,7 +680,13 @@ where
         cmds.extend(
             to_cancel
                 .into_iter()
-                .map(|block_id| ConsensusCommand::CancelSync { block_id }),
+                // TODO: Fix field from
+                .map(|block_id| ConsensusCommand::CancelRangeSync {
+                    block_id_range: BlockIdRange {
+                        from: block_id,
+                        to: block_id,
+                    },
+                }),
         );
 
         // statesync if too far from tip && have close enough committed block to statesync to
@@ -1313,8 +1319,11 @@ where
             return Vec::new();
         }
 
-        vec![ConsensusCommand::RequestSync {
-            block_id: qc.get_block_id(),
+        vec![ConsensusCommand::RequestRangeSync {
+            block_id_range: BlockIdRange {
+                from: qc.get_parent_block_id(),
+                to: qc.get_block_id(),
+            },
         }]
     }
 

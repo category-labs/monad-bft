@@ -8,7 +8,7 @@ use monad_proto::{
 };
 
 use crate::{
-    block::{Block, BlockKind, FullBlock},
+    block::{Block, BlockIdRange, BlockKind, FullBlock},
     payload::{
         Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
         TransactionPayload,
@@ -268,6 +268,35 @@ impl TryFrom<ProtoPayload> for Payload {
             txns: value
                 .txns
                 .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
+                .try_into()?,
+        })
+    }
+}
+
+impl From<&BlockIdRange> for ProtoBlockIdRange {
+    fn from(value: &BlockIdRange) -> Self {
+        ProtoBlockIdRange {
+            from: Some((&value.from).into()),
+            to: Some((&value.to).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoBlockIdRange> for BlockIdRange {
+    type Error = ProtoError;
+    fn try_from(value: ProtoBlockIdRange) -> Result<Self, Self::Error> {
+        Ok(Self {
+            from: value
+                .from
+                .ok_or(Self::Error::MissingRequiredField(
+                    "BlockIdRange.from".to_owned(),
+                ))?
+                .try_into()?,
+            to: value
+                .to
+                .ok_or(Self::Error::MissingRequiredField(
+                    "BlockIdRange.to".to_owned(),
+                ))?
                 .try_into()?,
         })
     }

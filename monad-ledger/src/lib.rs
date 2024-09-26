@@ -13,9 +13,9 @@ use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use futures::Stream;
 use monad_block_persist::{BlockPersist, FileBlockPersist};
-use monad_consensus::messages::message::BlockSyncResponseMessage;
+use monad_consensus::messages::message::{BlockSyncHeadersResponse, BlockSyncResponseMessage};
 use monad_consensus_types::{
-    block::{BlockType, FullBlock as MonadBlock},
+    block::{BlockIdRange, BlockType, FullBlock as MonadBlock},
     payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
     signature_collection::SignatureCollection,
 };
@@ -223,26 +223,30 @@ where
     }
 
     fn get_ledger_fetch_response(&self, block_id: BlockId) -> BlockSyncResponseMessage<SCT> {
-        let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
-            &self.bft_block_persist,
-            &block_id,
-        )
-        .and_then(|block| {
-            let payload_id = block.payload_id;
-            let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
-                &self.bft_block_persist,
-                &payload_id,
-            );
-            match maybe_payload {
-                Ok(payload) => Ok(MonadBlock { block, payload }),
-                Err(e) => Err(e),
-            }
-        });
+        // let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
+        //     &self.bft_block_persist,
+        //     &block_id,
+        // )
+        // .and_then(|block| {
+        //     let payload_id = block.payload_id;
+        //     let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
+        //         &self.bft_block_persist,
+        //         &payload_id,
+        //     );
+        //     match maybe_payload {
+        //         Ok(payload) => Ok(MonadBlock { block, payload }),
+        //         Err(e) => Err(e),
+        //     }
+        // });
 
-        match maybe_response {
-            Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
-            Err(_) => BlockSyncResponseMessage::NotAvailable(block_id),
-        }
+        // match maybe_response {
+        //     Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
+        //     Err(_) => BlockSyncResponseMessage::NotAvailable(block_id),
+        // }
+        BlockSyncResponseMessage::HeadersResponse(BlockSyncHeadersResponse::NotAvailable(BlockIdRange {
+            from: block_id,
+            to: block_id
+        }))
     }
 }
 
@@ -269,20 +273,23 @@ where
                         self.last_commit = Some(seqnum);
                     }
                 }
-                LedgerCommand::LedgerFetch(block_id) => {
+                LedgerCommand::LedgerFetchHeaders(block_id_range) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector
-                    if let Some(cached_block) = self.block_cache.get(&block_id) {
-                        self.fetches_tx
-                            .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
-                            .expect("failed to write to fetches_tx");
-                    } else {
-                        let fetches_tx = self.fetches_tx.clone();
+                    // if let Some(cached_block) = self.block_cache.get(&block_id) {
+                    //     self.fetches_tx
+                    //         .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
+                    //         .expect("failed to write to fetches_tx");
+                    // } else {
+                    //     let fetches_tx = self.fetches_tx.clone();
 
-                        let response = self.get_ledger_fetch_response(block_id);
-                        fetches_tx
-                            .send(response)
-                            .expect("failed to write to fetches_tx");
-                    }
+                    //     let response = self.get_ledger_fetch_response(block_id);
+                    //     fetches_tx
+                    //         .send(response)
+                    //         .expect("failed to write to fetches_tx");
+                    // }
+                }
+                LedgerCommand::LedgerFetchPayload(payload_id) => {
+
                 }
             }
         }
@@ -303,9 +310,10 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.fetches.poll_recv(cx).map(|response| {
             let response = response.expect("fetches_tx never dropped");
-            if let BlockSyncResponseMessage::BlockFound(block) = &response {
-                self.update_cache(block.clone())
-            }
+            // TODO: figure out how the cache should work
+            // if let BlockSyncResponseMessage::BlockFound(block) = &response {
+            //     self.update_cache(block.clone())
+            // }
             Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
                 response,
             }))

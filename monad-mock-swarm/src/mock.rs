@@ -15,11 +15,11 @@ use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, Message, MonadEvent, RouterCommand, TimerCommand, TimestampCommand,
+    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
-use monad_types::{NodeId, TimeoutVariant};
+use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
     loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
@@ -484,7 +484,7 @@ mod tests {
     use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
-    use monad_types::{BlockId, TimeoutVariant};
+    use monad_types::BlockId;
 
     use super::*;
 

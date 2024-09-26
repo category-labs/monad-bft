@@ -428,3 +428,17 @@ impl<SCT: SignatureCollection> Hashable for FullBlock<SCT> {
         self.payload.hash(state);
     }
 }
+
+// BlockIdRange represents a range of blocks
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockIdRange {
+    pub from: BlockId,
+    pub to: BlockId,
+}
+
+impl Hashable for BlockIdRange {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.from.hash(state);
+        self.to.hash(state);
+    }
+}

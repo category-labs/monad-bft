@@ -127,16 +127,16 @@ impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEven
                     request: Some(request.into()),
                 })
             }
-            BlockSyncEvent::SelfRequest { requester, request } => {
+            BlockSyncEvent::SelfRequest { requester, block_id_range } => {
                 proto_block_sync_event::Event::SelfRequest(ProtoBlockSyncSelfRequest {
                     requester: requester.into(),
-                    request: Some(request.into()),
+                    block_id_range: Some(block_id_range.into()),
                 })
             }
-            BlockSyncEvent::SelfCancelRequest { requester, request } => {
+            BlockSyncEvent::SelfCancelRequest { requester, block_id_range } => {
                 proto_block_sync_event::Event::SelfCancelRequest(ProtoBlockSyncSelfRequest {
                     requester: requester.into(),
-                    request: Some(request.into()),
+                    block_id_range: Some(block_id_range.into()),
                 })
             }
             BlockSyncEvent::Response { sender, response } => {
@@ -180,10 +180,10 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
                 proto_block_sync_event::Event::SelfRequest(self_request) => {
                     BlockSyncEvent::SelfRequest {
                         requester: self_request.requester.try_into()?,
-                        request: self_request
-                            .request
+                        block_id_range: self_request
+                            .block_id_range
                             .ok_or(ProtoError::MissingRequiredField(
-                                "BlockSyncSelfRequest.request".to_owned(),
+                                "BlockSyncSelfRequest.block_id_range".to_owned(),
                             ))?
                             .try_into()?,
                     }
@@ -191,10 +191,10 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
                 proto_block_sync_event::Event::SelfCancelRequest(self_request) => {
                     BlockSyncEvent::SelfCancelRequest {
                         requester: self_request.requester.try_into()?,
-                        request: self_request
-                            .request
+                        block_id_range: self_request
+                            .block_id_range
                             .ok_or(ProtoError::MissingRequiredField(
-                                "BlockSyncCancelRequest.request".to_owned(),
+                                "BlockSyncCancelRequest.block_id_range".to_owned(),
                             ))?
                             .try_into()?,
                     }
@@ -578,8 +578,14 @@ impl<SCT: SignatureCollection> From<&StateSyncEvent<SCT>> for ProtoStateSyncEven
                     },
                 )),
             },
-            StateSyncEvent::BlockSync(block) => Self {
-                event: Some(proto_state_sync_event::Event::BlockSync(block.into())),
+            StateSyncEvent::BlockSync { block_id_range, full_blocks } => Self {
+                event: Some(proto_state_sync_event::Event::BlockSync(ProtoBlockSyncFullBlocks {
+                    block_id_range: Some(block_id_range.into()),
+                    full_blocks: full_blocks
+                        .iter()
+                        .map(|b| b.into())
+                        .collect::<Vec<_>>(),
+                })),
             },
         }
     }
@@ -732,8 +738,20 @@ impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<S
                             .try_into()?,
                     }
                 }
-                proto_state_sync_event::Event::BlockSync(block) => {
-                    StateSyncEvent::BlockSync(block.try_into()?)
+                proto_state_sync_event::Event::BlockSync(blocksync_blocks) => {
+                    StateSyncEvent::BlockSync {
+                        block_id_range: blocksync_blocks
+                            .block_id_range
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "BlockSync.block_id_range".to_owned(),
+                            ))?
+                            .try_into()?,
+                        full_blocks: blocksync_blocks
+                            .full_blocks
+                            .into_iter()
+                            .map(|b| b.try_into())
+                            .collect::<Result<Vec<_>, _>>()?,
+                    }
                 }
             }
         })

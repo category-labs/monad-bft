@@ -12,13 +12,13 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, PeerStateRootMessage, RequestBlockSyncMessage},
+        message::{BlockSyncRequestMessage, BlockSyncResponseMessage, PeerStateRootMessage},
     },
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockType},
+    block::{BlockIdRange, BlockPolicy, BlockType},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
@@ -554,7 +554,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
-    BlockSyncRequest(RequestBlockSyncMessage),
+    BlockSyncRequest(BlockSyncRequestMessage),
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
@@ -580,8 +580,8 @@ where
     /// Consensus protocol message
     Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
 
-    /// Request a missing block given BlockId
-    BlockSyncRequest(RequestBlockSyncMessage),
+    /// Request missing block headers or payload
+    BlockSyncRequest(BlockSyncRequestMessage),
 
     /// Block sync response
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
@@ -1013,7 +1013,8 @@ where
                         commands.extend(self.update(MonadEvent::BlockSyncEvent(
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
-                                request: RequestBlockSyncMessage { block_id },
+                                // TODO: Fix with exact block id or range
+                                block_id_range: BlockIdRange { from: block_id, to: block_id }
                             },
                         )));
                     }
@@ -1048,7 +1049,7 @@ where
                         self.maybe_start_consensus()
                     }
                 }
-                StateSyncEvent::BlockSync(full_block) => {
+                StateSyncEvent::BlockSync { block_id_range, full_blocks } => {
                     let ConsensusMode::Sync {
                         root, block_buffer, ..
                     } = &mut self.consensus
@@ -1058,13 +1059,16 @@ where
 
                     let mut commands = Vec::new();
 
-                    block_buffer.handle_blocksync(full_block);
+                    for full_block in full_blocks {
+                        block_buffer.handle_blocksync(full_block);
+                    }
                     // committed-block-sync
                     if let Some(block_id) = block_buffer.needs_blocksync(root) {
                         commands.extend(self.update(MonadEvent::BlockSyncEvent(
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
-                                request: RequestBlockSyncMessage { block_id },
+                                // TODO: Fix with exact block id or range
+                                block_id_range: BlockIdRange { from: block_id, to: block_id }
                             },
                         )));
                     }
