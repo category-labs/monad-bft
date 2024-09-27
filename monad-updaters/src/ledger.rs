@@ -7,9 +7,12 @@ use std::{
 };
 
 use futures::Stream;
-use monad_consensus::messages::message::BlockSyncResponseMessage;
+use monad_consensus::messages::message::{
+    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+};
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
+    block::{BlockIdRange, BlockType, FullBlock},
+    payload::PayloadId,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -75,6 +78,50 @@ where
             _phantom: Default::default(),
         }
     }
+
+    fn get_headers(&self, block_id_range: BlockIdRange) -> BlockSyncHeadersResponse<SCT> {
+        // TODO: configurable
+        let max_reads = 10;
+
+        let final_block_id = block_id_range.from;
+        let next_block_id = block_id_range.to;
+        let mut num_reads = 0;
+        let mut headers = Vec::new();
+        while next_block_id != final_block_id {
+            if num_reads >= max_reads {
+                // trace!("header reads over limit for block id range");
+                return BlockSyncHeadersResponse::NotAvailable(block_id_range);
+            }
+
+            let full_block = match self.block_ids.get(&next_block_id) {
+                Some(round) => self
+                    .blocks
+                    .get(round)
+                    .expect("block_id mapping inconsistent")
+                    .clone(),
+                None => {
+                    return BlockSyncHeadersResponse::NotAvailable(block_id_range);
+                }
+            };
+
+            headers.push(full_block.block);
+            num_reads += 1;
+        }
+
+        BlockSyncHeadersResponse::Found((block_id_range, headers))
+    }
+
+    fn get_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+        if let Some((_, full_block)) = self
+            .blocks
+            .iter()
+            .find(|(_, full_block)| full_block.block.payload_id == payload_id)
+        {
+            return BlockSyncPayloadResponse::Found((payload_id, full_block.payload.clone()));
+        }
+
+        BlockSyncPayloadResponse::NotAvailable(payload_id)
+    }
 }
 
 impl<ST, SCT> Executor for MockLedger<ST, SCT>
@@ -111,23 +158,14 @@ where
                     }
                 }
                 LedgerCommand::LedgerFetchHeaders(block_id_range) => {
-                    // self.events.push_back(BlockSyncEvent::SelfResponse {
-                    //     response: match self.block_ids.get(&block_id) {
-                    //         Some(round) => BlockSyncResponseMessage::BlockFound(
-                    //             self.blocks
-                    //                 .get(round)
-                    //                 .expect("block_id mapping inconsistent")
-                    //                 .clone(),
-                    //         ),
-                    //         None => BlockSyncResponseMessage::NotAvailable(block_id),
-                    //     },
-                    // });
-                    // if let Some(waker) = self.waker.take() {
-                    //     waker.wake()
-                    // }
+                    self.events.push_back(BlockSyncEvent::SelfResponse {
+                        response: BlockSyncResponseMessage::HeadersResponse(self.get_headers(block_id_range))
+                    });
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
-
+                    self.events.push_back(BlockSyncEvent::SelfResponse {
+                        response: BlockSyncResponseMessage::PayloadResponse(self.get_payload(payload_id))
+                    });
                 }
             }
         }

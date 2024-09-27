@@ -22,14 +22,13 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
             ConsensusEvent::Timeout => {
                 proto_consensus_event::Event::Timeout(ProtoPaceMakerTimeout {})
             }
-            ConsensusEvent::BlockSync { block_id_range, full_blocks } => {
-                proto_consensus_event::Event::BlockSync(ProtoBlockSyncFullBlocks {
-                    block_id_range: Some(block_id_range.into()),
-                    full_blocks: full_blocks.iter()
-                                    .map(|b| b.into())
-                                    .collect::<Vec<_>>(),
-                })
-            }
+            ConsensusEvent::BlockSync {
+                block_id_range,
+                full_blocks,
+            } => proto_consensus_event::Event::BlockSync(ProtoBlockSyncFullBlocks {
+                block_id_range: Some(block_id_range.into()),
+                full_blocks: full_blocks.iter().map(|b| b.into()).collect::<Vec<_>>(),
+            }),
         };
         Self { event: Some(event) }
     }

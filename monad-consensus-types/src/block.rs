@@ -429,7 +429,9 @@ impl<SCT: SignatureCollection> Hashable for FullBlock<SCT> {
     }
 }
 
-// BlockIdRange represents a range of blocks
+// BlockIdRange represents a range of blocks (from, to]
+// block with blockid 'from' is not included
+// block with blockid 'to' is included
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockIdRange {
     pub from: BlockId,

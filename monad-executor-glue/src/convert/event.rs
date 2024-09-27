@@ -127,18 +127,20 @@ impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEven
                     request: Some(request.into()),
                 })
             }
-            BlockSyncEvent::SelfRequest { requester, block_id_range } => {
-                proto_block_sync_event::Event::SelfRequest(ProtoBlockSyncSelfRequest {
-                    requester: requester.into(),
-                    block_id_range: Some(block_id_range.into()),
-                })
-            }
-            BlockSyncEvent::SelfCancelRequest { requester, block_id_range } => {
-                proto_block_sync_event::Event::SelfCancelRequest(ProtoBlockSyncSelfRequest {
-                    requester: requester.into(),
-                    block_id_range: Some(block_id_range.into()),
-                })
-            }
+            BlockSyncEvent::SelfRequest {
+                requester,
+                block_id_range,
+            } => proto_block_sync_event::Event::SelfRequest(ProtoBlockSyncSelfRequest {
+                requester: requester.into(),
+                block_id_range: Some(block_id_range.into()),
+            }),
+            BlockSyncEvent::SelfCancelRequest {
+                requester,
+                block_id_range,
+            } => proto_block_sync_event::Event::SelfCancelRequest(ProtoBlockSyncSelfRequest {
+                requester: requester.into(),
+                block_id_range: Some(block_id_range.into()),
+            }),
             BlockSyncEvent::Response { sender, response } => {
                 proto_block_sync_event::Event::Response(ProtoBlockSyncResponseWithSender {
                     sender: Some(sender.into()),
@@ -578,14 +580,16 @@ impl<SCT: SignatureCollection> From<&StateSyncEvent<SCT>> for ProtoStateSyncEven
                     },
                 )),
             },
-            StateSyncEvent::BlockSync { block_id_range, full_blocks } => Self {
-                event: Some(proto_state_sync_event::Event::BlockSync(ProtoBlockSyncFullBlocks {
-                    block_id_range: Some(block_id_range.into()),
-                    full_blocks: full_blocks
-                        .iter()
-                        .map(|b| b.into())
-                        .collect::<Vec<_>>(),
-                })),
+            StateSyncEvent::BlockSync {
+                block_id_range,
+                full_blocks,
+            } => Self {
+                event: Some(proto_state_sync_event::Event::BlockSync(
+                    ProtoBlockSyncFullBlocks {
+                        block_id_range: Some(block_id_range.into()),
+                        full_blocks: full_blocks.iter().map(|b| b.into()).collect::<Vec<_>>(),
+                    },
+                )),
             },
         }
     }

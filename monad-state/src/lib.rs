@@ -1014,7 +1014,10 @@ where
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
                                 // TODO: Fix with exact block id or range
-                                block_id_range: BlockIdRange { from: block_id, to: block_id }
+                                block_id_range: BlockIdRange {
+                                    from: block_id,
+                                    to: block_id,
+                                },
                             },
                         )));
                     }
@@ -1049,7 +1052,10 @@ where
                         self.maybe_start_consensus()
                     }
                 }
-                StateSyncEvent::BlockSync { block_id_range, full_blocks } => {
+                StateSyncEvent::BlockSync {
+                    block_id_range,
+                    full_blocks,
+                } => {
                     let ConsensusMode::Sync {
                         root, block_buffer, ..
                     } = &mut self.consensus
@@ -1068,7 +1074,10 @@ where
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
                                 // TODO: Fix with exact block id or range
-                                block_id_range: BlockIdRange { from: block_id, to: block_id }
+                                block_id_range: BlockIdRange {
+                                    from: block_id,
+                                    to: block_id,
+                                },
                             },
                         )));
                     }

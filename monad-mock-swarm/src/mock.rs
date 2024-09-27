@@ -15,7 +15,7 @@ use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand
+    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;

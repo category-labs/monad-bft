@@ -21,7 +21,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    BlockSyncEvent, BlockSyncSelfRequester, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand
+    BlockSyncEvent, BlockSyncSelfRequester, CheckpointCommand, Command, ConsensusEvent,
+    LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum};
@@ -219,13 +221,16 @@ where
                 }
             }
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
-            ConsensusEvent::BlockSync { block_id_range, full_blocks } => {
+            ConsensusEvent::BlockSync {
+                block_id_range,
+                full_blocks,
+            } => {
                 // TODO remove block id range ?
                 let mut cmds = Vec::new();
                 for full_block in full_blocks {
                     cmds.extend(consensus.handle_block_sync(full_block.block, full_block.payload))
                 }
-                
+
                 cmds
             }
         };
@@ -359,7 +364,7 @@ where
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
                         requester: BlockSyncSelfRequester::Consensus,
-                        block_id_range
+                        block_id_range,
                     }),
                 )));
             }
@@ -367,7 +372,7 @@ where
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
                         requester: BlockSyncSelfRequester::Consensus,
-                        block_id_range
+                        block_id_range,
                     }),
                 )));
             }

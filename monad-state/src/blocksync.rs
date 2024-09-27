@@ -17,7 +17,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, BlockSyncSelfRequester, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand
+    BlockSyncEvent, BlockSyncSelfRequester, Command, ConsensusEvent, LedgerCommand,
+    LoopbackCommand, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{BlockId, NodeId, RouterTarget};
@@ -154,10 +155,7 @@ where
 
         let mut cmds = Vec::new();
         match event {
-            BlockSyncEvent::Request {
-                sender,
-                request
-            } => {
+            BlockSyncEvent::Request { sender, request } => {
                 // let consensus_cached_block = match &self.consensus {
                 //     ConsensusMode::Sync { .. } => None,
                 //     ConsensusMode::Live(consensus) => consensus.fetch_uncommitted_block(&block_id),
@@ -354,17 +352,22 @@ where
             //     vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(block_id))]
             // }
             BlockSyncCommand::FetchHeaders(block_id_range) => {
-                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchHeaders(block_id_range))]
+                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchHeaders(
+                    block_id_range,
+                ))]
             }
             BlockSyncCommand::FetchPayload(payload_id) => {
-                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchPayload(payload_id))]
+                vec![Command::LedgerCommand(LedgerCommand::LedgerFetchPayload(
+                    payload_id,
+                ))]
             }
             BlockSyncCommand::Emit(requester, (block_id_range, full_blocks)) => {
                 vec![Command::LoopbackCommand(LoopbackCommand::Forward(
                     match requester {
                         BlockSyncSelfRequester::StateSync => {
                             MonadEvent::StateSyncEvent(StateSyncEvent::BlockSync {
-                                block_id_range, full_blocks
+                                block_id_range,
+                                full_blocks,
                             })
                         }
                         BlockSyncSelfRequester::Consensus => {

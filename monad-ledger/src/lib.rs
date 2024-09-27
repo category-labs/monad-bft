@@ -13,10 +13,12 @@ use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use futures::Stream;
 use monad_block_persist::{BlockPersist, FileBlockPersist};
-use monad_consensus::messages::message::{BlockSyncHeadersResponse, BlockSyncResponseMessage};
+use monad_consensus::messages::message::{
+    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+};
 use monad_consensus_types::{
     block::{BlockIdRange, BlockType, FullBlock as MonadBlock},
-    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
+    payload::{ExecutionProtocol, FullTransactionList, PayloadId, TransactionPayload},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -222,31 +224,75 @@ where
         }
     }
 
-    fn get_ledger_fetch_response(&self, block_id: BlockId) -> BlockSyncResponseMessage<SCT> {
-        // let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
-        //     &self.bft_block_persist,
-        //     &block_id,
-        // )
-        // .and_then(|block| {
-        //     let payload_id = block.payload_id;
-        //     let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
-        //         &self.bft_block_persist,
-        //         &payload_id,
-        //     );
-        //     match maybe_payload {
-        //         Ok(payload) => Ok(MonadBlock { block, payload }),
-        //         Err(e) => Err(e),
-        //     }
-        // });
+    fn ledger_fetch_headers(&self, block_id_range: BlockIdRange) -> BlockSyncHeadersResponse<SCT> {
+        // TODO: configurable
+        let max_reads = 10;
 
-        // match maybe_response {
-        //     Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
-        //     Err(_) => BlockSyncResponseMessage::NotAvailable(block_id),
-        // }
-        BlockSyncResponseMessage::HeadersResponse(BlockSyncHeadersResponse::NotAvailable(BlockIdRange {
-            from: block_id,
-            to: block_id
-        }))
+        let final_block_id = block_id_range.from;
+        let next_block_id = block_id_range.to;
+        let mut num_reads = 0;
+        let mut headers = Vec::new();
+        while next_block_id != final_block_id {
+            if num_reads >= max_reads {
+                trace!("header reads over limit for block id range");
+                return BlockSyncHeadersResponse::NotAvailable(block_id_range);
+            }
+
+            // read block from BlockPersist
+            let block = match <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
+                &self.bft_block_persist,
+                &next_block_id,
+            ) {
+                Ok(block) => block,
+                Err(err) => {
+                    // TODO print error and block id
+                    trace!("error while reading header from block persist");
+                    return BlockSyncHeadersResponse::NotAvailable(block_id_range);
+                }
+            };
+
+            headers.push(block);
+            num_reads += 1;
+        }
+
+        BlockSyncHeadersResponse::Found((block_id_range, headers))
+    }
+
+    fn ledger_fetch_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+        match <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
+            &self.bft_block_persist,
+            &payload_id,
+        ) {
+            Ok(payload) => BlockSyncPayloadResponse::Found((payload_id, payload)),
+            Err(err) => {
+                // TODO print error and payload id
+                trace!("error while reading payload from block persist");
+                BlockSyncPayloadResponse::NotAvailable(payload_id)
+            }
+        }
+    }
+
+    fn ledger_fetch_full_block(&self, block_id: BlockId) -> Option<MonadBlock<SCT>> {
+        let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
+            &self.bft_block_persist,
+            &block_id,
+        )
+        .and_then(|block| {
+            let payload_id = block.payload_id;
+            let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
+                &self.bft_block_persist,
+                &payload_id,
+            );
+            match maybe_payload {
+                Ok(payload) => Ok(MonadBlock { block, payload }),
+                Err(e) => Err(e),
+            }
+        });
+
+        match maybe_response {
+            Ok(full_block) => Some(full_block),
+            Err(_) => None,
+        }
     }
 }
 
@@ -275,21 +321,22 @@ where
                 }
                 LedgerCommand::LedgerFetchHeaders(block_id_range) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector
-                    // if let Some(cached_block) = self.block_cache.get(&block_id) {
-                    //     self.fetches_tx
-                    //         .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
-                    //         .expect("failed to write to fetches_tx");
-                    // } else {
-                    //     let fetches_tx = self.fetches_tx.clone();
-
-                    //     let response = self.get_ledger_fetch_response(block_id);
-                    //     fetches_tx
-                    //         .send(response)
-                    //         .expect("failed to write to fetches_tx");
-                    // }
+                    let fetches_tx = self.fetches_tx.clone();
+                    let response = BlockSyncResponseMessage::HeadersResponse(
+                        self.ledger_fetch_headers(block_id_range),
+                    );
+                    fetches_tx
+                        .send(response)
+                        .expect("failed to write to fetches_tx");
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
-
+                    let fetches_tx = self.fetches_tx.clone();
+                    let response = BlockSyncResponseMessage::PayloadResponse(
+                        self.ledger_fetch_payload(payload_id),
+                    );
+                    fetches_tx
+                        .send(response)
+                        .expect("failed to write to fetches_tx");
                 }
             }
         }

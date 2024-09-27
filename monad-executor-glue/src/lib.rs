@@ -83,12 +83,14 @@ impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
             LedgerCommand::LedgerCommit(blocks) => {
                 f.debug_tuple("LedgerCommit").field(blocks).finish()
             }
-            LedgerCommand::LedgerFetchHeaders(block_id_range) => {
-                f.debug_tuple("LedgerFetchHeaders").field(block_id_range).finish()
-            }
-            LedgerCommand::LedgerFetchPayload(payload_id) => {
-                f.debug_tuple("LedgerFetchPayload").field(payload_id).finish()
-            }
+            LedgerCommand::LedgerFetchHeaders(block_id_range) => f
+                .debug_tuple("LedgerFetchHeaders")
+                .field(block_id_range)
+                .finish(),
+            LedgerCommand::LedgerFetchPayload(payload_id) => f
+                .debug_tuple("LedgerFetchPayload")
+                .field(payload_id)
+                .finish(),
         }
     }
 }
@@ -272,7 +274,10 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", unverified_message)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
-            ConsensusEvent::BlockSync { block_id_range, full_blocks } => f
+            ConsensusEvent::BlockSync {
+                block_id_range,
+                full_blocks,
+            } => f
                 .debug_struct("BlockSync")
                 .field("block_id_range", block_id_range)
                 .field("full_blocks", full_blocks)

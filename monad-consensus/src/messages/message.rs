@@ -179,6 +179,24 @@ pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
     PayloadResponse(BlockSyncPayloadResponse),
 }
 
+impl<SCT: SignatureCollection> BlockSyncResponseMessage<SCT> {
+    pub fn found_headers(block_id_range: BlockIdRange, headers: Vec<Block<SCT>>) -> Self {
+        Self::HeadersResponse(BlockSyncHeadersResponse::Found((block_id_range, headers)))
+    }
+
+    pub fn headers_not_available(block_id_range: BlockIdRange) -> Self {
+        Self::HeadersResponse(BlockSyncHeadersResponse::NotAvailable(block_id_range))
+    }
+
+    pub fn found_payload(payload_id: PayloadId, payload: Payload) -> Self {
+        Self::PayloadResponse(BlockSyncPayloadResponse::Found((payload_id, payload)))
+    }
+
+    pub fn payload_not_available(payload_id: PayloadId) -> Self {
+        Self::PayloadResponse(BlockSyncPayloadResponse::NotAvailable(payload_id))
+    }
+}
+
 impl<SCT: SignatureCollection> Hashable for BlockSyncResponseMessage<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(std::any::type_name::<Self>().as_bytes());
