@@ -38,6 +38,9 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     /// the QC contained in this block
     fn get_parent_round(&self) -> Round;
 
+    // PayloadId of the associated payload
+    fn get_payload_id(&self) -> PayloadId;
+
     /// Sequence number when this block was proposed
     fn get_seq_num(&self) -> SeqNum;
 
@@ -223,6 +226,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
         self.qc.get_round()
     }
 
+    fn get_payload_id(&self) -> PayloadId {
+        self.payload_id
+    }
+
     fn get_seq_num(&self) -> SeqNum {
         self.execution.seq_num
     }
@@ -376,6 +383,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
 
     fn get_parent_round(&self) -> Round {
         self.block.qc.get_round()
+    }
+
+    fn get_payload_id(&self) -> PayloadId {
+        self.block.payload_id
     }
 
     fn get_seq_num(&self) -> SeqNum {

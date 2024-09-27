@@ -466,7 +466,7 @@ where
     /// Core consensus algorithm state machine
     consensus: ConsensusMode<SCT, BPT, SBT>,
     /// Handles blocksync servicing
-    block_sync: BlockSync<ST>,
+    block_sync: BlockSync<ST, SCT>,
 
     /// Algorithm for choosing leaders for the consensus algorithm
     leader_election: LT,

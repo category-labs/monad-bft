@@ -16,7 +16,7 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::{
-        ExecutionProtocol, Payload, RandaoReveal, StateRootResult, StateRootValidator,
+        ExecutionProtocol, Payload, PayloadId, RandaoReveal, StateRootResult, StateRootValidator,
         TransactionPayload,
     },
     quorum_certificate::{QuorumCertificate, Rank},
@@ -258,6 +258,10 @@ where
         self.pending_block_tree
             .get_block(bid)
             .map(|b| b.clone().get_full_block()) //TODO revisit
+    }
+
+    pub fn fetch_uncommitted_payload(&self, payload_id: PayloadId) -> Option<Payload> {
+        self.pending_block_tree.get_payload(payload_id)
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT, BPT, SBT> {

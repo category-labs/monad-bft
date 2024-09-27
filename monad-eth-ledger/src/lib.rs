@@ -8,7 +8,9 @@ use std::{
 
 use alloy_rlp::Decodable;
 use futures::Stream;
-use monad_consensus::messages::message::{BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage};
+use monad_consensus::messages::message::{
+    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+};
 use monad_consensus_types::{
     block::{BlockIdRange, BlockType, FullBlock},
     payload::{PayloadId, TransactionPayload},
@@ -150,12 +152,16 @@ where
                 }
                 LedgerCommand::LedgerFetchHeaders(block_id_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: BlockSyncResponseMessage::HeadersResponse(self.get_headers(block_id_range))
+                        response: BlockSyncResponseMessage::HeadersResponse(
+                            self.get_headers(block_id_range),
+                        ),
                     });
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: BlockSyncResponseMessage::PayloadResponse(self.get_payload(payload_id))
+                        response: BlockSyncResponseMessage::PayloadResponse(
+                            self.get_payload(payload_id),
+                        ),
                     });
                 }
             }

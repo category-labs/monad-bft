@@ -1,16 +1,22 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{hash_map::Entry, BTreeSet, HashMap},
     marker::PhantomData,
     time::Duration,
 };
 
 use itertools::Itertools;
-use monad_consensus::messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage};
+use monad_consensus::{
+    messages::message::{
+        BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncRequestMessage,
+        BlockSyncResponseMessage,
+    },
+    validation::signing::verify_certificates,
+};
 use monad_consensus_types::{
-    block::{BlockIdRange, BlockPolicy, FullBlock},
+    block::{Block, BlockIdRange, BlockPolicy, BlockType, FullBlock},
     block_validator::BlockValidator,
     metrics::Metrics,
-    payload::{PayloadId, StateRootValidator},
+    payload::{self, Payload, PayloadId, StateRootValidator},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -23,6 +29,7 @@ use monad_executor_glue::{
 use monad_state_backend::StateBackend;
 use monad_types::{BlockId, NodeId, RouterTarget};
 use monad_validator::{
+    epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
@@ -33,10 +40,22 @@ use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
 /// Responds to BlockSync requests from other nodes
 #[derive(Debug)]
-pub(crate) struct BlockSync<ST: CertificateSignatureRecoverable> {
-    requests: HashMap<BlockId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+pub(crate) struct BlockSync<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> {
+    // requests: HashMap<BlockId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
-    self_requests: HashMap<BlockId, SelfRequest<CertificateSignaturePubKey<ST>>>,
+    // self_requests: HashMap<BlockId, SelfRequest<CertificateSignaturePubKey<ST>>>,
+
+    // Requests from peers
+    header_requests: HashMap<BlockIdRange, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+    payload_requests: HashMap<PayloadId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+
+    // Requests from self
+    self_header_requests: HashMap<BlockIdRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
+    self_payload_requests: HashMap<PayloadId, SelfRequest<CertificateSignaturePubKey<ST>>>,
+    // Parallel payload requests from self after receiving headers
+    // If payload is None, the payload request is still in flight
+    self_completed_header_requests: HashMap<BlockIdRange, Vec<(Block<SCT>, Option<Payload>)>>,
+
     self_request_mode: BlockSyncSelfRequester,
 
     rng: ChaCha8Rng,
@@ -52,12 +71,20 @@ struct SelfRequest<PT: PubKey> {
     to: Option<NodeId<PT>>,
 }
 
-impl<ST: CertificateSignatureRecoverable> Default for BlockSync<ST> {
+impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for BlockSync<ST, SCT> {
     fn default() -> Self {
         Self {
-            requests: Default::default(),
-            self_requests: Default::default(),
+            // requests: Default::default(),
+            // self_requests: Default::default(),
+            header_requests: Default::default(),
+            payload_requests: Default::default(),
+
+            self_header_requests: Default::default(),
+            self_payload_requests: Default::default(),
+            self_completed_header_requests: Default::default(),
+
             self_request_mode: BlockSyncSelfRequester::StateSync,
+
             rng: ChaCha8Rng::seed_from_u64(123456),
         }
     }
@@ -92,10 +119,11 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    block_sync: &'a mut BlockSync<ST>,
+    block_sync: &'a mut BlockSync<ST, SCT>,
 
     /// BlockSync queries consensus first when receiving BlockSyncRequest
     consensus: &'a ConsensusMode<SCT, BPT, SBT>,
+    epoch_manager: &'a EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -122,12 +150,70 @@ where
         Self {
             block_sync: &mut monad_state.block_sync,
             consensus: &monad_state.consensus,
+            epoch_manager: &monad_state.epoch_manager,
             val_epoch_map: &monad_state.val_epoch_map,
             delta: &monad_state.consensus_config.delta,
             nodeid: &monad_state.nodeid,
             metrics: &mut monad_state.metrics,
             _phantom: PhantomData,
         }
+    }
+
+    fn self_headers_request_exists(&self, block_id_range: BlockIdRange) -> bool {
+        self.block_sync
+            .self_header_requests
+            .contains_key(&block_id_range)
+            || self
+                .block_sync
+                .self_completed_header_requests
+                .contains_key(&block_id_range)
+    }
+
+    fn verify_block_headers(
+        &self,
+        block_id_range: BlockIdRange,
+        headers: &Vec<Block<SCT>>,
+    ) -> bool {
+        let num_headers = headers.len();
+
+        // atleast one block header was requested and received
+        // TODO: doesn't have to be assert
+        assert_ne!(block_id_range.from, block_id_range.to);
+        assert!(num_headers > 0);
+
+        // The id of the last header must be block_id_range.to
+        if block_id_range.to != headers.last().unwrap().get_id() {
+            return false;
+        }
+
+        // verify that the headers form a chain between block_id_range.from and block_id_range.to
+        // by verifying the QCs and their parent block ids
+        for (index, block_header) in headers.iter().enumerate() {
+            let qc = &block_header.qc;
+            // verify the QC
+            if let Err(_err) =
+                verify_certificates(self.epoch_manager, self.val_epoch_map, &None, qc)
+            {
+                return false;
+            }
+
+            // verify the QC points to correct block id
+            let previous_block_id = if index == 0 {
+                // the QC first header should point to block_id_range.from
+                block_id_range.from
+            } else {
+                // the QC should point to the previous block
+                headers[index - 1].get_id()
+            };
+
+            if qc.get_block_id() != previous_block_id {
+                return false;
+            }
+
+            // TODO verify block id
+        }
+
+        true
     }
 
     pub(super) fn update(
@@ -178,34 +264,78 @@ where
                 //         response: BlockSyncResponseMessage::NotAvailable(block_id),
                 //     })
                 // }
+                match request {
+                    BlockSyncRequestMessage::Headers(block_id_range) => {
+                        let entry = self
+                            .block_sync
+                            .header_requests
+                            .entry(block_id_range)
+                            .or_default();
+                        entry.insert(sender);
+                        // TODO: retrieve some of the headers from consensus first and request rest from ledger
+                        cmds.push(BlockSyncCommand::FetchHeaders(block_id_range))
+                    }
+                    BlockSyncRequestMessage::Payload(payload_id) => {
+                        let consensus_cached_payload = match &self.consensus {
+                            ConsensusMode::Sync { .. } => None,
+                            ConsensusMode::Live(consensus) => {
+                                consensus.fetch_uncommitted_payload(payload_id)
+                            }
+                        };
+
+                        if let Some(payload) = consensus_cached_payload {
+                            cmds.push(BlockSyncCommand::SendResponse {
+                                to: sender,
+                                response: BlockSyncResponseMessage::PayloadResponse(
+                                    BlockSyncPayloadResponse::Found((payload_id, payload)),
+                                ),
+                            });
+                        } else {
+                            let entry = self
+                                .block_sync
+                                .payload_requests
+                                .entry(payload_id)
+                                .or_default();
+                            entry.insert(sender);
+
+                            cmds.push(BlockSyncCommand::FetchPayload(payload_id))
+                        }
+                    }
+                };
             }
             BlockSyncEvent::SelfRequest {
                 requester,
-                block_id_range: BlockIdRange { from, to },
+                block_id_range,
             } => {
-                // if requester != self.block_sync.self_request_mode {
-                //     self.block_sync.self_requests.clear();
-                //     self.block_sync.self_request_mode = requester;
-                // }
-                // if let Entry::Vacant(entry) = self.block_sync.self_requests.entry(block_id) {
-                //     entry.insert(SelfRequest {
-                //         requester,
-                //         to: None,
-                //     });
-                //     cmds.push(BlockSyncCommand::FetchBlock(block_id));
-                // } else {
-                //     // already have outstanding request, don't need to do anything
-                // }
+                if requester != self.block_sync.self_request_mode {
+                    self.block_sync.self_header_requests.clear();
+                    self.block_sync.self_payload_requests.clear();
+                    self.block_sync.self_request_mode = requester;
+                }
+
+                if !self.self_headers_request_exists(block_id_range) {
+                    let existing_entry = self.block_sync.self_header_requests.insert(
+                        block_id_range,
+                        SelfRequest {
+                            requester,
+                            to: None,
+                        },
+                    );
+                    assert!(existing_entry.is_none(), "asserted above");
+                }
             }
             BlockSyncEvent::SelfCancelRequest {
                 requester,
-                block_id_range: BlockIdRange { from, to },
+                block_id_range,
             } => {
-                // if let Entry::Occupied(entry) = self.block_sync.self_requests.entry(block_id) {
-                //     if entry.get().requester == requester {
-                //         entry.remove();
-                //     }
-                // }
+                if let Entry::Occupied(entry) =
+                    self.block_sync.self_header_requests.entry(block_id_range)
+                {
+                    if entry.get().requester == requester {
+                        entry.remove();
+                    }
+                }
+                // TODO also check self_completed_header_requests
             }
 
             BlockSyncEvent::SelfResponse { response } => {
@@ -247,6 +377,105 @@ where
                 //         };
                 //     }
                 // }
+                match response {
+                    BlockSyncResponseMessage::HeadersResponse(headers_response) => {
+                        let block_id_range = match headers_response {
+                            BlockSyncHeadersResponse::Found((bid_range, _)) => bid_range,
+                            BlockSyncHeadersResponse::NotAvailable(bid_range) => bid_range,
+                        };
+
+                        let requesters = self
+                            .block_sync
+                            .header_requests
+                            .remove(&block_id_range)
+                            .unwrap_or_default();
+                        cmds.extend(requesters.into_iter().map(|requester| {
+                            BlockSyncCommand::SendResponse {
+                                to: requester,
+                                response: BlockSyncResponseMessage::HeadersResponse(
+                                    headers_response.clone(),
+                                ),
+                            }
+                        }));
+
+                        if let Entry::Occupied(mut entry) =
+                            self.block_sync.self_header_requests.entry(block_id_range)
+                        {
+                            let self_request = entry.get_mut();
+                            if self_request.to.is_none() {
+                                match headers_response {
+                                    BlockSyncHeadersResponse::Found((block_id_range, headers)) => {
+                                        assert_eq!(
+                                            self_request.requester,
+                                            self.block_sync.self_request_mode
+                                        );
+                                        entry.remove();
+
+                                        // verify headers
+                                        if !self.verify_block_headers(block_id_range, &headers) {
+                                            panic!("self response should never fail block headers verification");
+                                        }
+
+                                        if !self
+                                            .block_sync
+                                            .self_completed_header_requests
+                                            .contains_key(&block_id_range)
+                                        {
+                                            for block_header in headers.iter() {
+                                                let payload_id = block_header.get_payload_id();
+
+                                                // fetch payload only if we haven't already requested
+                                                if !self
+                                                    .block_sync
+                                                    .self_payload_requests
+                                                    .contains_key(&payload_id)
+                                                {
+                                                    cmds.push(BlockSyncCommand::FetchPayload(
+                                                        block_header.get_payload_id(),
+                                                    ));
+                                                }
+                                            }
+
+                                            let payload_requests = headers
+                                                .into_iter()
+                                                .map(|block| (block, None))
+                                                .collect();
+                                            self.block_sync
+                                                .self_completed_header_requests
+                                                .insert(block_id_range, payload_requests);
+                                        }
+                                    }
+                                    BlockSyncHeadersResponse::NotAvailable(block_id_range) => {}
+                                }
+                            }
+                        }
+                    }
+                    BlockSyncResponseMessage::PayloadResponse(payload_response) => {
+                        let payload_id = match payload_response {
+                            BlockSyncPayloadResponse::Found((payload_id, _)) => payload_id,
+                            BlockSyncPayloadResponse::NotAvailable(payload_id) => payload_id,
+                        };
+
+                        let requesters = self
+                            .block_sync
+                            .payload_requests
+                            .remove(&payload_id)
+                            .unwrap_or_default();
+                        cmds.extend(requesters.into_iter().map(|requester| {
+                            BlockSyncCommand::SendResponse {
+                                to: requester,
+                                response: BlockSyncResponseMessage::PayloadResponse(
+                                    payload_response.clone(),
+                                ),
+                            }
+                        }));
+
+                        match payload_response {
+                            BlockSyncPayloadResponse::Found((payload_id, payload)) => {}
+                            BlockSyncPayloadResponse::NotAvailable(payload_id) => {}
+                        }
+                    }
+                }
             }
             BlockSyncEvent::Response { sender, response } => {
                 // let block_id = response.get_block_id();

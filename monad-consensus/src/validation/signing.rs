@@ -477,7 +477,8 @@ fn validate_commit_result(vote: &Vote) -> Result<(), Error> {
     }
 }
 
-fn verify_certificates<SCT, VTF, VT>(
+// TODO: remove pub
+pub fn verify_certificates<SCT, VTF, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     tc: &Option<TimeoutCertificate<SCT>>,

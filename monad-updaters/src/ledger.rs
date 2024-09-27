@@ -159,12 +159,16 @@ where
                 }
                 LedgerCommand::LedgerFetchHeaders(block_id_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: BlockSyncResponseMessage::HeadersResponse(self.get_headers(block_id_range))
+                        response: BlockSyncResponseMessage::HeadersResponse(
+                            self.get_headers(block_id_range),
+                        ),
                     });
                 }
                 LedgerCommand::LedgerFetchPayload(payload_id) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: BlockSyncResponseMessage::PayloadResponse(self.get_payload(payload_id))
+                        response: BlockSyncResponseMessage::PayloadResponse(
+                            self.get_payload(payload_id),
+                        ),
                     });
                 }
             }
