@@ -8,7 +8,7 @@ use actix_web::{
 };
 use clap::Parser;
 use eth_json_types::serialize_result;
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
@@ -55,7 +55,7 @@ use crate::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
     triedb::TriedbEnv,
-    txpool::{
+    vpool::{
         monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
     },
     websocket::Disconnect,
@@ -79,7 +79,7 @@ mod metrics;
 mod trace;
 mod trace_handlers;
 mod triedb;
-mod txpool;
+mod vpool;
 mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
@@ -246,7 +246,7 @@ async fn rpc_select(
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_sendRawTransaction(
-                app_state.mempool_sender.clone(),
+                &app_state.tx_pool,
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -483,9 +483,16 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "txpool_content" => monad_txpool_content().await.map(serialize_result)?,
-        "txpool_contentFrom" => monad_txpool_contentFrom().await.map(serialize_result)?,
+        "txpool_contentFrom" => {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_txpool_contentFrom(&app_state.tx_pool, params)
+                .await
+                .map(serialize_result)?
+        }
         "txpool_inspect" => monad_txpool_inspect().await.map(serialize_result)?,
-        "txpool_status" => monad_txpool_status().await.map(serialize_result)?,
+        "txpool_status" => monad_txpool_status(&app_state.tx_pool)
+            .await
+            .map(serialize_result)?,
         "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }
@@ -504,6 +511,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
+    tx_pool: Arc<vpool::VirtualPool>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -524,6 +532,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
+        tx_pool: Arc<vpool::VirtualPool>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -534,6 +543,7 @@ impl MonadRpcResources {
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
+            tx_pool,
         }
     }
 }
@@ -623,18 +633,38 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
+    let tx_pool = Arc::new(vpool::VirtualPool::new(
+        ipc_sender.clone(),
+        args.vpool_capacity,
+    ));
+
+    let triedb_env = args
+        .triedb_path
+        .clone()
+        .as_deref()
+        .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
+
+    // We need to spawn a task to handle changes to the base fee, and block updates
+    let tx_pool2 = tx_pool.clone();
+    let triedb_env2 = triedb_env.clone();
+    tokio::task::spawn(async move {
+        let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
+        let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
+        while let Some(block) = watcher.next().await {
+            tx_pool2.new_block(block, 1_000).await;
+        }
+    });
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
-        args.triedb_path
-            .clone()
-            .as_deref()
-            .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize)),
+        triedb_env,
         Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
+        tx_pool,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -730,16 +760,17 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
         }))
         .await;
         (app, m)
     }
 
-    fn make_tx_legacy() -> (B256, String) {
+    fn make_tx_legacy(nonce: u64) -> (B256, String) {
         let input = vec![0; 64];
         let transaction = Transaction::Legacy(TxLegacy {
             chain_id: Some(1337),
-            nonce: 0,
+            nonce,
             gas_price: 1000,
             gas_limit: 30000,
             to: TransactionKind::Call(Address::random()),
@@ -757,12 +788,12 @@ mod tests {
         (txn.recalculate_hash(), txn.envelope_encoded().to_string())
     }
 
-    fn make_tx_eip1559() -> (B256, String) {
+    fn make_tx_eip1559(nonce: u64) -> (B256, String) {
         let input = vec![0; 64];
         let transaction = Transaction::Eip1559(TxEip1559 {
             chain_id: 1337,
-            nonce: 0,
-            max_fee_per_gas: 456,
+            nonce,
+            max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 123,
             gas_limit: 30000,
             to: TransactionKind::Call(Address::random()),
@@ -827,7 +858,7 @@ mod tests {
 
         let test_input = [make_tx_legacy, make_tx_eip1559];
         for (i, f) in test_input.iter().enumerate() {
-            let (expected_hash, rawtx) = f();
+            let (expected_hash, rawtx) = f(i as u64);
             let payload = json!(
                 {
                     "jsonrpc": "2.0",

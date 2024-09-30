@@ -142,6 +142,7 @@ ratatui = "0.26.0"
 rayon = "1.7"
 reqwest = { version = "0.11", features = ["json"] }
 rtrb = "0.3"
+scc = "2.2.0"
 scrypt = { version = "0.11", default-features = false }
 secp256k1 = "0.26"
 serde = "1.0"

@@ -104,13 +104,13 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use crate::{
-        create_app, tests::MonadRpcResourcesState, ExecutionLedgerPath, MonadRpcResources,
+        create_app, tests::MonadRpcResourcesState, vpool, ExecutionLedgerPath, MonadRpcResources,
     };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
         let resources = MonadRpcResources {
-            mempool_sender: ipc_sender,
+            mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,
@@ -118,6 +118,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender, 20_000)),
         };
         (
             MonadRpcResourcesState { ipc_receiver },

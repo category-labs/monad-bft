@@ -175,7 +175,7 @@ pub trait Triedb {
     fn get_receipts(
         &self,
         block_id: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, JsonRpcError>> + Send + Sync;
     fn get_transaction(
         &self,
         txn_index: u64,
@@ -184,11 +184,11 @@ pub trait Triedb {
     fn get_transactions(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, JsonRpcError>> + Send + Sync;
     fn get_block_header(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, JsonRpcError>> + Send + Sync;
     fn get_transaction_location_by_hash(
         &self,
         tx_hash: EthTxHash,

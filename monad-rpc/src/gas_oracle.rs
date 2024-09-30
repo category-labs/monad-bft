@@ -1,17 +1,8 @@
-use std::{
-    cmp::{max, Ordering},
-    collections::VecDeque,
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use reth_primitives::{Block, TransactionSigned};
 use reth_rpc_types::TransactionReceipt;
 use tracing::warn;
-
-// Defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
-const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
-// Defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
-const ELASTICITY_MULTIPLIER: u64 = 2;
 
 /// Number of transactions to sample in a block
 const BLOCK_TX_SAMPLE_SIZE: usize = 3;
@@ -100,7 +91,7 @@ impl GasOracle for Oracle {
         Ok(())
     }
 
-    // Base fee specification defined in [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)
+    // The base fee is currently static, and will be not dynamically adjust.
     fn base_fee(&self) -> Option<u64> {
         let block = if let Ok(cache) = self.cache.try_lock() {
             cache.front().cloned()
@@ -110,26 +101,7 @@ impl GasOracle for Oracle {
 
         let block = block.as_ref()?;
 
-        let gas_target = block.block_gas_limit / ELASTICITY_MULTIPLIER;
-        let base_fee = block.base_fee;
-        let gas_used = block.block_gas_used;
-
-        match gas_used.cmp(&gas_target) {
-            Ordering::Equal => Some(base_fee),
-            Ordering::Greater => {
-                let delta = gas_used - gas_target;
-                let delta = max(
-                    base_fee * delta / gas_target / BASE_FEE_MAX_CHANGE_DENOMINATOR,
-                    1,
-                );
-                Some(base_fee + delta)
-            }
-            Ordering::Less => {
-                let delta = gas_target - gas_used;
-                let delta = base_fee * delta / gas_target / BASE_FEE_MAX_CHANGE_DENOMINATOR;
-                Some(base_fee.saturating_sub(delta))
-            }
-        }
+        Some(block.base_fee)
     }
 }
 
@@ -293,70 +265,5 @@ mod tests {
 
         let tip = oracle.tip().unwrap();
         assert_eq!(tip, 103);
-    }
-
-    #[test]
-    fn oracle_base_fee_changes() {
-        let oracle = Oracle::new(Some(2));
-
-        // Block that is less than half full.
-        let block0 = Block {
-            header: Header {
-                gas_used: 21_000 * 2,
-                base_fee_per_gas: Some(1_000),
-                number: 0,
-                gas_limit: 100_000,
-                ..Default::default()
-            },
-            body: vec![make_tx(1000), make_tx(1002)],
-            ..Default::default()
-        };
-        let receipts = vec![
-            TransactionReceipt {
-                gas_used: Some(U256::from(21_000)),
-                ..Default::default()
-            },
-            TransactionReceipt {
-                gas_used: Some(U256::from(21_000)),
-                ..Default::default()
-            },
-        ];
-
-        oracle.process_block(block0, receipts).unwrap();
-        assert_eq!(oracle.base_fee().unwrap(), 980); // Block is half full, base fee drops
-        assert_eq!(oracle.tip(), None); // Transactions so far do not have tips above IGNORE_PRICE.
-
-        // Block that more than half full.
-        let block1 = Block {
-            header: Header {
-                gas_used: 21_000 * 3,
-                base_fee_per_gas: Some(980),
-                number: 1,
-                gas_limit: 100_000,
-                ..Default::default()
-            },
-            body: vec![make_tx(1100), make_tx(1101), make_tx(1102)],
-            ..Default::default()
-        };
-
-        let receipts = vec![
-            TransactionReceipt {
-                gas_used: Some(U256::from(21_000)),
-                ..Default::default()
-            },
-            TransactionReceipt {
-                gas_used: Some(U256::from(21_000)),
-                ..Default::default()
-            },
-            TransactionReceipt {
-                gas_used: Some(U256::from(21_000)),
-                ..Default::default()
-            },
-        ];
-
-        oracle.process_block(block1, receipts).unwrap();
-        assert_eq!(oracle.base_fee().unwrap(), 1011); // Base fee increases
-        let tip = oracle.tip().unwrap();
-        assert_eq!(tip, 101);
     }
 }

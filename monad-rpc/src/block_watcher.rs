@@ -6,29 +6,84 @@ use std::{
 
 use futures::{FutureExt, Stream};
 use pin_project::pin_project;
-use reth_primitives::Block;
+use reth_primitives::{Block, TransactionSigned};
 use reth_rpc_types::TransactionReceipt;
+use tracing::error;
+
+use crate::{
+    block_handlers::block_receipts,
+    jsonrpc::JsonRpcError,
+    triedb::{BlockHeader, Triedb},
+};
 
 #[pin_project::pin_project(project = StateProj)]
 enum State {
     GetBlock(u64),
     GetBlockResult {
-        task: std::pin::Pin<Box<dyn futures::Future<Output = Block> + Send + Sync>>,
+        task: std::pin::Pin<
+            Box<
+                dyn futures::Future<Output = Result<Option<BlockHeader>, JsonRpcError>>
+                    + Send
+                    + Sync,
+            >,
+        >,
+        height: u64,
     },
     BlockAndReceipts {
-        block: Block,
-        task:
-            std::pin::Pin<Box<dyn futures::Future<Output = Vec<TransactionReceipt>> + Send + Sync>>,
+        block_header: BlockHeader,
+        task: std::pin::Pin<
+            Box<
+                dyn futures::Future<
+                        Output = Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError>,
+                    > + Send
+                    + Sync,
+            >,
+        >,
     },
 }
 
-// TODO: remove this trait when triedb contains blocks
 pub trait BlockState: Send {
-    fn get_block(&self, block_num: u64) -> impl Future<Output = Block> + Send + Sync;
-    fn get_receipts(
+    fn get_block(
         &self,
         block_num: u64,
-    ) -> impl Future<Output = Vec<TransactionReceipt>> + Send + Sync;
+    ) -> impl Future<Output = Result<Option<BlockHeader>, JsonRpcError>> + Send + Sync;
+    fn get_receipts(
+        &self,
+        header: BlockHeader,
+        block_num: u64,
+    ) -> impl Future<Output = Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError>>
+           + Send
+           + Sync;
+}
+
+#[derive(Clone)]
+pub struct TrieDbBlockState<T: Triedb> {
+    inner: T,
+}
+
+impl<T: Triedb> TrieDbBlockState<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
+    async fn get_block(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
+        self.inner.get_block_header(block_num).await
+    }
+
+    async fn get_receipts(
+        &self,
+        header: BlockHeader,
+        block_num: u64,
+    ) -> Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError> {
+        let transactions = self.inner.get_transactions(block_num).await?;
+        let receipts = block_receipts(&self.inner, &header.header, header.hash).await?;
+
+        let result: Vec<(TransactionSigned, TransactionReceipt)> =
+            transactions.into_iter().zip(receipts).collect();
+        Ok(result)
+    }
 }
 
 #[derive(Clone)]
@@ -47,19 +102,22 @@ impl MockBlockState {
 }
 
 impl BlockState for MockBlockState {
-    async fn get_block(&self, block_num: u64) -> Block {
-        if self.blocks.is_empty() || block_num > self.blocks.len() as u64 {
-            Block::default()
-        } else {
-            self.blocks
-                .get(block_num as usize)
-                .cloned()
-                .unwrap_or_default()
+    async fn get_block(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
+        match self.blocks.get(block_num as usize) {
+            Some(b) => Ok(Some(BlockHeader {
+                hash: b.hash_slow(),
+                header: b.header.clone(),
+            })),
+            None => Ok(None),
         }
     }
 
-    async fn get_receipts(&self, _block_num: u64) -> Vec<TransactionReceipt> {
-        vec![]
+    async fn get_receipts(
+        &self,
+        _block_header: BlockHeader,
+        _block_num: u64,
+    ) -> Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError> {
+        Ok(vec![])
     }
 }
 
@@ -81,9 +139,11 @@ impl<B: BlockState + Clone> BlockWatcher<B> {
     }
 }
 
+#[derive(Clone, Default)]
 pub struct BlockWithReceipts {
-    block: Block,
-    receipts: Vec<TransactionReceipt>,
+    pub block_header: BlockHeader,
+    pub transactions: Vec<TransactionSigned>,
+    pub receipts: Vec<TransactionReceipt>,
 }
 
 impl<B: BlockState + Clone + Send + Sync + 'static> Stream for BlockWatcher<B> {
@@ -100,31 +160,62 @@ impl<B: BlockState + Clone + Send + Sync + 'static> Stream for BlockWatcher<B> {
                     let height = *height;
                     let task = async move { triedb.get_block(height).await };
                     let task = Box::pin(task);
-                    state.set(State::GetBlockResult { task });
+                    state.set(State::GetBlockResult { task, height });
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 }
                 Poll::Pending => Poll::Pending,
             },
-            StateProj::GetBlockResult { task } => match task.poll_unpin(cx) {
-                Poll::Ready(block) => {
-                    let triedb = this.triedb.clone();
-                    let height = block.header.number;
-                    let task = async move { triedb.get_receipts(height).await };
-                    let task = Box::pin(task);
-                    state.set(State::BlockAndReceipts { block, task });
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
+            StateProj::GetBlockResult { task, height } => match task.poll_unpin(cx) {
+                Poll::Ready(block) => match block {
+                    Ok(Some(block_header)) => {
+                        let triedb = this.triedb.clone();
+                        let height = block_header.header.number;
+                        let header = block_header.clone();
+                        let task = async move { triedb.get_receipts(header, height).await };
+                        let task = Box::pin(task);
+                        state.set(State::BlockAndReceipts { block_header, task });
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Ok(None) => {
+                        let height = *height;
+                        state.set(State::GetBlock(height));
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Err(e) => {
+                        error!("error getting block inside blockwatcher: {e:?}");
+                        let height = *height;
+                        state.set(State::GetBlock(height));
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                },
                 Poll::Pending => Poll::Pending,
             },
-            StateProj::BlockAndReceipts { block, task } => match task.poll_unpin(cx) {
-                Poll::Ready(receipts) => {
-                    let height = block.header.number;
-                    let block = block.clone();
-                    state.set(State::GetBlock(height + 1));
-                    Poll::Ready(Some(BlockWithReceipts { block, receipts }))
-                }
+            StateProj::BlockAndReceipts { block_header, task } => match task.poll_unpin(cx) {
+                Poll::Ready(receipts) => match receipts {
+                    Ok(receipts) => {
+                        let height = block_header.header.number;
+                        let block_header = block_header.clone();
+                        state.set(State::GetBlock(height + 1));
+
+                        let (transactions, receipts) = receipts.into_iter().unzip();
+                        Poll::Ready(Some(BlockWithReceipts {
+                            block_header,
+                            transactions,
+                            receipts,
+                        }))
+                    }
+                    Err(e) => {
+                        error!("error getting receipts inside blockwatcher: {e:?}");
+                        let height = block_header.header.number;
+                        state.set(State::GetBlock(height));
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                },
                 Poll::Pending => Poll::Pending,
             },
         }
@@ -157,7 +248,7 @@ mod test {
 
         for i in 0..3 {
             let block = watcher.next().await;
-            assert_eq!(block.unwrap().block.number, i)
+            assert_eq!(block.unwrap().block_header.header.number, i)
         }
     }
 }

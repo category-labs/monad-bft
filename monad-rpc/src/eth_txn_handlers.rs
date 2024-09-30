@@ -14,7 +14,7 @@ use reth_rpc_types::{
     Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 use crate::{
     block_handlers::block_receipts,
@@ -24,6 +24,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{get_block_num_from_tag, TransactionLocation, Triedb},
+    vpool,
 };
 
 pub fn parse_tx_content(
@@ -314,12 +315,12 @@ pub struct MonadEthSendRawTransactionParams {
 }
 
 // TODO: need to support EIP-4844 transactions
-#[rpc(method = "eth_sendRawTransaction", ignore = "ipc")]
+#[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool")]
 #[allow(non_snake_case)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
-    ipc: flume::Sender<TransactionSigned>,
+    tx_pool: &vpool::VirtualPool,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -349,15 +350,11 @@ pub async fn monad_eth_sendRawTransaction(
             let hash = txn.hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            match ipc.try_send(txn) {
-                Ok(_) => Ok(hash.to_string()),
-                Err(err) => {
-                    warn!(?err, "mempool ipc send error");
-                    Err(JsonRpcError::internal_error(
-                        "unable to send to mempool".into(),
-                    ))
-                }
-            }
+            let txn = txn.try_into_ecrecovered().map_err(|_| {
+                JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
+            })?;
+            tx_pool.add_transaction(txn).await;
+            Ok(hash.to_string())
         }
         Err(e) => {
             debug!("eth txn decode failed {:?}", e);

@@ -4197,6 +4197,7 @@ dependencies = [
  "reqwest 0.11.27",
  "reth-primitives",
  "reth-rpc-types",
+ "scc",
  "schemars",
  "serde",
  "serde_json",
@@ -5945,6 +5946,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "scc"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "836f1e0f4963ef5288b539b643b35e043e76a32d0f4e47e67febf69576527f50"
+dependencies = [
+ "sdd",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5993,6 +6003,12 @@ dependencies = [
  "salsa20",
  "sha2",
 ]
+
+[[package]]
+name = "sdd"
+version = "3.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a7b59a5d9b0099720b417b6325d91a52cbf5b3dcb5041d864be53eefa58abc"
 
 [[package]]
 name = "sec1"
