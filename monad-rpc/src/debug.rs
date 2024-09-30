@@ -10,7 +10,7 @@ use crate::{
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
     trace::{TraceCallObject, TracerObject},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbEnv, TriedbResult},
 };
 
 #[rpc(method = "debug_getRawBlock")]

@@ -659,18 +659,20 @@ async fn main() -> std::io::Result<()> {
         None
     };
 
+    let triedb: Option<TriedbEnv> = args.triedb_path.clone().as_deref().map(TriedbEnv::new);
     // Create a gas oracle if rpc was started with a blockdb
     // Temporary until blockdb is removed
-    let gas_oracle = if let Some(blockdb_env) = blockdb_env.clone() {
-        let current_height = blockdb_env
-            .get_latest_block()
-            .await
-            .expect("could not get latest block")
-            .0;
-        Some(PollingGasOracle::new(blockdb_env, current_height, None).unwrap())
-    } else {
-        None
-    };
+    let gas_oracle =
+        if let (Some(blockdb_env), Some(triedb)) = (blockdb_env.clone(), triedb.clone()) {
+            let current_height = blockdb_env
+                .get_latest_block()
+                .await
+                .expect("could not get latest block")
+                .0;
+            Some(PollingGasOracle::new(blockdb_env, triedb, current_height, None).unwrap())
+        } else {
+            None
+        };
 
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),

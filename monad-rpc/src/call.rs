@@ -12,7 +12,7 @@ use crate::{
     eth_json_types::{deserialize_block_tags, BlockTags},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbEnv, TriedbResult},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]

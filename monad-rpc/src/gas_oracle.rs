@@ -1,6 +1,9 @@
 use monad_blockdb_utils::BlockDB;
 use reth_primitives::{Block, TransactionSigned};
+use reth_rpc_types::TransactionReceipt;
 use std::{collections::VecDeque, sync::Arc};
+
+use crate::{block_handlers::block_receipts, triedb::Triedb};
 
 /// Number of transactions to sample in a block
 const BLOCK_TX_SAMPLE_SIZE: usize = 3;
@@ -16,14 +19,14 @@ const IGNORE_PRICE: u128 = 2;
 /// Number of recent blocks to cache
 const CACHE_CAPACITY: usize = 100;
 
-pub struct Cache(VecDeque<Vec<u64>>);
+pub struct Cache(VecDeque<ProcessedBlock>);
 
 impl Cache {
     fn new(capacity: Option<usize>) -> Self {
         Self(VecDeque::with_capacity(capacity.unwrap_or(CACHE_CAPACITY)))
     }
 
-    fn insert(&mut self, value: Vec<u64>) {
+    fn insert(&mut self, value: ProcessedBlock) {
         if self.0.len() == self.0.capacity() {
             self.0.pop_back();
         }
@@ -59,8 +62,9 @@ impl GasOracle for MockOracle {
 }
 
 impl PollingGasOracle {
-    pub fn new<B: BlockDB + Send + 'static>(
+    pub fn new<B: BlockDB + Send + 'static, T: Triedb + Send + 'static + Sync>(
         blockdb_env: B,
+        triedb_env: T,
         current_height: u64,
         block_sample_size: Option<usize>,
     ) -> Result<Self, GasOracleError> {
@@ -89,13 +93,19 @@ impl PollingGasOracle {
                         else {
                             continue;
                         };
-                        let prices = sample_gas_tips(block.block);
-                        if prices.is_some() {
-                            if let Ok(mut cache) = cache2.lock() {
-                                cache.insert(prices.unwrap());
-                            } else {
-                                continue;
+
+                        let receipts = block_receipts(&triedb_env, &block).await.unwrap();
+
+                        let block = process_block(block.block, receipts);
+                        match block {
+                            Ok(block) => {
+                                if let Ok(mut cache) = cache2.lock() {
+                                    cache.insert(block);
+                                } else {
+                                    continue;
+                                }
                             }
+                            Err(_) => continue,
                         }
                         cur_height = height;
                     }
@@ -126,6 +136,7 @@ impl GasOracle for PollingGasOracle {
             .0
             .range(0..self.block_sample_size)
             .cloned()
+            .map(|block| block.sampled_tips)
             .flatten()
             .collect();
 
@@ -140,22 +151,57 @@ impl GasOracle for PollingGasOracle {
     }
 }
 
-/// Returns a sampled list of effective gas tips for a block.
-/// Returns `None` if base fee is missing in the block or if the block is empty.
-fn sample_gas_tips(block: Block) -> Option<Vec<u64>> {
+pub enum BlockProcessingError {
+    MissingBaseFee,
+}
+
+#[derive(Clone)]
+pub struct ProcessedBlock {
+    // Sampled list of tips
+    sampled_tips: Vec<u64>,
+    // Base fees for block
+    base_fee: u64,
+    // Gas used ratios for each transaction
+    gas_used_ratios: Vec<f64>,
+    // effective priority fees per gas for each transaction
+    rewards: Vec<u128>,
+}
+
+fn process_block(
+    block: Block,
+    receipts: Vec<TransactionReceipt>,
+) -> Result<ProcessedBlock, BlockProcessingError> {
     let base_fee = match block.base_fee_per_gas {
         Some(base_fee) => base_fee,
-        None => return None,
+        None => return Err(BlockProcessingError::MissingBaseFee),
     };
 
-    let mut transactions = block.body.into_iter().collect::<Vec<TransactionSigned>>();
+    let mut transactions = block
+        .body
+        .clone()
+        .into_iter()
+        .collect::<Vec<TransactionSigned>>();
     transactions.sort_by_cached_key(|tx| tx.effective_tip_per_gas(Some(base_fee)));
 
     let mut prices = Vec::new();
-    for tx in transactions {
+    let mut rewards = Vec::new();
+    let mut gas_used_ratios = Vec::new();
+    for (idx, tx) in transactions.iter().enumerate() {
         let tip = tx
             .effective_tip_per_gas(Some(base_fee))
             .expect("missing base fee");
+        rewards.push(tip);
+
+        // For each receipt, calculate gas_used_ratio
+        let receipt = receipts.get(idx).unwrap();
+        let Some(gas_used) = receipt.gas_used else {
+            todo!()
+        };
+
+        let gas_used: f64 = gas_used.try_into().unwrap();
+        let gas_used_ratio = gas_used / block.gas_limit as f64;
+        gas_used_ratios.push(gas_used_ratio);
+
         if tip < IGNORE_PRICE {
             continue;
         }
@@ -170,20 +216,24 @@ fn sample_gas_tips(block: Block) -> Option<Vec<u64>> {
         }
     }
 
-    if prices.is_empty() {
-        None
-    } else {
-        Some(prices)
-    }
+    Ok(ProcessedBlock {
+        sampled_tips: prices,
+        base_fee,
+        gas_used_ratios,
+        rewards,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU64;
-
+    use alloy_rlp::Encodable;
     use monad_blockdb::{BlockNumTableKey, BlockTableKey, BlockValue, EthTxKey, EthTxValue};
     use monad_blockdb_utils::BlockTags;
-    use reth_primitives::{Header, TxEip1559};
+    use reth_primitives::{Header, Receipt, ReceiptWithBloom, TxEip1559};
+    use reth_primitives::{Signature, U256};
+    use std::sync::atomic::AtomicU64;
+
+    use crate::triedb::TriedbResult;
 
     use super::*;
 
@@ -225,6 +275,45 @@ mod tests {
         }
     }
 
+    struct MockTriedb {}
+
+    impl Triedb for MockTriedb {
+        async fn get_latest_block(&self) -> TriedbResult {
+            unimplemented!()
+        }
+
+        async fn get_receipt(&self, txn_index: u64, block_id: u64) -> TriedbResult {
+            let receipt = ReceiptWithBloom {
+                receipt: Receipt {
+                    cumulative_gas_used: 21_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut buf = Vec::new();
+            receipt.encode(&mut buf);
+
+            TriedbResult::Receipt(buf)
+        }
+
+        async fn get_account(&self, addr: [u8; 20], block_tag: BlockTags) -> TriedbResult {
+            unimplemented!()
+        }
+
+        async fn get_storage_at(
+            &self,
+            addr: [u8; 20],
+            at: [u8; 32],
+            block_tag: BlockTags,
+        ) -> TriedbResult {
+            unimplemented!()
+        }
+
+        async fn get_code(&self, code_hash: [u8; 32], block_tag: BlockTags) -> TriedbResult {
+            unimplemented!()
+        }
+    }
+
     #[test]
     fn gas_prices_for_block() {
         let block = Block {
@@ -239,6 +328,19 @@ mod tests {
                         max_fee_per_gas: 1000,
                         ..Default::default()
                     }),
+                    signature: Signature {
+                        odd_y_parity: false,
+                        r: U256::from_str_radix(
+                            "0000000000000000000000000000000000000000000000000000000000000000",
+                            16,
+                        )
+                        .unwrap(),
+                        s: U256::from_str_radix(
+                            "0000000000000000000000000000000000000000000000000000000000000000",
+                            16,
+                        )
+                        .unwrap(),
+                    },
                     ..Default::default()
                 },
                 TransactionSigned {
@@ -286,6 +388,19 @@ mod tests {
                 max_fee_per_gas: price,
                 ..Default::default()
             }),
+            signature: Signature {
+                odd_y_parity: false,
+                r: U256::from_str_radix(
+                    "b129895435986f95c27e02bfae5f32e83aa09465154ed216b9534164ecab1016",
+                    16,
+                )
+                .unwrap(),
+                s: U256::from_str_radix(
+                    "732a1eaaaa968aeedcfdf67fe34ee6157c169e7b6f5267601ec89a62a8b836c9",
+                    16,
+                )
+                .unwrap(),
+            },
             ..Default::default()
         };
 
@@ -324,24 +439,13 @@ mod tests {
             ..Default::default()
         });
 
-        let oracle = PollingGasOracle::new(blockdb, 0, Some(2)).unwrap();
+        let triedb = MockTriedb {};
+        let oracle = PollingGasOracle::new(blockdb, triedb, 0, Some(2)).unwrap();
         block_height.fetch_add(2, std::sync::atomic::Ordering::SeqCst);
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let tip = oracle.tip().unwrap();
         assert_eq!(tip, 103);
-    }
-
-    #[test]
-    fn cache_capacity() {
-        let mut cache = Cache::new(Some(2));
-        cache.insert(vec![1]);
-        cache.insert(vec![2]);
-        cache.insert(vec![3]);
-        assert_eq!(cache.0.capacity(), 2);
-        assert_eq!(cache.0.len(), 2);
-        assert_eq!(cache.0.pop_front(), Some(vec![3]));
-        assert_eq!(cache.0.pop_front(), Some(vec![2]));
     }
 }

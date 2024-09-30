@@ -16,7 +16,7 @@ use crate::{
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{self, Triedb, TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
@@ -227,8 +227,8 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
 }
 
 pub async fn block_receipts(
-    triedb_env: &TriedbEnv,
-    block: BlockValue,
+    triedb_env: &impl triedb::Triedb,
+    block: &BlockValue,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
     let block_num: u64 = block.block.number;
     let mut block_receipts: Vec<(ReceiptDetails, u64)> = vec![];
@@ -290,7 +290,7 @@ pub async fn monad_eth_getBlockReceipts(
         return Ok(None);
     };
 
-    let receipts = block_receipts(triedb_env, block).await?;
+    let receipts = block_receipts(triedb_env, &block).await?;
     Ok(Some(MonadEthGetBlockReceiptsResult(
         receipts.into_iter().map(MonadTransactionReceipt).collect(),
     )))

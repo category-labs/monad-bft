@@ -23,7 +23,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbEnv, TriedbResult},
 };
 
 pub fn parse_tx_content(
@@ -340,7 +340,7 @@ pub async fn monad_eth_getLogs(
             if FilteredParams::matches_address(header_logs_bloom, &address_filter)
                 || FilteredParams::matches_topics(header_logs_bloom, &topics_filter)
             {
-                let block_receipts = block_receipts(triedb_env, block).await?;
+                let block_receipts = block_receipts(triedb_env, &block).await?;
                 let mut receipt_logs: Vec<Log> = block_receipts
                     .into_iter()
                     .flat_map(|receipt| {

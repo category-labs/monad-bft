@@ -27,6 +27,31 @@ pub struct TriedbEnv {
     triedb_path: PathBuf,
 }
 
+pub trait Triedb {
+    fn get_latest_block(&self) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_receipt(
+        &self,
+        txn_index: u64,
+        block_id: u64,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_account(
+        &self,
+        addr: EthAddress,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_storage_at(
+        &self,
+        addr: EthAddress,
+        at: EthStorageKey,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_code(
+        &self,
+        code_hash: EthCodeHash,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+}
+
 impl TriedbEnv {
     thread_local! {
         pub static DB: RefCell<Option<TriedbReader>> = RefCell::new(None);
@@ -38,7 +63,13 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_latest_block(&self) -> TriedbResult {
+    pub fn path(&self) -> PathBuf {
+        self.triedb_path.clone()
+    }
+}
+
+impl Triedb for TriedbEnv {
+    async fn get_latest_block(&self) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
@@ -54,7 +85,7 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_latest_block")
     }
 
-    pub async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
+    async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
@@ -87,7 +118,7 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_account")
     }
 
-    pub async fn get_storage_at(
+    async fn get_storage_at(
         &self,
         addr: EthAddress,
         at: EthStorageKey,
@@ -121,7 +152,7 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_storage_at")
     }
 
-    pub async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {
+    async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
@@ -150,7 +181,7 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_code")
     }
 
-    pub async fn get_receipt(&self, txn_index: u64, block_num: u64) -> TriedbResult {
+    async fn get_receipt(&self, txn_index: u64, block_num: u64) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
@@ -168,9 +199,5 @@ impl TriedbEnv {
             });
         });
         recv.await.expect("rayon panic get_receipt")
-    }
-
-    pub fn path(&self) -> PathBuf {
-        self.triedb_path.clone()
     }
 }

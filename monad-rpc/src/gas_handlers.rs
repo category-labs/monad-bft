@@ -17,7 +17,7 @@ use crate::{
     },
     gas_oracle::GasOracle,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
