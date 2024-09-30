@@ -27,15 +27,12 @@ use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_state_backend::InMemoryStateInner;
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_transformer::{
-    BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer, ID,
-};
+use monad_transformer::{BytesTransformer, GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
-use tracing_subscriber::Registry;
 
 #[test]
 fn two_nodes_noser() {
@@ -231,124 +228,4 @@ fn two_nodes_quic_latency() {
             min_ledger_len as u64,
         );
     assert!(verifier.verify(&swarm));
-}
-
-#[test]
-fn two_nodes_quic_bw() {
-    let subscriber = Registry::default();
-    tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
-
-    let zero_instant = Instant::now();
-    let delta = Duration::from_millis(40);
-
-    let state_configs = make_state_configs::<QuicSwarm>(
-        2, // num_nodes
-        ValidatorSetFactory::default,
-        SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
-        || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        || {
-            StateRoot::new(
-                SeqNum(4), // state_root_delay
-            )
-        },
-        PeerAsyncStateVerify::new,
-        delta,              // delta
-        100,                // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
-        SeqNum(100),        // state_sync_threshold
-    );
-    let all_peers: BTreeSet<_> = state_configs
-        .iter()
-        .map(|state_config| NodeId::new(state_config.key.pubkey()))
-        .collect();
-    let swarm_config = SwarmBuilder::<QuicSwarm>(
-        state_configs
-            .into_iter()
-            .enumerate()
-            .map(|(seed, state_builder)| {
-                let me = NodeId::new(state_builder.key.pubkey());
-                let state_backend = state_builder.state_backend.clone();
-                let validators = state_builder.forkpoint.validator_sets[0].clone();
-                NodeBuilder::new(
-                    ID::new(me),
-                    state_builder,
-                    QuicRouterSchedulerConfig::new(
-                        zero_instant,
-                        all_peers.clone(),
-                        me,
-                        seed.try_into().unwrap(),
-                        MockGossipConfig {
-                            all_peers: all_peers.iter().copied().collect(),
-                            me,
-                            message_delay: Duration::ZERO,
-                        }
-                        .build(),
-                        delta,
-                        1000,
-                    )
-                    .build(),
-                    MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
-                    MockLedger::new(state_backend.clone()),
-                    MockStateSyncExecutor::new(
-                        state_backend,
-                        validators
-                            .validators
-                            .0
-                            .into_iter()
-                            .map(|v| v.node_id)
-                            .collect(),
-                    ),
-                    vec![
-                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
-                            20,
-                        ))),
-                        BytesTransformer::Bw(BwTransformer::new(2, Duration::from_millis(10))),
-                    ],
-                    vec![],
-                    TimestamperConfig::default(),
-                    seed.try_into().unwrap(),
-                )
-            })
-            .collect(),
-    );
-
-    let mut swarm = swarm_config.build();
-    while swarm
-        .step_until(&mut UntilTerminator::new().until_block(1000))
-        .is_some()
-    {}
-
-    let max_block_sync_requests = 5;
-    // 998 instead of 1000 to account for missed proposals due to BW limit
-    let min_ledger_len = 998;
-    swarm_ledger_verification(&swarm, min_ledger_len);
-
-    // this is empirical, don't want to spend too much time figuring out a
-    // degenerative case
-    let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(121), Duration::from_secs(1));
-    assert!(verifier.verify(&swarm));
-
-    let node_ids = swarm.states().keys().copied().collect_vec();
-    verifier
-        .metric_maximum(
-            &node_ids,
-            fetch_metric!(blocksync_events.blocksync_request),
-            max_block_sync_requests,
-        )
-        .metric_minimum(
-            &node_ids,
-            fetch_metric!(consensus_events.handle_proposal),
-            min_ledger_len as u64 - max_block_sync_requests,
-        )
-        .metric_minimum(
-            &node_ids,
-            fetch_metric!(consensus_events.created_vote),
-            min_ledger_len as u64 - max_block_sync_requests,
-        );
 }

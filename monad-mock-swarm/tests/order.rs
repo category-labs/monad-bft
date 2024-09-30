@@ -215,7 +215,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     let blocksync_requests_range = match direction {
         // when replayed forward, node should populate blocktree in order
-        TransformerReplayOrder::Forward => (0, 6),
+        TransformerReplayOrder::Forward => (0, 7),
         // when replayed in reverse, should request every block in ledger
         // +1 is the case where the proposal to commit the last block in
         // ledger is in flight and not delivered to all peers yet

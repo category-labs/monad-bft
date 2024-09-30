@@ -177,6 +177,11 @@ where
                                         validator_data: v.validator_data.clone(),
                                     })
                                 } else {
+                                    // FIXME review this... the unwrap_or_else below here will run
+                                    // if this branch gets hit.
+                                    //
+                                    // This all should disappear post staking module so fine for
+                                    // now
                                     debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch did not match matched locked epoch");
                                     None
                                 }

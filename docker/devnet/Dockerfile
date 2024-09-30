@@ -121,5 +121,6 @@ CMD monad-node \
     --mempool-ipc-path /monad/mempool.sock \
     --control-panel-ipc-path /monad/controlpanel.sock \
     --execution-ledger-path /monad/ledger \
-    --blockdb-path /monad/blockdb \
+    --bft-block-header-path /monad/bft-ledger \
+    --bft-block-payload-path /monad/block-payload \
     --triedb-path /monad/triedb

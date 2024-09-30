@@ -11,11 +11,15 @@ pub struct Cli {
 
     /// Set the execution ledger path
     #[arg(long)]
-    pub execution_ledger_path: Option<PathBuf>,
+    pub execution_ledger_path: PathBuf,
 
-    /// Set the monad blockdb path
+    /// Set the path where the bft block headers will be stored
     #[arg(long)]
-    pub blockdb_path: Option<PathBuf>,
+    pub bft_block_header_path: PathBuf,
+
+    /// Set the path where the bft block payloads will be stored
+    #[arg(long)]
+    pub bft_block_payload_path: PathBuf,
 
     /// Set the monad triedb path
     #[arg(long)]
@@ -34,7 +38,7 @@ pub struct Cli {
     pub chain_id: u64,
 
     /// Set the max number of requests in a batch request
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
 
     /// Set the max response size in bytes

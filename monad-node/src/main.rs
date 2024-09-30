@@ -10,7 +10,6 @@ use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_blockdb::BlockDbBuilder;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -144,7 +143,20 @@ async fn run(
     node_state: NodeState,
     reload_handle: Handle<EnvFilter, Registry>,
 ) -> Result<(), ()> {
-    let router: BoxUpdater<_, _> = if node_state.forkpoint_config.validator_sets[0]
+    let checkpoint_validators_first = node_state
+        .forkpoint_config
+        .validator_sets
+        .first()
+        .expect("no validator sets")
+        .clone();
+    let checkpoint_validators_last = node_state
+        .forkpoint_config
+        .validator_sets
+        .last()
+        .expect("no validator sets")
+        .clone();
+
+    let router: BoxUpdater<_, _> = if checkpoint_validators_first
         .validators
         .0
         .iter()
@@ -165,7 +177,7 @@ async fn run(
         )
     } else {
         let gossip = MockGossipConfig {
-            all_peers: node_state.forkpoint_config.validator_sets[0]
+            all_peers: checkpoint_validators_first
                 .validators
                 .0
                 .iter()
@@ -192,11 +204,8 @@ async fn run(
         )
     };
 
-    let validators = node_state.forkpoint_config.validator_sets[0].clone();
-
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
-    let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
@@ -219,7 +228,8 @@ async fn run(
         timer: TokioTimer::default(),
         ledger: MonadBlockFileLedger::new(
             node_state.execution_ledger_path,
-            blockdb.clone(),
+            node_state.bft_block_header_path,
+            node_state.bft_block_payload_path,
             EthHeaderParam {
                 gas_limit: node_state.node_config.consensus.block_gas_limit,
             },
@@ -227,7 +237,11 @@ async fn run(
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
-            validators.validators.clone(),
+            // Use the more recent of the 2 checkpoint validator sets for seeding the default e+2
+            // validator set. This allows us to manually change validator set e+1 without it
+            // getting rolled back in e+2.
+            // FIXME this should be deleted post staking module
+            checkpoint_validators_last.validators,
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
@@ -248,7 +262,7 @@ async fn run(
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
-            validators
+            checkpoint_validators_first
                 .validators
                 .0
                 .iter()
@@ -320,7 +334,7 @@ async fn run(
         consensus_config: ConsensusConfig {
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
             proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
-            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
+            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
             state_sync_threshold: SeqNum(statesync_threshold as u64),
             timestamp_latency_estimate_ms: 20,
         },

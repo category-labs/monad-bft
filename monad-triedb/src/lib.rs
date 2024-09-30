@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use futures::channel::oneshot::{self, Receiver, Sender};
+use futures::channel::oneshot::Sender;
 use tracing::debug;
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
@@ -56,8 +56,7 @@ pub unsafe extern "C" fn read_async_callback(
     };
 
     // Send the retrieved result through the channel
-    let sender_result = sender_context.sender.send(result);
-    assert!(sender_result.is_ok());
+    let _ = sender_context.sender.send(result);
 }
 
 impl Handle {
@@ -126,12 +125,11 @@ impl Handle {
         key_len_nibbles: u8,
         block_id: u64,
         completed_counter: Arc<AtomicUsize>,
-    ) -> Receiver<Option<Vec<u8>>> {
+        sender: Sender<Option<Vec<u8>>>,
+    ) {
         assert!(key_len_nibbles < u8::MAX - 1); // make sure doesn't overflow
         assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
 
-        // Create a channel to send the value from TrieDB
-        let (sender, receiver) = oneshot::channel();
         // Wrap the sender and completed_counter in a context struct
         let sender_context = Box::new(SenderContext {
             sender,
@@ -151,12 +149,10 @@ impl Handle {
                 sender_context_ptr as *mut std::ffi::c_void,
             );
         }
-
-        receiver
     }
 
     /// Used to pump async reads in TrieDB
-    /// if blocking is true, the thread will sleep atleast until 1 completion is availabe to process
+    /// if blocking is true, the thread will sleep at least until 1 completion is available to process
     /// if blocking is false, poll will return if no completion is available to process
     /// max_completions is used as a bound for maximum completions to process in this poll
     ///

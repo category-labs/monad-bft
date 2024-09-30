@@ -27,11 +27,21 @@ where
     BPT: BlockPolicy<SCT, SBT>,
     SBT: StateBackend,
 {
+    // TODO it would be less jank if the BLS pubkey was included in the block payload.
+    //
+    // It's weird that we need to pass in the expected author's BLS pubkey just to validate the
+    // randao payload.
+    //
+    // If the BLS pubkey was included as part of the block, then this validate function could just
+    // assert that randao_reveal is internally consistent.
+    //
+    // Then, separately, the BLS pubkey could be validated alongside the SECP pubkey when leader
+    // checks are done.
     fn validate(
         &self,
         block: Block<SCT>,
         payload: Payload,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+        author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
@@ -46,7 +56,7 @@ where
         &self,
         block: Block<SCT>,
         payload: Payload,
-        _author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+        _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,

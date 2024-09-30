@@ -1173,19 +1173,13 @@ where
         let root_parent_chain: Vec<_> = root_parent_chain
             .into_iter()
             .map(|full_block| {
-                // FIXME forkpoint validator doesn't assert that these epochs exist
-                let author_pubkey = self
-                    .val_epoch_map
-                    .get_cert_pubkeys(&full_block.get_epoch())
-                    .expect("statesync sync'd block epoch should exist in mapping")
-                    .map
-                    .get(&full_block.get_author())
-                    .expect("committed block author should exist in epoch mapping");
                 self.block_validator
                     .validate(
                         full_block.block.clone(),
                         full_block.payload.clone(),
-                        author_pubkey,
+                        // we don't need to validate bls pubkey fields (randao)
+                        // this is because these blocks are already committed by majority
+                        None,
                     )
                     .expect("majority committed invalid block")
             })

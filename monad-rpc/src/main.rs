@@ -29,7 +29,6 @@ use eth_txn_handlers::{
     monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
-use monad_blockdb_utils::BlockDbEnv;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
@@ -48,6 +47,7 @@ use txpool::{
 };
 
 use crate::{
+    block_util::FileBlockReader,
     call::monad_eth_call,
     debug::monad_debug_getRawBlock,
     eth_txn_handlers::monad_eth_sendRawTransaction,
@@ -63,6 +63,7 @@ use crate::{
 
 mod account_handlers;
 mod block_handlers;
+mod block_util;
 mod call;
 mod cli;
 mod debug;
@@ -161,21 +162,32 @@ async fn rpc_select(
 ) -> Result<Value, JsonRpcError> {
     match method {
         "debug_getRawBlock" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawBlock(reader, params)
+            monad_debug_getRawBlock(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawHeader" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawHeader(reader, params)
+            monad_debug_getRawHeader(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawReceipts" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
             monad_debug_getRawReceipts(reader, triedb_env, params)
@@ -183,23 +195,35 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "debug_getRawTransaction" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawTransaction(reader, params)
+            monad_debug_getRawTransaction(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_traceBlockByHash" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByHash(reader, params)
+            monad_debug_traceBlockByHash(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_traceBlockByNumber" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(reader, params)
+            monad_debug_traceBlockByNumber(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
@@ -218,13 +242,11 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "eth_call" => {
-            let Some(reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
                 debug!("execution ledger path was not set");
@@ -233,8 +255,8 @@ async fn rpc_select(
 
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_call(
-                reader,
                 triedb_env,
+                reader,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
@@ -249,21 +271,19 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "eth_getLogs" => {
-            let Some(blockdb_env) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getLogs(blockdb_env, triedb_env, params)
+            monad_eth_getLogs(reader, triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "eth_getTransactionByHash" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_getTransactionByHash(reader, params)
                     .await
@@ -273,7 +293,7 @@ async fn rpc_select(
             }
         }
         "eth_getBlockByHash" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_getBlockByHash(reader, params)
                     .await
@@ -283,9 +303,10 @@ async fn rpc_select(
             }
         }
         "eth_getBlockByNumber" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, params)
+                monad_eth_getBlockByNumber(reader, triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -293,7 +314,7 @@ async fn rpc_select(
             }
         }
         "eth_getTransactionByBlockHashAndIndex" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = &app_state.file_ledger_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_getTransactionByBlockHashAndIndex(reader, params)
                     .await
@@ -303,9 +324,10 @@ async fn rpc_select(
             }
         }
         "eth_getTransactionByBlockNumberAndIndex" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            if let Some(reader) = &app_state.file_ledger_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(reader, params)
+                monad_eth_getTransactionByBlockNumberAndIndex(reader, triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -313,7 +335,7 @@ async fn rpc_select(
             }
         }
         "eth_getBlockTransactionCountByHash" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
                 monad_eth_getBlockTransactionCountByHash(reader, params)
                     .await
@@ -323,9 +345,10 @@ async fn rpc_select(
             }
         }
         "eth_getBlockTransactionCountByNumber" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(reader, params)
+                monad_eth_getBlockTransactionCountByNumber(reader, triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -397,7 +420,7 @@ async fn rpc_select(
             }
         }
         "eth_estimateGas" => {
-            let Some(reader) = &app_state.blockdb_reader else {
+            let Some(reader) = &app_state.file_ledger_reader else {
                 return Err(JsonRpcError::method_not_supported());
             };
 
@@ -412,8 +435,8 @@ async fn rpc_select(
 
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_estimateGas(
-                reader,
                 triedb_env,
+                reader,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
@@ -422,15 +445,18 @@ async fn rpc_select(
             .map(serialize_result)?
         }
         "eth_gasPrice" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_gasPrice(reader).await.map(serialize_result)?
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            if let Some(reader) = &app_state.file_ledger_reader {
+                monad_eth_gasPrice(reader, triedb_env)
+                    .await
+                    .map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
         "eth_maxPriorityFeePerGas" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_maxPriorityFeePerGas(reader)
+            if let Some(reader) = &app_state.file_ledger_reader {
+                monad_eth_maxPriorityFeePerGas()
                     .await
                     .map(serialize_result)?
             } else {
@@ -438,11 +464,9 @@ async fn rpc_select(
             }
         }
         "eth_feeHistory" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = &app_state.file_ledger_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_feeHistory(reader, params)
-                    .await
-                    .map(serialize_result)?
+                monad_eth_feeHistory(params).await.map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -452,26 +476,24 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
-            let Some(blockdb_reader) = &app_state.blockdb_reader else {
+            let Some(file_ledger_reader) = &app_state.file_ledger_reader else {
                 return Err(JsonRpcError::method_not_supported());
             };
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(blockdb_reader, triedb_reader, params)
+            monad_eth_getTransactionReceipt(file_ledger_reader, triedb_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "eth_getBlockReceipts" => {
-            let Some(triedb_reader) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(blockdb_reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
+            let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let file_ledger_reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getBlockReceipts(blockdb_reader, triedb_reader, params)
+            monad_eth_getBlockReceipts(file_ledger_reader, triedb_reader, params)
                 .await
                 .map(serialize_result)?
         }
@@ -488,11 +510,12 @@ async fn rpc_select(
         "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
         "net_version" => serialize_result(format!("0x{:x}", app_state.chain_id)),
         "trace_block" => {
-            let reader = app_state.blockdb_reader.as_ref().method_not_supported()?;
+            let reader = app_state
+                .file_ledger_reader
+                .as_ref()
+                .method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_block(reader, params)
-                .await
-                .map(serialize_result)?
+            monad_trace_block(params).await.map(serialize_result)?
         }
         "trace_call" => {
             let params = serde_json::from_value(params).invalid_params()?;
@@ -524,7 +547,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 #[derive(Clone)]
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
-    blockdb_reader: Option<BlockDbEnv>,
+    file_ledger_reader: Option<FileBlockReader>,
     triedb_reader: Option<TriedbEnv>,
     execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
@@ -543,7 +566,7 @@ impl Handler<Disconnect> for MonadRpcResources {
 impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
-        blockdb_reader: Option<BlockDbEnv>,
+        file_ledger_reader: Option<FileBlockReader>,
         triedb_reader: Option<TriedbEnv>,
         execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
@@ -552,7 +575,7 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             mempool_sender,
-            blockdb_reader,
+            file_ledger_reader,
             triedb_reader,
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
@@ -640,35 +663,19 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build_global()
-        .expect("thread pool with 4 threads");
-
-    // blockdb is only created when monad node starts
-    // therefore we retry initialization if blockdb path is provided
-    let blockdb_env = if let Some(blockdb_path) = &args.blockdb_path {
-        Some(
-            retry(|| async { BlockDbEnv::new(blockdb_path) })
-                .await
-                .expect("failed to create blockdb env"),
-        )
-    } else {
-        None
-    };
-
+    let file_block_reader = Some(FileBlockReader::new(args.execution_ledger_path.clone()));
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
-        blockdb_env,
+        file_block_reader,
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
-        args.execution_ledger_path,
+        Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.and_then(|endpoint| {
+        args.otel_endpoint.map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
                 &endpoint,
                 "monad-rpc".to_string(),
@@ -676,7 +683,7 @@ async fn main() -> std::io::Result<()> {
             )
             .expect("failed to build otel meter");
             opentelemetry::global::set_meter_provider(provider.clone());
-            Some(provider)
+            provider
         });
 
     let with_metrics = meter_provider
@@ -753,7 +760,7 @@ mod tests {
         let m = MonadRpcResourcesState { ipc_receiver };
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
-            blockdb_reader: None,
+            file_ledger_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,

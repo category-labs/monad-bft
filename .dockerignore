@@ -4,7 +4,8 @@
 .github
 
 /docker/devnet/monad/ledger
-/docker/devnet/monad/blockdb
+/docker/devnet/monad/bft-ledger
+/docker/devnet/monad/block-payload
 /docker/devnet/monad/triedb
 /docker/devnet/monad/wal
 /docker/devnet/monad/mempool.sock

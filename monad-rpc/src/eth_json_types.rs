@@ -29,14 +29,16 @@ impl Serialize for MonadU256 {
     }
 }
 
-pub fn deserialize_u256<'de, D>(deserializer: D) -> Result<MonadU256, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    let u = U256::from_str(&buf)
-        .map_err(|e| serde::de::Error::custom(format!("MonadU256 parse failed: {e:?}")))?;
-    Ok(MonadU256(u))
+impl<'de> Deserialize<'de> for MonadU256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        let u = U256::from_str(&buf)
+            .map_err(|e| serde::de::Error::custom(format!("U256 parse failed: {e:?}")))?;
+        Ok(Self(u))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -178,18 +180,6 @@ impl schemars::JsonSchema for MonadU256 {
     }
 }
 
-impl<'de> Deserialize<'de> for MonadU256 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let buf = String::deserialize(deserializer)?;
-        let u = U256::from_str_radix(&buf, 16)
-            .map_err(|e| serde::de::Error::custom(format!("U256 parse failed: {e:?}")))?;
-        Ok(Self(u))
-    }
-}
-
 #[derive(Serialize, Debug)]
 pub struct MonadFeeHistory(pub FeeHistory);
 
@@ -258,17 +248,19 @@ impl FromStr for UnformattedData {
     }
 }
 
-pub fn deserialize_unformatted_data<'de, D>(deserializer: D) -> Result<UnformattedData, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    UnformattedData::from_str(&buf)
-        .map_err(|e| serde::de::Error::custom(format!("UnformattedData parse failed: {e:?}")))
+impl<'de> Deserialize<'de> for UnformattedData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        UnformattedData::from_str(&buf)
+            .map_err(|e| serde::de::Error::custom(format!("UnformattedData parse failed: {e:?}")))
+    }
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#hex-encoding
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Quantity(pub u64);
 
 impl schemars::JsonSchema for Quantity {
@@ -299,26 +291,28 @@ impl Serialize for Quantity {
     }
 }
 
-pub fn deserialize_quantity<'de, D>(deserializer: D) -> Result<Quantity, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum QuantityOrString {
-        Num(u64),
-        Str(String),
-    }
+impl<'de> Deserialize<'de> for Quantity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum QuantityOrString {
+            Num(u64),
+            Str(String),
+        }
 
-    match QuantityOrString::deserialize(deserializer)? {
-        QuantityOrString::Num(n) => Ok(Quantity(n)),
-        QuantityOrString::Str(s) => {
-            if let Some(hex) = s.strip_prefix("0x") {
-                u64::from_str_radix(hex, 16)
-                    .map(Quantity)
-                    .map_err(serde::de::Error::custom)
-            } else {
-                s.parse().map(Quantity).map_err(serde::de::Error::custom)
+        match QuantityOrString::deserialize(deserializer)? {
+            QuantityOrString::Num(n) => Ok(Quantity(n)),
+            QuantityOrString::Str(s) => {
+                if let Some(hex) = s.strip_prefix("0x") {
+                    u64::from_str_radix(hex, 16)
+                        .map(Quantity)
+                        .map_err(serde::de::Error::custom)
+                } else {
+                    s.parse().map(Quantity).map_err(serde::de::Error::custom)
+                }
             }
         }
     }
@@ -351,6 +345,12 @@ impl From<Address> for FixedData<20> {
     }
 }
 
+impl From<FixedData<32>> for monad_types::BlockId {
+    fn from(value: FixedData<32>) -> Self {
+        monad_types::BlockId(monad_types::Hash(value.0))
+    }
+}
+
 impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -371,57 +371,16 @@ impl Serialize for EthHash {
     }
 }
 
-pub fn deserialize_fixed_data<'de, D, const N: usize>(
-    deserializer: D,
-) -> Result<FixedData<N>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    FixedData::from_str(&buf)
-        .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
-}
-
-impl From<FixedData<32>> for monad_blockdb::BlockTableKey {
-    fn from(f: FixedData<32>) -> Self {
-        monad_blockdb::BlockTableKey(monad_types::BlockId(monad_types::Hash(f.0)))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum BlockTags {
     Number(Quantity),
-    Default(BlockTagKey),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-pub enum BlockTagKey {
     Latest,
-    Finalized,
-}
-
-impl From<BlockTagKey> for monad_blockdb::BlockTagKey {
-    fn from(t: BlockTagKey) -> Self {
-        match t {
-            BlockTagKey::Latest => monad_blockdb::BlockTagKey::Latest,
-            BlockTagKey::Finalized => monad_blockdb::BlockTagKey::Finalized,
-        }
-    }
-}
-
-impl From<BlockTags> for monad_blockdb_utils::BlockTags {
-    fn from(t: BlockTags) -> Self {
-        match t {
-            BlockTags::Number(q) => monad_blockdb_utils::BlockTags::Number(q.0),
-            BlockTags::Default(k) => monad_blockdb_utils::BlockTags::Default(k.into()),
-        }
-    }
 }
 
 impl Default for BlockTags {
     fn default() -> Self {
-        BlockTags::Default(BlockTagKey::Latest)
+        BlockTags::Latest
     }
 }
 
@@ -430,23 +389,34 @@ impl FromStr for BlockTags {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "earliest" => Ok(Self::Default(BlockTagKey::Latest)),
-            "latest" => Ok(Self::Default(BlockTagKey::Latest)),
-            "safe" => Ok(Self::Default(BlockTagKey::Latest)),
-            "finalized" => Ok(Self::Default(BlockTagKey::Finalized)),
-            "pending" => Ok(Self::Default(BlockTagKey::Latest)),
+            "earliest" => Ok(Self::Latest),
+            "latest" => Ok(Self::Latest),
+            "safe" => Ok(Self::Latest),
+            "finalized" => Ok(Self::Latest),
+            "pending" => Ok(Self::Latest),
             _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
         }
     }
 }
 
-pub fn deserialize_block_tags<'de, D>(deserializer: D) -> Result<BlockTags, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    BlockTags::from_str(&buf)
-        .map_err(|e| serde::de::Error::custom(format!("BlockTags parse failed: {e:?}")))
+impl From<BlockTags> for crate::triedb::BlockTags {
+    fn from(value: BlockTags) -> Self {
+        match value {
+            BlockTags::Number(n) => crate::triedb::BlockTags::Number(n.0),
+            BlockTags::Latest => crate::triedb::BlockTags::Latest,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockTags {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        BlockTags::from_str(&buf)
+            .map_err(|e| serde::de::Error::custom(format!("BlockTags parse failed: {e:?}")))
+    }
 }
 
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
@@ -462,28 +432,21 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
 
-    use super::{
-        deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTagKey, BlockTags, FixedData, Quantity, UnformattedData,
-    };
+    use super::{BlockTags, FixedData, Quantity, UnformattedData};
 
     #[derive(Deserialize, Debug)]
     struct OneDataParam {
-        #[serde(deserialize_with = "deserialize_unformatted_data")]
         a: UnformattedData,
     }
 
     #[derive(Deserialize, Debug)]
     struct TwoDataParam {
-        #[serde(deserialize_with = "deserialize_unformatted_data")]
         a: UnformattedData,
-        #[serde(deserialize_with = "deserialize_unformatted_data")]
         b: UnformattedData,
     }
 
     #[derive(Deserialize, Debug)]
     struct OneQuantity {
-        #[serde(deserialize_with = "deserialize_quantity")]
         a: Quantity,
     }
 
@@ -548,14 +511,13 @@ mod tests {
 
     #[derive(Deserialize, Debug)]
     struct OneBlockParam {
-        #[serde(deserialize_with = "deserialize_block_tags")]
         a: BlockTags,
     }
 
     #[test]
     fn test_block_enums() {
         let x: OneBlockParam = serde_json::from_value(json!(["latest"])).unwrap();
-        assert_eq!(BlockTags::Default(BlockTagKey::Latest), x.a);
+        assert_eq!(BlockTags::Latest, x.a);
 
         let x: OneBlockParam = serde_json::from_value(json!(["0xffacb0"])).unwrap();
         assert_eq!(BlockTags::Number(Quantity(16755888)), x.a);
@@ -563,13 +525,11 @@ mod tests {
 
     #[derive(Deserialize, Debug)]
     struct OneFixedAddr {
-        #[serde(deserialize_with = "deserialize_fixed_data")]
         a: FixedData<20>,
     }
 
     #[derive(Deserialize, Debug)]
     struct OneFixedHash {
-        #[serde(deserialize_with = "deserialize_fixed_data")]
         a: FixedData<32>,
     }
 

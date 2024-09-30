@@ -6,7 +6,7 @@ use crate::{
     account_handlers::StorageProof,
     call::CallRequest,
     eth_json_types::{
-        BlockTagKey, BlockTags, EthAddress, EthHash, MonadBlock, MonadLog, MonadTransaction,
+        BlockTags, EthAddress, EthHash, MonadBlock, MonadLog, MonadTransaction,
         MonadTransactionReceipt, MonadU256, Quantity, UnformattedData,
     },
     eth_txn_handlers::{AddressValueOrArray, FilterParams, LogFilter},
@@ -64,10 +64,6 @@ pub fn as_openrpc() -> OpenRpc {
     components
         .schemas
         .insert("CallRequest".to_string(), call_request.schema.into());
-    components.schemas.insert(
-        "BlockTagKey".to_string(),
-        schemars::schema_for!(BlockTagKey).schema.into(),
-    );
     let storage_proof = schemars::schema_for!(StorageProof);
     let mut storage_proof = storage_proof.schema.into();
     clean_schema_refs(&mut storage_proof);

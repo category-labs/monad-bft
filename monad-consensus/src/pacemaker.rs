@@ -111,7 +111,8 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     }
 
     fn get_round_timer(&self) -> Duration {
-        self.delta * 4
+        // 2 delta from proposal, 1 delta from votes, 2 delta from next proposal
+        self.delta * 5
     }
 
     /// enter a new round. Phase is set to PhaseHonest::Zero and all

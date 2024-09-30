@@ -1,19 +1,65 @@
 use std::{
-    cell::RefCell,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicUsize, Ordering::SeqCst},
+        mpsc, Arc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
-use monad_blockdb::BlockTagKey;
-use monad_blockdb_utils::BlockTags;
-use monad_triedb_utils::TriedbReader;
+use futures::channel::oneshot;
+use monad_triedb::Handle as TriedbHandle;
+use monad_triedb_utils::{
+    decode::{rlp_decode_account, rlp_decode_storage_slot},
+    key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
+};
+use tracing::error;
 
 type EthAddress = [u8; 20];
 type EthStorageKey = [u8; 32];
 type EthCodeHash = [u8; 32];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockTags {
+    Number(u64),
+    Latest,
+}
+
+impl Default for BlockTags {
+    fn default() -> Self {
+        Self::Latest
+    }
+}
+
+enum TriedbRequest {
+    BlockNumberRequest(BlockNumberRequest),
+    AsyncRequest(AsyncRequest),
+}
+
+struct BlockNumberRequest {
+    // a sender to send the block number back to the request handler
+    request_sender: oneshot::Sender<u64>,
+}
+
+// struct that is sent from the request handler to the polling thread
+struct AsyncRequest {
+    // a sender for the polling thread to send the result back to the request handler
+    // after polling is completed
+    request_sender: oneshot::Sender<Option<Vec<u8>>>,
+    // counter which is updated when TrieDB processes a single async read to completion
+    completed_counter: Arc<AtomicUsize>,
+    // triedb_key and key_len_nibbles are used to read items from triedb
+    triedb_key: Vec<u8>,
+    key_len_nibbles: u8,
+    // block number
+    block_tag: BlockTags,
+}
+
 #[derive(Debug)]
 pub enum TriedbResult {
     Null,
+    Error,
     // (nonce, balance, code_hash)
     Account(u64, u128, [u8; 32]),
     Storage([u8; 32]),
@@ -22,69 +68,159 @@ pub enum TriedbResult {
     BlockNum(u64),
 }
 
+fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
+    // create a new triedb handle for the polling thread
+    let triedb_handle: TriedbHandle =
+        TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
+
+    // create a polling interval of 200 microseconds
+    let poll_interval = Duration::from_micros(200);
+    let mut last_poll = Instant::now();
+
+    loop {
+        if last_poll.elapsed() >= poll_interval {
+            triedb_handle.triedb_poll(false, usize::MAX);
+            last_poll = Instant::now();
+        }
+
+        // spin on receiver
+        match receiver.try_recv() {
+            Ok(triedb_request) => {
+                match triedb_request {
+                    TriedbRequest::BlockNumberRequest(block_num_request) => {
+                        let block_num = triedb_handle.latest_block();
+                        let _ = block_num_request.request_sender.send(block_num);
+                    }
+                    TriedbRequest::AsyncRequest(async_request) => {
+                        // Process the request directly in this thread
+                        process_request(&triedb_handle, async_request);
+                    }
+                }
+            }
+            Err(_) => {
+                // no message received, continue spinning
+                continue;
+            }
+        }
+    }
+}
+
+fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
+    // Parse block tag
+    let block_num = match async_request.block_tag {
+        BlockTags::Number(q) => q,
+        BlockTags::Latest => triedb_handle.latest_block(),
+    };
+
+    // read_async will send back a future to request_receiver of tokio oneshot channel
+    triedb_handle.read_async(
+        &async_request.triedb_key,
+        async_request.key_len_nibbles,
+        block_num,
+        async_request.completed_counter,
+        async_request.request_sender,
+    );
+}
+
 #[derive(Clone)]
 pub struct TriedbEnv {
     triedb_path: PathBuf,
+    mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
 }
 
 impl TriedbEnv {
-    thread_local! {
-        pub static DB: RefCell<Option<TriedbReader>> = RefCell::new(None);
-    }
-
     pub fn new(triedb_path: &Path) -> Self {
+        // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
+        let (sender, receiver) = mpsc::sync_channel::<TriedbRequest>(10000);
+
+        // spawn the polling thread in a dedicated thread
+        let triedb_path_cloned = triedb_path.to_path_buf();
+        thread::spawn(move || {
+            polling_thread(triedb_path_cloned, receiver);
+        });
+
         Self {
             triedb_path: triedb_path.to_path_buf(),
+            mpsc_sender: sender,
         }
     }
 
     pub async fn get_latest_block(&self) -> TriedbResult {
-        let triedb_path = self.triedb_path.clone();
-        let (send, recv) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            TriedbEnv::DB.with_borrow_mut(|db_reader| {
-                let db = db_reader.get_or_insert_with(|| {
-                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
-                });
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
 
-                let result = db.get_latest_block();
-                let _ = send.send(TriedbResult::BlockNum(result));
-            });
-        });
-        recv.await.expect("rayon panic get_latest_block")
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::BlockNumberRequest(BlockNumberRequest {
+                request_sender,
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        match request_receiver.await {
+            Ok(block_num) => TriedbResult::BlockNum(block_num),
+            Err(e) => {
+                error!("Error when receiving response from polling thread: {e}");
+                TriedbResult::Error
+            }
+        }
     }
 
     pub async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
-        let triedb_path = self.triedb_path.clone();
-        let (send, recv) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            TriedbEnv::DB.with_borrow_mut(|db_handle| {
-                let db = db_handle.get_or_insert_with(|| {
-                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
-                });
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
 
-                // parse block tag
-                let block_num = match block_tag {
-                    BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
-                };
+        let (triedb_key, key_len_nibbles) = create_addr_key(&addr);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
 
-                let Some(account) = db.get_account(&addr, block_num) else {
-                    let _ = send.send(TriedbResult::Null);
-                    return;
-                };
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag,
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
 
-                let _ = send.send(TriedbResult::Account(
-                    account.nonce,
-                    account.balance,
-                    account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
-                ));
-            });
-        });
-        recv.await.expect("rayon panic get_account")
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(triedb_result) => rlp_decode_account(triedb_result)
+                        .map(|account| {
+                            TriedbResult::Account(
+                                account.nonce,
+                                account.balance,
+                                account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            error!("Decoding account error");
+                            TriedbResult::Error
+                        }),
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
     }
 
     pub async fn get_storage_at(
@@ -93,81 +229,137 @@ impl TriedbEnv {
         at: EthStorageKey,
         block_tag: BlockTags,
     ) -> TriedbResult {
-        let triedb_path = self.triedb_path.clone();
-        let (send, recv) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            TriedbEnv::DB.with_borrow_mut(|db_handle| {
-                let db = db_handle.get_or_insert_with(|| {
-                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
-                });
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
 
-                // parse block tag
-                let block_num = match block_tag {
-                    BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
-                };
+        let (triedb_key, key_len_nibbles) = create_storage_at_key(&addr, &at);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
 
-                let Some(storage_value) = db.get_storage_at(&addr, &at, block_num) else {
-                    let _ = send.send(TriedbResult::Null);
-                    return;
-                };
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag,
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
 
-                let _ = send.send(TriedbResult::Storage(storage_value));
-            });
-        });
-        recv.await.expect("rayon panic get_storage_at")
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
+                        .map(TriedbResult::Storage)
+                        .unwrap_or_else(|| {
+                            error!("Decoding storage slot error");
+                            TriedbResult::Error
+                        }),
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
     }
 
     pub async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {
-        let triedb_path = self.triedb_path.clone();
-        let (send, recv) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            TriedbEnv::DB.with_borrow_mut(|db_handle| {
-                let db = db_handle.get_or_insert_with(|| {
-                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
-                });
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
 
-                // parse block tag
-                let block_num = match block_tag {
-                    BlockTags::Number(q) => q,
-                    BlockTags::Default(t) => match t {
-                        BlockTagKey::Latest => db.get_latest_block(),
-                        BlockTagKey::Finalized => db.get_latest_block(),
-                    },
-                };
+        let (triedb_key, key_len_nibbles) = create_code_key(&code_hash);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
 
-                let Some(code) = db.get_code(&code_hash, block_num) else {
-                    let _ = send.send(TriedbResult::Null);
-                    return;
-                };
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag,
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
 
-                let _ = send.send(TriedbResult::Code(code));
-            });
-        });
-        recv.await.expect("rayon panic get_code")
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(code) => TriedbResult::Code(code),
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
     }
 
     pub async fn get_receipt(&self, txn_index: u64, block_num: u64) -> TriedbResult {
-        let triedb_path = self.triedb_path.clone();
-        let (send, recv) = tokio::sync::oneshot::channel();
-        rayon::spawn(move || {
-            TriedbEnv::DB.with_borrow_mut(|db_handle| {
-                let db = db_handle.get_or_insert_with(|| {
-                    TriedbReader::try_new(&triedb_path).expect("triedb should exist in path")
-                });
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
 
-                let Some(receipt) = db.get_receipt(txn_index, block_num) else {
-                    let _ = send.send(TriedbResult::Null);
-                    return;
-                };
+        let (triedb_key, key_len_nibbles) = create_receipt_key(txn_index);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
 
-                let _ = send.send(TriedbResult::Receipt(receipt));
-            });
-        });
-        recv.await.expect("rayon panic get_receipt")
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(block_num),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(receipt) => TriedbResult::Receipt(receipt),
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
     }
 
     pub fn path(&self) -> PathBuf {

@@ -11,9 +11,8 @@ bench = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-monad-blockdb = { path = "../monad-blockdb" }
-monad-blockdb-utils = { path = "../monad-blockdb-utils" }
 monad-cxx = { path = "../monad-cxx" }
+monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-rpc-docs = { path = "./monad-rpc-docs" }
@@ -31,13 +30,12 @@ env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-rayon = { workspace = true }
 reth-primitives = { workspace = true }
 reth-rpc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
-tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
@@ -48,5 +46,7 @@ opentelemetry-otlp = "0.17.0"
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
+alloy-rpc-client = { workspace = true }
+reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }

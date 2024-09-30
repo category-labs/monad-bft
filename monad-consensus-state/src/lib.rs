@@ -387,7 +387,7 @@ where
             .expect("proposal author exists in validator_mapping");
         let block = match self
             .block_validator
-            .validate(p.block, p.payload, author_pubkey)
+            .validate(p.block, p.payload, Some(author_pubkey))
         {
             Ok(block) => block,
             Err(BlockValidationError::TxnError) => {
@@ -619,7 +619,7 @@ where
             .expect("blocksync'd block author should be in validator set");
         let block = self
             .block_validator
-            .validate(block, payload, author_pubkey)
+            .validate(block, payload, Some(author_pubkey))
             .expect("majority extended invalid block"); //FIXME: header payload could mismatch if
                                                         //they respond with incorrect thing. DONT
                                                         //UNWRAP THIS

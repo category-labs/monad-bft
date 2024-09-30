@@ -106,6 +106,21 @@ fn test_forkpoint_restart_f_simple_statesync() {
     );
 }
 
+#[test]
+fn test_forkpoint_restart_f_epoch_boundary_statesync() {
+    let epoch_length = SeqNum(200);
+    let statesync_threshold = SeqNum(100);
+
+    let blocks_before_failure = SeqNum(275);
+    let recovery_time = SeqNum(statesync_threshold.0 * 3 / 2);
+    forkpoint_restart_f(
+        blocks_before_failure,
+        recovery_time,
+        epoch_length,
+        statesync_threshold,
+    );
+}
+
 // This test takes too long to run. Ignore for PR CI runs
 #[ignore]
 #[test]

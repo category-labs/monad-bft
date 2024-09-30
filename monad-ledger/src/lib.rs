@@ -9,10 +9,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_primitives::{Bloom, Bytes, FixedBytes, U256};
+use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use futures::Stream;
-use monad_blockdb::BlockDb;
+use monad_block_persist::{BlockPersist, FileBlockPersist};
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
     block::{BlockType, FullBlock as MonadBlock},
@@ -26,9 +26,7 @@ use monad_crypto::{
 use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_proto::proto::block::ProtoFullBlock;
 use monad_types::{BlockId, Round, SeqNum};
-use prost::Message;
 use reth_primitives::{Block as EthBlock, BlockBody, Header};
 use tracing::{info, trace};
 
@@ -45,8 +43,8 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    dir_path: PathBuf,
-    blockdb: BlockDb,
+    eth_block_path: PathBuf,
+    bft_block_persist: FileBlockPersist,
     header_param: EthHeaderParam,
 
     metrics: ExecutorMetrics,
@@ -71,16 +69,31 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(dir_path: PathBuf, blockdb: BlockDb, header_param: EthHeaderParam) -> Self {
-        match fs::create_dir(&dir_path) {
+    pub fn new(
+        eth_block_path: PathBuf,
+        bft_block_path: PathBuf,
+        payload_path: PathBuf,
+        header_param: EthHeaderParam,
+    ) -> Self {
+        match fs::create_dir(&eth_block_path) {
+            Ok(_) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(e) => panic!("{}", e),
+        }
+        match fs::create_dir(&bft_block_path) {
+            Ok(_) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(e) => panic!("{}", e),
+        }
+        match fs::create_dir(&payload_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
             Err(e) => panic!("{}", e),
         }
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
-            dir_path,
-            blockdb,
+            eth_block_path: eth_block_path.clone(),
+            bft_block_persist: FileBlockPersist::new(bft_block_path, payload_path, eth_block_path),
             header_param,
 
             metrics: Default::default(),
@@ -111,8 +124,8 @@ where
         }
     }
 
-    fn write_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
-        let mut file_path = PathBuf::from(&self.dir_path);
+    fn write_eth_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
+        let mut file_path = PathBuf::from(&self.eth_block_path);
         file_path.push(format!("{}", seq_num.0));
 
         let mut f = File::create(file_path).unwrap();
@@ -139,6 +152,98 @@ where
             unreachable!()
         }
     }
+
+    fn encode_eth_blocks(
+        &self,
+        full_blocks: &[(SeqNum, Option<EthBlock>, MonadBlock<SCT>)],
+    ) -> Vec<(SeqNum, Vec<u8>)> {
+        full_blocks
+            .iter()
+            .filter_map(|(seqnum, maybe_eth_block, _)| {
+                maybe_eth_block
+                    .as_ref()
+                    .map(|eth_block| (*seqnum, encode_eth_block(eth_block)))
+            })
+            .collect()
+    }
+
+    fn create_and_zip_with_eth_blocks(
+        &mut self,
+        full_bft_blocks: Vec<MonadBlock<SCT>>,
+    ) -> Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)> {
+        full_bft_blocks
+            .into_iter()
+            .map(|b| {
+                if b.is_empty_block() {
+                    (b.get_seq_num(), None, b)
+                } else {
+                    self.update_cache(b.clone());
+                    (b.get_seq_num(), Some(self.create_eth_block(&b)), b)
+                }
+            })
+            .collect()
+    }
+
+    fn write_bft_blocks(&self, full_blocks: &Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)>) {
+        // unwrap because failure to persist a finalized block is fatal error
+        for (_, _, bft_full_block) in full_blocks {
+            <FileBlockPersist as BlockPersist<ST, SCT>>::write_bft_block(
+                &self.bft_block_persist,
+                &bft_full_block.block,
+            )
+            .unwrap();
+            <FileBlockPersist as BlockPersist<ST, SCT>>::write_bft_payload(
+                &self.bft_block_persist,
+                &bft_full_block.payload,
+            )
+            .unwrap();
+        }
+    }
+
+    fn trace_and_metrics(
+        &mut self,
+        full_blocks: &Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)>,
+    ) {
+        for block in full_blocks {
+            if let (_, Some(eth_block), _) = block {
+                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
+                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += eth_block.body.len() as u64;
+                self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
+                info!(
+                    num_tx = eth_block.body.len(),
+                    block_num = eth_block.number,
+                    "committed block"
+                );
+
+                for t in &eth_block.body {
+                    trace!(txn_hash = ?t.hash(), "txn committed");
+                }
+            }
+        }
+    }
+
+    fn get_ledger_fetch_response(&self, block_id: BlockId) -> BlockSyncResponseMessage<SCT> {
+        let maybe_response = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
+            &self.bft_block_persist,
+            &block_id,
+        )
+        .and_then(|block| {
+            let payload_id = block.payload_id;
+            let maybe_payload = <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
+                &self.bft_block_persist,
+                &payload_id,
+            );
+            match maybe_payload {
+                Ok(payload) => Ok(MonadBlock { block, payload }),
+                Err(e) => Err(e),
+            }
+        });
+
+        match maybe_response {
+            Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
+            Err(_) => BlockSyncResponseMessage::NotAvailable(block_id),
+        }
+    }
 }
 
 impl<ST, SCT> Executor for MonadBlockFileLedger<ST, SCT>
@@ -152,63 +257,15 @@ where
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(full_blocks) => {
-                    let full_blocks: Vec<(SeqNum, Option<EthBlock>, MonadBlock<SCT>)> = full_blocks
-                        .into_iter()
-                        .map(|b| {
-                            if b.is_empty_block() {
-                                (b.get_seq_num(), None, b)
-                            } else {
-                                self.update_cache(b.clone());
-                                (b.get_seq_num(), Some(self.create_eth_block(&b)), b)
-                            }
-                        })
-                        .collect();
+                    let full_blocks = self.create_and_zip_with_eth_blocks(full_blocks);
+                    self.trace_and_metrics(&full_blocks);
 
-                    for block in &full_blocks {
-                        if let (_, Some(eth_block), _) = block {
-                            self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
-                            self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
-                                eth_block.body.len() as u64;
-                            self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
-                            info!(
-                                num_tx = eth_block.body.len(),
-                                block_num = eth_block.number,
-                                "committed block"
-                            );
+                    let encoded_eth_blocks = self.encode_eth_blocks(&full_blocks);
+                    // this can panic because failure to persist a finalized block is fatal error
+                    self.write_bft_blocks(&full_blocks);
 
-                            for t in &eth_block.body {
-                                trace!(txn_hash = ?t.hash(), "txn committed");
-                            }
-                        }
-                    }
-
-                    let encoded_eth_blocks: Vec<(SeqNum, Vec<u8>)> = full_blocks
-                        .iter()
-                        .filter_map(|(seqnum, maybe_eth_block, _)| {
-                            maybe_eth_block
-                                .as_ref()
-                                .map(|eth_block| (*seqnum, encode_eth_block(eth_block)))
-                        })
-                        .collect();
-
-                    let env = self.blockdb.clone();
-                    tokio::task::spawn_blocking(move || {
-                        for (_, maybe_eth_block, bft_block) in full_blocks {
-                            let bft_id = bft_block.get_id();
-                            let pblock: ProtoFullBlock = (&bft_block).into();
-                            let data = pblock.encode_to_vec();
-                            // if eth block is present, it must be written with
-                            // the matching bft block atomically
-                            match maybe_eth_block {
-                                Some(eth_block) => {
-                                    env.write_eth_and_bft_blocks(eth_block, bft_id, &data);
-                                }
-                                None => env.write_only_bft_block(bft_id, &data),
-                            }
-                        }
-                    });
                     for (seqnum, b) in encoded_eth_blocks {
-                        self.write_block(seqnum, &b).unwrap();
+                        self.write_eth_block(seqnum, &b).unwrap();
                         self.last_commit = Some(seqnum);
                     }
                 }
@@ -219,26 +276,12 @@ where
                             .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
                             .expect("failed to write to fetches_tx");
                     } else {
-                        let env = self.blockdb.clone();
                         let fetches_tx = self.fetches_tx.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let maybe_bft_block_bytes = env.read_bft_block(block_id);
-                            let response = match maybe_bft_block_bytes {
-                                Some(bft_block_serialized) => {
-                                    let pblock =
-                                        ProtoFullBlock::decode(bft_block_serialized.as_slice())
-                                            .expect("local bft block is not valid block");
-                                    let block = pblock
-                                        .try_into()
-                                        .expect("pbblock from blockdb is invalid block");
-                                    BlockSyncResponseMessage::BlockFound(block)
-                                }
-                                None => BlockSyncResponseMessage::NotAvailable(block_id),
-                            };
-                            fetches_tx
-                                .send(response)
-                                .expect("failed to write to fetches_tx");
-                        });
+
+                        let response = self.get_ledger_fetch_response(block_id);
+                        fetches_tx
+                            .send(response)
+                            .expect("failed to write to fetches_tx");
                     }
                 }
             }
@@ -328,6 +371,6 @@ fn generate_header<SCT: SignatureCollection>(
         blob_gas_used: None,
         excess_blob_gas: None,
         parent_beacon_block_root: None,
-        extra_data: Bytes::default(),
+        extra_data: monad_block.get_id().0 .0.into(),
     }
 }

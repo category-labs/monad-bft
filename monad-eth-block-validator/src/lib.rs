@@ -116,20 +116,22 @@ impl EthValidator {
         &self,
         block: &Block<SCT>,
         payload: &Payload,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+        author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<(), BlockValidationError> {
         if block.payload_id != payload.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
 
-        if let Err(e) = block
-            .execution
-            .randao_reveal
-            .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
-        {
-            warn!("Invalid randao_reveal signature, reason: {:?}", e);
-            return Err(BlockValidationError::RandaoError);
-        };
+        if let Some(author_pubkey) = author_pubkey {
+            if let Err(e) = block
+                .execution
+                .randao_reveal
+                .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
+            {
+                warn!("Invalid randao_reveal signature, reason: {:?}", e);
+                return Err(BlockValidationError::RandaoError);
+            };
+        }
         Ok(())
     }
 }
@@ -144,7 +146,7 @@ where
         &self,
         block: Block<SCT>,
         payload: Payload,
-        author_pubkey: &SignatureCollectionPubKeyType<SCT>,
+        author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<<EthBlockPolicy as BlockPolicy<SCT, SBT>>::ValidatedBlock, BlockValidationError>
     {
         match block.block_kind {
@@ -166,18 +168,14 @@ where
                 }
             }
             BlockKind::Null => {
-                match self.validate_block_header(&block, &payload, author_pubkey) {
-                    Ok(_) => {
-                        Ok(EthValidatedBlock {
-                            block,
-                            orig_payload: payload,
-                            validated_txns: Default::default(),
-                            nonces: Default::default(), // (address -> highest txn nonce) in the block
-                            carriage_costs: Default::default(), // (address -> carriage cost) in the block
-                        })
-                    }
-                    Err(e) => Err(e),
-                }
+                self.validate_block_header(&block, &payload, author_pubkey)?;
+                Ok(EthValidatedBlock {
+                    block,
+                    orig_payload: payload,
+                    validated_txns: Default::default(),
+                    nonces: Default::default(), // (address -> highest txn nonce) in the block
+                    carriage_costs: Default::default(), // (address -> carriage cost) in the block
+                })
             }
         }
     }

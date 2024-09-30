@@ -1,13 +1,12 @@
 use std::cmp::min;
 
 use alloy_primitives::{
-    aliases::{B256, U128, U256, U64},
+    aliases::{U128, U256, U64},
     Address, FixedBytes,
 };
-use monad_blockdb::{BlockValue, EthTxKey};
-use monad_blockdb_utils::BlockDbEnv;
+use bytes::Buf;
 use monad_rpc_docs::rpc;
-use reth_primitives::{transaction::TransactionKind, TransactionSigned};
+use reth_primitives::{transaction::TransactionKind, Block as EthBlock, TransactionSigned};
 use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
 };
@@ -16,10 +15,10 @@ use tracing::{debug, trace, warn};
 
 use crate::{
     block_handlers::block_receipts,
+    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     eth_json_types::{
-        deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction,
-        MonadTransactionReceipt, Quantity, UnformattedData,
+        BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt,
+        Quantity, UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
@@ -27,7 +26,7 @@ use crate::{
 };
 
 pub fn parse_tx_content(
-    value: &BlockValue,
+    block: &EthBlock,
     tx: &TransactionSigned,
     tx_index: u64,
 ) -> Option<Transaction> {
@@ -38,7 +37,7 @@ pub fn parse_tx_content(
         .expect("transaction sender should exist");
 
     // parse fee parameters
-    let base_fee = value.block.base_fee_per_gas;
+    let base_fee = block.base_fee_per_gas;
     let gas_price = base_fee
         .and_then(|base_fee| {
             tx.effective_tip_per_gas(Some(base_fee))
@@ -65,6 +64,8 @@ pub fn parse_tx_content(
             .collect()
     });
 
+    let block_hash = Some(get_block_hash(block));
+
     let retval = Transaction {
         hash: tx.hash(),
         nonce: U64::from(tx.nonce()),
@@ -80,8 +81,8 @@ pub fn parse_tx_content(
         chain_id: tx.chain_id().map(U64::from),
         access_list,
         transaction_type: Some(U64::from(tx.tx_type() as u8)),
-        block_hash: Some(value.block_id()),
-        block_number: Some(U256::from(value.block.number)),
+        block_hash,
+        block_number: Some(U256::from(block.number)),
         transaction_index: Some(U256::from(tx_index)),
 
         // only relevant for EIP-4844 transactions
@@ -94,25 +95,26 @@ pub fn parse_tx_content(
 }
 
 pub fn parse_tx_receipt(
-    block: &BlockValue,
+    block: &EthBlock,
     prev_receipt: Option<ReceiptDetails>,
     receipt: ReceiptDetails,
     block_num: u64,
     tx_index: u64,
 ) -> Option<TransactionReceipt> {
-    let tx = block.block.body.get(tx_index as usize)?;
+    let tx = block.body.get(tx_index as usize)?;
     let transaction = tx
         .clone()
         .into_ecrecovered_unchecked()
         .expect("transaction sender should exist");
-    let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
+    let base_fee_per_gas = block.base_fee_per_gas.unwrap_or_default() as u128;
     // effective gas price is calculated according to eth json rpc specification
     let effective_gas_price = base_fee_per_gas
         + min(
             tx.max_fee_per_gas() - base_fee_per_gas,
             tx.max_priority_fee_per_gas().unwrap_or_default(),
         );
-    let block_hash = Some(block.block_id());
+
+    let block_hash = Some(get_block_hash(block));
     let block_number = Some(U256::from(block_num));
     let logs = receipt
         .logs
@@ -225,13 +227,10 @@ impl<'de> Deserialize<'de> for FilterParams {
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum LogFilter {
     Range {
-        #[serde(deserialize_with = "deserialize_block_tags")]
         from_block: BlockTags,
-        #[serde(deserialize_with = "deserialize_block_tags")]
         to_block: BlockTags,
     },
     BlockHash {
-        #[serde(deserialize_with = "deserialize_fixed_data")]
         block_hash: EthHash,
     },
 }
@@ -255,11 +254,11 @@ pub enum AddressValueOrArray {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 
-#[rpc(method = "eth_getLogs")]
+#[rpc(method = "eth_getLogs", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     triedb_env: &TriedbEnv,
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
@@ -296,25 +295,19 @@ pub async fn monad_eth_getLogs(
                 from_block,
                 to_block,
             } => {
-                let from_block = blockdb_env
-                    .get_block_by_tag(from_block.into())
-                    .await
-                    .ok_or(JsonRpcError::internal_error())?;
-                let to_block = blockdb_env
-                    .get_block_by_tag(to_block.into())
-                    .await
-                    .ok_or(JsonRpcError::internal_error())?;
-                filter = filter.from_block(from_block.block.number);
-                filter = filter.to_block(to_block.block.number);
-                (from_block.block.number, to_block.block.number)
+                let from_block = get_block_num_from_tag(triedb_env, from_block).await?;
+                let to_block = get_block_num_from_tag(triedb_env, to_block).await?;
+                filter = filter.from_block(from_block);
+                filter = filter.to_block(to_block);
+                (from_block, to_block)
             }
             LogFilter::BlockHash { block_hash } => {
                 filter = filter.at_block_hash(Into::<FixedBytes<32>>::into(block_hash.0));
-                let block = blockdb_env
+                let block = file_ledger_reader
+                    .clone()
                     .get_block_by_hash(block_hash.into())
-                    .await
                     .ok_or(JsonRpcError::internal_error())?;
-                (block.block.number, block.block.number)
+                (block.number, block.number)
             }
         };
 
@@ -330,12 +323,13 @@ pub async fn monad_eth_getLogs(
         let topics_filter = FilteredParams::topics_filter(&filter.topics);
 
         for block_num in from_block..=to_block {
-            let block = blockdb_env
-                .get_block_by_tag(monad_blockdb_utils::BlockTags::Number(block_num))
-                .await
-                .ok_or(JsonRpcError::internal_error())?;
+            let block = match get_block_from_num(file_ledger_reader, block_num).await {
+                BlockResult::Block(b) => b,
+                BlockResult::NotFound => return Err(JsonRpcError::internal_error()),
+                BlockResult::DecodeFailed(_) => return Err(JsonRpcError::internal_error()),
+            };
 
-            let header_logs_bloom = block.block.header.logs_bloom;
+            let header_logs_bloom = block.header.logs_bloom;
 
             if FilteredParams::matches_address(header_logs_bloom, &address_filter)
                 || FilteredParams::matches_topics(header_logs_bloom, &topics_filter)
@@ -368,7 +362,6 @@ pub async fn monad_eth_getLogs(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthSendRawTransactionParams {
-    #[serde(deserialize_with = "deserialize_unformatted_data")]
     hex_tx: UnformattedData,
 }
 
@@ -405,30 +398,28 @@ pub async fn monad_eth_sendRawTransaction(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionReceiptParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionReceipt")]
+#[rpc(method = "eth_getTransactionReceipt", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
 pub async fn monad_eth_getTransactionReceipt(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     triedb_env: &TriedbEnv,
     p: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {p:?}");
 
-    let key = EthTxKey(B256::new(p.tx_hash.0));
-    let Some(txn_value) = blockdb_env.get_txn(key).await else {
+    let Some(txn_value) = file_ledger_reader.get_txn_by_hash(monad_types::Hash(p.tx_hash.0)) else {
         return Ok(None);
     };
     let txn_index = txn_value.transaction_index;
 
-    let Some(block) = blockdb_env.get_block_by_hash(txn_value.block_hash).await else {
+    let Some(block) = file_ledger_reader.get_block_by_hash(txn_value.block_hash) else {
         return Ok(None);
     };
-    let block_num = block.block.number;
+    let block_num = block.number;
     match triedb_env.get_receipt(txn_index, block_num).await {
         TriedbResult::Null => Ok(None),
         TriedbResult::Receipt(rlp_receipt) => {
@@ -463,65 +454,62 @@ pub async fn monad_eth_getTransactionReceipt(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionByHash")]
+#[rpc(method = "eth_getTransactionByHash", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
 pub async fn monad_eth_getTransactionByHash(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    let key = EthTxKey(B256::new(params.tx_hash.0));
-    let Some(result) = blockdb_env.get_txn(key).await else {
+    let Some(txn_value) = file_ledger_reader.get_txn_by_hash(monad_types::Hash(params.tx_hash.0))
+    else {
         return Ok(None);
     };
 
-    let block_key = result.block_hash;
-    let block = blockdb_env
-        .get_block_by_hash(block_key)
-        .await
-        .expect("txn was found so its block should exist");
+    let Some(block) = file_ledger_reader.get_block_by_hash(txn_value.block_hash) else {
+        return Ok(None);
+    };
 
     let transaction = block
-        .block
         .body
-        .get(result.transaction_index as usize)
+        .get(txn_value.transaction_index as usize)
         .expect("txn and block found so its index should be correct");
 
     let retval =
-        parse_tx_content(&block, transaction, result.transaction_index).map(MonadTransaction);
+        parse_tx_content(&block, transaction, txn_value.transaction_index).map(MonadTransaction);
 
     Ok(retval)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByBlockHashAndIndexParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
-    #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 
-#[rpc(method = "eth_getTransactionByBlockHashAndIndex")]
+#[rpc(
+    method = "eth_getTransactionByBlockHashAndIndex",
+    ignore = "file_ledger_reader"
+)]
 #[allow(non_snake_case)]
 /// Returns information about a transaction by block hash and transaction index position.
 pub async fn monad_eth_getTransactionByBlockHashAndIndex(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
     params: MonadEthGetTransactionByBlockHashAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
     let key = params.block_hash.into();
-    let Some(block) = blockdb_env.get_block_by_hash(key).await else {
+    let Some(block) = file_ledger_reader.get_block_by_hash(key) else {
         return Ok(None);
     };
 
-    let Some(transaction) = block.block.body.get(params.index.0 as usize) else {
+    let Some(transaction) = block.body.get(params.index.0 as usize) else {
         return Ok(None);
     };
 
@@ -532,30 +520,41 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
-    #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
 }
 
-#[rpc(method = "eth_getTransactionByBlockNumberAndIndex")]
+#[rpc(
+    method = "eth_getTransactionByBlockNumberAndIndex",
+    ignore = "file_ledger_reader"
+)]
 #[allow(non_snake_case)]
 /// Returns information about a transaction by block number and transaction index position.
 pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
-    blockdb_env: &BlockDbEnv,
+    file_ledger_reader: &FileBlockReader,
+    triedb_env: &TriedbEnv,
     params: MonadEthGetTransactionByBlockNumberAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
 
-    let Some(block) = blockdb_env.get_block_by_tag(params.block_tag.into()).await else {
-        return Ok(None);
+    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
+    let block = match get_block_from_num(file_ledger_reader, block_num).await {
+        BlockResult::Block(b) => b,
+        BlockResult::NotFound => return Ok(None),
+        BlockResult::DecodeFailed(e) => return Ok(None),
     };
 
-    let Some(transaction) = block.block.body.get(params.index.0 as usize) else {
+    let Some(transaction) = block.body.get(params.index.0 as usize) else {
         return Ok(None);
     };
 
     let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction);
 
     Ok(retval)
+}
+
+fn get_block_hash(block: &EthBlock) -> FixedBytes<32> {
+    let mut block_hash = [0; 32];
+    block.extra_data.clone().copy_to_slice(&mut block_hash);
+    FixedBytes::from(block_hash)
 }
