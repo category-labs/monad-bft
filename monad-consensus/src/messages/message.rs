@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    block::{Block, BlockIdRange, BlockType, FullBlock},
+    block::{Block, BlockIdRange},
     payload::{Payload, PayloadId},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
@@ -131,6 +131,15 @@ pub enum BlockSyncHeadersResponse<SCT: SignatureCollection> {
     NotAvailable(BlockIdRange),
 }
 
+impl<SCT: SignatureCollection> BlockSyncHeadersResponse<SCT> {
+    pub fn get_block_id_range(&self) -> BlockIdRange {
+        match self {
+            BlockSyncHeadersResponse::Found((block_id_range, _)) => *block_id_range,
+            BlockSyncHeadersResponse::NotAvailable(block_id_range) => *block_id_range,
+        }
+    }
+}
+
 impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(std::any::type_name::<Self>().as_bytes());
@@ -154,6 +163,15 @@ impl<SCT: SignatureCollection> Hashable for BlockSyncHeadersResponse<SCT> {
 pub enum BlockSyncPayloadResponse {
     Found((PayloadId, Payload)),
     NotAvailable(PayloadId),
+}
+
+impl BlockSyncPayloadResponse {
+    pub fn get_payload_id(&self) -> PayloadId {
+        match self {
+            BlockSyncPayloadResponse::Found((payload_id, _)) => *payload_id,
+            BlockSyncPayloadResponse::NotAvailable(payload_id) => *payload_id,
+        }
+    }
 }
 
 impl Hashable for BlockSyncPayloadResponse {
