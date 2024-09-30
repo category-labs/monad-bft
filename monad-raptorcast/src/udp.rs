@@ -793,7 +793,7 @@ struct BroadcastBatch<PT: PubKey> {
     start_idx: usize,
     end_idx: usize,
 }
-pub struct BroadcastBatcher<'a, F, PT>
+pub(crate) struct BroadcastBatcher<'a, F, PT>
 where
     F: FnMut(Vec<NodeId<PT>>, Bytes),
     PT: PubKey,
@@ -850,7 +850,7 @@ where
         }
     }
 }
-pub struct BatcherGuard<'a, 'g, F, PT>
+pub(crate) struct BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
     F: FnMut(Vec<NodeId<PT>>, Bytes),
@@ -865,7 +865,7 @@ where
     F: FnMut(Vec<NodeId<PT>>, Bytes),
     PT: PubKey,
 {
-    pub fn queue_broadcast(
+    pub(crate) fn queue_broadcast(
         &mut self,
         payload_start_idx: usize,
         payload_end_idx: usize,

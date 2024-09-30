@@ -7,6 +7,7 @@ use std::{
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
+use config::FullNodeIdentityConfig;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
@@ -173,6 +174,7 @@ async fn run(
             node_state.node_config.network.clone(),
             node_state.router_identity,
             &node_state.node_config.bootstrap.peers,
+            &node_state.node_config.fullnode.identities,
         )
         .await;
 
@@ -508,6 +510,7 @@ async fn build_raptorcast_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
+    full_nodes: &[FullNodeIdentityConfig],
 ) -> RaptorCast<SignatureType, M, OM>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
@@ -534,6 +537,10 @@ where
                     .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
                 (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
             })
+            .collect(),
+        full_nodes: full_nodes
+            .iter()
+            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
             .collect(),
         redundancy: 3,
         local_addr: SocketAddr::V4(SocketAddrV4::new(

@@ -258,6 +258,7 @@ pub fn set_up_test(
         rt.spawn(async move {
             let service_config = RaptorCastConfig {
                 key: rx_keypair,
+                full_nodes: Default::default(),
                 known_addresses,
                 redundancy: 2,
                 local_addr: rx_addr,

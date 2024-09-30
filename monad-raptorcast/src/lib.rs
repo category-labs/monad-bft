@@ -20,7 +20,7 @@ use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serial
 
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, Validator};
+use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -30,6 +30,7 @@ where
 {
     // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     pub key: ST::KeyPairType,
     /// amount of redundancy to send
@@ -49,6 +50,8 @@ where
     redundancy: u8,
 
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
+    // TODO support dynamic updating
+    full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     current_epoch: Epoch,
@@ -74,6 +77,7 @@ where
         let dataplane = Dataplane::new(&config.local_addr);
         Self {
             epoch_validators: Default::default(),
+            full_nodes: FullNodes::new(config.full_nodes),
             known_addresses: config.known_addresses,
 
             key: config.key,
@@ -317,12 +321,28 @@ where
                 &mut this.epoch_validators,
                 |targets, payload| {
                     // this is the callback used for rebroadcasting
-                    let targets = targets
+                    //
+                    // enqueue two BroadcastMsg for broadcast priority:
+                    // validators first then full nodes
+                    let validator_targets = targets
                         .into_iter()
                         .filter_map(|validator| this.known_addresses.get(&validator).copied())
                         .collect();
-                    this.dataplane
-                        .udp_write_broadcast(BroadcastMsg { targets, payload })
+                    this.dataplane.udp_write_broadcast(BroadcastMsg {
+                        targets: validator_targets,
+                        payload: payload.clone(),
+                    });
+
+                    let full_node_targets = this
+                        .full_nodes
+                        .list
+                        .iter()
+                        .filter_map(|full_node| this.known_addresses.get(&full_node).copied())
+                        .collect();
+                    this.dataplane.udp_write_broadcast(BroadcastMsg {
+                        targets: full_node_targets,
+                        payload,
+                    });
                 },
                 message,
             );

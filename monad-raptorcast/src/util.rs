@@ -66,6 +66,25 @@ where
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct FullNodes<P: PubKey> {
+    pub list: Vec<NodeId<P>>,
+}
+
+impl<P: PubKey> Default for FullNodes<P> {
+    fn default() -> Self {
+        Self {
+            list: Default::default(),
+        }
+    }
+}
+
+impl<P: PubKey> FullNodes<P> {
+    pub fn new(nodes: Vec<NodeId<P>>) -> Self {
+        Self { list: nodes }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Validator {
     pub stake: Stake,
 }
