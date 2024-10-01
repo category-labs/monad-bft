@@ -27,7 +27,7 @@ use monad_executor_glue::{
     LoopbackCommand, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{NodeId, RouterTarget};
+use monad_types::{Epoch, NodeId, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -82,6 +82,21 @@ impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for 
 
             rng: ChaCha8Rng::seed_from_u64(123456),
         }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> BlockSync<ST, SCT> {
+    pub fn clear_self_requests(&mut self) {
+        self.self_header_requests.clear();
+        self.self_payload_requests.clear();
+        self.self_completed_header_requests.clear();
+    }
+
+    pub fn self_headers_request_exists(&self, block_id_range: BlockIdRange) -> bool {
+        self.self_header_requests.contains_key(&block_id_range)
+            || self
+                .self_completed_header_requests
+                .contains_key(&block_id_range)
     }
 }
 
@@ -154,22 +169,36 @@ where
         }
     }
 
-    fn self_headers_request_exists(&self, block_id_range: BlockIdRange) -> bool {
-        self.block_sync
-            .self_header_requests
-            .contains_key(&block_id_range)
-            || self
-                .block_sync
-                .self_completed_header_requests
-                .contains_key(&block_id_range)
+    fn pick_peer(
+        self_node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+        current_epoch: Epoch,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        rng: &mut ChaCha8Rng,
+    ) -> NodeId<CertificateSignaturePubKey<ST>> {
+        // let epoch = self.consensus.current_epoch();
+        let validators = val_epoch_map
+            .get_val_set(&current_epoch)
+            .expect("current epoch exists");
+        let members = validators.get_members();
+        let members = members
+            .iter()
+            .filter(|(peer, _)| peer != &self_node_id)
+            .collect_vec();
+        assert!(!members.is_empty(), "no nodes to blocksync from");
+        *members
+            .choose_weighted(rng, |(_peer, weight)| weight.0)
+            .expect("nonempty")
+            .0
     }
 
+    // TODO return actual errors instead of bool
     fn verify_block_headers(
-        &self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         block_id_range: BlockIdRange,
-        headers: &Vec<Block<SCT>>,
+        block_headers: &Vec<Block<SCT>>,
     ) -> bool {
-        let num_headers = headers.len();
+        let num_headers = block_headers.len();
 
         // atleast one block header was requested and received
         // TODO: doesn't have to be assert ?
@@ -177,18 +206,16 @@ where
         assert!(num_headers > 0);
 
         // The id of the last header must be block_id_range.to
-        if block_id_range.to != headers.last().unwrap().get_id() {
+        if block_id_range.to != block_headers.last().unwrap().get_id() {
             return false;
         }
 
         // verify that the headers form a chain between block_id_range.from and block_id_range.to
         // by verifying the QCs and their parent block ids
-        for (index, block_header) in headers.iter().enumerate() {
+        for (index, block_header) in block_headers.iter().enumerate() {
             let qc = &block_header.qc;
             // verify the QC
-            if let Err(_err) =
-                verify_certificates(self.epoch_manager, self.val_epoch_map, &None, qc)
-            {
+            if let Err(_err) = verify_certificates(epoch_manager, val_epoch_map, &None, qc) {
                 return false;
             }
 
@@ -197,8 +224,8 @@ where
                 // the QC of first header should point to block_id_range.from
                 block_id_range.from
             } else {
-                // the QC should point to the previous block
-                headers[index - 1].get_id()
+                // the QC should point to the previous header
+                block_headers[index - 1].get_id()
             };
 
             if qc.get_block_id() != previous_block_id {
@@ -217,58 +244,55 @@ where
         sender: Option<NodeId<SCT::NodeIdPubKey>>,
         headers_response: BlockSyncHeadersResponse<SCT>,
     ) -> Vec<BlockSyncCommand<SCT>> {
-        // FIXME: make this a function
-        let mut pick_peer = || {
-            let epoch = self.consensus.current_epoch();
-            let validators = self
-                .val_epoch_map
-                .get_val_set(&epoch)
-                .expect("current epoch exists");
-            let members = validators.get_members();
-            let members = members
-                .iter()
-                .filter(|(peer, _)| peer != &self.nodeid)
-                .collect_vec();
-            assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(&mut self.block_sync.rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
-        };
-
-        let block_id_range = headers_response.get_block_id_range();
         let mut cmds = Vec::new();
 
+        let block_id_range = headers_response.get_block_id_range();
         if let Entry::Occupied(mut entry) =
             self.block_sync.self_header_requests.entry(block_id_range)
         {
             // self requested blocksync headers
             let self_request = entry.get_mut();
-
             if self_request.to != sender {
                 // unexpected sender
                 return cmds;
+            }
+
+            // reset timeout
+            if sender.is_some() {
+                cmds.push(BlockSyncCommand::ResetTimeout(
+                    BlockSyncRequestMessage::Headers(block_id_range),
+                ));
             }
 
             let self_requester = self_request.requester;
             match headers_response {
                 BlockSyncHeadersResponse::Found((block_id_range, headers)) => {
                     assert_eq!(self_requester, self.block_sync.self_request_mode);
-                    entry.remove();
 
                     // verify headers. includes QC verification
-                    if !self.verify_block_headers(block_id_range, &headers) {
-                        panic!("self response should never fail block headers verification");
-                    }
+                    if Self::verify_block_headers(
+                        self.epoch_manager,
+                        self.val_epoch_map,
+                        block_id_range,
+                        &headers,
+                    ) {
+                        // valid headers received, remove entry for its request
+                        entry.remove();
 
-                    if !self
-                        .block_sync
-                        .self_completed_header_requests
-                        .contains_key(&block_id_range)
-                    {
+                        if self
+                            .block_sync
+                            .self_completed_header_requests
+                            .contains_key(&block_id_range)
+                        {
+                            // headers request already completed, nothing to do
+                            return cmds;
+                        }
+
+                        // valid headers received. request its payloads
                         for block_header in headers.iter() {
                             let payload_id = block_header.get_payload_id();
 
+                            // TODO: check blocktree and not request existing payloads
                             // fetch payload only if we haven't already requested
                             if !self
                                 .block_sync
@@ -293,11 +317,37 @@ where
                         self.block_sync
                             .self_completed_header_requests
                             .insert(block_id_range, (self_requester, payload_requests));
+                    } else {
+                        assert!(
+                            sender != None,
+                            "self response shouldn't fail headers verification"
+                        );
+
+                        // invalid headers, request from different peer
+                        let to = Self::pick_peer(
+                            &self.nodeid,
+                            self.consensus.current_epoch(),
+                            &self.val_epoch_map,
+                            &mut self.block_sync.rng,
+                        );
+                        self_request.to = Some(to);
+                        cmds.push(BlockSyncCommand::SendRequest {
+                            to,
+                            request: BlockSyncRequestMessage::Headers(block_id_range),
+                        });
+                        cmds.push(BlockSyncCommand::ScheduleTimeout(
+                            BlockSyncRequestMessage::Headers(block_id_range),
+                        ));
                     }
                 }
                 BlockSyncHeadersResponse::NotAvailable(block_id_range) => {
-                    // self requested headers not found, request from peer.
-                    let to = pick_peer();
+                    // request from peer
+                    let to = Self::pick_peer(
+                        &self.nodeid,
+                        self.consensus.current_epoch(),
+                        &self.val_epoch_map,
+                        &mut self.block_sync.rng,
+                    );
                     self_request.to = Some(to);
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
@@ -319,25 +369,6 @@ where
         sender: Option<NodeId<SCT::NodeIdPubKey>>,
         payload_response: BlockSyncPayloadResponse,
     ) -> Vec<BlockSyncCommand<SCT>> {
-        // FIXME: make this a function
-        let mut pick_peer = || {
-            let epoch = self.consensus.current_epoch();
-            let validators = self
-                .val_epoch_map
-                .get_val_set(&epoch)
-                .expect("current epoch exists");
-            let members = validators.get_members();
-            let members = members
-                .iter()
-                .filter(|(peer, _)| peer != &self.nodeid)
-                .collect_vec();
-            assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(&mut self.block_sync.rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
-        };
-
         let payload_id = payload_response.get_payload_id();
         let mut cmds = Vec::new();
 
@@ -345,15 +376,23 @@ where
         {
             // self requested payload
             let self_request = entry.get_mut();
-
             if self_request.to != sender {
                 // unexpected sender
                 return cmds;
             }
 
+            // reset timeout
+            if sender.is_some() {
+                cmds.push(BlockSyncCommand::ResetTimeout(
+                    BlockSyncRequestMessage::Payload(payload_id),
+                ));
+            }
+
+            let self_requester = self_request.requester;
             match payload_response {
                 BlockSyncPayloadResponse::Found((payload_id, payload)) => {
-                    assert_eq!(self_request.requester, self.block_sync.self_request_mode);
+                    assert_eq!(self_requester, self.block_sync.self_request_mode);
+                    // TODO: payload validation
                     entry.remove();
 
                     let requested_ranges: Vec<_> = self
@@ -370,9 +409,6 @@ where
                         else {
                             panic!("should be in tree");
                         };
-
-                        // TODO: payload validation
-                        // TODO: clear timeout
 
                         // add the payload completed header requests
                         let (_, payload_requests) = entry.get_mut();
@@ -408,7 +444,12 @@ where
                 }
                 BlockSyncPayloadResponse::NotAvailable(payload_id) => {
                     // self requested payload not found, request from peer.
-                    let to = pick_peer();
+                    let to = Self::pick_peer(
+                        &self.nodeid,
+                        self.consensus.current_epoch(),
+                        &self.val_epoch_map,
+                        &mut self.block_sync.rng,
+                    );
                     self_request.to = Some(to);
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
@@ -494,20 +535,18 @@ where
                 block_id_range,
             } => {
                 if requester != self.block_sync.self_request_mode {
-                    self.block_sync.self_header_requests.clear();
-                    self.block_sync.self_payload_requests.clear();
+                    self.block_sync.clear_self_requests();
                     self.block_sync.self_request_mode = requester;
                 }
 
-                if !self.self_headers_request_exists(block_id_range) {
-                    let existing_entry = self.block_sync.self_header_requests.insert(
+                if !self.block_sync.self_headers_request_exists(block_id_range) {
+                    self.block_sync.self_header_requests.insert(
                         block_id_range,
                         SelfRequest {
                             requester,
                             to: None,
                         },
                     );
-                    assert!(existing_entry.is_none(), "asserted above");
 
                     cmds.push(BlockSyncCommand::FetchHeaders(block_id_range));
                 }
@@ -523,12 +562,21 @@ where
                         entry.remove();
                     }
                 }
-                // TODO also check self_completed_header_requests
-            }
 
+                if let Entry::Occupied(entry) = self
+                    .block_sync
+                    .self_completed_header_requests
+                    .entry(block_id_range)
+                {
+                    if entry.get().0 == requester {
+                        entry.remove();
+                    }
+                }
+            }
             BlockSyncEvent::SelfResponse { response } => match response {
                 BlockSyncResponseMessage::HeadersResponse(headers_response) => {
                     let block_id_range = headers_response.get_block_id_range();
+
                     let requesters = self
                         .block_sync
                         .header_requests
@@ -547,6 +595,7 @@ where
                 }
                 BlockSyncResponseMessage::PayloadResponse(payload_response) => {
                     let payload_id = payload_response.get_payload_id();
+
                     let requesters = self
                         .block_sync
                         .payload_requests
