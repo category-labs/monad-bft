@@ -16,7 +16,7 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_triedb::Handle as TriedbHandle;
+use monad_triedb::TriedbHandle;
 use monad_types::{Epoch, SeqNum};
 use tracing::{debug, error, warn};
 

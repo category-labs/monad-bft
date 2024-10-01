@@ -10,7 +10,7 @@ use decode::rlp_decode_storage_slot;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_triedb::Handle;
+use monad_triedb::TriedbHandle;
 use monad_types::SeqNum;
 use tracing::{debug, warn};
 
@@ -26,12 +26,12 @@ const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 
 #[derive(Clone)]
 pub struct TriedbReader {
-    handle: Handle,
+    handle: TriedbHandle,
 }
 
 impl TriedbReader {
     pub fn try_new(triedb_path: &Path) -> Option<Self> {
-        Handle::try_new(triedb_path).map(|handle| Self { handle })
+        TriedbHandle::try_new(triedb_path).map(|handle| Self { handle })
     }
 
     pub fn get_latest_block(&self) -> u64 {

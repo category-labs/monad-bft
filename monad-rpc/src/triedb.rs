@@ -5,16 +5,17 @@ use std::{
         mpsc, Arc,
     },
     thread,
-    time::{Duration, Instant},
 };
 
 use futures::channel::oneshot;
-use monad_triedb::Handle as TriedbHandle;
+use monad_triedb::TriedbHandle;
 use monad_triedb_utils::{
     decode::{rlp_decode_account, rlp_decode_storage_slot},
     key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
 };
 use tracing::error;
+
+const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 10_000;
 
 type EthAddress = [u8; 20];
 type EthStorageKey = [u8; 32];
@@ -73,15 +74,8 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
     let triedb_handle: TriedbHandle =
         TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
 
-    // create a polling interval of 200 microseconds
-    let poll_interval = Duration::from_micros(200);
-    let mut last_poll = Instant::now();
-
     loop {
-        if last_poll.elapsed() >= poll_interval {
-            triedb_handle.triedb_poll(false, usize::MAX);
-            last_poll = Instant::now();
-        }
+        triedb_handle.triedb_poll(false, usize::MAX);
 
         // spin on receiver
         match receiver.try_recv() {
@@ -131,7 +125,8 @@ pub struct TriedbEnv {
 impl TriedbEnv {
     pub fn new(triedb_path: &Path) -> Self {
         // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
-        let (sender, receiver) = mpsc::sync_channel::<TriedbRequest>(10000);
+        let (sender, receiver) =
+            mpsc::sync_channel::<TriedbRequest>(MAX_CONCURRENT_TRIEDB_REQUESTS);
 
         // spawn the polling thread in a dedicated thread
         let triedb_path_cloned = triedb_path.to_path_buf();

@@ -19,9 +19,8 @@ mod bindings {
 
 const STATE_NIBBLE: u8 = 0x0;
 
-// TODO: rename to TriedbHandle
 #[derive(Clone, Debug)]
-pub struct Handle {
+pub struct TriedbHandle {
     db_ptr: *mut bindings::triedb,
 }
 
@@ -59,7 +58,7 @@ pub unsafe extern "C" fn read_async_callback(
     let _ = sender_context.sender.send(result);
 }
 
-impl Handle {
+impl TriedbHandle {
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
             .expect("failed to create CString");
@@ -198,7 +197,7 @@ impl Handle {
     }
 }
 
-impl Drop for Handle {
+impl Drop for TriedbHandle {
     fn drop(&mut self) {
         let result = unsafe { bindings::triedb_close(self.db_ptr) };
         assert_eq!(result, 0);
@@ -209,11 +208,11 @@ impl Drop for Handle {
 mod test {
     use std::path::Path;
 
-    use crate::Handle;
+    use crate::TriedbHandle;
 
     #[test]
     fn read() {
-        let handle = Handle::try_new(Path::new("/dummy")).unwrap();
+        let handle = TriedbHandle::try_new(Path::new("/dummy")).unwrap();
 
         // this key is hardcoded into mock triedb
         let result = handle.read(&[1, 2, 3], 6, 0);
@@ -230,7 +229,7 @@ mod test {
     #[test]
     #[should_panic]
     fn read_invalid() {
-        let handle = Handle::try_new(Path::new("/dummy")).unwrap();
+        let handle = TriedbHandle::try_new(Path::new("/dummy")).unwrap();
 
         // too many nibbles
         let _ = handle.read(&[1, 2, 3], 7, 0);
@@ -238,7 +237,7 @@ mod test {
 
     #[test]
     fn read_latest_block() {
-        let handle = Handle::try_new(Path::new("/dummy")).unwrap();
+        let handle = TriedbHandle::try_new(Path::new("/dummy")).unwrap();
 
         // this value is hardcoded into mock triedb
         let result = handle.latest_block();
