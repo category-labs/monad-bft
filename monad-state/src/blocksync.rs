@@ -309,6 +309,9 @@ where
                                 cmds.push(BlockSyncCommand::FetchPayload(
                                     block_header.get_payload_id(),
                                 ));
+                                cmds.push(BlockSyncCommand::ScheduleTimeout(
+                                    BlockSyncRequestMessage::Payload(payload_id),
+                                ));
                             }
                         }
 
