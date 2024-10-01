@@ -19,13 +19,12 @@ fn test_single_decode(src: Vec<u8>) {
         let mut buf: Box<[u8]> = vec![0; SYMBOL_LEN].into_boxed_slice();
         encoder.encode_symbol(&mut buf, *esi);
 
-        // We feed some encoded symbols back into the decoder twice to test the
-        // Redundant buffer handling paths.
-        if rand::thread_rng().gen_ratio(1, 100) {
-            decoder.received_encoded_symbol(&buf, *esi);
-        }
+        decoder.received_encoded_symbol(&buf, *esi).unwrap();
 
-        decoder.received_encoded_symbol(&buf, *esi);
+        // Make sure that we detect multiple submissions of the same ESI.
+        if rand::thread_rng().gen_ratio(1, 100) {
+            decoder.received_encoded_symbol(&buf, *esi).unwrap_err();
+        }
 
         if decoder.try_decode() {
             break;
