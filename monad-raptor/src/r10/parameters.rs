@@ -12,7 +12,8 @@ pub struct CodeParameters {
 
 // RFC 5053 section 5.2 suggests a minimum value of 4.
 // RFC 5053 section 5.7 provides systematic indices for values of 4 and higher.
-pub const SOURCE_SYMBOLS_MIN: usize = 4;
+// We provide our own systematic indices for values of 1, 2, and 3.
+pub const SOURCE_SYMBOLS_MIN: usize = 1;
 
 // RFC 5053 section 5.1.2 defines Kmax to be 8192.
 pub const SOURCE_SYMBOLS_MAX: usize = 8192;
