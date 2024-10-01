@@ -2,7 +2,6 @@ use crate::r10::{CodeParameters, SOURCE_SYMBOLS_MAX, SOURCE_SYMBOLS_MIN};
 
 // The pre-computed systematic indices J(K) defined in RFC 5053 section 5.7.
 const SYSTEMATIC_INDEX: [u16; SOURCE_SYMBOLS_MAX - SOURCE_SYMBOLS_MIN + 1] = [
-    1072, 2062, 57975, // Custom values not specified in RFC 5053.
     18, 14, 61, 46, 14, 22, 20, 40, 48, 1, 29, 40, 43, 46, 18, 8, 20, 2, 61, 26, 13, 29, 36, 19,
     58, 5, 58, 0, 54, 56, 24, 14, 5, 67, 39, 31, 25, 29, 24, 19, 14, 56, 49, 49, 63, 30, 4, 39, 2,
     1, 20, 19, 61, 4, 54, 70, 25, 52, 9, 26, 55, 69, 27, 68, 75, 19, 64, 57, 45, 3, 37, 31, 100,
