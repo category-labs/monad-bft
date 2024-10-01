@@ -6,6 +6,7 @@ use std::{
 use clap::Parser;
 use executor::{LedgerConfig, MonadP2PGossipConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
+use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -19,7 +20,6 @@ use monad_executor::Executor;
 use monad_gossip::{
     gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, seeder::SeederConfig,
 };
-use monad_multi_sig::MultiSig;
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
@@ -62,11 +62,11 @@ struct Args {
 }
 
 struct TestgroundArgs {
-    simulation_length_s: u64,     // default 10
-    delta_ms: u64,                // default 1000
-    proposal_size: usize,         // default 5000
-    val_set_update_interval: u64, // default 2000
-    epoch_start_delay: u64,       // default 50
+    simulation_length_s: u64,
+    delta_ms: u64,
+    proposal_size: usize,
+    val_set_update_interval: u64,
+    epoch_start_delay: u64,
 
     router: RouterArgs,
     ledger: LedgerArgs,
@@ -140,10 +140,11 @@ async fn main() {
     });
 
     type SignatureTypeConfig = SecpSignature;
-    type SignatureCollectionTypeConfig = MultiSig<SignatureTypeConfig>;
+    type SignatureCollectionTypeConfig =
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureTypeConfig>>;
     // TODO parse this from CLI args
     let testground_args = TestgroundArgs {
-        simulation_length_s: 20,
+        simulation_length_s: 3600,
         delta_ms: 4000,
         proposal_size: 5_000,
         val_set_update_interval: 2_000,

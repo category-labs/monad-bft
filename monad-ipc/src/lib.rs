@@ -9,7 +9,6 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_tx::EthSignedTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
-use rand::distributions::{Alphanumeric, DistString};
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::mpsc,
@@ -17,32 +16,6 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use tracing::{debug, error, trace, warn};
-
-const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "./monad_mempool";
-const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
-const MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR: &str = "MONAD_MEMPOOL_RNDUDS";
-
-pub fn generate_uds_path() -> String {
-    let randomize = cfg!(test)
-        || std::env::var(MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR)
-            .ok()
-            .map(|s| s.eq_ignore_ascii_case("true"))
-            .unwrap_or_default();
-
-    format!(
-        "{}{}{}",
-        DEFAULT_MEMPOOL_BIND_PATH_BASE,
-        if randomize {
-            format!(
-                "_{}",
-                Alphanumeric.sample_string(&mut rand::thread_rng(), 8)
-            )
-        } else {
-            "".to_string()
-        },
-        DEFAULT_MEMPOOL_BIND_PATH_EXT
-    )
-}
 
 pub struct IpcReceiver<ST, SCT>
 where

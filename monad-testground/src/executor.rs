@@ -19,7 +19,7 @@ use monad_gossip::{
     seeder::{Raptor, SeederConfig},
     Gossip,
 };
-use monad_ipc::{generate_uds_path, IpcReceiver};
+use monad_ipc::IpcReceiver;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
     Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
@@ -36,6 +36,7 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
+use rand::distributions::{Alphanumeric, DistString};
 use tracing_subscriber::EnvFilter;
 
 pub enum MonadP2PGossipConfig<ST: CertificateSignatureRecoverable> {
@@ -109,6 +110,7 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+    let instance_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::MonadP2P {
@@ -142,20 +144,20 @@ where
                 val_set_update_interval,
             )),
         },
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 86400),
+        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         ipc: IpcReceiver::new(
-            generate_uds_path().into(),
+            format!("./monad_mempool_{}.sock", instance_id).into(),
             500, // tx_batch_size
             6,   // max_queued_batches
             3,   // queued_batches_watermark
         )
         .expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(
-            generate_uds_path().into(),
+            format!("./monad_controlpanel_{}.sock", instance_id).into(),
             reload_handle,
             1000,
         )
-        .expect("usd bind failed"),
+        .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: MockStateSyncExecutor::new(
             state_backend,

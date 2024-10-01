@@ -8,6 +8,8 @@ name = "monad-testground"
 bench = false
 
 [dependencies]
+monad-async-state-verify = { path = "../monad-async-state-verify" }
+monad-bls = { path = "../monad-bls" }
 monad-control-panel = { path = "../monad-control-panel" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -17,7 +19,6 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-ipc = { path = "../monad-ipc" }
 monad-gossip = { path = "../monad-gossip" }
-monad-multi-sig = { path = "../monad-multi-sig" }
 monad-quic = { path = "../monad-quic" }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
@@ -37,4 +38,3 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-monad-async-state-verify = { path = "../monad-async-state-verify" }
