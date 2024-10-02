@@ -53,6 +53,7 @@ where
     last_commit: Option<SeqNum>,
 
     block_cache_size: usize,
+    // stores the last block_cache_size committed blocks. peers can only blocksync from this cache
     block_cache: HashMap<BlockId, MonadBlock<SCT>>,
     block_cache_index: BTreeMap<Round, BlockId>,
 
@@ -117,11 +118,14 @@ where
     }
 
     fn update_cache(&mut self, block: MonadBlock<SCT>) {
-        let block = self.block_cache.entry(block.get_id()).or_insert(block);
-        self.block_cache_index
-            .insert(block.get_round(), block.get_id());
+        let block_id = block.get_id();
+        let block_round = block.get_round();
+
+        self.block_cache.insert(block_id, block);
+        self.block_cache_index.insert(block_round, block_id);
+
         if self.block_cache_index.len() > self.block_cache_size {
-            let (_block_num, block_id) = self.block_cache_index.pop_first().expect("nonempty");
+            let (_, block_id) = self.block_cache_index.pop_first().expect("nonempty");
             self.block_cache.remove(&block_id);
         }
     }
@@ -225,50 +229,33 @@ where
     }
 
     fn ledger_fetch_headers(&self, block_id_range: BlockIdRange) -> BlockSyncHeadersResponse<SCT> {
-        // TODO: configurable
-        let max_reads = 10;
-
         let final_block_id = block_id_range.from;
         let next_block_id = block_id_range.to;
-        let mut num_reads = 0;
+
         let mut headers = Vec::new();
         while next_block_id != final_block_id {
-            if num_reads >= max_reads {
-                trace!("header reads over limit for block id range");
+            // read block from cache
+            if let Some(full_block) = self.block_cache.get(&next_block_id) {
+                headers.push(&full_block.block);
+            } else {
                 return BlockSyncHeadersResponse::NotAvailable(block_id_range);
             }
-
-            // read block from BlockPersist
-            let block = match <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_block(
-                &self.bft_block_persist,
-                &next_block_id,
-            ) {
-                Ok(block) => block,
-                Err(err) => {
-                    // TODO print error and block id
-                    trace!("error while reading header from block persist");
-                    return BlockSyncHeadersResponse::NotAvailable(block_id_range);
-                }
-            };
-
-            headers.push(block);
-            num_reads += 1;
         }
 
+        let headers = headers.into_iter().cloned().collect();
         BlockSyncHeadersResponse::Found((block_id_range, headers))
     }
 
     fn ledger_fetch_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
-        match <FileBlockPersist as BlockPersist<ST, SCT>>::read_bft_payload(
-            &self.bft_block_persist,
-            &payload_id,
-        ) {
-            Ok(payload) => BlockSyncPayloadResponse::Found((payload_id, payload)),
-            Err(err) => {
-                // TODO print error and payload id
-                trace!("error while reading payload from block persist");
-                BlockSyncPayloadResponse::NotAvailable(payload_id)
-            }
+        // TODO store payload_id to block_id map to avoid searching the entire cache
+        if let Some((_, full_block)) = self
+            .block_cache
+            .iter()
+            .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
+        {
+            BlockSyncPayloadResponse::Found((payload_id, full_block.payload.clone()))
+        } else {
+            BlockSyncPayloadResponse::NotAvailable(payload_id)
         }
     }
 
@@ -318,6 +305,10 @@ where
                         self.write_eth_block(seqnum, &b).unwrap();
                         self.last_commit = Some(seqnum);
                     }
+
+                    for (_, _, full_block) in full_blocks {
+                        self.update_cache(full_block);
+                    }
                 }
                 LedgerCommand::LedgerFetchHeaders(block_id_range) => {
                     // TODO cap max concurrent LedgerFetch? DOS vector
@@ -357,10 +348,6 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.fetches.poll_recv(cx).map(|response| {
             let response = response.expect("fetches_tx never dropped");
-            // TODO: figure out how the cache should work
-            // if let BlockSyncResponseMessage::BlockFound(block) = &response {
-            //     self.update_cache(block.clone())
-            // }
             Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
                 response,
             }))

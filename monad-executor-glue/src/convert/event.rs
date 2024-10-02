@@ -1,7 +1,10 @@
 use bytes::Bytes;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
-use monad_proto::{error::ProtoError, proto::event::*, proto::blocksync::ProtoBlockSyncSelfRequest};
+use monad_proto::{
+    error::ProtoError,
+    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
+};
 
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,

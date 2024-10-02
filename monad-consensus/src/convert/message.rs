@@ -5,7 +5,10 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_proto::{error::ProtoError, proto::message::*, proto::blocksync::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{blocksync::*, message::*},
+};
 
 use crate::{
     messages::{
