@@ -144,6 +144,31 @@ impl<SCT: SignatureCollection> Hashable for Block<SCT> {
 }
 
 impl<SCT: SignatureCollection> Block<SCT> {
+    pub fn calculate_block_id(
+        author: NodeId<SCT::NodeIdPubKey>,
+        timestamp: u64,
+        epoch: Epoch,
+        round: Round,
+        execution: &ExecutionProtocol,
+        payload_id: PayloadId,
+        block_kind: BlockKind,
+        qc: &QuorumCertificate<SCT>,
+    ) -> BlockId {
+        let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
+        let mut state = HasherType::new();
+        author.hash(&mut state);
+        state.update(timestamp.as_bytes());
+        state.update(epoch.as_bytes());
+        state.update(round.as_bytes());
+        execution.hash(&mut state);
+        state.update(payload_id.0.as_bytes());
+        block_kind.hash(&mut state);
+        state.update(qc.get_block_id().0.as_bytes());
+        state.update(qc.get_hash().as_bytes());
+
+        BlockId(state.hash())
+    }
+
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
@@ -164,22 +189,9 @@ impl<SCT: SignatureCollection> Block<SCT> {
             payload_id,
             block_kind,
             qc: qc.clone(),
-            id: {
-                let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
-                let mut state = HasherType::new();
-                author.hash(&mut state);
-                state.update(timestamp.as_bytes());
-                state.update(epoch.as_bytes());
-                state.update(round.as_bytes());
-                execution.hash(&mut state);
-                //payload.hash(&mut state);
-                state.update(payload_id.0.as_bytes());
-                block_kind.hash(&mut state);
-                state.update(qc.get_block_id().0.as_bytes());
-                state.update(qc.get_hash().as_bytes());
-
-                BlockId(state.hash())
-            },
+            id: Self::calculate_block_id(
+                author, timestamp, epoch, round, execution, payload_id, block_kind, qc,
+            ),
         }
     }
 

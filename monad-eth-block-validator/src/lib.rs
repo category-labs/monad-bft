@@ -118,6 +118,20 @@ impl EthValidator {
         payload: &Payload,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
     ) -> Result<(), BlockValidationError> {
+        let expected_block_id = Block::<SCT>::calculate_block_id(
+            block.author,
+            block.timestamp,
+            block.epoch,
+            block.round,
+            &block.execution,
+            block.payload_id,
+            block.block_kind,
+            &block.qc,
+        );
+        if block.get_id() != expected_block_id {
+            return Err(BlockValidationError::HeaderError);
+        }
+
         if block.payload_id != payload.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
