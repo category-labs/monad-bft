@@ -72,8 +72,13 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
     fn get_parent_id(&self) -> BlockId {
         self.parent_block_id
     }
+
     fn get_parent_round(&self) -> Round {
         Round(0)
+    }
+
+    fn get_payload_id(&self) -> monad_consensus_types::payload::PayloadId {
+        unimplemented!()
     }
 
     fn get_seq_num(&self) -> SeqNum {

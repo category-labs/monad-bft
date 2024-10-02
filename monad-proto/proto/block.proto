@@ -13,24 +13,17 @@ message ProtoExecutionProtocol{
   bytes randao_reveal = 4;
 }
 
-
 message ProtoEmptyBlockTransactionList {}
 
 message ProtoTransactionPayload {
   oneof txns {
     bytes list = 1;
     ProtoEmptyBlockTransactionList empty = 2;
-    
   }
 }
 
 message ProtoPayload {
   ProtoTransactionPayload txns = 1;
-}
-
-message ProtoBlockIdRange {
-  monad_proto.basic.ProtoBlockId from = 1;
-  monad_proto.basic.ProtoBlockId to = 2;
 }
 
 enum ProtoBlockKind {
@@ -50,6 +43,6 @@ message ProtoBlock {
 }
 
 message ProtoFullBlock {
-    ProtoBlock block = 1;
-    ProtoPayload payload = 2;
+  ProtoBlock block = 1;
+  ProtoPayload payload = 2;
 }

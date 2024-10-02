@@ -4,6 +4,7 @@ use monad_proto::{
     proto::{
         basic::{ProtoBloom, ProtoGas, ProtoPayloadId},
         block::*,
+        blocksync::ProtoBlockIdRange,
     },
 };
 

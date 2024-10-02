@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package monad_proto.blocksync;
+
+import "basic.proto";
+import "block.proto";
+
+message ProtoBlockIdRange {
+  monad_proto.basic.ProtoBlockId from = 1;
+  monad_proto.basic.ProtoBlockId to = 2;
+}
+
+enum ProtoBlockSyncSelfRequester {
+  CONSENSUS = 0;
+  STATE_SYNC = 1;
+}
+
+message ProtoBlockSyncSelfRequest {
+  ProtoBlockSyncSelfRequester requester = 1;
+  ProtoBlockIdRange block_id_range = 2;
+}
+  
+message ProtoBlockSyncHeaders {
+  ProtoBlockIdRange block_id_range = 1;
+  repeated monad_proto.block.ProtoBlock headers = 2;
+}
+
+message ProtoBlockSyncHeadersResponse {
+  oneof one_of_message {
+    ProtoBlockSyncHeaders headers_found = 1;
+    ProtoBlockIdRange not_available = 2;
+  }
+}
+  
+message ProtoBlockSyncPayload {
+  monad_proto.basic.ProtoPayloadId payload_id = 1;
+  monad_proto.block.ProtoPayload payload = 2;
+}
+
+message ProtoBlockSyncPayloadResponse {
+  oneof one_of_message {
+    ProtoBlockSyncPayload payload_found = 1;
+    monad_proto.basic.ProtoPayloadId not_available = 2;
+  }
+}

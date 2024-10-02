@@ -28,4 +28,5 @@ pub mod proto {
     include_proto!(event);
     include_proto!(validator_data);
     include_proto!(state_root_hash);
+    include_proto!(blocksync);
 }

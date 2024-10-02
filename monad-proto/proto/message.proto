@@ -4,6 +4,7 @@ package monad_proto.message;
 
 import "basic.proto";
 import "block.proto";
+import "blocksync.proto";
 import "signing.proto";
 import "state_root_hash.proto";
 import "timeout.proto";
@@ -17,39 +18,15 @@ message ProtoVoteMessage {
 
 message ProtoBlockSyncRequestMessage {
   oneof request_type {
-    monad_proto.block.ProtoBlockIdRange block_id_range = 1;
+    monad_proto.blocksync.ProtoBlockIdRange block_id_range = 1;
     monad_proto.basic.ProtoPayloadId payload_id = 2;
-  }
-}
-
-message ProtoBlockSyncHeaders {
-  monad_proto.block.ProtoBlockIdRange block_id_range = 1;
-  repeated monad_proto.block.ProtoBlock headers = 2;
-}
-
-message ProtoBlockSyncHeadersResponse {
-  oneof one_of_message {
-    ProtoBlockSyncHeaders headers_found = 1;
-    monad_proto.block.ProtoBlockIdRange not_available = 2;
-  }
-}
-
-message ProtoBlockSyncPayload {
-  monad_proto.basic.ProtoPayloadId payload_id = 1;
-  monad_proto.block.ProtoPayload payload = 2;
-}
-
-message ProtoBlockSyncPayloadResponse {
-  oneof one_of_message {
-    ProtoBlockSyncPayload payload_found = 1;
-    monad_proto.basic.ProtoPayloadId not_available = 2;
   }
 }
 
 message ProtoBlockSyncResponseMessage {
   oneof blocksync_response {
-    ProtoBlockSyncHeadersResponse headers_response = 1;
-    ProtoBlockSyncPayloadResponse payload_response = 2;
+    monad_proto.blocksync.ProtoBlockSyncHeadersResponse headers_response = 1;
+    monad_proto.blocksync.ProtoBlockSyncPayloadResponse payload_response = 2;
   }
 }
 

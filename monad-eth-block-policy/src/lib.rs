@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
-    payload::Payload,
+    payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -173,6 +173,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
 
     fn get_parent_round(&self) -> Round {
         self.block.qc.get_round()
+    }
+
+    fn get_payload_id(&self) -> PayloadId {
+        self.block.payload_id
     }
 
     fn get_seq_num(&self) -> SeqNum {
