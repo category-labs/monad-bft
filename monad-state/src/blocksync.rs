@@ -191,7 +191,7 @@ where
             .0
     }
 
-    // TODO return actual errors instead of bool
+    // TODO return more informative errors instead of bool
     fn verify_block_headers(
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
@@ -236,7 +236,7 @@ where
         true
     }
 
-    // If sender is None, response is from self ledger
+    // if sender is None, response is from self ledger
     fn handle_headers_response_for_self(
         &mut self,
         sender: Option<NodeId<SCT::NodeIdPubKey>>,
@@ -245,104 +245,86 @@ where
         let mut cmds = Vec::new();
 
         let block_id_range = headers_response.get_block_id_range();
-        if let Entry::Occupied(mut entry) =
-            self.block_sync.self_header_requests.entry(block_id_range)
-        {
-            // self requested blocksync headers
-            let self_request = entry.get_mut();
-            if self_request.to != sender {
-                // unexpected sender
-                return cmds;
-            }
+        let Entry::Occupied(mut entry) = self.block_sync.self_header_requests.entry(block_id_range)
+        else {
+            // unexpected response
+            return cmds;
+        };
 
-            // reset timeout
-            if sender.is_some() {
-                cmds.push(BlockSyncCommand::ResetTimeout(
-                    BlockSyncRequestMessage::Headers(block_id_range),
-                ));
-            }
+        // self requested blocksync headers
+        let self_request = entry.get_mut();
+        if self_request.to != sender {
+            // unexpected sender
+            return cmds;
+        }
 
-            let self_requester = self_request.requester;
-            match headers_response {
-                BlockSyncHeadersResponse::Found((block_id_range, headers)) => {
-                    assert_eq!(self_requester, self.block_sync.self_request_mode);
+        // reset timeout if requested from peer
+        if sender.is_some() {
+            cmds.push(BlockSyncCommand::ResetTimeout(
+                BlockSyncRequestMessage::Headers(block_id_range),
+            ));
+        }
 
-                    // verify headers. includes QC verification
-                    if Self::verify_block_headers(
-                        self.epoch_manager,
-                        self.val_epoch_map,
-                        block_id_range,
-                        &headers,
-                    ) {
-                        // valid headers received, remove entry for its request
-                        entry.remove();
+        let self_requester = self_request.requester;
+        match headers_response {
+            BlockSyncHeadersResponse::Found((block_id_range, headers)) => {
+                assert_eq!(self_requester, self.block_sync.self_request_mode);
 
-                        if self
-                            .block_sync
-                            .self_completed_header_requests
-                            .contains_key(&block_id_range)
-                        {
-                            // headers request already completed, nothing to do
-                            return cmds;
-                        }
+                // verify headers. includes QC verification
+                if Self::verify_block_headers(
+                    self.epoch_manager,
+                    self.val_epoch_map,
+                    block_id_range,
+                    &headers,
+                ) {
+                    // valid headers received, remove entry for its request
+                    entry.remove();
 
-                        // valid headers received. request its payloads
-                        for block_header in headers.iter() {
-                            let payload_id = block_header.get_payload_id();
-
-                            // TODO: check blocktree and not request existing payloads
-                            // fetch payload only if we haven't already requested
-                            if !self
-                                .block_sync
-                                .self_payload_requests
-                                .contains_key(&payload_id)
-                            {
-                                self.block_sync.self_payload_requests.insert(
-                                    payload_id,
-                                    SelfRequest {
-                                        requester: self_requester,
-                                        to: None,
-                                    },
-                                );
-                                cmds.push(BlockSyncCommand::FetchPayload(
-                                    block_header.get_payload_id(),
-                                ));
-                                cmds.push(BlockSyncCommand::ScheduleTimeout(
-                                    BlockSyncRequestMessage::Payload(payload_id),
-                                ));
-                            }
-                        }
-
-                        let payload_requests =
-                            headers.into_iter().map(|block| (block, None)).collect();
-                        self.block_sync
-                            .self_completed_header_requests
-                            .insert(block_id_range, (self_requester, payload_requests));
-                    } else {
-                        assert!(
-                            sender != None,
-                            "self response shouldn't fail headers verification"
-                        );
-
-                        // invalid headers, request from different peer
-                        let to = Self::pick_peer(
-                            &self.nodeid,
-                            self.consensus.current_epoch(),
-                            &self.val_epoch_map,
-                            &mut self.block_sync.rng,
-                        );
-                        self_request.to = Some(to);
-                        cmds.push(BlockSyncCommand::SendRequest {
-                            to,
-                            request: BlockSyncRequestMessage::Headers(block_id_range),
-                        });
-                        cmds.push(BlockSyncCommand::ScheduleTimeout(
-                            BlockSyncRequestMessage::Headers(block_id_range),
-                        ));
+                    if self
+                        .block_sync
+                        .self_completed_header_requests
+                        .contains_key(&block_id_range)
+                    {
+                        // headers request already completed, nothing to do
+                        return cmds;
                     }
-                }
-                BlockSyncHeadersResponse::NotAvailable(block_id_range) => {
-                    // request from peer
+
+                    // valid headers received. request its payloads
+                    for block_header in headers.iter() {
+                        let payload_id = block_header.get_payload_id();
+
+                        // TODO: check blocktree and not request existing payloads
+                        // fetch payload only if we haven't already requested
+                        if !self
+                            .block_sync
+                            .self_payload_requests
+                            .contains_key(&payload_id)
+                        {
+                            self.block_sync.self_payload_requests.insert(
+                                payload_id,
+                                SelfRequest {
+                                    requester: self_requester,
+                                    to: None,
+                                },
+                            );
+                            cmds.push(BlockSyncCommand::FetchPayload(
+                                block_header.get_payload_id(),
+                            ));
+                            cmds.push(BlockSyncCommand::ScheduleTimeout(
+                                BlockSyncRequestMessage::Payload(payload_id),
+                            ));
+                        }
+                    }
+
+                    let payload_requests = headers.into_iter().map(|block| (block, None)).collect();
+                    self.block_sync
+                        .self_completed_header_requests
+                        .insert(block_id_range, (self_requester, payload_requests));
+                } else {
+                    // self response shouldn't fail headers verification
+                    assert!(sender.is_some());
+
+                    // invalid headers, request from different peer
                     let to = Self::pick_peer(
                         &self.nodeid,
                         self.consensus.current_epoch(),
@@ -359,12 +341,29 @@ where
                     ));
                 }
             }
+            BlockSyncHeadersResponse::NotAvailable(block_id_range) => {
+                // headers not found, request from peer
+                let to = Self::pick_peer(
+                    &self.nodeid,
+                    self.consensus.current_epoch(),
+                    &self.val_epoch_map,
+                    &mut self.block_sync.rng,
+                );
+                self_request.to = Some(to);
+                cmds.push(BlockSyncCommand::SendRequest {
+                    to,
+                    request: BlockSyncRequestMessage::Headers(block_id_range),
+                });
+                cmds.push(BlockSyncCommand::ScheduleTimeout(
+                    BlockSyncRequestMessage::Headers(block_id_range),
+                ));
+            }
         }
 
         cmds
     }
 
-    // If sender is None, response is from self ledger
+    // if sender is None, response is from self ledger
     fn handle_payload_response_for_self(
         &mut self,
         sender: Option<NodeId<SCT::NodeIdPubKey>>,
@@ -373,36 +372,41 @@ where
         let payload_id = payload_response.get_payload_id();
         let mut cmds = Vec::new();
 
-        if let Entry::Occupied(mut entry) = self.block_sync.self_payload_requests.entry(payload_id)
-        {
-            // self requested payload
-            let self_request = entry.get_mut();
-            if self_request.to != sender {
-                // unexpected sender
-                return cmds;
-            }
+        let Entry::Occupied(mut entry) = self.block_sync.self_payload_requests.entry(payload_id)
+        else {
+            // unexpected response
+            return cmds;
+        };
 
-            // reset timeout
-            if sender.is_some() {
-                cmds.push(BlockSyncCommand::ResetTimeout(
-                    BlockSyncRequestMessage::Payload(payload_id),
-                ));
-            }
+        let self_request = entry.get_mut();
+        if self_request.to != sender {
+            // unexpected sender
+            return cmds;
+        }
 
-            let self_requester = self_request.requester;
-            match payload_response {
-                BlockSyncPayloadResponse::Found((payload_id, payload)) => {
-                    assert_eq!(self_requester, self.block_sync.self_request_mode);
-                    // TODO: payload validation
+        // reset timeout if requested from peer
+        if sender.is_some() {
+            cmds.push(BlockSyncCommand::ResetTimeout(
+                BlockSyncRequestMessage::Payload(payload_id),
+            ));
+        }
+
+        let self_requester = self_request.requester;
+        match payload_response {
+            BlockSyncPayloadResponse::Found((payload_id, payload)) => {
+                assert_eq!(self_requester, self.block_sync.self_request_mode);
+
+                if payload_id == payload.get_id() {
+                    // valid payload, remove entry and update existing requests
                     entry.remove();
 
-                    let requested_ranges: Vec<_> = self
+                    let self_requested_ranges: Vec<_> = self
                         .block_sync
                         .self_completed_header_requests
                         .keys()
                         .cloned()
                         .collect();
-                    for block_id_range in requested_ranges {
+                    for block_id_range in self_requested_ranges {
                         let Entry::Occupied(mut entry) = self
                             .block_sync
                             .self_completed_header_requests
@@ -442,9 +446,11 @@ where
                             ));
                         }
                     }
-                }
-                BlockSyncPayloadResponse::NotAvailable(payload_id) => {
-                    // self requested payload not found, request from peer.
+                } else {
+                    // self response shouldn't fail payload validation
+                    assert!(sender.is_some());
+
+                    // invalid payload, request from peer
                     let to = Self::pick_peer(
                         &self.nodeid,
                         self.consensus.current_epoch(),
@@ -461,6 +467,23 @@ where
                     ));
                 }
             }
+            BlockSyncPayloadResponse::NotAvailable(payload_id) => {
+                // payload not found, request from peer.
+                let to = Self::pick_peer(
+                    &self.nodeid,
+                    self.consensus.current_epoch(),
+                    &self.val_epoch_map,
+                    &mut self.block_sync.rng,
+                );
+                self_request.to = Some(to);
+                cmds.push(BlockSyncCommand::SendRequest {
+                    to,
+                    request: BlockSyncRequestMessage::Payload(payload_id),
+                });
+                cmds.push(BlockSyncCommand::ScheduleTimeout(
+                    BlockSyncRequestMessage::Payload(payload_id),
+                ));
+            }
         }
 
         cmds
@@ -470,25 +493,6 @@ where
         &mut self,
         event: BlockSyncEvent<SCT>,
     ) -> Vec<WrappedBlockSyncCommand<SCT>> {
-        // pick_peer is a closure instead of a function to help the borrow checker
-        let mut pick_peer = || {
-            let epoch = self.consensus.current_epoch();
-            let validators = self
-                .val_epoch_map
-                .get_val_set(&epoch)
-                .expect("current epoch exists");
-            let members = validators.get_members();
-            let members = members
-                .iter()
-                .filter(|(peer, _)| peer != &self.nodeid)
-                .collect_vec();
-            assert!(!members.is_empty(), "no nodes to blocksync from");
-            *members
-                .choose_weighted(&mut self.block_sync.rng, |(_peer, weight)| weight.0)
-                .expect("nonempty")
-                .0
-        };
-
         let mut cmds = Vec::new();
         match event {
             BlockSyncEvent::Request { sender, request } => {
@@ -633,7 +637,12 @@ where
                     {
                         let self_request = entry.get_mut();
                         if self_request.to.is_some() {
-                            let to = pick_peer();
+                            let to = Self::pick_peer(
+                                &self.nodeid,
+                                self.consensus.current_epoch(),
+                                &self.val_epoch_map,
+                                &mut self.block_sync.rng,
+                            );
                             self_request.to = Some(to);
                             cmds.push(BlockSyncCommand::SendRequest {
                                 to,
@@ -651,7 +660,12 @@ where
                     {
                         let self_request = entry.get_mut();
                         if self_request.to.is_some() {
-                            let to = pick_peer();
+                            let to = Self::pick_peer(
+                                &self.nodeid,
+                                self.consensus.current_epoch(),
+                                &self.val_epoch_map,
+                                &mut self.block_sync.rng,
+                            );
                             self_request.to = Some(to);
                             cmds.push(BlockSyncCommand::SendRequest {
                                 to,
