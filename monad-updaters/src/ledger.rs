@@ -53,6 +53,7 @@ where
 {
     blocks: BTreeMap<Round, FullBlock<SCT>>,
     block_ids: HashMap<BlockId, Round>,
+    blocksyncable_range: Round,
     events: VecDeque<BlockSyncEvent<SCT>>,
 
     state_backend: InMemoryState,
@@ -70,6 +71,8 @@ where
         Self {
             blocks: Default::default(),
             block_ids: Default::default(),
+            // TODO: make it configurable
+            blocksyncable_range: Round(100),
             events: Default::default(),
 
             state_backend,
@@ -80,43 +83,53 @@ where
     }
 
     fn get_headers(&self, block_id_range: BlockIdRange) -> BlockSyncHeadersResponse<SCT> {
-        // TODO: configurable
-        let max_reads = 10;
+        // all blocks are stored in memory, facilitate blocksync for only the blocksyncable_range
+        let latest_round = self
+            .blocks
+            .last_key_value()
+            .map(|(r, _)| *r)
+            .unwrap_or(Round(0));
+        let last_blocksyncable_round =
+            Round(latest_round.0.saturating_sub(self.blocksyncable_range.0));
 
         let final_block_id = block_id_range.from;
         let next_block_id = block_id_range.to;
-        let mut num_reads = 0;
         let mut headers = Vec::new();
         while next_block_id != final_block_id {
-            if num_reads >= max_reads {
-                // trace!("header reads over limit for block id range");
+            let Some(block_round) = self.block_ids.get(&next_block_id) else {
+                return BlockSyncHeadersResponse::NotAvailable(block_id_range);
+            };
+
+            if block_round < &last_blocksyncable_round {
                 return BlockSyncHeadersResponse::NotAvailable(block_id_range);
             }
 
-            let full_block = match self.block_ids.get(&next_block_id) {
-                Some(round) => self
-                    .blocks
-                    .get(round)
-                    .expect("block_id mapping inconsistent")
-                    .clone(),
-                None => {
-                    return BlockSyncHeadersResponse::NotAvailable(block_id_range);
-                }
-            };
+            let full_block = self
+                .blocks
+                .get(block_round)
+                .expect("round to blockid invariant");
 
-            headers.push(full_block.block);
-            num_reads += 1;
+            headers.push(&full_block.block);
         }
 
+        let headers = headers.into_iter().cloned().collect();
         BlockSyncHeadersResponse::Found((block_id_range, headers))
     }
 
     fn get_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
-        if let Some((_, full_block)) = self
+        // all payloads are stored in memory, facilitate blocksync for only the blocksyncable_range
+        let latest_round = self
             .blocks
-            .iter()
-            .find(|(_, full_block)| full_block.block.payload_id == payload_id)
-        {
+            .last_key_value()
+            .map(|(r, _)| *r)
+            .unwrap_or(Round(0));
+        let last_blocksyncable_round =
+            Round(latest_round.0.saturating_sub(self.blocksyncable_range.0));
+
+        if let Some((_, full_block)) = self.blocks.iter().find(|(_, full_block)| {
+            full_block.get_round() >= last_blocksyncable_round
+                && full_block.get_payload_id() == payload_id
+        }) {
             return BlockSyncPayloadResponse::Found((payload_id, full_block.payload.clone()));
         }
 

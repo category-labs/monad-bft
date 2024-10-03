@@ -219,7 +219,7 @@ where
                 return false;
             }
 
-            // verify the QC points to correct block id
+            // verify that the QC points to correct block id
             let previous_block_id = if index == 0 {
                 // the QC of first header should point to block_id_range.from
                 block_id_range.from
@@ -231,8 +231,6 @@ where
             if qc.get_block_id() != previous_block_id {
                 return false;
             }
-
-            // TODO verify block id
         }
 
         true
