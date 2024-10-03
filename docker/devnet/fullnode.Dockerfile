@@ -107,6 +107,7 @@ COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 
 ENV RUST_LOG=info
+# full nodes doesn't need bls identity because they are not voting
 CMD monad-full-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
@@ -118,5 +119,6 @@ CMD monad-full-node \
     --mempool-ipc-path /monad/mempool.sock \
     --control-panel-ipc-path /monad/controlpanel.sock \
     --execution-ledger-path /monad/ledger \
-    --blockdb-path /monad/blockdb \
+    --bft-block-header-path /monad/bft-ledger \
+    --bft-block-payload-path /monad/block-payload \
     --triedb-path /monad/triedb
