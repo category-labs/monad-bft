@@ -441,6 +441,10 @@ impl DataplaneEventLoop {
             total_recv_bytes += len;
             let src_sock_addr = result.src_addr;
 
+            if len == 0 {
+                continue;
+            }
+
             let stride: usize = if result.stride == 0 {
                 len
             } else {
