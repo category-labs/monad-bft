@@ -236,6 +236,57 @@ where
         true
     }
 
+    fn initiate_payload_requests(
+        &mut self,
+        self_requester: BlockSyncSelfRequester,
+        block_id_range: BlockIdRange,
+        headers: Vec<Block<SCT>>,
+    ) -> Vec<BlockSyncCommand<SCT>> {
+        let mut cmds = Vec::new();
+
+        if self
+            .block_sync
+            .self_completed_header_requests
+            .contains_key(&block_id_range)
+        {
+            // payload requests already initiated, nothing to do
+            return cmds;
+        }
+
+        for block_header in headers.iter() {
+            let payload_id = block_header.get_payload_id();
+
+            // TODO: check blocktree and not request existing payloads
+            // fetch payload only if we haven't already requested
+            if !self
+                .block_sync
+                .self_payload_requests
+                .contains_key(&payload_id)
+            {
+                self.block_sync.self_payload_requests.insert(
+                    payload_id,
+                    SelfRequest {
+                        requester: self_requester,
+                        to: None,
+                    },
+                );
+                cmds.push(BlockSyncCommand::FetchPayload(
+                    block_header.get_payload_id(),
+                ));
+                cmds.push(BlockSyncCommand::ScheduleTimeout(
+                    BlockSyncRequestMessage::Payload(payload_id),
+                ));
+            }
+        }
+
+        let payload_requests = headers.into_iter().map(|block| (block, None)).collect();
+        self.block_sync
+            .self_completed_header_requests
+            .insert(block_id_range, (self_requester, payload_requests));
+
+        cmds
+    }
+
     // if sender is None, response is from self ledger
     fn handle_headers_response_for_self(
         &mut self,
@@ -277,49 +328,16 @@ where
                     block_id_range,
                     &headers,
                 ) {
-                    // valid headers received, remove entry for its request
+                    // valid headers received
+                    // remove entry for its request
                     entry.remove();
 
-                    if self
-                        .block_sync
-                        .self_completed_header_requests
-                        .contains_key(&block_id_range)
-                    {
-                        // headers request already completed, nothing to do
-                        return cmds;
-                    }
-
-                    // valid headers received. request its payloads
-                    for block_header in headers.iter() {
-                        let payload_id = block_header.get_payload_id();
-
-                        // TODO: check blocktree and not request existing payloads
-                        // fetch payload only if we haven't already requested
-                        if !self
-                            .block_sync
-                            .self_payload_requests
-                            .contains_key(&payload_id)
-                        {
-                            self.block_sync.self_payload_requests.insert(
-                                payload_id,
-                                SelfRequest {
-                                    requester: self_requester,
-                                    to: None,
-                                },
-                            );
-                            cmds.push(BlockSyncCommand::FetchPayload(
-                                block_header.get_payload_id(),
-                            ));
-                            cmds.push(BlockSyncCommand::ScheduleTimeout(
-                                BlockSyncRequestMessage::Payload(payload_id),
-                            ));
-                        }
-                    }
-
-                    let payload_requests = headers.into_iter().map(|block| (block, None)).collect();
-                    self.block_sync
-                        .self_completed_header_requests
-                        .insert(block_id_range, (self_requester, payload_requests));
+                    // request its payloads
+                    cmds.extend(self.initiate_payload_requests(
+                        self_requester,
+                        block_id_range,
+                        headers,
+                    ));
                 } else {
                     // self response shouldn't fail headers verification
                     assert!(sender.is_some());
@@ -400,7 +418,9 @@ where
                     // valid payload, remove entry and update existing requests
                     entry.remove();
 
-                    for (_, (_, payload_requests)) in self.block_sync.self_completed_header_requests.iter_mut() {
+                    for (_, (_, payload_requests)) in
+                        self.block_sync.self_completed_header_requests.iter_mut()
+                    {
                         if let Some((_, maybe_payload)) = payload_requests
                             .iter_mut()
                             .find(|(header, _)| header.payload_id == payload_id)
