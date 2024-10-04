@@ -400,23 +400,7 @@ where
                     // valid payload, remove entry and update existing requests
                     entry.remove();
 
-                    let self_requested_ranges: Vec<_> = self
-                        .block_sync
-                        .self_completed_header_requests
-                        .keys()
-                        .cloned()
-                        .collect();
-                    for block_id_range in self_requested_ranges {
-                        let Entry::Occupied(mut entry) = self
-                            .block_sync
-                            .self_completed_header_requests
-                            .entry(block_id_range)
-                        else {
-                            panic!("should be in tree");
-                        };
-
-                        // add the payload completed header requests
-                        let (_, payload_requests) = entry.get_mut();
+                    for (_, (_, payload_requests)) in self.block_sync.self_completed_header_requests.iter_mut() {
                         if let Some((_, maybe_payload)) = payload_requests
                             .iter_mut()
                             .find(|(header, _)| header.payload_id == payload_id)
@@ -425,25 +409,6 @@ where
                                 // clone incase there are multiple requests that require the same payload
                                 *maybe_payload = Some(payload.clone());
                             }
-                        }
-
-                        // if all payloads are received for this range, create the full blocks and emit
-                        if payload_requests
-                            .iter()
-                            .all(|(_, maybe_payload)| maybe_payload.is_some())
-                        {
-                            let (self_requester, requested_blocks) = entry.remove();
-                            let full_blocks = requested_blocks
-                                .into_iter()
-                                .map(|(block, payload)| FullBlock {
-                                    block,
-                                    payload: payload.expect("asserted"),
-                                })
-                                .collect();
-                            cmds.push(BlockSyncCommand::Emit(
-                                self_requester,
-                                (block_id_range, full_blocks),
-                            ));
                         }
                     }
                 } else {
@@ -482,6 +447,52 @@ where
                 });
                 cmds.push(BlockSyncCommand::ScheduleTimeout(
                     BlockSyncRequestMessage::Payload(payload_id),
+                ));
+            }
+        }
+
+        cmds.extend(self.handle_completed_ranges());
+
+        cmds
+    }
+
+    fn handle_completed_ranges(&mut self) -> Vec<BlockSyncCommand<SCT>> {
+        let mut cmds = Vec::new();
+
+        let self_requested_ranges: Vec<BlockIdRange> = self
+            .block_sync
+            .self_completed_header_requests
+            .keys()
+            .cloned()
+            .collect();
+        for block_id_range in self_requested_ranges {
+            let Entry::Occupied(mut entry) = self
+                .block_sync
+                .self_completed_header_requests
+                .entry(block_id_range)
+            else {
+                panic!("should be in tree");
+            };
+
+            // add the payload completed header requests
+            let (_, payload_requests) = entry.get_mut();
+
+            // if all payloads are received for this range, create the full blocks and emit
+            if payload_requests
+                .iter()
+                .all(|(_, maybe_payload)| maybe_payload.is_some())
+            {
+                let (self_requester, requested_blocks) = entry.remove();
+                let full_blocks = requested_blocks
+                    .into_iter()
+                    .map(|(block, payload)| FullBlock {
+                        block,
+                        payload: payload.expect("asserted"),
+                    })
+                    .collect();
+                cmds.push(BlockSyncCommand::Emit(
+                    self_requester,
+                    (block_id_range, full_blocks),
                 ));
             }
         }
