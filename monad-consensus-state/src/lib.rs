@@ -42,6 +42,9 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};
 
+// TODO: Configurable
+const MAX_UPCOMING_LEADER: u64 = 3;
+
 pub mod command;
 pub mod timestamp;
 
@@ -1205,6 +1208,25 @@ where
                     "Creating Proposal"
                 );
 
+                let is_upcoming_leader = (1..=MAX_UPCOMING_LEADER)
+                    .into_iter()
+                    .map(|adv| round + Round(adv))
+                    .map(|round| {
+                        (
+                            self.epoch_manager.get_epoch(round).expect("epoch exists"),
+                            round,
+                        )
+                    })
+                    .any(|(epoch, round)| {
+                        &self.election.get_leader(
+                            round,
+                            self.val_epoch_map
+                                .get_val_set(&epoch)
+                                .expect("handle non-existent validatorset for upcoming round epoch")
+                                .get_members(),
+                        ) == self.nodeid
+                    });
+
                 match self.tx_pool.create_proposal(
                     try_propose_seq_num,
                     self.config.proposal_txn_limit,
@@ -1212,6 +1234,7 @@ where
                     self.block_policy,
                     pending_blocktree_blocks,
                     self.state_backend,
+                    is_upcoming_leader,
                 ) {
                     Ok(prop_txns) => {
                         self.metrics.consensus_events.creating_proposal += 1;

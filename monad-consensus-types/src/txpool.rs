@@ -52,6 +52,7 @@ where
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
         state_backend: &SBT,
+        is_upcoming_leader: bool,
     ) -> Result<FullTransactionList, StateBackendError>;
 
     /// Reclaims memory used by internal TxPool datastructures
@@ -100,6 +101,7 @@ where
             &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
         >,
         _state_backend: &InMemoryState,
+        _is_upcoming_leader: bool,
     ) -> Result<FullTransactionList, StateBackendError> {
         if tx_limit == 0 {
             Ok(FullTransactionList::empty())

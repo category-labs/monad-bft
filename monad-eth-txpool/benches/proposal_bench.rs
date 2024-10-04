@@ -131,6 +131,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             &controller.block_policy,
                             Default::default(),
                             &controller.state_backend,
+                            false,
                         )
                         .unwrap();
                         perf.disable();
@@ -160,6 +161,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                             &controller.block_policy,
                             Default::default(),
                             &controller.state_backend,
+                            false,
                         )
                         .unwrap();
                     },

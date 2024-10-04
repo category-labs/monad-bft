@@ -377,6 +377,7 @@ where
         block_policy: &EthBlockPolicy,
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
+        is_upcoming_leader: bool,
     ) -> Result<FullTransactionList, StateBackendError> {
         if let Err(err) = self.validate_nonces_and_carriage_fee(
             proposed_seq_num,
@@ -550,6 +551,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
 
@@ -588,6 +590,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
 
@@ -633,6 +636,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -677,6 +681,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -714,6 +719,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -774,6 +780,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -829,6 +836,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -892,6 +900,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -954,6 +963,7 @@ mod test {
             &eth_block_policy,
             Default::default(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1044,6 +1054,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1080,6 +1091,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1125,6 +1137,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1166,6 +1179,7 @@ mod test {
             &eth_block_policy,
             Vec::new(),
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1210,6 +1224,7 @@ mod test {
             &eth_block_policy,
             vec![&extending_block],
             &state_backend,
+            false,
         )
         .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
@@ -1264,6 +1279,7 @@ mod test {
                 &eth_block_policy,
                 vec![&extending_block_1, &extending_block_2],
                 &state_backend,
+                false,
             )
             .unwrap();
         let decoded_txns = Vec::<EthSignedTransaction>::decode(&mut encoded_txns.as_ref()).unwrap();
