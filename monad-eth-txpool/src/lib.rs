@@ -1,7 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap},
-};
+use std::collections::{BTreeMap, BinaryHeap};
 
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -14,105 +11,26 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{
     compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
-use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
-use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_eth_tx::{EthFullTransactionList, EthTransaction};
+use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
-use sorted_vector_map::SortedVectorMap;
 use tracing::{info, trace, warn};
 
-type VirtualTimestamp = u64;
+use crate::{
+    pool::Pool,
+    transaction::{VirtualTimestamp, WrappedTransaction},
+    utils::effective_tip_per_gas,
+};
+
+mod pool;
+mod transaction;
+mod utils;
 
 const MAX_TXPOOL_SIZE: usize = 1024 * 32;
 
-/// Needed to have control over Ord implementation
-#[derive(Debug, PartialEq)]
-struct WrappedTransaction<'a> {
-    inner: &'a EthTransaction,
-    insertion_time: VirtualTimestamp,
-    price_gas_limit_ratio: f64,
-}
-
-fn effective_tip_per_gas(transaction: &EthTransaction) -> u128 {
-    match transaction.transaction {
-        Transaction::Legacy(TxLegacy { gas_price, .. })
-        | Transaction::Eip2930(TxEip2930 { gas_price, .. }) => gas_price,
-        Transaction::Eip1559(TxEip1559 {
-            max_priority_fee_per_gas,
-            ..
-        })
-        | Transaction::Eip4844(TxEip4844 {
-            max_priority_fee_per_gas,
-            ..
-        }) => max_priority_fee_per_gas,
-    }
-}
-
-impl<'a> WrappedTransaction<'a> {
-    pub fn effective_tip_per_gas(&self) -> u128 {
-        effective_tip_per_gas(self.inner)
-    }
-
-    pub fn hash(&self) -> EthTxHash {
-        self.inner.hash()
-    }
-
-    pub fn gas_limit(&self) -> u64 {
-        self.inner.gas_limit()
-    }
-
-    pub fn inner(&self) -> &EthTransaction {
-        self.inner
-    }
-}
-
-impl<'a> Eq for WrappedTransaction<'a> {}
-
-impl<'a> Ord for WrappedTransaction<'a> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Unwrap safety: Okay to unwrap here so long as we guarantee price_gas_limit_ratio is not NaN
-        // when inserting into the mempool. partial_cmp is guaranteed to return Some(_) if neither
-        // operand is NaN
-        (self.price_gas_limit_ratio, self.insertion_time)
-            .partial_cmp(&(other.price_gas_limit_ratio, other.insertion_time))
-            .unwrap()
-    }
-}
-
-impl<'a> PartialOrd for WrappedTransaction<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 #[derive(Clone, Debug, Default)]
-struct TransactionGroup {
-    transactions: SortedVectorMap<Nonce, (EthTransaction, f64)>,
-}
-
-impl TransactionGroup {
-    fn add(&mut self, transaction: EthTransaction, ratio: f64) {
-        self.transactions
-            .insert(transaction.nonce(), (transaction, ratio));
-    }
-
-    fn find_nonce_gap(&self, mut next_nonce: Nonce) -> Option<Nonce> {
-        for (nonce, _) in self.transactions.iter() {
-            if *nonce != next_nonce {
-                return Some(*nonce);
-            }
-            next_nonce += 1;
-        }
-
-        None
-    }
-}
-
-type Pool = SortedVectorMap<EthAddress, TransactionGroup>;
-
-#[derive(Clone, Default, Debug)]
 pub struct EthTxPool {
     /// pool is transient, garbage collected after creating a proposal
     pool: Pool,
@@ -133,112 +51,29 @@ impl EthTxPool {
         SCT: SignatureCollection,
     {
         // TODO don't copy all the addresses
-        let addresses = self.pool.keys().copied().collect::<Vec<_>>();
+        let addresses = self.pool.iter_addresses().cloned().collect::<Vec<_>>();
+
         let account_base_nonces = block_policy.get_account_base_nonces(
             proposed_seq_num,
             state_backend,
             extending_blocks,
             addresses.iter(),
         )?;
+
         let account_base_reserve_balances = block_policy.compute_account_base_reserve_balances(
             proposed_seq_num,
             state_backend,
             Some(extending_blocks),
             addresses.iter(),
         )?;
-        for (eth_address, transaction_group) in self.pool.iter_mut() {
-            let &lowest_valid_nonce = account_base_nonces
-                .get(eth_address)
-                .expect("account_base_nonces must be populated");
 
-            if tracing::event_enabled!(tracing::Level::TRACE) {
-                transaction_group
-                    .transactions
-                    .iter()
-                    .filter(|&(nonce, _)| *nonce < lowest_valid_nonce)
-                    .for_each(|(nonce, txn)| {
-                        trace!(
-                            "validate_nonces_and_cariage_fee \
-                        txn {:?} will be excluded \
-                        nonce is : {:?} < lowest_valid_nonce {:?} \
-                        ",
-                            txn.0.hash(),
-                            nonce,
-                            lowest_valid_nonce
-                        )
-                    })
-            }
+        self.pool.validate_nonces_and_carriage_fee(
+            proposed_seq_num,
+            account_base_nonces,
+            account_base_reserve_balances,
+        );
 
-            // Remove transactions with nonces lower than the lowest valid nonce
-            transaction_group
-                .transactions
-                .retain(|&nonce, _| nonce >= lowest_valid_nonce);
-
-            let maybe_nonce_gap = transaction_group.find_nonce_gap(lowest_valid_nonce);
-
-            if let Some(gap) = maybe_nonce_gap {
-                // TODO: garbage collect
-                let _ = transaction_group.transactions.split_off(&gap);
-            }
-
-            let mut reserve_balance = *account_base_reserve_balances
-                .get(eth_address)
-                .expect("account_base_reserve_balances must be populated");
-            trace!(
-                "ReserveBalance validate_nonces_and_carriage_fee 1 \
-                    balance is: {:?} \
-                    at block_id: {:?} \
-                    for address: {:?}",
-                reserve_balance,
-                proposed_seq_num,
-                eth_address
-            );
-
-            let mut nonce_to_remove: Option<u64> = None;
-            for (nonce, txn) in &transaction_group.transactions {
-                let txn_carriage_cost = compute_txn_carriage_cost(&txn.0);
-
-                if reserve_balance >= txn_carriage_cost {
-                    reserve_balance -= txn_carriage_cost;
-                    trace!(
-                        "ReserveBalance validate_nonces_and_carriage_fee 2 \
-                            updated balance to: {:?} \
-                            at block_id: {:?} \
-                            at nonce: {:?} \
-                            for address: {:?}",
-                        reserve_balance,
-                        proposed_seq_num,
-                        nonce,
-                        eth_address
-                    );
-                } else {
-                    nonce_to_remove = Some(*nonce);
-                    trace!(
-                        "ReserveBalance create_proposal 3 \
-                            insufficient balance at nonce: {:?} \
-                            for address: {:?}",
-                        nonce,
-                        eth_address
-                    );
-                    break;
-                }
-            }
-            if let Some(gap) = nonce_to_remove {
-                // TODO: garbage collect
-                let _ = transaction_group.transactions.split_off(&gap);
-            }
-        }
-        // TODO: garbage collect
-        self.pool
-            .retain(|_, transaction_group| !transaction_group.transactions.is_empty());
         Ok(())
-    }
-
-    fn total_txns(&self) -> usize {
-        self.pool
-            .iter()
-            .map(|(_, txn_group)| txn_group.transactions.len())
-            .sum()
     }
 
     fn validate_and_insert_tx(
@@ -248,7 +83,7 @@ impl EthTxPool {
         reserve_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
         // TODO(abenedito): Smarter tx eviction when pool is full
-        if self.total_txns() > MAX_TXPOOL_SIZE {
+        if self.pool.num_txs() > MAX_TXPOOL_SIZE {
             return Err(TxPoolInsertionError::PoolFull);
         }
 
@@ -286,7 +121,7 @@ impl EthTxPool {
         // mempool
 
         // TODO(rene): should any transaction validation occur here before inserting into mempool
-        self.pool.entry(sender).or_default().add(eth_tx, ratio);
+        self.pool.add_tx(sender, eth_tx, ratio);
         trace!(
             "ReserveBalance insert_tx 1 \
                             reserve balance: {:?} \
@@ -352,11 +187,9 @@ where
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
             .filter_map(|b| {
-                if let Ok(valid_tx) = EthTransaction::decode(&mut b.as_ref()) {
-                    Some((valid_tx, b))
-                } else {
-                    None
-                }
+                EthTransaction::decode(&mut b.as_ref())
+                    .ok()
+                    .map(|valid_tx| (valid_tx, b))
             })
             .unzip();
 
@@ -366,6 +199,7 @@ where
             // can't insert, state backend is delayed
             return Vec::new();
         };
+
         insertion_results
             .into_iter()
             .zip(raw_txs)
@@ -404,7 +238,7 @@ where
         > = self
             .pool
             .iter()
-            .map(|(address, group)| (*address, group.transactions.iter()))
+            .map(|(address, group)| (*address, group.iter()))
             .collect::<BTreeMap<_, _>>();
 
         let mut virtual_time: VirtualTimestamp = 0;
@@ -546,8 +380,8 @@ mod test {
             &state_backend,
         )
         .is_empty());
-        assert_eq!(pool.pool.len(), 1);
-        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
+        assert_eq!(pool.pool.num_addresses(), 1);
+        assert_eq!(pool.pool.num_txs(), 1);
 
         let encoded_txns = Pool::create_proposal(
             &mut pool,
@@ -584,8 +418,8 @@ mod test {
             &state_backend,
         )
         .is_empty());
-        assert_eq!(pool.pool.len(), 1);
-        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 1);
+        assert_eq!(pool.pool.num_addresses(), 1);
+        assert_eq!(pool.pool.num_txs(), 1);
 
         let encoded_txns = Pool::create_proposal(
             &mut pool,
@@ -629,8 +463,8 @@ mod test {
         ];
 
         assert!(!Pool::insert_tx(&mut pool, txns, &eth_block_policy, &state_backend,).is_empty());
-        assert_eq!(pool.pool.len(), 1);
-        assert_eq!(pool.pool.first_key_value().unwrap().1.transactions.len(), 3);
+        assert_eq!(pool.pool.num_addresses(), 1);
+        assert_eq!(pool.pool.num_txs(), 3);
 
         let encoded_txns = Pool::create_proposal(
             &mut pool,
