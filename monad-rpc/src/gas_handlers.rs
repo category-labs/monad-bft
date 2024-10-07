@@ -6,7 +6,7 @@ use monad_rpc_docs::rpc;
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
-use tracing::{debug, trace};
+use tracing::{error, trace, warn};
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
@@ -19,6 +19,7 @@ use crate::{
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthEstimateGasParams {
     tx: CallRequest,
+    #[serde(default)]
     block: BlockTags,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
@@ -76,8 +77,10 @@ pub async fn monad_eth_estimateGas(
         BlockTags::Latest => {
             let TriedbResult::BlockNum(triedb_block_number) = triedb_env.get_latest_block().await
             else {
-                debug!("triedb did not have latest block number");
-                return Err(JsonRpcError::internal_error());
+                error!("triedb did not have latest block number");
+                return Err(JsonRpcError::internal_error(
+                    "missing latest block number".into(),
+                ));
             };
             triedb_block_number
         }
@@ -87,12 +90,17 @@ pub async fn monad_eth_estimateGas(
     let block = match get_block_from_num(file_ledger_reader, block_number).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => {
-            debug!("latest block header not found");
-            return Err(JsonRpcError::internal_error());
+            warn!("latest block header not found");
+            return Err(JsonRpcError::internal_error(
+                "latest block header not found".into(),
+            ));
         }
-        BlockResult::DecodeFailed(_) => {
-            debug!("block decode failed");
-            return Err(JsonRpcError::internal_error());
+        BlockResult::DecodeFailed(e) => {
+            warn!("block decode failed");
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )));
         }
     };
 
@@ -218,11 +226,17 @@ pub async fn monad_eth_gasPrice(
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => {
-            debug!("unable to retrieve latest block");
-            return Err(JsonRpcError::internal_error());
+            warn!("latest block header not found");
+            return Err(JsonRpcError::internal_error(
+                "latest block header not found".into(),
+            ));
         }
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            warn!("block decode failed");
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )));
         }
     };
 

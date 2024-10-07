@@ -422,7 +422,7 @@ impl<'de> Deserialize<'de> for BlockTags {
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
     serde_json::to_value(value).map_err(|e| {
         debug!("blockdb serialize error {:?}", e);
-        JsonRpcError::internal_error()
+        JsonRpcError::internal_error(format!("serialization error: {}", e))
     })
 }
 

@@ -17,7 +17,7 @@ pub async fn get_block_num_from_tag(triedb_env: &TriedbEnv, tag: BlockTags) -> J
         BlockTags::Latest => {
             let result = triedb_env.get_latest_block().await;
             let TriedbResult::BlockNum(n) = result else {
-                return Err(JsonRpcError::custom(
+                return Err(JsonRpcError::internal_error(
                     "could not get latest block from triedb".to_string(),
                 ));
             };

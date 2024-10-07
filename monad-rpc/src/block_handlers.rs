@@ -5,7 +5,7 @@ use monad_rpc_docs::rpc;
 use reth_primitives::Block as EthBlock;
 use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
@@ -100,7 +100,12 @@ pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> JsonRpcResult<Quan
 
     match triedb_env.get_latest_block().await {
         TriedbResult::BlockNum(num) => Ok(Quantity(num)),
-        _ => Err(JsonRpcError::internal_error()),
+        _ => {
+            error!("triedb did not have latest block number");
+            Err(JsonRpcError::internal_error(
+                "missing latest block number".into(),
+            ))
+        }
     }
 }
 
@@ -166,7 +171,10 @@ pub async fn monad_eth_getBlockByNumber(
         BlockResult::Block(b) => b,
         BlockResult::NotFound => return Ok(None),
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )))
         }
     };
 
@@ -225,7 +233,10 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
         BlockResult::Block(b) => b,
         BlockResult::NotFound => return Ok(None),
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )))
         }
     };
 
@@ -244,11 +255,12 @@ pub async fn block_receipts(
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
                 let mut rlp_buf = rlp_receipt.as_slice();
-                let receipt =
-                    decode_receipt(&mut rlp_buf).map_err(|_| JsonRpcError::internal_error())?;
+                let receipt = decode_receipt(&mut rlp_buf).map_err(|e| {
+                    JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
+                })?;
                 block_receipts.push((receipt, txn_index as u64));
             }
-            _ => return Err(JsonRpcError::internal_error()),
+            _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
         }
     }
 
@@ -268,7 +280,7 @@ pub async fn block_receipts(
         .collect();
 
     if block_receipts.len() != block.body.len() {
-        return Err(JsonRpcError::internal_error());
+        return Err(JsonRpcError::internal_error("receipts unavailable".into()));
     }
 
     Ok(block_receipts)
@@ -303,7 +315,10 @@ pub async fn monad_eth_getBlockReceipts(
     let decoded_block = match file_ledger_reader.decode_eth_block(encoded_block) {
         Ok(b) => b,
         Err(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)));
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )));
         }
     };
 

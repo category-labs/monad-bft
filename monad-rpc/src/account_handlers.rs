@@ -33,7 +33,7 @@ pub async fn monad_eth_getBalance(
     {
         TriedbResult::Null => Ok(MonadU256(U256::ZERO)),
         TriedbResult::Account(_, balance, _) => Ok(MonadU256(U256::from(balance))),
-        _ => Err(JsonRpcError::internal_error()),
+        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
 }
 
@@ -58,7 +58,7 @@ pub async fn monad_eth_getCode(
     {
         TriedbResult::Null => return Ok(format!("0x")),
         TriedbResult::Account(_, _, code_hash) => code_hash,
-        _ => return Err(JsonRpcError::internal_error()),
+        _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
     };
 
     match triedb_env
@@ -67,7 +67,7 @@ pub async fn monad_eth_getCode(
     {
         TriedbResult::Null => Ok(format!("0x")),
         TriedbResult::Code(code) => Ok(hex::encode(&code)),
-        _ => Err(JsonRpcError::internal_error()),
+        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
 }
 
@@ -97,7 +97,7 @@ pub async fn monad_eth_getStorageAt(
     {
         TriedbResult::Null => Ok(format!("0x{:x}", 0)),
         TriedbResult::Storage(storage) => Ok(hex::encode(&storage)),
-        _ => Err(JsonRpcError::internal_error()),
+        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
 }
 
@@ -122,7 +122,7 @@ pub async fn monad_eth_getTransactionCount(
     {
         TriedbResult::Null => Ok(format!("0x{:x}", 0)),
         TriedbResult::Account(nonce, _, _) => Ok(format!("0x{:x}", nonce)),
-        _ => Err(JsonRpcError::internal_error()),
+        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
 }
 

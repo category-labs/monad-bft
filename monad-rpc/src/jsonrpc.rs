@@ -125,7 +125,7 @@ where
     }
 
     fn block_not_found(self) -> JsonRpcResult<T> {
-        self.map_err(|_| JsonRpcError::custom("block not found".into()))
+        self.map_err(|_| JsonRpcError::internal_error("block not found".into()))
     }
 }
 
@@ -141,7 +141,7 @@ impl<T> JsonRpcResultExt for Option<T> {
     }
 
     fn block_not_found(self) -> JsonRpcResult<T> {
-        self.ok_or(JsonRpcError::custom("block not found".into()))
+        self.ok_or(JsonRpcError::internal_error("block not found".into()))
     }
 }
 
@@ -172,18 +172,26 @@ impl JsonRpcError {
         }
     }
 
-    pub fn invalid_params() -> Self {
+    pub fn method_not_supported() -> Self {
         Self {
             code: -32602,
+            message: "Method not supported".into(),
+            data: None,
+        }
+    }
+
+    pub fn invalid_params() -> Self {
+        Self {
+            code: -32603,
             message: "Invalid params".into(),
             data: None,
         }
     }
 
-    pub fn internal_error() -> Self {
+    pub fn internal_error(message: String) -> Self {
         Self {
-            code: -32603,
-            message: "Internal error".into(),
+            code: -32604,
+            message: format!("Internal error: {}", message),
             data: None,
         }
     }
@@ -210,22 +218,6 @@ impl JsonRpcError {
             code: -32000,
             message,
             data: data.map(Value::String),
-        }
-    }
-
-    pub fn eth_filter_error(message: String) -> Self {
-        Self {
-            code: -32000,
-            message,
-            data: None,
-        }
-    }
-
-    pub fn method_not_supported() -> Self {
-        Self {
-            code: -32001,
-            message: "Method not supported".into(),
-            data: None,
         }
     }
 

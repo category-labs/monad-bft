@@ -178,10 +178,10 @@ impl From<FilterError> for JsonRpcError {
     fn from(e: FilterError) -> Self {
         match e {
             FilterError::InvalidBlockRange => {
-                JsonRpcError::eth_filter_error("invalid block range".into())
+                JsonRpcError::internal_error("invalid block range".into())
             }
             FilterError::RangeTooLarge => {
-                JsonRpcError::eth_filter_error("block range too large".into())
+                JsonRpcError::internal_error("block range too large".into())
             }
         }
     }
@@ -307,7 +307,9 @@ pub async fn monad_eth_getLogs(
                 let block = file_ledger_reader
                     .clone()
                     .get_block_by_hash(block_hash.into())
-                    .ok_or(JsonRpcError::internal_error())?;
+                    .ok_or(JsonRpcError::internal_error(
+                        "error reading block data".into(),
+                    ))?;
                 (block.number, block.number)
             }
         };
@@ -326,8 +328,15 @@ pub async fn monad_eth_getLogs(
         for block_num in from_block..=to_block {
             let block = match get_block_from_num(file_ledger_reader, block_num).await {
                 BlockResult::Block(b) => b,
-                BlockResult::NotFound => return Err(JsonRpcError::internal_error()),
-                BlockResult::DecodeFailed(_) => return Err(JsonRpcError::internal_error()),
+                BlockResult::NotFound => {
+                    return Err(JsonRpcError::internal_error("block not found".into()))
+                }
+                BlockResult::DecodeFailed(e) => {
+                    return Err(JsonRpcError::internal_error(format!(
+                        "decode block failed: {}",
+                        e
+                    )))
+                }
             };
 
             let header_logs_bloom = block.header.logs_bloom;
@@ -398,7 +407,9 @@ pub async fn monad_eth_sendRawTransaction(
                 Ok(_) => Ok(hash.to_string()),
                 Err(err) => {
                     warn!(?err, "mempool ipc send error");
-                    Err(JsonRpcError::internal_error())
+                    Err(JsonRpcError::internal_error(
+                        "unable to send to mempool".into(),
+                    ))
                 }
             }
         }
@@ -437,18 +448,20 @@ pub async fn monad_eth_getTransactionReceipt(
         TriedbResult::Null => Ok(None),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
-            let receipt =
-                decode_receipt(&mut rlp_buf).map_err(|_| JsonRpcError::internal_error())?;
+            let receipt = decode_receipt(&mut rlp_buf).map_err(|e| {
+                JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
+            })?;
 
             let prev_receipt = if txn_index > 0 {
                 let TriedbResult::Receipt(prev_receipt_rlp_buf) =
                     triedb_env.get_receipt(txn_index - 1, block_num).await
                 else {
-                    return Err(JsonRpcError::internal_error());
+                    return Err(JsonRpcError::internal_error("error reading from db".into()));
                 };
                 Some(
-                    decode_receipt(&mut prev_receipt_rlp_buf.as_slice())
-                        .map_err(|_| JsonRpcError::internal_error())?,
+                    decode_receipt(&mut prev_receipt_rlp_buf.as_slice()).map_err(|e| {
+                        JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
+                    })?,
                 )
             } else {
                 None
@@ -457,11 +470,11 @@ pub async fn monad_eth_getTransactionReceipt(
             let Some(receipt) =
                 parse_tx_receipt(&block, prev_receipt, receipt, block_num, txn_index)
             else {
-                return Err(JsonRpcError::internal_error());
+                return Err(JsonRpcError::internal_error("parse receipt failed".into()));
             };
             Ok(Some(MonadTransactionReceipt(receipt)))
         }
-        _ => Err(JsonRpcError::internal_error()),
+        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
 }
 

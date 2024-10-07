@@ -279,7 +279,9 @@ pub async fn sender_gas_allowance(
             .await
         else {
             debug!("triedb did not have sender account {from:}");
-            return Err(JsonRpcError::internal_error());
+            return Err(JsonRpcError::internal_error(
+                "sender address not in db".into(),
+            ));
         };
 
         let gas_price = request.max_fee_per_gas().expect("max_fee_per_gas");
@@ -292,7 +294,7 @@ pub async fn sender_gas_allowance(
                 )
             })?
             .checked_div(gas_price)
-            .ok_or_else(JsonRpcError::internal_error)?;
+            .ok_or_else(|| JsonRpcError::internal_error("zero gas price".into()))?;
 
         Ok(min(
             gas_limit.try_into().unwrap_or(block.gas_limit),
@@ -306,6 +308,7 @@ pub async fn sender_gas_allowance(
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadEthCallParams {
     transaction: CallRequest,
+    #[serde(default)]
     block: BlockTags,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
@@ -346,9 +349,14 @@ pub async fn monad_eth_call(
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let mut block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
-        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::NotFound => {
+            return Err(JsonRpcError::internal_error("block not found".into()))
+        }
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )))
         }
     };
 

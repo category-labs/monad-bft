@@ -24,7 +24,9 @@ pub async fn monad_debug_getRawBlock(
         .async_read_encoded_eth_block(block_num)
         .await
     else {
-        return Err(JsonRpcError::internal_error());
+        return Err(JsonRpcError::internal_error(
+            "error reading block data".into(),
+        ));
     };
     Ok(hex::encode(&raw_block))
 }
@@ -40,9 +42,14 @@ pub async fn monad_debug_getRawHeader(
     let block_num = get_block_num_from_tag(triedb_env, params).await?;
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
-        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::NotFound => {
+            return Err(JsonRpcError::internal_error("block not found".into()))
+        }
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )))
         }
     };
 
@@ -68,9 +75,14 @@ pub async fn monad_debug_getRawReceipts(
     let block_num = get_block_num_from_tag(triedb_env, params).await?;
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
-        BlockResult::NotFound => return Err(JsonRpcError::custom(format!("block not found"))),
+        BlockResult::NotFound => {
+            return Err(JsonRpcError::internal_error("block not found".into()))
+        }
         BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::custom(format!("decode block failed: {}", e)))
+            return Err(JsonRpcError::internal_error(format!(
+                "decode block failed: {}",
+                e
+            )))
         }
     };
 
@@ -82,7 +94,7 @@ pub async fn monad_debug_getRawReceipts(
                 let receipt = hex::encode(&rlp_receipt);
                 receipts.push(receipt);
             }
-            _ => return Err(JsonRpcError::internal_error()),
+            _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
         }
     }
 

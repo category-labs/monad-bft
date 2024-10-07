@@ -139,7 +139,9 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
         }
         Err(e) => {
             debug!("response serialization error: {e}");
-            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::internal_error()));
+            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::internal_error(
+                format!("serialization error: {}", e),
+            )));
         }
     };
 
