@@ -1,10 +1,9 @@
 use std::{
-    collections::{hash_map::Entry, BTreeSet, HashMap},
-    marker::PhantomData,
-    time::Duration,
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap}, iter, marker::PhantomData, time::Duration
 };
 
 use itertools::Itertools;
+use monad_blocktree::blocktree::BlockTreeHeadersResponse;
 use monad_consensus::{
     messages::message::{
         BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncRequestMessage,
@@ -42,15 +41,21 @@ use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 #[derive(Debug)]
 pub(crate) struct BlockSync<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> {
     // Requests from peers
-    header_requests: HashMap<BlockIdRange, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
+
+    // The map stores some of the blocks fetched from consensus blocktree while the 
+    // rest of the blocks from the requested range are fetched from ledger
+    // e.g. If NodeX requests a -> c and blocks b -> c are fetched from blocktree,
+    // stored in the map is [a -> b, (NodeX, b -> c)] while a -> b is fetched from ledger
+    headers_requests:
+        HashMap<BlockIdRange, BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Vec<Block<SCT>>>>,
     payload_requests: HashMap<PayloadId, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     // Requests from self
-    self_header_requests: HashMap<BlockIdRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
+    self_headers_requests: HashMap<BlockIdRange, SelfRequest<CertificateSignaturePubKey<ST>>>,
     self_payload_requests: HashMap<PayloadId, SelfRequest<CertificateSignaturePubKey<ST>>>,
     // Parallel payload requests from self after receiving headers
     // If payload is None, the payload request is still in flight
-    self_completed_header_requests:
+    self_completed_headers_requests:
         HashMap<BlockIdRange, (BlockSyncSelfRequester, Vec<(Block<SCT>, Option<Payload>)>)>,
 
     self_request_mode: BlockSyncSelfRequester,
@@ -71,12 +76,12 @@ struct SelfRequest<PT: PubKey> {
 impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for BlockSync<ST, SCT> {
     fn default() -> Self {
         Self {
-            header_requests: Default::default(),
+            headers_requests: Default::default(),
             payload_requests: Default::default(),
 
-            self_header_requests: Default::default(),
+            self_headers_requests: Default::default(),
             self_payload_requests: Default::default(),
-            self_completed_header_requests: Default::default(),
+            self_completed_headers_requests: Default::default(),
 
             self_request_mode: BlockSyncSelfRequester::StateSync,
 
@@ -87,15 +92,15 @@ impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> Default for 
 
 impl<ST: CertificateSignatureRecoverable, SCT: SignatureCollection> BlockSync<ST, SCT> {
     pub fn clear_self_requests(&mut self) {
-        self.self_header_requests.clear();
+        self.self_headers_requests.clear();
         self.self_payload_requests.clear();
-        self.self_completed_header_requests.clear();
+        self.self_completed_headers_requests.clear();
     }
 
     pub fn self_headers_request_exists(&self, block_id_range: BlockIdRange) -> bool {
-        self.self_header_requests.contains_key(&block_id_range)
+        self.self_headers_requests.contains_key(&block_id_range)
             || self
-                .self_completed_header_requests
+                .self_completed_headers_requests
                 .contains_key(&block_id_range)
     }
 }
@@ -246,7 +251,7 @@ where
 
         if self
             .block_sync
-            .self_completed_header_requests
+            .self_completed_headers_requests
             .contains_key(&block_id_range)
         {
             // payload requests already initiated, nothing to do
@@ -281,7 +286,7 @@ where
 
         let payload_requests = headers.into_iter().map(|block| (block, None)).collect();
         self.block_sync
-            .self_completed_header_requests
+            .self_completed_headers_requests
             .insert(block_id_range, (self_requester, payload_requests));
 
         cmds
@@ -296,7 +301,7 @@ where
         let mut cmds = Vec::new();
 
         let block_id_range = headers_response.get_block_id_range();
-        let Entry::Occupied(mut entry) = self.block_sync.self_header_requests.entry(block_id_range)
+        let Entry::Occupied(mut entry) = self.block_sync.self_headers_requests.entry(block_id_range)
         else {
             // unexpected response
             return cmds;
@@ -419,7 +424,7 @@ where
                     entry.remove();
 
                     for (_, (_, payload_requests)) in
-                        self.block_sync.self_completed_header_requests.iter_mut()
+                        self.block_sync.self_completed_headers_requests.iter_mut()
                     {
                         if let Some((_, maybe_payload)) = payload_requests
                             .iter_mut()
@@ -481,29 +486,27 @@ where
 
         let self_requested_ranges: Vec<BlockIdRange> = self
             .block_sync
-            .self_completed_header_requests
+            .self_completed_headers_requests
             .keys()
             .cloned()
             .collect();
         for block_id_range in self_requested_ranges {
             let Entry::Occupied(mut entry) = self
                 .block_sync
-                .self_completed_header_requests
+                .self_completed_headers_requests
                 .entry(block_id_range)
             else {
                 panic!("should be in tree");
             };
 
-            // add the payload completed header requests
             let (_, payload_requests) = entry.get_mut();
-
             // if all payloads are received for this range, create the full blocks and emit
             if payload_requests
                 .iter()
                 .all(|(_, maybe_payload)| maybe_payload.is_some())
             {
-                let (self_requester, requested_blocks) = entry.remove();
-                let full_blocks = requested_blocks
+                let (self_requester, payload_requests) = entry.remove();
+                let full_blocks = payload_requests
                     .into_iter()
                     .map(|(block, payload)| FullBlock {
                         block,
@@ -529,14 +532,62 @@ where
             BlockSyncEvent::Request { sender, request } => {
                 match request {
                     BlockSyncRequestMessage::Headers(block_id_range) => {
-                        let entry = self
-                            .block_sync
-                            .header_requests
-                            .entry(block_id_range)
-                            .or_default();
-                        entry.insert(sender);
-                        // TODO: retrieve some of the headers from consensus first and request rest from ledger
-                        cmds.push(BlockSyncCommand::FetchHeaders(block_id_range))
+                        if block_id_range.from != block_id_range.to {
+                            match self.block_sync.headers_requests.entry(block_id_range) {
+                                Entry::Vacant(entry) => {
+                                    // fetch blocks from block tree
+                                    let consensus_cached_headers = match &self.consensus {
+                                        ConsensusMode::Sync { .. } => None,
+                                        ConsensusMode::Live(consensus) => {
+                                            let uncommitted_headers = consensus.fetch_uncommitted_headers(block_id_range);
+                                            Some(uncommitted_headers)
+                                        }
+                                    };
+
+                                    if let Some(blocktree_response) = consensus_cached_headers {
+                                        match blocktree_response {
+                                            BlockTreeHeadersResponse::FullRange(headers) => {
+                                                // all requested headers retrieved from blocktree
+                                                cmds.push(BlockSyncCommand::SendResponse {
+                                                    to: sender,
+                                                    response: BlockSyncResponseMessage::HeadersResponse(
+                                                        BlockSyncHeadersResponse::Found((block_id_range, headers)),
+                                                    ),
+                                                });
+                                            }
+                                            BlockTreeHeadersResponse::PartialRange(headers) => {
+                                                // some requested headers retrieved from blocktree
+                                                // fetch rest from ledger
+                                                let blocks_to_fetch = BlockIdRange {
+                                                    from: block_id_range.from,
+                                                    to: headers.first().unwrap().get_parent_id(),
+                                                };
+                                                entry.insert(BTreeMap::from([(sender, headers)]));
+                                                cmds.push(BlockSyncCommand::FetchHeaders(blocks_to_fetch));
+                                            }
+                                            BlockTreeHeadersResponse::NotAvailable => {
+                                                // self is also missing blocks from the requested range
+                                                // TODO self can respond with some of the blocks it has
+                                                cmds.push(BlockSyncCommand::SendResponse {
+                                                    to: sender,
+                                                    response: BlockSyncResponseMessage::HeadersResponse(
+                                                        BlockSyncHeadersResponse::NotAvailable(block_id_range),
+                                                    ),
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        entry.insert(BTreeMap::from([(sender, Vec::new())]));
+                                        cmds.push(BlockSyncCommand::FetchHeaders(block_id_range));
+                                    }
+                                }
+                                Entry::Occupied(mut entry) => {
+                                    // self already made a ledger fetch call for this range
+                                    let requested_nodes = entry.get_mut();
+                                    requested_nodes.insert(sender, Vec::new());
+                                }
+                            }
+                        }
                     }
                     BlockSyncRequestMessage::Payload(payload_id) => {
                         let consensus_cached_payload = match &self.consensus {
@@ -576,7 +627,7 @@ where
                 }
 
                 if !self.block_sync.self_headers_request_exists(block_id_range) {
-                    self.block_sync.self_header_requests.insert(
+                    self.block_sync.self_headers_requests.insert(
                         block_id_range,
                         SelfRequest {
                             requester,
@@ -592,7 +643,7 @@ where
                 block_id_range,
             } => {
                 if let Entry::Occupied(entry) =
-                    self.block_sync.self_header_requests.entry(block_id_range)
+                    self.block_sync.self_headers_requests.entry(block_id_range)
                 {
                     if entry.get().requester == requester {
                         entry.remove();
@@ -601,7 +652,7 @@ where
 
                 if let Entry::Occupied(entry) = self
                     .block_sync
-                    .self_completed_header_requests
+                    .self_completed_headers_requests
                     .entry(block_id_range)
                 {
                     if entry.get().0 == requester {
@@ -610,24 +661,46 @@ where
                 }
             }
             BlockSyncEvent::SelfResponse { response } => match response {
-                BlockSyncResponseMessage::HeadersResponse(headers_response) => {
-                    let block_id_range = headers_response.get_block_id_range();
+                BlockSyncResponseMessage::HeadersResponse(ledger_response) => {
+                    let block_id_range = ledger_response.get_block_id_range();
 
                     let requesters = self
                         .block_sync
-                        .header_requests
+                        .headers_requests
                         .remove(&block_id_range)
                         .unwrap_or_default();
-                    cmds.extend(requesters.into_iter().map(|requester| {
+                    cmds.extend(requesters.into_iter().map(|(requester, uncommitted_blocks)| {
+                        let headers_response = if uncommitted_blocks.is_empty() {
+                            // no blocks fetched from blocktree
+                            ledger_response.clone()
+                        } else {
+                            // some blocks fetched from blocktree. combine both and respond with the
+                            // actual requested block id range
+                            let requested_block_id_range = BlockIdRange {
+                                from: block_id_range.from,
+                                to: uncommitted_blocks.last().unwrap().get_id(),
+                            };
+                            match ledger_response.clone() {
+                                BlockSyncHeadersResponse::Found((_, headers_from_ledger)) => {
+                                    let mut requested_block_range = headers_from_ledger;
+                                    requested_block_range.extend(uncommitted_blocks);
+                                    BlockSyncHeadersResponse::Found((requested_block_id_range, requested_block_range))
+                                }
+                                BlockSyncHeadersResponse::NotAvailable(_) => {
+                                    BlockSyncHeadersResponse::NotAvailable(requested_block_id_range)
+                                }
+                            }
+                        };
+
                         BlockSyncCommand::SendResponse {
                             to: requester,
                             response: BlockSyncResponseMessage::HeadersResponse(
-                                headers_response.clone(),
+                                headers_response,
                             ),
                         }
                     }));
 
-                    cmds.extend(self.handle_headers_response_for_self(None, headers_response));
+                    cmds.extend(self.handle_headers_response_for_self(None, ledger_response));
                 }
                 BlockSyncResponseMessage::PayloadResponse(payload_response) => {
                     let payload_id = payload_response.get_payload_id();
@@ -664,7 +737,7 @@ where
             BlockSyncEvent::Timeout(request) => match request {
                 BlockSyncRequestMessage::Headers(block_id_range) => {
                     if let Entry::Occupied(mut entry) =
-                        self.block_sync.self_header_requests.entry(block_id_range)
+                        self.block_sync.self_headers_requests.entry(block_id_range)
                     {
                         let self_request = entry.get_mut();
                         if self_request.to.is_some() {

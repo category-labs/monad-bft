@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{BlockPolicy, BlockPolicyError, BlockType},
+    block::{Block, BlockIdRange, BlockPolicy, BlockPolicyError, BlockType},
     checkpoint::RootInfo,
     payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
@@ -17,6 +17,12 @@ use monad_types::{BlockId, SeqNum};
 use tracing::trace;
 
 type Result<T> = StdResult<T, BlockTreeError>;
+
+pub enum BlockTreeHeadersResponse<SCT: SignatureCollection> {
+    FullRange(Vec<Block<SCT>>),
+    PartialRange(Vec<Block<SCT>>),
+    NotAvailable,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum BlockTreeError {
@@ -492,6 +498,31 @@ where
     /// Use get_block_state_root instead?
     pub fn get_block(&self, block_id: &BlockId) -> Option<&BPT::ValidatedBlock> {
         self.tree.get(block_id).map(|block| &block.validated_block)
+    }
+
+    // returns the maximally available headers from the given range.
+    pub fn get_headers(&self, block_id_range: BlockIdRange) -> BlockTreeHeadersResponse<SCT> {
+        let mut uncommitted_headers = VecDeque::new();
+        let next_block_id = block_id_range.to;
+        while next_block_id != block_id_range.from {
+            if self.root.info.block_id == next_block_id {
+                return BlockTreeHeadersResponse::PartialRange(uncommitted_headers.into());
+            }
+
+            if let Some(blocktree_entry) = self.tree.get(&next_block_id) {
+                uncommitted_headers.push_front(
+                    blocktree_entry
+                        .validated_block
+                        .get_unvalidated_block_ref()
+                        .clone(),
+                );
+            } else {
+                // TODO blocksync should be able to respond with a partial range here 
+                return BlockTreeHeadersResponse::NotAvailable;
+            }
+        }
+
+        BlockTreeHeadersResponse::FullRange(uncommitted_headers.into())
     }
 
     pub fn get_payload(&self, payload_id: PayloadId) -> Option<Payload> {

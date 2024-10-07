@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_blocktree::blocktree::{BlockTree, BlockTreeError};
+use monad_blocktree::blocktree::{BlockTree, BlockTreeError, BlockTreeHeadersResponse};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -258,6 +258,10 @@ where
         self.pending_block_tree
             .get_block(bid)
             .map(|b| b.clone().get_full_block()) //TODO revisit
+    }
+
+    pub fn fetch_uncommitted_headers(&self, block_id_range: BlockIdRange) -> BlockTreeHeadersResponse<SCT> {
+        self.pending_block_tree.get_headers(block_id_range)
     }
 
     pub fn fetch_uncommitted_payload(&self, payload_id: PayloadId) -> Option<Payload> {
