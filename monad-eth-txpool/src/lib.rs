@@ -25,6 +25,8 @@ use tracing::{info, trace, warn};
 
 type VirtualTimestamp = u64;
 
+const MAX_TXPOOL_SIZE: usize = 1024 * 32;
+
 /// Needed to have control over Ord implementation
 #[derive(Debug, PartialEq)]
 struct WrappedTransaction<'a> {
@@ -245,6 +247,11 @@ impl EthTxPool {
         eth_tx: EthTransaction,
         reserve_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
+        // TODO(abenedito): Smarter tx eviction when pool is full
+        if self.total_txns() > MAX_TXPOOL_SIZE {
+            return Err(TxPoolInsertionError::PoolFull);
+        }
+
         let sender = EthAddress(eth_tx.signer());
         let txn_hash = eth_tx.hash();
 

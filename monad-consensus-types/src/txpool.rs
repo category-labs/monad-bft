@@ -15,6 +15,7 @@ pub enum TxPoolInsertionError {
     NonceTooLow,
     FeeTooLow,
     InsufficientBalance,
+    PoolFull,
 }
 
 /// This trait represents the storage of transactions that
