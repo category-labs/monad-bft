@@ -3884,6 +3884,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-executor-delay"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-executor",
+ "tokio",
+]
+
+[[package]]
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
@@ -4084,12 +4093,11 @@ dependencies = [
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
+ "monad-executor-delay",
  "monad-executor-glue",
- "monad-gossip",
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
- "monad-quic",
  "monad-raptorcast",
  "monad-secp",
  "monad-state",

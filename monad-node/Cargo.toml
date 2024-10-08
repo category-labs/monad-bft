@@ -25,12 +25,11 @@ monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
+monad-executor-delay = { path = "../monad-executor-delay" }
 monad-executor-glue = { path = "../monad-executor-glue" }
-monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
-monad-quic = { path = "../monad-quic" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }

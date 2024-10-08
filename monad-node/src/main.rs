@@ -21,11 +21,10 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor_delay::ExecutorDelay;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
-use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
-use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_statesync::StateSync;
@@ -164,44 +163,34 @@ async fn run(
         .count()
         > 1
     {
-        Updater::boxed(
-            build_raptorcast_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-            >(
-                node_state.node_config.network.clone(),
-                node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-            )
-            .await,
+        let raptor_router = build_raptorcast_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        >(
+            node_state.node_config.network.clone(),
+            node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
         )
-    } else {
-        let gossip = MockGossipConfig {
-            all_peers: checkpoint_validators_first
-                .validators
-                .0
-                .iter()
-                .map(|peer| NodeId::new(peer.node_id.pubkey()))
-                .collect(),
-            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
-            message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
-        }
-        .build()
-        .boxed();
+        .await;
 
-        Updater::boxed(
-            build_mockgossip_router::<
-                MonadMessage<SignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-                _,
-            >(
-                node_state.node_config.network.clone(),
-                &node_state.router_identity,
-                &node_state.node_config.bootstrap.peers,
-                gossip,
-            )
-            .await,
+        <_ as Updater<_>>::boxed(raptor_router)
+    } else {
+        let raptor_router = build_raptorcast_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        >(
+            node_state.node_config.network.clone(),
+            node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
         )
+        .await;
+
+        let delayed_router = ExecutorDelay::new(
+            raptor_router,
+            Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
+        );
+
+        <_ as Updater<_>>::boxed(delayed_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
@@ -536,49 +525,6 @@ where
         .to_string(),
         up_bandwidth_mbps: network_config.max_mbps.into(),
     })
-}
-
-async fn build_mockgossip_router<M, OM, G>(
-    network_config: NodeNetworkConfig,
-    identity: &<SignatureType as CertificateSignature>::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig],
-    gossip: G,
-) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
-where
-    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>> + Send + 'static,
-    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
-    <M as Deserializable<Bytes>>::ReadError: 'static,
-    OM: Serializable<Bytes> + Send + Sync + 'static,
-{
-    Service::new(
-        ServiceConfig {
-            me: NodeId::new(identity.pubkey()),
-            server_address: SocketAddr::V4(SocketAddrV4::new(
-                network_config.bind_address_host,
-                network_config.bind_address_port,
-            )),
-            quinn_config: SafeQuinnConfig::new(
-                identity,
-                Duration::from_millis(network_config.max_rtt_ms),
-                network_config.max_mbps,
-            ),
-            known_addresses: peers
-                .iter()
-                .map(|peer| {
-                    let address = peer
-                        .address
-                        .to_socket_addrs()
-                        .unwrap_or_else(|err| {
-                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                        })
-                        .next()
-                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-                })
-                .collect(),
-        },
-        gossip,
-    )
 }
 
 /// Returns (otel_context, expiry)

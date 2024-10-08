@@ -1,0 +1,10 @@
+[package]
+name = "monad-executor-delay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-executor = { path = "../monad-executor" }
+
+futures = { workspace = true }
+tokio = { workspace = true, features = ["time"] }

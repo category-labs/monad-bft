@@ -21,7 +21,8 @@ members = [
     "monad-eth-tx",
     "monad-eth-txpool",
     "monad-eth-types",
-    "monad-eth-types",
+    "monad-executor",
+    "monad-executor-delay",
     "monad-executor-glue",
     "monad-executor",
     "monad-gossip",
@@ -53,7 +54,7 @@ members = [
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
-    "monad-wal"
+    "monad-wal",
 ]
 resolver = "2"
 
