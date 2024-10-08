@@ -26,6 +26,16 @@ impl AsRef<Self> for ExecutorMetrics {
     }
 }
 
+impl<I> From<I> for ExecutorMetrics
+where
+    I: IntoIterator<Item = (&'static str, u64)>,
+{
+    fn from(value: I) -> Self {
+        let iter = value.into_iter();
+        Self(iter.collect())
+    }
+}
+
 impl<'a> From<&'a ExecutorMetrics> for ExecutorMetricsChain<'a> {
     fn from(metrics: &'a ExecutorMetrics) -> Self {
         ExecutorMetricsChain(vec![metrics])

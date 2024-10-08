@@ -3871,6 +3871,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-executor-delay"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-executor",
+ "tokio",
+]
+
+[[package]]
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
