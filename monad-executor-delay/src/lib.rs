@@ -92,7 +92,6 @@ where
                 std::task::Poll::Ready(Some(item)) => match item {
                     DelayDriverItem::MetricsUpdate(metrics) => {
                         self.metrics = metrics.into_iter().into();
-                        println!("metrics updated");
                         continue;
                     }
                     DelayDriverItem::Item(event) => return std::task::Poll::Ready(Some(event)),

@@ -230,20 +230,25 @@ where
                                     waker.wake()
                                 }
                             }
-                            let epoch_validators_without_self =
-                                epoch_validators.view_without(vec![&self_id]);
-                            if epoch_validators_without_self.view().is_empty() {
+
+                            let cast_view = if epoch_validators.validators.len() > 1 {
+                                epoch_validators.view_without(vec![&self_id])
+                            } else {
+                                if !self.full_nodes.list.is_empty() {
+                                    epoch_validators.view_without(vec![])
+                                } else {
+                                    epoch_validators.view_without(vec![&self_id])
+                                }
+                            };
+
+                            if cast_view.view().is_empty() {
                                 // this is degenerate case where the only validator is self
                                 continue;
                             }
 
                             let build_target = match &target {
-                                RouterTarget::Broadcast(_) => {
-                                    BuildTarget::Broadcast(epoch_validators_without_self)
-                                }
-                                RouterTarget::Raptorcast(_) => {
-                                    BuildTarget::Raptorcast(epoch_validators_without_self)
-                                }
+                                RouterTarget::Broadcast(_) => BuildTarget::Broadcast(cast_view),
+                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(cast_view),
                                 _ => unreachable!(),
                             };
 
