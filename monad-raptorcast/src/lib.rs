@@ -337,7 +337,7 @@ where
                         .full_nodes
                         .list
                         .iter()
-                        .filter_map(|full_node| this.known_addresses.get(&full_node).copied())
+                        .filter_map(|full_node| this.known_addresses.get(full_node).copied())
                         .collect();
                     this.dataplane.udp_write_broadcast(BroadcastMsg {
                         targets: full_node_targets,

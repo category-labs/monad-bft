@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-futures.workspace = true
-monad-executor = { version = "0.1.0", path = "../monad-executor" }
+futures = { workspace = true }
+monad-executor = { path = "../monad-executor" }
 tokio = { workspace = true, features = ["time"] }
-tracing.workspace = true

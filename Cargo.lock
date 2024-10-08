@@ -3877,7 +3877,6 @@ dependencies = [
  "futures",
  "monad-executor",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -4083,11 +4082,9 @@ dependencies = [
  "monad-executor",
  "monad-executor-delay",
  "monad-executor-glue",
- "monad-gossip",
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
- "monad-quic",
  "monad-raptorcast",
  "monad-router-filter",
  "monad-secp",

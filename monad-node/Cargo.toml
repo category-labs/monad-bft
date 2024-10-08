@@ -25,12 +25,11 @@ monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
+monad-executor-delay = { path = "../monad-executor-delay" }
 monad-executor-glue = { path = "../monad-executor-glue" }
-monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
-monad-quic = { path = "../monad-quic" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-router-filter = { path = "../monad-router-filter", optional = true }
 monad-secp = { path = "../monad-secp" }
@@ -63,7 +62,6 @@ toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-monad-executor-delay = { version = "0.1.0", path = "../monad-executor-delay" }
 
 [features]
 full-node = ["monad-router-filter"]

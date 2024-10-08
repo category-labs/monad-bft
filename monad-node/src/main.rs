@@ -7,8 +7,7 @@ use std::{
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
-use config::FullNodeIdentityConfig;
-use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
+use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
@@ -22,12 +21,11 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
+#[cfg(not(feature = "full-node"))]
 use monad_executor_delay::ExecutorDelay;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
-use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
-use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
@@ -35,8 +33,10 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
+#[cfg(not(feature = "full-node"))]
+use monad_types::Stake;
 use monad_types::{
-    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, Stake, GENESIS_SEQ_NUM,
+    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
@@ -174,7 +174,7 @@ async fn run(
         .await;
 
         let raptor_router = FullNodeRouterFilter::new(raptor_router);
-        <_ as Updater<_>>::boxed(delayed_router)
+        <_ as Updater<_>>::boxed(raptor_router)
     };
 
     #[cfg(not(feature = "full-node"))]
@@ -554,49 +554,6 @@ where
         ))
         .to_string(),
     })
-}
-
-async fn build_mockgossip_router<M, OM, G>(
-    network_config: NodeNetworkConfig,
-    identity: &<SignatureType as CertificateSignature>::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig],
-    gossip: G,
-) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
-where
-    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>> + Send + 'static,
-    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
-    <M as Deserializable<Bytes>>::ReadError: 'static,
-    OM: Serializable<Bytes> + Send + Sync + 'static,
-{
-    Service::new(
-        ServiceConfig {
-            me: NodeId::new(identity.pubkey()),
-            server_address: SocketAddr::V4(SocketAddrV4::new(
-                network_config.bind_address_host,
-                network_config.bind_address_port,
-            )),
-            quinn_config: SafeQuinnConfig::new(
-                identity,
-                Duration::from_millis(network_config.max_rtt_ms),
-                network_config.max_mbps,
-            ),
-            known_addresses: peers
-                .iter()
-                .map(|peer| {
-                    let address = peer
-                        .address
-                        .to_socket_addrs()
-                        .unwrap_or_else(|err| {
-                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                        })
-                        .next()
-                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-                })
-                .collect(),
-        },
-        gossip,
-    )
 }
 
 /// Returns (otel_context, expiry)

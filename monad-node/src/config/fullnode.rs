@@ -1,6 +1,7 @@
-use super::util::deserialize_secp256k1_pubkey;
 use monad_secp::PubKey;
 use serde::Deserialize;
+
+use super::util::deserialize_secp256k1_pubkey;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

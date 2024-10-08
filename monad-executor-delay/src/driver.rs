@@ -7,8 +7,8 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
+use monad_executor::Executor;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 const METRICS_UPDATE_PERIOD: Duration = Duration::from_secs(1);
 
