@@ -272,6 +272,7 @@ async fn rpc_select(
                 app_state.mempool_sender.clone(),
                 params,
                 app_state.chain_id,
+                app_state.allow_unprotected_txs,
             )
             .await
             .map(serialize_result)?
@@ -546,6 +547,7 @@ struct MonadRpcResources {
     chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
+    allow_unprotected_txs: bool,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -565,6 +567,7 @@ impl MonadRpcResources {
         chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
+        allow_unprotected_txs: bool,
     ) -> Self {
         Self {
             mempool_sender,
@@ -574,6 +577,7 @@ impl MonadRpcResources {
             chain_id,
             batch_request_limit,
             max_response_size,
+            allow_unprotected_txs,
         }
     }
 }
@@ -665,6 +669,7 @@ async fn main() -> std::io::Result<()> {
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
+        args.allow_unprotected_txs,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -759,6 +764,7 @@ mod tests {
             chain_id: 1337,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
+            allow_unprotected_txs: false,
         }))
         .await;
         (app, m)

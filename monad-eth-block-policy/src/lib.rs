@@ -81,9 +81,12 @@ pub fn static_validate_transaction(
     chain_id: u64,
 ) -> Result<(), TransactionError> {
     // EIP-155
-    tx.chain_id()
-        .and_then(|cid| (cid == chain_id).then_some(()))
-        .ok_or(TransactionError::InvalidChainId)?;
+    // We allow legacy transactions without chain_id specified to pass through
+    if let Some(tx_chain_id) = tx.chain_id() {
+        if tx_chain_id != chain_id {
+            return Err(TransactionError::InvalidChainId);
+        }
+    }
 
     // EIP-1559
     if let Some(max_priority_fee) = tx.max_priority_fee_per_gas() {
@@ -702,7 +705,9 @@ mod test {
     use alloy_primitives::{Address, FixedBytes, B256};
     use monad_eth_types::EthAddress;
     use monad_types::SeqNum;
-    use reth_primitives::{sign_message, AccessList, Transaction, TransactionKind, TxEip1559};
+    use reth_primitives::{
+        sign_message, AccessList, Transaction, TransactionKind, TxEip1559, TxLegacy,
+    };
 
     use super::*;
 
@@ -798,6 +803,38 @@ mod test {
     #[test]
     fn test_static_validate_transaction() {
         const CHAIN_ID: u64 = 1337;
+
+        // pre EIP-155 transaction with no chain id is allowed
+        let tx_no_chain_id = Transaction::Legacy(TxLegacy {
+            chain_id: None,
+            nonce: 0,
+            to: TransactionKind::Call(Address::random()),
+            gas_price: 1000,
+            gas_limit: 1_000_000,
+            input: vec![].into(),
+            value: 0.into(),
+        });
+        let txn = create_signed_tx(tx_no_chain_id, B256::repeat_byte(0xAu8));
+
+        let result = static_validate_transaction(&txn, CHAIN_ID);
+        assert!(matches!(result, Ok(())));
+
+        // transaction with incorrect chain id
+        let tx_invalid_chain_id = Transaction::Eip1559(TxEip1559 {
+            chain_id: CHAIN_ID - 1,
+            nonce: 0,
+            to: TransactionKind::Call(Address::random()),
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10,
+            gas_limit: 1_000_000,
+            input: vec![].into(),
+            value: 0.into(),
+            access_list: AccessList::default(),
+        });
+        let txn = create_signed_tx(tx_invalid_chain_id, B256::repeat_byte(0xAu8));
+
+        let result = static_validate_transaction(&txn, CHAIN_ID);
+        assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
         let input = vec![0; 2 * 0x6000 + 1];

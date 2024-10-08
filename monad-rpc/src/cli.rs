@@ -47,4 +47,7 @@ pub struct Cli {
 
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    pub allow_unprotected_txs: bool,
 }

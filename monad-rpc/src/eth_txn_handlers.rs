@@ -384,6 +384,7 @@ pub async fn monad_eth_sendRawTransaction(
     ipc: flume::Sender<TransactionSigned>,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
+    allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
@@ -398,6 +399,13 @@ pub async fn monad_eth_sendRawTransaction(
                     TransactionError::GasLimitTooLow => "Gas limit too low",
                 };
                 return Err(JsonRpcError::custom(error_message.to_string()));
+            }
+
+            // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
+            if !allow_unprotected_txs && txn.chain_id().is_none() {
+                return Err(JsonRpcError::custom(
+                    "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
+                ));
             }
 
             let hash = txn.hash();

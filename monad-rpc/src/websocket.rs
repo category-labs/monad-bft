@@ -114,6 +114,7 @@ mod tests {
             chain_id: 41454,
             batch_request_limit: 1000,
             max_response_size: 25_000_000,
+            allow_unprotected_txs: false,
         };
         (
             MonadRpcResourcesState { ipc_receiver },
