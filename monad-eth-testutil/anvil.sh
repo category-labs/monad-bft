@@ -1,0 +1,1 @@
+anvil --balance 100000000000 --block-time 1 --chain-id 41454 --base-fee 1000

@@ -31,14 +31,7 @@ impl Client {
     }
 
     pub async fn rpc(&self, req: Value) -> Result<reqwest::Response, reqwest::Error> {
-        let res = self
-            .client
-            .post(self.url.clone())
-            .body(req.to_string())
-            .send()
-            .await;
-
-        res
+        self.client.post(self.url.clone()).json(&req).send().await
     }
 }
 
@@ -106,8 +99,8 @@ impl Account {
         let transaction = Transaction::Eip1559(TxEip1559 {
             chain_id: 41454,
             nonce: self.nonce,
-            max_fee_per_gas: 1000,
-            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 10000,
+            max_priority_fee_per_gas: 1000,
             gas_limit: 21000,
             to: TransactionKind::Call(dst),
             value: value.into(),
