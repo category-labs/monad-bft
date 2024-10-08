@@ -7,3 +7,4 @@ edition = "2021"
 futures.workspace = true
 monad-executor = { version = "0.1.0", path = "../monad-executor" }
 tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true

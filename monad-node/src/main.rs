@@ -22,6 +22,7 @@ use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor_delay::ExecutorDelay;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
@@ -159,6 +160,24 @@ async fn run(
         .expect("no validator sets")
         .clone();
 
+    #[cfg(feature = "full-node")]
+    let router: BoxUpdater<_, _> = {
+        let raptor_router = build_raptorcast_router::<
+            MonadMessage<SignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        >(
+            node_state.node_config.network.clone(),
+            node_state.router_identity,
+            &node_state.node_config.bootstrap.peers,
+            &node_state.node_config.fullnode.identities,
+        )
+        .await;
+
+        let raptor_router = FullNodeRouterFilter::new(raptor_router);
+        <_ as Updater<_>>::boxed(delayed_router)
+    };
+
+    #[cfg(not(feature = "full-node"))]
     let router: BoxUpdater<_, _> = if checkpoint_validators_first
         .validators
         .0
@@ -178,39 +197,25 @@ async fn run(
         )
         .await;
 
-        #[cfg(feature = "full-node")]
-        let raptor_router = FullNodeRouterFilter::new(raptor_router);
-
         <_ as Updater<_>>::boxed(raptor_router)
     } else {
-        let gossip = MockGossipConfig {
-            all_peers: checkpoint_validators_first
-                .validators
-                .0
-                .iter()
-                .map(|peer| NodeId::new(peer.node_id.pubkey()))
-                .collect(),
-            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
-            message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
-        }
-        .build()
-        .boxed();
-        let mock_router = build_mockgossip_router::<
+        let raptor_router = build_raptorcast_router::<
             MonadMessage<SignatureType, SignatureCollectionType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-            _,
         >(
             node_state.node_config.network.clone(),
-            &node_state.router_identity,
+            node_state.router_identity,
             &node_state.node_config.bootstrap.peers,
-            gossip,
+            &node_state.node_config.fullnode.identities,
         )
         .await;
 
-        #[cfg(feature = "full-node")]
-        let mock_router = FullNodeRouterFilter::new(mock_router);
+        let delayed_router = ExecutorDelay::new(
+            raptor_router,
+            Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
+        );
 
-        <_ as Updater<_>>::boxed(mock_router)
+        <_ as Updater<_>>::boxed(delayed_router)
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable

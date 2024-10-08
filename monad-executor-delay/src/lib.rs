@@ -5,11 +5,12 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use driver::{DelayDriver, DelayDriverItem, DelayTimedEvent};
+use driver::{DelayDriver, DelayDriverItem, ScheduledEvent};
 use futures::{stream::Iter, Stream, StreamExt};
 
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use tokio::sync::mpsc::{error::TrySendError, UnboundedSender};
+use tracing::debug;
 
 mod driver;
 
@@ -98,6 +99,7 @@ where
                 std::task::Poll::Ready(Some(item)) => match item {
                     DelayDriverItem::MetricsUpdate(metrics) => {
                         self.metrics = metrics.into_iter().into();
+                        debug!("metrics updated");
                         continue;
                     }
                     DelayDriverItem::Item(event) => return std::task::Poll::Ready(Some(event)),

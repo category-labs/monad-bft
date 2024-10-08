@@ -1,20 +1,46 @@
 use std::{
-    collections::VecDeque,
+    collections::BinaryHeap,
     ops::DerefMut,
-    pin::pin,
-    sync::{Arc, Mutex},
+    pin::Pin,
     task::Poll,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
 
-pub struct DelayTimedEvent<E> {
-    deliver_time: Duration,
-    event: E,
+const METRICS_UPDATE_PERIOD: Duration = Duration::from_secs(1);
+
+enum Trigger<E> {
+    UpdateMetrics,
+    EmitEvent(E),
 }
+
+pub struct ScheduledEvent<E> {
+    deliver: Duration,
+    trigger: Trigger<E>,
+}
+
+impl<E> PartialOrd for ScheduledEvent<E> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(other.deliver.cmp(&self.deliver))
+    }
+}
+
+impl<E> Ord for ScheduledEvent<E> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.deliver.cmp(&self.deliver)
+    }
+}
+
+impl<E> PartialEq for ScheduledEvent<E> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deliver.eq(&other.deliver)
+    }
+}
+
+impl<E> Eq for ScheduledEvent<E> {}
 
 pub struct DelayDriver<E>
 where
@@ -22,9 +48,10 @@ where
 {
     executor: E,
     commands: UnboundedReceiver<E::Command>,
-    delayed_events: VecDeque<DelayTimedEvent<E::Item>>,
+    events: BinaryHeap<ScheduledEvent<E::Item>>,
     event_delay: Duration,
-    last_metrics_update: Duration,
+    timeout: Pin<Box<tokio::time::Sleep>>,
+    now: Duration,
 }
 
 impl<E> DelayDriver<E>
@@ -32,13 +59,41 @@ where
     E: Executor + Stream,
 {
     pub fn new(executor: E, delay: Duration, command_rx: UnboundedReceiver<E::Command>) -> Self {
+        let mut events = BinaryHeap::new();
+        events.push(ScheduledEvent {
+            deliver: Duration::ZERO,
+            trigger: Trigger::UpdateMetrics,
+        });
         Self {
             executor,
             commands: command_rx,
-            delayed_events: VecDeque::new(),
+            events,
             event_delay: delay,
-            last_metrics_update: Duration::ZERO,
+            timeout: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            now: Duration::ZERO,
         }
+    }
+
+    fn now(&mut self) -> Duration {
+        self.now = self.now.max(UNIX_EPOCH.elapsed().unwrap());
+        self.now
+    }
+
+    fn peek_tick(&self) -> Option<Duration> {
+        if !self.events.is_empty() {
+            Some(self.events.peek().unwrap().deliver)
+        } else {
+            None
+        }
+    }
+
+    fn poll(&mut self, now: Duration) -> Option<Trigger<E::Item>> {
+        if let Some(event) = self.events.peek() {
+            if event.deliver <= now {
+                return self.events.pop().map(|event| event.trigger);
+            }
+        }
+        None
     }
 }
 
@@ -59,7 +114,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let now = UNIX_EPOCH.elapsed().unwrap();
+        let now = self.now();
         loop {
             let mut commands = Vec::new();
             let _count = self
@@ -71,36 +126,51 @@ where
                 continue;
             }
 
-            if let Some(DelayTimedEvent {
-                deliver_time,
-                event: _,
-            }) = self.delayed_events.front()
-            {
-                if &now > deliver_time {
-                    let DelayTimedEvent {
-                        deliver_time: _,
-                        event,
-                    } = self.delayed_events.pop_front().unwrap();
-                    return Poll::Ready(Some(DelayDriverItem::Item(event)));
+            if let Some(timeout) = self.peek_tick() {
+                let duration_until_timeout = timeout.checked_sub(now).unwrap_or(Duration::ZERO);
+                let current_instant = Instant::now();
+
+                let deadline = current_instant + duration_until_timeout;
+                let old_deadline = self.timeout.deadline().into_std();
+                if deadline < old_deadline - Duration::from_millis(1)
+                    || deadline > old_deadline - Duration::from_millis(1)
+                {
+                    tokio::time::Sleep::reset(self.timeout.as_mut(), deadline.into());
+                }
+
+                if self.timeout.poll_unpin(cx).is_ready()
+                    || duration_until_timeout == Duration::ZERO
+                {
+                    if let Some(trigger) = self.poll(now) {
+                        match trigger {
+                            Trigger::UpdateMetrics => {
+                                self.events.push(ScheduledEvent {
+                                    deliver: now + METRICS_UPDATE_PERIOD,
+                                    trigger: Trigger::UpdateMetrics,
+                                });
+                                let metrics = self.executor.metrics();
+                                return Poll::Ready(Some(DelayDriverItem::MetricsUpdate(
+                                    metrics.into_inner(),
+                                )));
+                            }
+                            Trigger::EmitEvent(event) => {
+                                return Poll::Ready(Some(DelayDriverItem::Item(event)));
+                            }
+                        }
+                    }
                 }
             }
 
             if let Poll::Ready(Some(event)) = self.executor.poll_next_unpin(cx) {
                 let deliver_time = now + self.event_delay;
-                self.delayed_events.push_back(DelayTimedEvent {
-                    deliver_time,
-                    event,
+                self.events.push(ScheduledEvent {
+                    deliver: deliver_time,
+                    trigger: Trigger::EmitEvent(event),
                 });
                 continue;
             }
 
-            if let Some(diff) = now.checked_sub(self.last_metrics_update) {
-                if diff > Duration::from_secs(1) {
-                    self.last_metrics_update = now;
-                    let metrics = self.executor.metrics();
-                    return Poll::Ready(Some(DelayDriverItem::MetricsUpdate(metrics.into_inner())));
-                }
-            }
+            return Poll::Pending;
         }
     }
 }
