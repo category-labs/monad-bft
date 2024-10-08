@@ -11,7 +11,7 @@ use crate::{
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbResult},
 };
 
 fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block> {
@@ -91,7 +91,7 @@ fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block
 #[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]
 /// Returns the number of most recent block.
-pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_blockNumber<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_blockNumber");
 
     match triedb_env.get_latest_block().await {
@@ -155,9 +155,9 @@ pub struct MonadEthGetBlockByNumberParams {
 #[rpc(method = "eth_getBlockByNumber", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns information about a block by number.
-pub async fn monad_eth_getBlockByNumber(
+pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
@@ -217,9 +217,9 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 )]
 #[allow(non_snake_case)]
 /// Returns the number of transactions in a block matching the given block number.
-pub async fn monad_eth_getBlockTransactionCountByNumber(
+pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadEthGetBlockTransactionCountByNumberParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
@@ -240,8 +240,8 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
     Ok(Some(format!("0x{:x}", count)))
 }
 
-pub async fn block_receipts(
-    triedb_env: &TriedbEnv,
+pub async fn block_receipts<T: Triedb>(
+    triedb_env: &T,
     block: EthBlock,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
     let block_num: u64 = block.number;
@@ -293,9 +293,9 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 #[rpc(method = "eth_getBlockReceipts", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the receipts of a block by number or hash.
-pub async fn monad_eth_getBlockReceipts(
+pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");

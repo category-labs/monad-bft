@@ -8,10 +8,13 @@ use tokio::{fs::File as TokioFile, io::AsyncReadExt};
 use crate::{
     eth_json_types::BlockTags,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbResult},
 };
 
-pub async fn get_block_num_from_tag(triedb_env: &TriedbEnv, tag: BlockTags) -> JsonRpcResult<u64> {
+pub async fn get_block_num_from_tag<T: Triedb>(
+    triedb_env: &T,
+    tag: BlockTags,
+) -> JsonRpcResult<u64> {
     match tag {
         BlockTags::Number(n) => Ok(n.0),
         BlockTags::Latest => {

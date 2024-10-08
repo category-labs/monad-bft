@@ -9,7 +9,7 @@ use crate::{
     eth_json_types::{serialize_result, BlockTags, EthAddress, EthHash, MonadU256},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -21,8 +21,8 @@ pub struct MonadEthGetBalanceParams {
 #[rpc(method = "eth_getBalance")]
 #[allow(non_snake_case)]
 /// Returns the balance of the account of given address.
-pub async fn monad_eth_getBalance(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_getBalance<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetBalanceParams,
 ) -> JsonRpcResult<MonadU256> {
     trace!("monad_eth_getBalance: {params:?}");
@@ -46,8 +46,8 @@ pub struct MonadEthGetCodeParams {
 #[rpc(method = "eth_getCode")]
 #[allow(non_snake_case)]
 /// Returns code at a given address.
-pub async fn monad_eth_getCode(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_getCode<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetCodeParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
@@ -81,8 +81,8 @@ pub struct MonadEthGetStorageAtParams {
 #[rpc(method = "eth_getStorageAt")]
 #[allow(non_snake_case)]
 /// Returns the value from a storage position at a given address.
-pub async fn monad_eth_getStorageAt(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_getStorageAt<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetStorageAtParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
@@ -110,8 +110,8 @@ pub struct MonadEthGetTransactionCountParams {
 #[rpc(method = "eth_getTransactionCount")]
 #[allow(non_snake_case)]
 /// Returns the number of transactions sent from an address.
-pub async fn monad_eth_getTransactionCount(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_getTransactionCount<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetTransactionCountParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
@@ -128,20 +128,12 @@ pub async fn monad_eth_getTransactionCount(
 
 #[allow(non_snake_case)]
 /// Returns an object with data about the sync status or false.
-pub async fn monad_eth_syncing(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_syncing() -> Result<Value, JsonRpcError> {
     trace!("monad_eth_syncing");
 
     // TODO. TBD where this data actually comes from
 
     serialize_result(serde_json::Value::Bool(false))
-}
-
-#[allow(non_snake_case)]
-/// Returns a list of addresses owned by client.
-pub async fn monad_eth_accounts(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_accounts");
-
-    serialize_result(serde_json::Value::Array(vec![]))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -172,8 +164,8 @@ pub struct MonadEthGetProofResult {
 #[allow(non_snake_case)]
 /// Returns the account and storage values of the specified account including the Merkle-proof.
 // TODO: this is a stub to support rpc docs, need to implement
-pub async fn monad_eth_getProof(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_getProof<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetProofParams,
 ) -> JsonRpcResult<MonadEthGetProofResult> {
     trace!("monad_eth_getProof");

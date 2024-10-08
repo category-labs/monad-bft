@@ -12,7 +12,7 @@ use crate::{
     eth_json_types::{BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbPath, TriedbResult},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -264,8 +264,8 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
 }
 
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
-pub async fn sender_gas_allowance(
-    triedb_env: &TriedbEnv,
+pub async fn sender_gas_allowance<T: Triedb>(
+    triedb_env: &T,
     block: &Block,
     request: &CallRequest,
 ) -> Result<u64, JsonRpcError> {
@@ -321,8 +321,8 @@ pub struct MonadEthCallParams {
     ignore = "chain_id",
     ignore = "file_ledger_reader"
 )]
-pub async fn monad_eth_call(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_call<T: Triedb + TriedbPath>(
+    triedb_env: &T,
     file_ledger_reader: &FileBlockReader,
     execution_ledger_path: &Path,
     chain_id: u64,

@@ -23,7 +23,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbResult},
 };
 
 pub fn parse_tx_content(
@@ -258,9 +258,9 @@ pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 #[rpc(method = "eth_getLogs", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
-pub async fn monad_eth_getLogs(
+pub async fn monad_eth_getLogs<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
@@ -428,9 +428,9 @@ pub struct MonadEthGetTransactionReceiptParams {
 #[rpc(method = "eth_getTransactionReceipt", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
-pub async fn monad_eth_getTransactionReceipt(
+pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     p: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {p:?}");
@@ -556,9 +556,9 @@ pub struct MonadEthGetTransactionByBlockNumberAndIndexParams {
 )]
 #[allow(non_snake_case)]
 /// Returns information about a transaction by block number and transaction index position.
-pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
+pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadEthGetTransactionByBlockNumberAndIndexParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");

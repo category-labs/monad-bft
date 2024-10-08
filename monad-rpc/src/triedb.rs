@@ -116,6 +116,35 @@ fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
     );
 }
 
+pub trait Triedb {
+    fn get_latest_block(&self) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_receipt(
+        &self,
+        txn_index: u64,
+        block_id: u64,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_account(
+        &self,
+        addr: EthAddress,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_storage_at(
+        &self,
+        addr: EthAddress,
+        at: EthStorageKey,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_code(
+        &self,
+        code_hash: EthCodeHash,
+        block_tag: BlockTags,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+}
+
+pub trait TriedbPath {
+    fn path(&self) -> PathBuf;
+}
+
 #[derive(Clone)]
 pub struct TriedbEnv {
     triedb_path: PathBuf,
@@ -139,8 +168,16 @@ impl TriedbEnv {
             mpsc_sender: sender,
         }
     }
+}
 
-    pub async fn get_latest_block(&self) -> TriedbResult {
+impl TriedbPath for TriedbEnv {
+    fn path(&self) -> PathBuf {
+        self.triedb_path.clone()
+    }
+}
+
+impl Triedb for TriedbEnv {
+    async fn get_latest_block(&self) -> TriedbResult {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -164,7 +201,7 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
+    async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -218,7 +255,7 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_storage_at(
+    async fn get_storage_at(
         &self,
         addr: EthAddress,
         at: EthStorageKey,
@@ -271,7 +308,7 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {
+    async fn get_code(&self, code_hash: EthCodeHash, block_tag: BlockTags) -> TriedbResult {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -314,7 +351,7 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_receipt(&self, txn_index: u64, block_num: u64) -> TriedbResult {
+    async fn get_receipt(&self, txn_index: u64, block_num: u64) -> TriedbResult {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -355,9 +392,5 @@ impl TriedbEnv {
                 TriedbResult::Error
             }
         }
-    }
-
-    pub fn path(&self) -> PathBuf {
-        self.triedb_path.clone()
     }
 }

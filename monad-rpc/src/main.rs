@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use account_handlers::{
-    monad_eth_accounts, monad_eth_getBalance, monad_eth_getCode, monad_eth_getProof,
-    monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_syncing,
+    monad_eth_getBalance, monad_eth_getCode, monad_eth_getProof, monad_eth_getStorageAt,
+    monad_eth_getTransactionCount, monad_eth_syncing,
 };
 use actix::prelude::*;
 use actix_http::body::BoxBody;
@@ -411,20 +411,7 @@ async fn rpc_select(
         "eth_chainId" => monad_eth_chainId(app_state.chain_id)
             .await
             .map(serialize_result)?,
-        "eth_syncing" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                monad_eth_syncing(reader).await
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_accounts" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                monad_eth_accounts(reader).await
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
+        "eth_syncing" => monad_eth_syncing().await,
         "eth_estimateGas" => {
             let Some(reader) = &app_state.file_ledger_reader else {
                 return Err(JsonRpcError::method_not_supported());

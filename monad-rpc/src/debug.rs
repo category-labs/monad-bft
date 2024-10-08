@@ -8,15 +8,15 @@ use crate::{
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbResult},
 };
 
 #[rpc(method = "debug_getRawBlock", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
-pub async fn monad_debug_getRawBlock(
+pub async fn monad_debug_getRawBlock<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: BlockTags,
 ) -> JsonRpcResult<String> {
     let block_num = get_block_num_from_tag(triedb_env, params).await?;
@@ -34,9 +34,9 @@ pub async fn monad_debug_getRawBlock(
 #[rpc(method = "debug_getRawHeader", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
-pub async fn monad_debug_getRawHeader(
+pub async fn monad_debug_getRawHeader<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: BlockTags,
 ) -> JsonRpcResult<String> {
     let block_num = get_block_num_from_tag(triedb_env, params).await?;
@@ -67,9 +67,9 @@ pub struct MonadDebugGetRawReceiptsResult {
 #[rpc(method = "debug_getRawReceipts", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
-pub async fn monad_debug_getRawReceipts(
+pub async fn monad_debug_getRawReceipts<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: BlockTags,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     let block_num = get_block_num_from_tag(triedb_env, params).await?;
@@ -109,9 +109,9 @@ pub struct MonadDebugGetRawTransactionParams {
 #[rpc(method = "debug_getRawTransaction", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
-pub async fn monad_debug_getRawTransaction(
+pub async fn monad_debug_getRawTransaction<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
@@ -120,9 +120,9 @@ pub async fn monad_debug_getRawTransaction(
 #[rpc(method = "debug_traceBlockByHash", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
-pub async fn monad_debug_traceBlockByHash(
+pub async fn monad_debug_traceBlockByHash<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: EthHash,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
@@ -131,9 +131,9 @@ pub async fn monad_debug_traceBlockByHash(
 #[rpc(method = "debug_traceBlockByNumber", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
-pub async fn monad_debug_traceBlockByNumber(
+pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
     params: MonadU256,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
@@ -149,8 +149,8 @@ pub struct DebugTraceCallParams {
 #[rpc(method = "debug_traceCall")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing an eth call within the context of the given block execution.
-pub async fn monad_debug_traceCall(
-    triedb_env: &TriedbEnv,
+pub async fn monad_debug_traceCall<T: Triedb>(
+    triedb_env: &T,
     params: DebugTraceCallParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
@@ -165,8 +165,8 @@ pub struct DebugTraceTransactionParams {
 #[rpc(method = "debug_traceTransaction")]
 #[allow(non_snake_case)]
 /// Returns all traces of a given transaction.
-pub async fn monad_debug_traceTransaction(
-    triedb_env: &TriedbEnv,
+pub async fn monad_debug_traceTransaction<T: Triedb>(
+    triedb_env: &T,
     params: DebugTraceTransactionParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())

@@ -13,7 +13,7 @@ use crate::{
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{Triedb, TriedbPath, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -51,8 +51,8 @@ fn set_gas_limit(tx: &mut Transaction, gas_limit: u64) {
 )]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
-pub async fn monad_eth_estimateGas(
-    triedb_env: &TriedbEnv,
+pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
+    triedb_env: &T,
     file_ledger_reader: &FileBlockReader,
     execution_ledger_path: &Path,
     chain_id: u64,
@@ -216,9 +216,9 @@ pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
 #[rpc(method = "eth_gasPrice", ignore = "file_ledger_reader")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice(
+pub async fn monad_eth_gasPrice<T: Triedb>(
     file_ledger_reader: &FileBlockReader,
-    triedb_env: &TriedbEnv,
+    triedb_env: &T,
 ) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
