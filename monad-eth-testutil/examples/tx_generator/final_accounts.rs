@@ -9,7 +9,7 @@ use futures::{future::join_all, StreamExt};
 use reth_primitives::Bytes;
 use tokio::time::{sleep, Instant};
 
-use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
+use crate::{batch_refresh_accounts, Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
 
 // ------------------- Final accounts functions -------------------
 
@@ -90,39 +90,49 @@ async fn create_final_accounts_from_root(
             split_level + 1
         );
 
-        let pre_refresh = Instant::now();
-        // referesh accounts in batches to not slow down splitting loop
-        futures::stream::iter(accounts_to_split.iter_mut())
-            .map(|account| {
+        let new_accounts: Vec<Account> = futures::stream::iter(accounts_to_split.into_iter())
+            .map(|mut account| {
                 let client = client.clone();
                 async move {
                     account.refresh_balance(client.clone()).await;
                     account.refresh_nonce(client.clone()).await;
-                    println!("Account {} refreshed", account.address);
+                    account
                 }
             })
             .buffer_unordered(100)
-            .for_each(|_| async {})
+            .then(|account| {
+                split_account_balance(
+                    account,
+                    *num_new_accounts_per_split,
+                    txn_batch_size,
+                    txn_sender.clone(),
+                )
+            })
+            .fold(Vec::new(), |mut accumulator, vec| async move {
+                accumulator.extend_from_slice(&vec);
+                accumulator
+            })
             .await;
-        if verbosity > 1 {
-            println!(
-                "Took {} ms to refresh {} accts",
-                (Instant::now() - pre_refresh).as_millis(),
-                accounts_to_split.len()
-            );
-        }
 
-        let mut new_accounts = Vec::new();
-        for account in accounts_to_split {
-            let acc = split_account_balance(
-                account,
-                *num_new_accounts_per_split,
-                txn_batch_size,
-                txn_sender.clone(),
-            )
-            .await;
-            new_accounts.extend(acc);
-        }
+        // if verbosity > 1 {
+        //     println!(
+        //         "Took {} ms to refresh {} accts",
+        //         (Instant::now() - pre_refresh).as_millis(),
+        //         accounts_to_split.len()
+        //     );
+        // }
+
+        // let mut new_accounts = Vec::new();
+        // for account in accounts_to_split {
+        //     let acc = split_account_balance(
+        //         account,
+        //         *num_new_accounts_per_split,
+        //         txn_batch_size,
+        //         txn_sender.clone(),
+        //     )
+        //     .await;
+        //     new_accounts.extend(acc);
+        // }
 
         // Keep splitting new accounts
         accounts_to_split = new_accounts;

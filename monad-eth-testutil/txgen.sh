@@ -4,7 +4,7 @@
 RPC_PORT=$(docker ps --filter "name=node0-rpc" --format "{{.Ports}}" | awk -F'[:>-]' '{print $2}')
 
 # Run the cargo command with the dynamically extracted port
-cargo run --package monad-eth-testutil \
+cargo run --release --package monad-eth-testutil \
     --example tx_generator \
     -- \
     --rpc-url "http://0.0.0.0:$RPC_PORT" \

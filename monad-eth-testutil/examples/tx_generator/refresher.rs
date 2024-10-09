@@ -9,7 +9,7 @@ use crate::{Account, Client, JsonResponse, EXECUTION_DELAY_WAIT_TIME};
 
 // ------------------- Refresher functions -------------------
 
-async fn batch_refresh_accounts(accounts: &mut [Account], client: Client, txn_batch_size: usize) {
+pub async fn batch_refresh_accounts(accounts: &mut [Account], client: Client, txn_batch_size: usize) {
     assert!(accounts.len() == txn_batch_size);
 
     // TODO: implement eth_getAccount in RPC and make this a sinlge call ?
