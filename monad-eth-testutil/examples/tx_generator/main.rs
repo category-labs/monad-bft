@@ -5,7 +5,7 @@ mod rpc;
 use std::{
     error::Error,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -51,6 +51,8 @@ pub const NUM_ACCOUNTS_PER_BATCH: usize = 500_000;
 pub const NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH: usize = 4_000;
 // e.g. with 10,000,000 final accounts, there will be 20 accounts batches
 // if each batch sends 2,000,000 txns, total txns count is 40,000,000 txns
+
+pub const VERBOSITY: AtomicU8 = AtomicU8::new(1);
 
 #[derive(Parser)]
 struct Args {
@@ -99,6 +101,9 @@ struct Args {
 
     #[arg(value_enum, long, default_value_t = TxgenStrategy::UniformManyToMany)]
     txgen_strategy: TxgenStrategy,
+
+    #[arg(long, default_value_t = 1)]
+    verbosity: u8,
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -310,10 +315,17 @@ async fn start_random_tx_gen_unbounded(
     }
 }
 
-async fn tps_logging(tx_counter: Arc<AtomicUsize>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
+async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut last_tx_count = tx_counter.load(Ordering::SeqCst);
     let mut last_instant = Instant::now();
+    let verbosity = VERBOSITY.load(Ordering::SeqCst);
+    if verbosity > 1 {
+        println!(
+            "tx_receiver channel capacity: {}",
+            tx_receiver.capacity().unwrap()
+        );
+    }
 
     loop {
         let instant = interval.tick().await;
@@ -322,15 +334,21 @@ async fn tps_logging(tx_counter: Arc<AtomicUsize>) {
 
         let secs = (instant - last_instant).as_secs_f64();
         let tps = txns as f64 / secs;
-        println!("Sent {} txns in {} seconds at {} tps", txns, secs, tps);
+        println!(
+            "Sent {} txns in {} seconds at {} tps, tx_receiver len: {}",
+            txns,
+            secs,
+            tps,
+            tx_receiver.len()
+        );
         last_tx_count = new_tx_count;
         last_instant = instant;
     }
 }
 
-fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>) {
+fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>) {
     tokio::spawn(async move {
-        tps_logging(tx_batch_counter).await;
+        tps_logging(tx_batch_counter, tx_receiver).await;
     });
 }
 
@@ -344,6 +362,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let num_rpc_senders = args.num_rpc_senders as usize;
     let txn_batch_size = args.txn_batch_size as usize;
+    VERBOSITY.store(args.verbosity, Ordering::SeqCst);
 
     // let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
     let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
@@ -356,7 +375,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_batch_counter = Arc::new(AtomicUsize::new(0));
-    spawn_tps_logging(tx_batch_counter.clone());
+    if args.verbosity > 0 {
+        spawn_tps_logging(tx_batch_counter.clone(), txn_batch_receiver.clone());
+    }
 
     let rpc_sender_handles = {
         let mut rpc_sender_handles = Vec::new();

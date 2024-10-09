@@ -5,9 +5,9 @@ use std::{
 
 use async_channel::Sender;
 use reth_primitives::Bytes;
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
-use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
+use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES, VERBOSITY};
 
 // ------------------- Final accounts functions -------------------
 
@@ -18,8 +18,16 @@ async fn split_account_balance(
     txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
 ) -> Vec<Account> {
+    let pre_refresh = Instant::now();
     account_to_split.refresh_nonce(client.clone()).await;
     account_to_split.refresh_balance(client.clone()).await;
+    if VERBOSITY.load(std::sync::atomic::Ordering::Relaxed) > 1 {
+        println!(
+            "Took {} ms to refresh acct {}",
+            (Instant::now() - pre_refresh).as_millis(),
+            account_to_split.address
+        );
+    }
 
     if account_to_split.balance == 0 {
         // If balance is expected to be non-zero, this error could mean either:
