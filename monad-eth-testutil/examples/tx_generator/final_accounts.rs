@@ -114,27 +114,7 @@ async fn create_final_accounts_from_root(
             })
             .await;
 
-        // if verbosity > 1 {
-        //     println!(
-        //         "Took {} ms to refresh {} accts",
-        //         (Instant::now() - pre_refresh).as_millis(),
-        //         accounts_to_split.len()
-        //     );
-        // }
-
-        // let mut new_accounts = Vec::new();
-        // for account in accounts_to_split {
-        //     let acc = split_account_balance(
-        //         account,
-        //         *num_new_accounts_per_split,
-        //         txn_batch_size,
-        //         txn_sender.clone(),
-        //     )
-        //     .await;
-        //     new_accounts.extend(acc);
-        // }
-
-        // Keep splitting new accounts
+        // keep splitting new accounts
         accounts_to_split = new_accounts;
     }
 

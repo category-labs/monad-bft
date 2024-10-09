@@ -9,7 +9,7 @@ cargo run --release --package monad-eth-testutil \
     -- \
     --rpc-url "http://0.0.0.0:$RPC_PORT" \
     --rpc-sender-interval-ms 100 \
-    --num-final-accounts 2500000 \
+    --num-final-accounts 25000000 \
     --num-rpc-senders 16 \
     --txgen-strategy many-to-one \
     --txn-batch-size 500

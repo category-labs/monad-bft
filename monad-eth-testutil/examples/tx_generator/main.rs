@@ -314,7 +314,11 @@ async fn start_random_tx_gen_unbounded(
     }
 }
 
-async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>, verbosity: u8) {
+async fn tps_logging(
+    tx_counter: Arc<AtomicUsize>,
+    tx_receiver: Receiver<Vec<Bytes>>,
+    verbosity: u8,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut last_tx_count = tx_counter.load(Ordering::SeqCst);
     let mut last_instant = Instant::now();
@@ -344,7 +348,11 @@ async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Byt
     }
 }
 
-fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>, verbosity: u8) {
+fn spawn_tps_logging(
+    tx_batch_counter: Arc<AtomicUsize>,
+    tx_receiver: Receiver<Vec<Bytes>>,
+    verbosity: u8,
+) {
     tokio::spawn(async move {
         tps_logging(tx_batch_counter, tx_receiver, verbosity).await;
     });
@@ -373,7 +381,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_batch_counter = Arc::new(AtomicUsize::new(0));
     if args.verbosity > 0 {
-        spawn_tps_logging(tx_batch_counter.clone(), txn_batch_receiver.clone(), args.verbosity);
+        spawn_tps_logging(
+            tx_batch_counter.clone(),
+            txn_batch_receiver.clone(),
+            args.verbosity,
+        );
     }
 
     let rpc_sender_handles = {
