@@ -17,3 +17,20 @@ monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
 rand = { workspace = true }
 reth-primitives = { workspace = true }
+
+[dev-dependencies]
+alloy-json-rpc = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rpc-client = { workspace = true }
+alloy-transport = { workspace = true }
+clap = { workspace = true, features = [ "derive" ] }
+futures = { workspace = true }
+rand = { workspace = true }
+reth-primitives = { workspace = true }
+reth-rpc-types = { workspace = true }
+ruint = "1.11.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+url = { workspace = true }
