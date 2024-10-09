@@ -1,9 +1,11 @@
 use std::{
     fs::File,
+    future::Future,
     io::{BufRead, BufReader, BufWriter, Write},
 };
 
 use async_channel::Sender;
+use futures::{future::join_all, StreamExt};
 use reth_primitives::Bytes;
 use tokio::time::{sleep, Instant};
 
@@ -14,22 +16,9 @@ use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
 async fn split_account_balance(
     mut account_to_split: Account,
     num_new_accounts: usize,
-    client: Client,
     txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
-    verbosity: u8,
 ) -> Vec<Account> {
-    let pre_refresh = Instant::now();
-    account_to_split.refresh_nonce(client.clone()).await;
-    account_to_split.refresh_balance(client.clone()).await;
-    if verbosity > 1 {
-        println!(
-            "Took {} ms to refresh acct {}",
-            (Instant::now() - pre_refresh).as_millis(),
-            account_to_split.address
-        );
-    }
-
     if account_to_split.balance == 0 {
         // If balance is expected to be non-zero, this error could mean either:
         // 1. The transfer transaction sent to this account didn't make it through consensus, or
@@ -101,15 +90,35 @@ async fn create_final_accounts_from_root(
             split_level + 1
         );
 
+        let pre_refresh = Instant::now();
+        // referesh accounts in batches to not slow down splitting loop
+        futures::stream::iter(accounts_to_split.iter_mut())
+            .map(|account| {
+                let client = client.clone();
+                async move {
+                    account.refresh_balance(client.clone()).await;
+                    account.refresh_nonce(client.clone()).await;
+                    println!("Account {} refreshed", account.address);
+                }
+            })
+            .buffer_unordered(100)
+            .for_each(|_| async {})
+            .await;
+        if verbosity > 1 {
+            println!(
+                "Took {} ms to refresh {} accts",
+                (Instant::now() - pre_refresh).as_millis(),
+                accounts_to_split.len()
+            );
+        }
+
         let mut new_accounts = Vec::new();
         for account in accounts_to_split {
             let acc = split_account_balance(
                 account,
                 *num_new_accounts_per_split,
-                client.clone(),
                 txn_batch_size,
                 txn_sender.clone(),
-                verbosity,
             )
             .await;
             new_accounts.extend(acc);
