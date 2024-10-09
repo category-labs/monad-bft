@@ -3,6 +3,7 @@ mod refresher;
 mod rpc;
 
 use std::{
+    cell::OnceCell,
     error::Error,
     sync::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -52,8 +53,6 @@ pub const NUM_TXN_BATCHES_PER_ACCOUNTS_BATCH: usize = 4_000;
 // e.g. with 10,000,000 final accounts, there will be 20 accounts batches
 // if each batch sends 2,000,000 txns, total txns count is 40,000,000 txns
 
-pub const VERBOSITY: AtomicU8 = AtomicU8::new(1);
-
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "http://localhost:8080")]
@@ -102,7 +101,7 @@ struct Args {
     #[arg(value_enum, long, default_value_t = TxgenStrategy::UniformManyToMany)]
     txgen_strategy: TxgenStrategy,
 
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 2)]
     verbosity: u8,
 }
 
@@ -315,11 +314,10 @@ async fn start_random_tx_gen_unbounded(
     }
 }
 
-async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>) {
+async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>, verbosity: u8) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut last_tx_count = tx_counter.load(Ordering::SeqCst);
     let mut last_instant = Instant::now();
-    let verbosity = VERBOSITY.load(Ordering::SeqCst);
     if verbosity > 1 {
         println!(
             "tx_receiver channel capacity: {}",
@@ -346,9 +344,9 @@ async fn tps_logging(tx_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Byt
     }
 }
 
-fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>) {
+fn spawn_tps_logging(tx_batch_counter: Arc<AtomicUsize>, tx_receiver: Receiver<Vec<Bytes>>, verbosity: u8) {
     tokio::spawn(async move {
-        tps_logging(tx_batch_counter, tx_receiver).await;
+        tps_logging(tx_batch_counter, tx_receiver, verbosity).await;
     });
 }
 
@@ -362,7 +360,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let num_rpc_senders = args.num_rpc_senders as usize;
     let txn_batch_size = args.txn_batch_size as usize;
-    VERBOSITY.store(args.verbosity, Ordering::SeqCst);
 
     // let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
     let rpc_sender_interval = Duration::from_millis(args.rpc_sender_interval_ms);
@@ -376,7 +373,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (txn_batch_sender, txn_batch_receiver) = async_channel::bounded(TX_BATCHES_CHANNEL_BUFFER);
     let tx_batch_counter = Arc::new(AtomicUsize::new(0));
     if args.verbosity > 0 {
-        spawn_tps_logging(tx_batch_counter.clone(), txn_batch_receiver.clone());
+        spawn_tps_logging(tx_batch_counter.clone(), txn_batch_receiver.clone(), args.verbosity);
     }
 
     let rpc_sender_handles = {
@@ -406,6 +403,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         client.clone(),
         txn_batch_size,
         txn_batch_sender.clone(),
+        args.verbosity,
     )
     .await;
     let num_final_accounts = final_accounts.len();

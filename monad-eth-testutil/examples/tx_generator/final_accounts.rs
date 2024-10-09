@@ -7,7 +7,7 @@ use async_channel::Sender;
 use reth_primitives::Bytes;
 use tokio::time::{sleep, Instant};
 
-use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES, VERBOSITY};
+use crate::{Account, Client, EXECUTION_DELAY_WAIT_TIME, TXN_GAS_FEES};
 
 // ------------------- Final accounts functions -------------------
 
@@ -17,11 +17,12 @@ async fn split_account_balance(
     client: Client,
     txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
+    verbosity: u8,
 ) -> Vec<Account> {
     let pre_refresh = Instant::now();
     account_to_split.refresh_nonce(client.clone()).await;
     account_to_split.refresh_balance(client.clone()).await;
-    if VERBOSITY.load(std::sync::atomic::Ordering::Relaxed) > 1 {
+    if verbosity > 1 {
         println!(
             "Took {} ms to refresh acct {}",
             (Instant::now() - pre_refresh).as_millis(),
@@ -72,6 +73,7 @@ async fn create_final_accounts_from_root(
     client: Client,
     txn_batch_size: usize,
     txn_sender: Sender<Vec<Bytes>>,
+    verbosity: u8,
 ) -> Vec<Account> {
     // Calculates the number of splits based on BATCH_SIZE.
     // e.g. For 1,000,000 final accounts and BATCH_SIZE = 500, root accounts will be split into 4
@@ -107,6 +109,7 @@ async fn create_final_accounts_from_root(
                 client.clone(),
                 txn_batch_size,
                 txn_sender.clone(),
+                verbosity,
             )
             .await;
             new_accounts.extend(acc);
@@ -167,6 +170,7 @@ pub async fn make_final_accounts(
     client: Client,
     txn_batch_size: usize,
     txn_batch_sender: Sender<Vec<Bytes>>,
+    verbosity: u8,
 ) -> Vec<Account> {
     if load_final_accs {
         let Some(priv_keys_file_path) = priv_keys_file else {
@@ -193,6 +197,7 @@ pub async fn make_final_accounts(
             client.clone(),
             txn_batch_size,
             txn_batch_sender.clone(),
+            verbosity,
         )
         .await;
 
