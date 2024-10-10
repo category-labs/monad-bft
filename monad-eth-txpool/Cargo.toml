@@ -37,5 +37,9 @@ monad-perf-util = { path = "../monad-perf-util" }
 monad-types = { path = "../monad-types" }
 
 [[bench]]
-name = "proposal_bench"
+name = "create_proposal"
+harness = false
+
+[[bench]]
+name = "clear"
 harness = false
