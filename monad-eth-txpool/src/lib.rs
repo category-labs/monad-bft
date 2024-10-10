@@ -323,8 +323,8 @@ where
             );
         }
 
-        let old_pool = std::mem::take(&mut self.pool);
-        self.garbage.push(old_pool);
+        // let old_pool = std::mem::take(&mut self.pool);
+        // self.garbage.push(old_pool);
 
         Ok(FullTransactionList::new(full_tx_list))
     }
