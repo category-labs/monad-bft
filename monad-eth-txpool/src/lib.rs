@@ -216,7 +216,7 @@ where
             .zip(raw_txs)
             .filter_map(|(insertion_result, b)| match insertion_result {
                 Ok(()) => Some(b),
-                Err(_) => None,
+                Err(_) => Some(b), // TODO: remove, testing forwarding all txns, including invalid ones
             })
             .collect::<Vec<_>>()
     }
