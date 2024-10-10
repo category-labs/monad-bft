@@ -22,32 +22,71 @@ pub type SignatureCollectionType = MultiSig<NopSignature>;
 pub struct BenchControllerConfig {
     pub accounts: usize,
     pub txs: usize,
-    pub tx_limit: usize,
     pub max_nonce: u64,
+    pub proposal_tx_limit: usize,
 }
 
 pub struct BenchController<'a> {
     pub block_policy: &'a EthBlockPolicy,
     pub state_backend: InMemoryState,
     pub pool: EthTxPool,
-    pub tx_limit: usize,
+    pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
 
 impl<'a> BenchController<'a> {
     pub fn setup(block_policy: &'a EthBlockPolicy, config: BenchControllerConfig) -> Self {
-        let mut pool = EthTxPool::default();
-
         let BenchControllerConfig {
             accounts,
             txs,
-            tx_limit,
             max_nonce,
+            proposal_tx_limit,
         } = config;
 
-        let txs = Self::make_txs(accounts, txs, max_nonce);
+        let txs = Self::generate_txs(accounts, txs, max_nonce);
 
-        let state_backend = InMemoryStateInner::new(
+        let state_backend = Self::generate_state_backend_for_txs(&txs);
+
+        let pool = Self::create_pool(block_policy, &state_backend, &txs);
+
+        Self {
+            block_policy,
+            state_backend,
+            pool,
+            proposal_tx_limit,
+            gas_limit: txs
+                .iter()
+                .map(|tx| tx.transaction.gas_limit())
+                .sum::<u64>()
+                .checked_add(1)
+                .expect("proposal gas limit does not overflow"),
+        }
+    }
+
+    pub fn create_pool(
+        block_policy: &EthBlockPolicy,
+        state_backend: &InMemoryState,
+        txs: &[EthSignedTransaction],
+    ) -> EthTxPool {
+        let mut pool = EthTxPool::default();
+
+        assert!(
+            !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
+                &mut pool,
+                txs.iter()
+                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .collect(),
+                block_policy,
+                state_backend,
+            )
+            .is_empty()
+        );
+
+        pool
+    }
+
+    pub fn generate_state_backend_for_txs(txs: &[EthSignedTransaction]) -> InMemoryState {
+        InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
             InMemoryBlockState::genesis(
@@ -60,35 +99,10 @@ impl<'a> BenchController<'a> {
                     })
                     .collect(),
             ),
-        );
-
-        assert!(
-            !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
-                &mut pool,
-                txs.iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
-                    .collect(),
-                block_policy,
-                &state_backend,
-            )
-            .is_empty()
-        );
-
-        Self {
-            state_backend,
-            block_policy,
-            pool,
-            tx_limit,
-            gas_limit: txs
-                .iter()
-                .map(|txn| txn.transaction.gas_limit())
-                .sum::<u64>()
-                .checked_add(1)
-                .expect("proposal gas limit does not overflow"),
-        }
+        )
     }
 
-    fn make_txs(accounts: usize, txs: usize, max_nonce: u64) -> Vec<EthSignedTransaction> {
+    pub fn generate_txs(accounts: usize, txs: usize, max_nonce: u64) -> Vec<EthSignedTransaction> {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         let accounts = (0..accounts)

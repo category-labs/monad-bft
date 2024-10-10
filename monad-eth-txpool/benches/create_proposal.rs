@@ -22,13 +22,13 @@ fn criterion_benchmark(c: &mut Criterion) {
              state_backend,
              block_policy,
              pool,
-             tx_limit,
+             proposal_tx_limit,
              gas_limit,
          }| {
             TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
                 pool,
                 block_policy.get_last_commit() + SeqNum(1),
-                *tx_limit,
+                *proposal_tx_limit,
                 *gas_limit,
                 block_policy,
                 Default::default(),

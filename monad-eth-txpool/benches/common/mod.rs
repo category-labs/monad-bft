@@ -18,8 +18,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 10_000,
             txs: 10_000,
-            tx_limit: 10_000,
             max_nonce: 0,
+            proposal_tx_limit: 10_000,
         },
     ),
     (
@@ -27,8 +27,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 1_000,
             txs: 10_000,
-            tx_limit: 1_000,
             max_nonce: 0,
+            proposal_tx_limit: 1_000,
         },
     ),
     (
@@ -36,8 +36,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 100,
             txs: 10_000,
-            tx_limit: 10_000,
             max_nonce: 50,
+            proposal_tx_limit: 10_000,
         },
     ),
     (
@@ -45,8 +45,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 50,
             txs: 10_000,
-            tx_limit: 10_000,
             max_nonce: 100,
+            proposal_tx_limit: 10_000,
         },
     ),
 ];
