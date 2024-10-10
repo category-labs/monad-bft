@@ -93,7 +93,8 @@ impl Pool {
                     .iter()
                     .filter(|&(nonce, _)| *nonce < lowest_valid_nonce)
                     .for_each(|(nonce, txn)| {
-                        trace!(
+                        // TODO: return to trace after debugging session
+                        tracing::info!(
                             "validate_nonces_and_carriage_fee \
                         txn {:?} will be excluded \
                         nonce is : {:?} < lowest_valid_nonce {:?} \
@@ -148,7 +149,7 @@ impl Pool {
                     );
                 } else {
                     nonce_to_remove = Some(*nonce);
-                    trace!(
+                    tracing::info!(
                         "ReserveBalance create_proposal 3 \
                             insufficient balance at nonce: {:?} \
                             for address: {:?}",
