@@ -21,6 +21,7 @@ use monad_gossip::{
 };
 use monad_ipc::IpcReceiver;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
+use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{
     Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
 };
@@ -58,6 +59,7 @@ where
         config: ServiceConfig<SafeQuinnConfig<ST>>,
         gossip_config: MonadP2PGossipConfig<ST>,
     },
+    RaptorCast(RaptorCastConfig<ST>),
 }
 
 pub enum LedgerConfig {
@@ -107,12 +109,14 @@ pub fn make_monad_executor<ST, SCT>(
 where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
+    <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
     let instance_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
     ParentExecutor {
         router: match config.router_config {
+            RouterConfig::Local(router) => Updater::boxed(router),
             RouterConfig::MonadP2P {
                 config,
                 gossip_config,
@@ -128,7 +132,11 @@ where
                     }
                 },
             )),
-            RouterConfig::Local(router) => Updater::boxed(router),
+            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
+                ST,
+                MonadMessage<ST, SCT>,
+                VerifiedMonadMessage<ST, SCT>,
+            >::new(config)),
         },
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {

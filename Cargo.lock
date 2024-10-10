@@ -4358,6 +4358,7 @@ dependencies = [
  "monad-gossip",
  "monad-ipc",
  "monad-quic",
+ "monad-raptorcast",
  "monad-secp",
  "monad-state",
  "monad-state-backend",

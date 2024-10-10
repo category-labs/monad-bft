@@ -164,7 +164,7 @@ async fn run(
         .count()
         > 1
     {
-        <_ as Updater<_>>::boxed(
+        Updater::boxed(
             build_raptorcast_router::<
                 MonadMessage<SignatureType, SignatureCollectionType>,
                 VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
@@ -189,7 +189,7 @@ async fn run(
         .build()
         .boxed();
 
-        <_ as Updater<_>>::boxed(
+        Updater::boxed(
             build_mockgossip_router::<
                 MonadMessage<SignatureType, SignatureCollectionType>,
                 VerifiedMonadMessage<SignatureType, SignatureCollectionType>,

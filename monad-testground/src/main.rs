@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -21,6 +22,7 @@ use monad_gossip::{
     gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, seeder::SeederConfig,
 };
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
+use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
@@ -82,6 +84,7 @@ enum RouterArgs {
         bandwidth_Mbps: u16,
         gossip: GossipArgs,
     },
+    RaptorCast,
 }
 
 enum GossipArgs {
@@ -150,13 +153,17 @@ async fn main() {
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
-        router: RouterArgs::MonadP2P {
-            max_rtt_ms: 200,
-            bandwidth_Mbps: 1_000,
-            gossip: GossipArgs::Raptor {
-                timeout: Duration::from_millis(150),
-                up_bandwidth_Mbps: 1_000,
-            },
+        router: if false {
+            RouterArgs::MonadP2P {
+                max_rtt_ms: 200,
+                bandwidth_Mbps: 1_000,
+                gossip: GossipArgs::Raptor {
+                    timeout: Duration::from_millis(150),
+                    up_bandwidth_Mbps: 1_000,
+                },
+            }
+        } else {
+            RouterArgs::RaptorCast
         },
         ledger: LedgerArgs::Mock,
     };
@@ -225,13 +232,18 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     let configs = std::iter::repeat_with(|| {
-        let keypair =
-            ST::KeyPairType::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        // RaptorCast wants to own the specified keypair, and we can't clone these later,
+        // so we have to instantiate two copies here.
+        let keypair_bytes = rand::random::<[u8; 32]>();
+        let keypair = ST::KeyPairType::from_bytes(keypair_bytes.clone().as_mut_slice()).unwrap();
+        let keypair2 = ST::KeyPairType::from_bytes(keypair_bytes.clone().as_mut_slice()).unwrap();
+
         let cert_keypair = <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(
             rand::random::<[u8; 32]>().as_mut_slice(),
         )
         .unwrap();
-        (keypair, cert_keypair)
+
+        (keypair, keypair2, cert_keypair)
     })
     .take(addresses.len())
     .collect::<Vec<_>>();
@@ -239,7 +251,7 @@ where
     let validators = ValidatorSetData(
         configs
             .iter()
-            .map(|(keypair, cert_keypair)| ValidatorData {
+            .map(|(keypair, _, cert_keypair)| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
                 stake: Stake(1),
                 cert_pubkey: cert_keypair.pubkey(),
@@ -266,13 +278,13 @@ where
     let known_addresses: HashMap<_, _> = addresses
         .iter()
         .zip(configs.iter())
-        .map(|(address, (keypair, _))| (NodeId::new(keypair.pubkey()), address.parse().unwrap()))
+        .map(|(address, (keypair, _, _))| (NodeId::new(keypair.pubkey()), address.parse().unwrap()))
         .collect();
 
     addresses
         .iter()
         .zip(configs)
-        .map(|(address, (keypair, cert_keypair))| {
+        .map(|(address, (keypair, keypair2, cert_keypair))| {
             let me = NodeId::new(keypair.pubkey());
             Config {
                 num_nodes: addresses.len(),
@@ -330,6 +342,12 @@ where
                                 }),
                             },
                         },
+                        RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
+                            key: keypair,
+                            known_addresses: known_addresses.clone(),
+                            redundancy: 3,
+                            local_addr: address.parse::<SocketAddr>().unwrap().to_string(),
+                        }),
                     },
                     ledger_config: match args.ledger {
                         LedgerArgs::Mock => LedgerConfig::Mock,
@@ -341,7 +359,7 @@ where
                     nodeid: me,
                 },
                 state_config: StateConfig {
-                    key: keypair,
+                    key: keypair2,
                     cert_key: cert_keypair,
                     val_set_update_interval: SeqNum(args.val_set_update_interval),
                     epoch_start_delay: Round(args.epoch_start_delay),
@@ -367,6 +385,7 @@ async fn run<ST, SCT>(
 ) where
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
+    <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
