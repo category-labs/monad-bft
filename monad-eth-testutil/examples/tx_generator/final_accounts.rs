@@ -99,7 +99,7 @@ async fn create_final_accounts_from_root(
                     account
                 }
             })
-            .buffer_unordered(100)
+            .buffer_unordered(10)
             .then(|account| {
                 split_account_balance(
                     account,

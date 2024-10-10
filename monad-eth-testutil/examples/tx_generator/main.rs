@@ -389,8 +389,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let rpc_sender_handles = {
+        let mut spacing =
+            tokio::time::interval(Duration::from_secs_f64(1. / num_rpc_senders as f64));
+        spacing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut rpc_sender_handles = Vec::new();
         for id in 0..num_rpc_senders {
+            spacing.tick().await;
             rpc_sender_handles.push(tokio::spawn(rpc_sender(
                 id,
                 rpc_sender_interval,

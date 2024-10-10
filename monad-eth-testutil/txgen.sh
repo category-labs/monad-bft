@@ -10,9 +10,10 @@ cargo run --release --package monad-eth-testutil \
     --rpc-url "http://0.0.0.0:$RPC_PORT" \
     --rpc-sender-interval-ms 100 \
     --num-final-accounts 25000000 \
-    --num-rpc-senders 16 \
+    --num-rpc-senders 1 \
     --txgen-strategy many-to-one \
-    --txn-batch-size 500
+    --txn-batch-size 500 \
+    --root-private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 
 # cargo run --package monad-eth-testutil \
 #     --example tx_generator \
