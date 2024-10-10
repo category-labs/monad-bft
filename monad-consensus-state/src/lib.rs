@@ -428,23 +428,23 @@ where
             }
         };
 
-        if let Some(ts_delta) = self
-            .block_timestamp
-            .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
-        {
-            // only update timestamp if the block advanced us our round
-            if block.get_round() > original_round {
-                cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
-            }
-        } else {
-            self.metrics.consensus_events.failed_ts_validation += 1;
-            warn!(prev_block_ts = ?block.get_qc().get_timestamp(),
-                  curr_block_ts = ?block.get_timestamp(),
-                  local_ts = ?self.block_timestamp.get_current_time(),
-                  "Timestamp validation failed"
-            );
-            return cmds;
-        }
+        // if let Some(ts_delta) = self
+        //     .block_timestamp
+        //     .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
+        // {
+        //     // only update timestamp if the block advanced us our round
+        //     if block.get_round() > original_round {
+        //         cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+        //     }
+        // } else {
+        //     self.metrics.consensus_events.failed_ts_validation += 1;
+        //     warn!(prev_block_ts = ?block.get_qc().get_timestamp(),
+        //           curr_block_ts = ?block.get_timestamp(),
+        //           local_ts = ?self.block_timestamp.get_current_time(),
+        //           "Timestamp validation failed"
+        //     );
+        //     return cmds;
+        // }
 
         // at this point, block is valid and can be added to the blocktree
         if let Ok(res_cmds) = self.try_add_and_commit_blocktree(&block, Some(state_root_action)) {
