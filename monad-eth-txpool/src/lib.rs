@@ -153,6 +153,12 @@ impl EthTxPool {
             senders.iter(),
         )?;
 
+        // TODO: make this trace logging after done debugging issue
+        info!(
+            num_to_insert = txs.len(),
+            num_txs = self.pool.num_txs(),
+            "Mempool size before inserting txs",
+        );
         let results = txs
             .into_iter()
             .zip(senders.iter())
@@ -166,6 +172,11 @@ impl EthTxPool {
                 )
             })
             .collect();
+        // TODO: make this trace logging after done debugging issue
+        info!(
+            num_txs = self.pool.num_txs(),
+            "Mempool size after inserting txs",
+        );
         Ok(results)
     }
 }
@@ -313,6 +324,7 @@ where
             ?proposal_num_tx,
             proposal_total_gas = total_gas,
             proposal_tx_bytes = full_tx_list.len(),
+            mempool_size = self.pool.num_txs(),
             "created proposal"
         );
 

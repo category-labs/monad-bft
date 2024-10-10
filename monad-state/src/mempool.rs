@@ -18,6 +18,7 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use tracing::info;
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
@@ -117,6 +118,8 @@ where
                         .insert_tx(txns, self.block_policy, self.state_backend);
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
+                // TODO: make trace after debugging issue
+                info!(num_txns, num_valid_txns, "Inserted user txs to mempool");
                 self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
                 self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
 
@@ -139,6 +142,11 @@ where
                         .insert_tx(txns, self.block_policy, self.state_backend);
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
+                // TODO: make trace after debugging issue
+                info!(
+                    num_txns,
+                    num_valid_txns, "Inserted forwarded txs to mempool"
+                );
                 self.metrics.txpool_events.external_inserted_txns += num_valid_txns;
 
                 if num_valid_txns != num_txns {
