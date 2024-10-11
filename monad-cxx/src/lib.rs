@@ -75,6 +75,14 @@ pub fn eth_call(
     blockdb_path: &Path,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
+    // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
+    if transaction.gas_limit() > block_header.gas_limit {
+        return CallResult::Failure(FailureCallResult {
+            message: "gas limit too high".into(),
+            data: None,
+        });
+    }
+
     // TODO: move the buffer copying into C++ for the reserve/push idiom
     let rlp_encoded_tx: Bytes = {
         let mut buf = BytesMut::new();
