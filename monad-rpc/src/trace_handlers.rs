@@ -387,12 +387,12 @@ async fn include_code_output(
             return Err(JsonRpcError::internal_error());
         };
 
-        let TriedbResult::Code(code) = triedb_env
+        let code = match triedb_env
             .get_code(code_hash, monad_blockdb_utils::BlockTags::Number(block_num))
             .await
-        else {
-            error!("expected code {} in triedb", FixedData::<32>(code_hash));
-            return Err(JsonRpcError::internal_error());
+        {
+            TriedbResult::Code(code) => code,
+            _ => vec![0],
         };
 
         frame.output = code.into();
