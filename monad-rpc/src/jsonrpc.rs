@@ -150,7 +150,7 @@ impl JsonRpcError {
     //
     pub fn parse_error() -> Self {
         Self {
-            code: -32700,
+            code: -32601,
             message: "Parse error".into(),
             data: None,
         }
@@ -158,7 +158,7 @@ impl JsonRpcError {
 
     pub fn invalid_request() -> Self {
         Self {
-            code: -32600,
+            code: -32601,
             message: "Invalid request".into(),
             data: None,
         }
@@ -191,7 +191,7 @@ impl JsonRpcError {
     // application errors
     pub fn custom(message: String) -> Self {
         Self {
-            code: -32000,
+            code: -32603,
             message,
             data: None,
         }
@@ -207,7 +207,7 @@ impl JsonRpcError {
 
     pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
-            code: -32000,
+            code: -32603,
             message,
             data: data.map(Value::String),
         }
@@ -215,7 +215,7 @@ impl JsonRpcError {
 
     pub fn eth_filter_error(message: String) -> Self {
         Self {
-            code: -32000,
+            code: -32602,
             message,
             data: None,
         }
@@ -223,7 +223,7 @@ impl JsonRpcError {
 
     pub fn method_not_supported() -> Self {
         Self {
-            code: -32001,
+            code: -32601,
             message: "Method not supported".into(),
             data: None,
         }
@@ -231,7 +231,7 @@ impl JsonRpcError {
 
     pub fn code_size_too_large(size: usize) -> Self {
         Self {
-            code: -32000,
+            code: -32603,
             message: format!(
                 "Contract code size is {} bytes and exceeds 24576 bytes",
                 size
