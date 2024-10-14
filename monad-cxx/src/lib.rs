@@ -248,8 +248,12 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
     // x bytes error message (padded to multiple of 32 bytes)
     let message_start_index = 68_usize;
     if output_data.len() > message_start_index {
-        // we only return the first 256 bytes of the error message
-        let message_length = output_data[message_start_index - 1] as usize;
+        let message_length_bytes = &output_data[36..68];
+        let message_length = match message_length_bytes.try_into() {
+            Ok(bytes) => usize::from_be_bytes(bytes),
+            Err(_) => return String::new(),
+        };
+
         let message_end_index = message_start_index + message_length;
         if output_data.len() >= message_end_index {
             // extract the message bytes
