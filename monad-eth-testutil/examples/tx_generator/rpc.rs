@@ -142,10 +142,13 @@ impl Account {
                 return;
             }
         };
-        let res = res
-            .json::<JsonResponse>()
-            .await
-            .expect("json deser of response must not fail");
+        let res = match res.json::<JsonResponse>().await {
+            Ok(x) => x,
+            Err(e) => {
+                println!("json response decoding should not fail: {e}");
+                return;
+            }
+        };
 
         self.nonce = res.get_result_u128() as u64;
     }
@@ -167,35 +170,19 @@ impl Account {
                 return;
             }
         };
-        let res = res
-            .json::<JsonResponse>()
-            .await
-            .expect("json deser of response must not fail");
+        let res = match res.json::<JsonResponse>().await {
+            Ok(x) => x,
+            Err(e) => {
+                println!("json response decoding should not fail: {e}");
+                return;
+            }
+        };
 
         self.balance = res.get_result_u128();
     }
 }
 
 // ------------------- RPC functions -------------------
-
-async fn _send_raw_txn(raw_txn: Bytes, client: Client) -> usize {
-    let req = json!(
-        {
-            "jsonrpc": "2.0",
-            "method": "eth_sendRawTransaction",
-            "params": [raw_txn],
-            "id": 1,
-        }
-    );
-
-    let res = client.rpc(req).await.expect("rpc not responding");
-    let res = res
-        .json::<JsonResponse>()
-        .await
-        .expect("json deser of response must not fail");
-
-    res.id
-}
 
 // sends the requests in a batch list in the order of the raw_txns input vector. The index of each
 // request is used as the id field in the batch list. The return value is a vector of the indices

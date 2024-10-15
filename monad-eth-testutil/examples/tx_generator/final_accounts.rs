@@ -50,7 +50,9 @@ async fn split_account_balance(
     for dst_accounts in new_accounts.chunks_mut(txn_batch_size) {
         let txns_batch =
             create_transfer_txns(&mut account_to_split, dst_accounts, transfer_per_account);
-        let _ = txn_sender.send(txns_batch).await.unwrap();
+        if let Err(e) = txn_sender.send(txns_batch).await {
+            println!("txn_sender.send failed: {e}");
+        }
     }
 
     new_accounts
