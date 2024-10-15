@@ -131,10 +131,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                             message.split_to(MONAD_GSO_SIZE),
                         )
                         .expect("valid message");
-                        decoder.received_encoded_symbol(
-                            &parsed_message.chunk,
-                            parsed_message.chunk_id.into(),
-                        );
+                        decoder
+                            .received_encoded_symbol(
+                                &parsed_message.chunk,
+                                parsed_message.chunk_id.into(),
+                            )
+                            .unwrap();
                         if decoder.try_decode() {
                             decode_success = true;
                             break;
