@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use monad_crypto::hasher::{Hasher, HasherType};
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
@@ -26,8 +28,71 @@ impl std::error::Error for Error {}
 impl std::fmt::Debug for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let ser = self.bytes_compressed();
-        for byte in ser {
-            write!(f, "{:02x}", byte)?;
+
+        let names: HashMap<Vec<u8>, String> = [
+            (
+                vec![
+                    3, 26, 88, 250, 93, 145, 252, 0, 167, 253, 194, 107, 47, 168, 138, 28, 61, 32,
+                    118, 127, 110, 179, 133, 91, 16, 7, 127, 138, 212, 68, 75, 137, 76,
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                "node4".to_string(),
+            ),
+            (
+                vec![
+                    3, 134, 127, 151, 9, 116, 70, 152, 224, 193, 64, 195, 9, 217, 59, 175, 83, 101,
+                    81, 118, 178, 21, 147, 29, 229, 47, 246, 243, 113, 16, 28, 2, 169,
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                "node0".to_string(),
+            ),
+            (
+                vec![
+                    3, 50, 40, 110, 142, 10, 27, 74, 217, 221, 118, 161, 34, 193, 98, 140, 121,
+                    223, 81, 149, 78, 149, 10, 235, 195, 161, 212, 255, 3, 179, 162, 86, 138,
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                "node2".to_string(),
+            ),
+            (
+                vec![
+                    3, 119, 67, 231, 190, 46, 217, 146, 118, 154, 193, 45, 18, 43, 147, 207, 128,
+                    193, 165, 255, 10, 93, 205, 254, 38, 189, 211, 71, 195, 114, 82, 9, 100,
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                "node1".to_string(),
+            ),
+            (
+                vec![
+                    2, 92, 73, 164, 211, 88, 222, 106, 95, 127, 24, 60, 73, 76, 29, 118, 165, 250,
+                    210, 133, 61, 85, 148, 235, 72, 83, 217, 80, 13, 49, 184, 87, 133,
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                "node3".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        match names.get(&ser) {
+            None => {
+                for byte in ser {
+                    write!(f, "{:02x}", byte)?;
+                }
+            }
+            Some(name) => {
+                write!(f, "{}", name)?;
+            }
         }
         Ok(())
     }
