@@ -28,7 +28,7 @@ fn criterion_benchmark(c: &mut Criterion) {
          }| {
             TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
                 pool,
-                block_policy.get_last_commit() + SeqNum(1),
+                block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *gas_limit,
                 block_policy,

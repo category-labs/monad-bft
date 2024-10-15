@@ -1252,6 +1252,12 @@ where
                 .rev()
                 .collect(),
         );
+        self.txpool.reset(
+            delay_non_null_validated_blocks_from_root
+                .iter()
+                .rev()
+                .collect(),
+        );
         // commit blocks
         commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
             blocks_to_commit,

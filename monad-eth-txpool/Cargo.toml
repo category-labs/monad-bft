@@ -10,18 +10,19 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
+monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
+heapless = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true }
 reth-primitives = { workspace = true }
-sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

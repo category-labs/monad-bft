@@ -20,7 +20,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         c,
         "insert",
         |controller_config| {
-            let pool = EthTxPool::default();
+            let pool = EthTxPool::new(true);
 
             let (pending_txs, txs) = BenchController::generate_txs(
                 controller_config.accounts,

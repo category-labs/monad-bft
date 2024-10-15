@@ -64,7 +64,7 @@ mod test {
         type ValidatorSetTypeFactory =
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-        type TxPool = EthTxPool;
+        type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
         type Ledger = MockEthLedger<Self::SignatureType, Self::SignatureCollectionType>;
         type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
@@ -105,7 +105,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            EthTxPool::default,
+            || EthTxPool::new(true),
             || EthValidator::new(10_000, 1_000_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {

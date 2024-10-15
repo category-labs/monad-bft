@@ -17,6 +17,9 @@ use reth_primitives::B256;
 const TRANSACTION_SIZE_BYTES: usize = 400;
 
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
+pub type BlockPolicyType = EthBlockPolicy;
+pub type StateBackendType = InMemoryState;
+pub type Pool = EthTxPool<SignatureCollectionType, StateBackendType>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BenchControllerConfig {
@@ -28,16 +31,16 @@ pub struct BenchControllerConfig {
 }
 
 pub struct BenchController<'a> {
-    pub block_policy: &'a EthBlockPolicy,
-    pub state_backend: InMemoryState,
-    pub pool: EthTxPool,
+    pub block_policy: &'a BlockPolicyType,
+    pub state_backend: StateBackendType,
+    pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureCollectionType>>,
     pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
 
 impl<'a> BenchController<'a> {
-    pub fn setup(block_policy: &'a EthBlockPolicy, config: BenchControllerConfig) -> Self {
+    pub fn setup(block_policy: &'a BlockPolicyType, config: BenchControllerConfig) -> Self {
         let BenchControllerConfig {
             accounts,
             txs,
@@ -50,7 +53,13 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let pool = Self::create_pool(block_policy, &state_backend, &txs);
+        let mut pool = Self::create_pool(block_policy, &state_backend, &txs);
+
+        pool.update_committed_block(&generate_block_with_txs(
+            Round(0),
+            block_policy.get_last_commit(),
+            Vec::default(),
+        ));
 
         Self {
             block_policy,
@@ -74,28 +83,26 @@ impl<'a> BenchController<'a> {
     }
 
     pub fn create_pool(
-        block_policy: &EthBlockPolicy,
-        state_backend: &InMemoryState,
+        block_policy: &BlockPolicyType,
+        state_backend: &StateBackendType,
         txs: &[EthSignedTransaction],
-    ) -> EthTxPool {
-        let mut pool = EthTxPool::default();
+    ) -> Pool {
+        let mut pool = Pool::new(true);
 
-        assert!(
-            !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
-                &mut pool,
-                txs.iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
-                    .collect(),
-                block_policy,
-                state_backend,
-            )
-            .is_empty()
-        );
+        assert!(!Pool::insert_tx(
+            &mut pool,
+            txs.iter()
+                .map(|t| Bytes::from(t.envelope_encoded()))
+                .collect(),
+            block_policy,
+            state_backend,
+        )
+        .is_empty());
 
         pool
     }
 
-    pub fn generate_state_backend_for_txs(txs: &[EthSignedTransaction]) -> InMemoryState {
+    pub fn generate_state_backend_for_txs(txs: &[EthSignedTransaction]) -> StateBackendType {
         InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),

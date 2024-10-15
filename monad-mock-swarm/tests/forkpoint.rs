@@ -49,7 +49,7 @@ impl SwarmRelation for ForkpointSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type TxPool = EthTxPool;
+    type TxPool = EthTxPool<Self::SignatureCollectionType, Self::StateBackendType>;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,

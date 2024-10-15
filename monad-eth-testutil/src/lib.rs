@@ -98,7 +98,18 @@ pub fn generate_block_with_txs(
     let nonces = validated_txns
         .iter()
         .map(|t| (EthAddress(t.signer()), t.nonce()))
-        .collect();
+        .fold(BTreeMap::default(), |mut map, (address, nonce)| {
+            match map.entry(address) {
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(nonce);
+                }
+                std::collections::btree_map::Entry::Occupied(mut o) => {
+                    o.insert(nonce.max(*o.get()));
+                }
+            }
+
+            map
+        });
 
     let txn_fees = validated_txns
         .iter()

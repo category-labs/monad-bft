@@ -57,7 +57,7 @@ type NodeCtx = NodeContext<
     ValidatorSetFactory<NopPubKey>,
     NopStateRoot,
     SimpleRoundRobin<NopPubKey>,
-    EthTxPool,
+    EthTxPool<MultiSig<SignatureType>, InMemoryState>,
 >;
 
 type EnvCtx = EnvContext<
@@ -454,7 +454,14 @@ fn make_txns() -> (Vec<TransactionSigned>, FullTransactionList) {
     )
 }
 fn init(seed_mempool: bool) -> BenchTuple {
-    let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
+    let (mut env, mut ctx) = setup::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+        _,
+        _,
+        EthTxPool<MultiSig<SignatureType>, InMemoryState>,
+    >(
         4u32,
         ValidatorSetFactory::default(),
         SimpleRoundRobin::default(),
@@ -478,7 +485,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
             .iter()
             .map(|t| Bytes::from(t.envelope_encoded()))
             .collect();
-        <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, StateBackendType>>::insert_tx(
+        EthTxPool::insert_tx(
             wrapped_state.tx_pool,
             txns,
             wrapped_state.block_policy,
@@ -583,7 +590,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 Vec<(NodeId<NopPubKey>, VoteMessage<SignatureCollectionType>)>,
             ) {
                 let (mut env, mut ctx) =
-                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
+                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool<MultiSig<SignatureType>, InMemoryState>>(
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
@@ -606,7 +613,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     .iter()
                     .map(|t| Bytes::from(t.envelope_encoded()))
                     .collect();
-                <EthTxPool as TxPool<SignatureCollectionType, EthBlockPolicy, StateBackendType>>::insert_tx(
+                EthTxPool::insert_tx(
                     wrapped_state.tx_pool,
                     txns,
                     wrapped_state.block_policy,
@@ -646,13 +653,19 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("handle_timeout", |b| {
         b.iter_batched_ref(
             || {
-                let (mut env, mut ctx) =
-                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool>(
-                        4u32,
-                        ValidatorSetFactory::default(),
-                        SimpleRoundRobin::default(),
-                        || NopStateRoot,
-                    );
+                let (mut env, mut ctx) = setup::<
+                    SignatureType,
+                    SignatureCollectionType,
+                    _,
+                    _,
+                    _,
+                    EthTxPool<MultiSig<SignatureType>, InMemoryState>,
+                >(
+                    4u32,
+                    ValidatorSetFactory::default(),
+                    SimpleRoundRobin::default(),
+                    || NopStateRoot,
+                );
 
                 let (raw_txns, _) = make_txns();
                 let txns: Vec<Bytes> = raw_txns
@@ -660,11 +673,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     .map(|t| Bytes::from(t.envelope_encoded()))
                     .collect();
                 let ctx_3 = &mut ctx[3];
-                let _ = <EthTxPool as TxPool<
-                    SignatureCollectionType,
-                    EthBlockPolicy,
-                    StateBackendType,
-                >>::insert_tx(
+                let _ = EthTxPool::insert_tx(
                     &mut ctx_3.txpool,
                     txns,
                     &ctx_3.block_policy,
