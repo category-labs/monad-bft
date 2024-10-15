@@ -23,11 +23,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         |controller_config| {
             let pool = EthTxPool::default();
 
-            let txs = BenchController::generate_txs(
+            let (pending_txs, txs) = BenchController::generate_txs(
                 controller_config.accounts,
                 controller_config.txs,
-                controller_config.max_nonce,
+                controller_config.nonce_var,
+                0,
             );
+
+            assert!(pending_txs.is_empty());
 
             let state_backend = BenchController::generate_state_backend_for_txs(&txs);
 

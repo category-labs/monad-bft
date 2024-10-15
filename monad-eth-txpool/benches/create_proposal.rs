@@ -1,4 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_types::Balance;
@@ -22,6 +23,7 @@ fn criterion_benchmark(c: &mut Criterion) {
              state_backend,
              block_policy,
              pool,
+             pending_blocks,
              proposal_tx_limit,
              gas_limit,
          }| {
@@ -31,7 +33,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 *proposal_tx_limit,
                 *gas_limit,
                 block_policy,
-                Default::default(),
+                pending_blocks.iter().collect_vec(),
                 state_backend,
             )
             .unwrap();

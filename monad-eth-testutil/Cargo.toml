@@ -12,8 +12,8 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-multi-sig = { path = "../monad-multi-sig" }
 monad-secp = { path = "../monad-secp" }
+monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 rand = { workspace = true }
 reth-primitives = { workspace = true }

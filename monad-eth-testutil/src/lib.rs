@@ -9,8 +9,8 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
-use monad_multi_sig::MultiSig;
 use monad_secp::KeyPair;
+use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use reth_primitives::{
     keccak256, revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
@@ -51,33 +51,37 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> EthAddress {
     EthAddress(Address::from_slice(&hash[12..]))
 }
 
-pub fn generate_random_block_with_txns(
-    eth_txn_list: Vec<EthSignedTransaction>,
-) -> EthValidatedBlock<MultiSig<NopSignature>> {
-    let eth_full_tx_list = EthFullTransactionList(
-        eth_txn_list
-            .clone()
-            .into_iter()
-            .map(|signed_txn| {
-                let sender_address = signed_txn.recover_signer().unwrap();
-                EthTransaction::from_signed_transaction(signed_txn, sender_address)
-            })
-            .collect(),
-    );
-    let full_txn_list = FullTransactionList::new(eth_full_tx_list.rlp_encode());
+pub fn generate_block_with_txs(
+    round: Round,
+    seq_num: SeqNum,
+    txs: Vec<EthSignedTransaction>,
+) -> EthValidatedBlock<MockSignatures<NopSignature>> {
+    let payload = {
+        let full_txs = EthFullTransactionList(
+            txs.clone()
+                .into_iter()
+                .map(|signed_txn| {
+                    let sender_address = signed_txn.recover_signer().unwrap();
+                    EthTransaction::from_signed_transaction(signed_txn, sender_address)
+                })
+                .collect(),
+        );
+
+        Payload {
+            txns: TransactionPayload::List(FullTransactionList::new(full_txs.rlp_encode())),
+        }
+    };
+
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
-    let payload = Payload {
-        txns: TransactionPayload::List(full_txn_list),
-    };
     let block = Block::new(
         NodeId::new(keypair.pubkey()),
         0,
         Epoch(1),
-        Round(1),
+        round,
         &ExecutionProtocol {
             state_root: Default::default(),
-            seq_num: SeqNum(1),
+            seq_num,
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<NopSignature>(Round(1), &keypair),
         },
@@ -85,10 +89,12 @@ pub fn generate_random_block_with_txns(
         BlockKind::Executable,
         &QuorumCertificate::genesis_qc(),
     );
-    let validated_txns: Vec<_> = eth_txn_list
+
+    let validated_txns: Vec<_> = txs
         .into_iter()
-        .map(|eth_txn| eth_txn.into_ecrecovered().unwrap())
+        .map(|tx| tx.into_ecrecovered().expect("tx is recoverable"))
         .collect();
+
     let nonces = validated_txns
         .iter()
         .map(|t| (EthAddress(t.signer()), t.nonce()))

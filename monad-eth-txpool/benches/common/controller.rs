@@ -2,27 +2,28 @@ use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::make_tx;
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_testutil::{generate_block_with_txs, make_tx};
 use monad_eth_tx::EthSignedTransaction;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
-use monad_multi_sig::MultiSig;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
-use monad_types::SeqNum;
+use monad_testutil::signing::MockSignatures;
+use monad_types::{Round, SeqNum};
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use reth_primitives::B256;
 
 const TRANSACTION_SIZE_BYTES: usize = 400;
 
-pub type SignatureCollectionType = MultiSig<NopSignature>;
+pub type SignatureCollectionType = MockSignatures<NopSignature>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BenchControllerConfig {
     pub accounts: usize,
     pub txs: usize,
-    pub max_nonce: u64,
+    pub nonce_var: usize,
+    pub pending_blocks: usize,
     pub proposal_tx_limit: usize,
 }
 
@@ -30,6 +31,7 @@ pub struct BenchController<'a> {
     pub block_policy: &'a EthBlockPolicy,
     pub state_backend: InMemoryState,
     pub pool: EthTxPool,
+    pub pending_blocks: Vec<EthValidatedBlock<SignatureCollectionType>>,
     pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
@@ -39,11 +41,12 @@ impl<'a> BenchController<'a> {
         let BenchControllerConfig {
             accounts,
             txs,
-            max_nonce,
+            nonce_var,
+            pending_blocks,
             proposal_tx_limit,
         } = config;
 
-        let txs = Self::generate_txs(accounts, txs, max_nonce);
+        let (pending_block_txs, txs) = Self::generate_txs(accounts, txs, nonce_var, pending_blocks);
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
@@ -53,6 +56,13 @@ impl<'a> BenchController<'a> {
             block_policy,
             state_backend,
             pool,
+            pending_blocks: pending_block_txs
+                .into_iter()
+                .enumerate()
+                .map(|(idx, tx)| {
+                    generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), tx)
+                })
+                .collect_vec(),
             proposal_tx_limit,
             gas_limit: txs
                 .iter()
@@ -102,16 +112,51 @@ impl<'a> BenchController<'a> {
         )
     }
 
-    pub fn generate_txs(accounts: usize, txs: usize, max_nonce: u64) -> Vec<EthSignedTransaction> {
+    pub fn generate_txs(
+        accounts: usize,
+        txs: usize,
+        nonce_var: usize,
+        pending_blocks: usize,
+    ) -> (Vec<Vec<EthSignedTransaction>>, Vec<EthSignedTransaction>) {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
-        let accounts = (0..accounts)
-            .map(|_| B256::random_with(&mut rng))
+        let mut accounts = (0..accounts)
+            .map(|_| (B256::random_with(&mut rng), 0u64))
+            .collect_vec();
+
+        let pending_block_txs = (0..pending_blocks)
+            .map(|pending_block| {
+                let mut txs = (txs * pending_block..txs * (pending_block + 1))
+                    .map(|idx| {
+                        let accounts_len = accounts.len();
+
+                        let (account, nonce) = accounts
+                            .get_mut(idx % accounts_len)
+                            .expect("account idx is in range");
+
+                        let tx = make_tx(
+                            *account,
+                            rng.gen_range(1000..=10_000),
+                            30000,
+                            *nonce,
+                            TRANSACTION_SIZE_BYTES,
+                        );
+
+                        *nonce += 1;
+
+                        tx
+                    })
+                    .collect_vec();
+
+                txs.shuffle(&mut rng);
+
+                txs
+            })
             .collect_vec();
 
         let mut txs = (0..txs)
             .map(|idx| {
-                let account = accounts
+                let (account, nonce) = accounts
                     .get(idx % accounts.len())
                     .expect("account idx is in range");
 
@@ -119,7 +164,9 @@ impl<'a> BenchController<'a> {
                     *account,
                     rng.gen_range(1000..=10_000),
                     30000,
-                    rng.gen_range(0..=max_nonce),
+                    nonce
+                        .checked_add(rng.gen_range(0..=nonce_var as u64))
+                        .expect("nonce does not overflow"),
                     TRANSACTION_SIZE_BYTES,
                 )
             })
@@ -127,6 +174,6 @@ impl<'a> BenchController<'a> {
 
         txs.shuffle(&mut rng);
 
-        txs
+        (pending_block_txs, txs)
     }
 }

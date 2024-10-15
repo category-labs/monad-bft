@@ -1,7 +1,7 @@
 use criterion::{black_box, BatchSize, Criterion};
 use monad_crypto::NopSignature;
-use monad_multi_sig::MultiSig;
 use monad_perf_util::PerfController;
+use monad_testutil::signing::MockSignatures;
 
 pub use self::controller::BenchController;
 use self::controller::BenchControllerConfig;
@@ -10,15 +10,26 @@ mod controller;
 
 pub const EXECUTION_DELAY: u64 = 4;
 
-pub type SignatureCollectionType = MultiSig<NopSignature>;
+pub type SignatureCollectionType = MockSignatures<NopSignature>;
 
-const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
+const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
         "simple",
         BenchControllerConfig {
             accounts: 10_000,
             txs: 10_000,
-            max_nonce: 0,
+            nonce_var: 0,
+            pending_blocks: 2,
+            proposal_tx_limit: 10_000,
+        },
+    ),
+    (
+        "random",
+        BenchControllerConfig {
+            accounts: 30_000,
+            txs: 10_000,
+            nonce_var: 0,
+            pending_blocks: 2,
             proposal_tx_limit: 10_000,
         },
     ),
@@ -27,7 +38,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 1_000,
             txs: 10_000,
-            max_nonce: 0,
+            nonce_var: 0,
+            pending_blocks: 2,
             proposal_tx_limit: 1_000,
         },
     ),
@@ -36,7 +48,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 100,
             txs: 10_000,
-            max_nonce: 50,
+            nonce_var: 50,
+            pending_blocks: 2,
             proposal_tx_limit: 10_000,
         },
     ),
@@ -45,7 +58,8 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 4] = [
         BenchControllerConfig {
             accounts: 50,
             txs: 10_000,
-            max_nonce: 100,
+            nonce_var: 100,
+            pending_blocks: 2,
             proposal_tx_limit: 10_000,
         },
     ),

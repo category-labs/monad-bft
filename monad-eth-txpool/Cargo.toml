@@ -32,8 +32,8 @@ tracing-test = { workspace = true }
 
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-testutil = { path = "../monad-eth-testutil" }
-monad-multi-sig = { path = "../monad-multi-sig" }
 monad-perf-util = { path = "../monad-perf-util" }
+monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 
 [[bench]]

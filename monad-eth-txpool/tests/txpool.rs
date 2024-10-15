@@ -1,19 +1,21 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use alloy_primitives::{hex, B256};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{
+    block::BlockPolicy, quorum_certificate::QuorumCertificate, txpool::TxPool,
+};
 use monad_crypto::NopSignature;
-use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_testutil::{generate_random_block_with_txns, make_tx};
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_testutil::{generate_block_with_txs, make_tx};
 use monad_eth_tx::EthSignedTransaction;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
-use monad_multi_sig::MultiSig;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
-use monad_types::{SeqNum, GENESIS_SEQ_NUM};
+use monad_testutil::signing::MockSignatures;
+use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
@@ -45,7 +47,11 @@ const S5: B256 = B256::new(hex!(
     "9c82e5ab4dda8da5391393c5eb7cb8b79ca8e03b3028be9ba1e31f2480e17dc8"
 ));
 
-type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy, InMemoryState>;
+type SignatureType = NopSignature;
+type StateBackendType = InMemoryState;
+type QC = QuorumCertificate<MockSignatures<SignatureType>>;
+
+type Pool = dyn TxPool<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>;
 
 fn make_test_block_policy() -> EthBlockPolicy {
     EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 1337)
@@ -60,15 +66,18 @@ enum TxPoolTestEvent<'a> {
         tx_limit: usize,
         gas_limit: u64,
         expected_txs: Vec<&'a EthSignedTransaction>,
+        add_to_blocktree: bool,
     },
-    SetPendingBlocks {
-        pending_blocks: Vec<EthValidatedBlock<MultiSig<NopSignature>>>,
+    CommitPendingBlocks {
+        num_blocks: usize,
+        expected_committed_seq_num: u64,
     },
+    Clear,
     Block(Box<dyn FnOnce(&mut EthTxPool)>),
 }
 
 fn run_custom_eth_txpool_test<const N: usize>(
-    eth_block_policy: EthBlockPolicy,
+    mut eth_block_policy: EthBlockPolicy,
     nonces_override: Option<BTreeMap<EthAddress, u64>>,
     events: [TxPoolTestEvent<'_>; N],
 ) {
@@ -96,7 +105,9 @@ fn run_custom_eth_txpool_test<const N: usize>(
     };
 
     let mut pool = EthTxPool::default();
-    let mut pending_blocks = Vec::default();
+    let mut current_round = 1u64;
+    let mut current_seq_num = 1u64;
+    let mut pending_blocks = VecDeque::default();
 
     for event in events {
         match event {
@@ -132,6 +143,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 tx_limit,
                 gas_limit,
                 expected_txs,
+                add_to_blocktree,
             } => {
                 let encoded_txns = Pool::create_proposal(
                     &mut pool,
@@ -149,12 +161,70 @@ fn run_custom_eth_txpool_test<const N: usize>(
 
                 let expected_txs = expected_txs.into_iter().cloned().collect_vec();
 
-                assert_eq!(decoded_txns, expected_txs);
+                assert_eq!(
+                    decoded_txns,
+                    expected_txs,
+                    "create_proposal decodede txns do not match expected txs!\n{:#?}",
+                    decoded_txns
+                        .iter()
+                        .zip_longest(expected_txs.iter())
+                        .collect_vec()
+                );
+
+                if add_to_blocktree {
+                    let block = generate_block_with_txs(
+                        Round(current_round),
+                        SeqNum(current_seq_num),
+                        decoded_txns,
+                    );
+
+                    current_seq_num += 1;
+
+                    pending_blocks.push_back(block);
+                }
+
+                current_round += 1;
             }
-            TxPoolTestEvent::SetPendingBlocks {
-                pending_blocks: new_pending_blocks,
+            TxPoolTestEvent::CommitPendingBlocks {
+                num_blocks,
+                expected_committed_seq_num,
             } => {
-                pending_blocks = new_pending_blocks;
+                for _ in 0..num_blocks {
+                    let block = pending_blocks
+                        .pop_front()
+                        .expect("missing block in blocktree");
+
+                    assert_eq!(
+                        current_seq_num
+                            .checked_sub(pending_blocks.len() as u64 + 2)
+                            .expect("seq_num does not underflow"),
+                        block.block.qc.get_seq_num().0
+                    );
+
+                    BlockPolicy::<MockSignatures<SignatureType>, StateBackendType>::update_committed_block(
+                        &mut eth_block_policy,
+                        &block,
+                    );
+
+                    TxPool::<
+                        MockSignatures<SignatureType>,
+                        EthBlockPolicy,
+                        StateBackendType,
+                    >::update_committed_block(&mut pool, &block);
+                }
+
+                assert_eq!(
+                    expected_committed_seq_num,
+                    eth_block_policy.get_last_commit().0
+                );
+            }
+            TxPoolTestEvent::Clear => {
+                TxPool::<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>::clear(
+                    &mut pool,
+                );
+
+                assert!(pool.is_empty());
+                assert_eq!(pool.num_txs(), 0);
             }
             TxPoolTestEvent::Block(f) => f(&mut pool),
         }
@@ -179,6 +249,7 @@ fn test_create_proposal_with_insufficient_tx_limit() {
             tx_limit: 0,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![],
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::Block(Box::new(|pool| {
             assert!(pool.is_empty());
@@ -200,6 +271,7 @@ fn test_create_proposal_with_insufficient_gas_limit() {
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![],
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::Block(Box::new(|pool| {
             assert!(pool.is_empty());
@@ -223,6 +295,7 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
             tx_limit: 3,
             gas_limit: GAS_LIMIT * 2,
             expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::Block(Box::new(|pool| {
             assert!(pool.is_empty());
@@ -244,6 +317,7 @@ fn test_basic_price_priority() {
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
             expected_txs: vec![&tx2, &tx1],
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::Block(Box::new(|pool| {
             assert!(pool.is_empty());
@@ -266,6 +340,7 @@ fn test_resubmit_with_better_price() {
             tx_limit: 2,
             gas_limit: GAS_LIMIT * 3,
             expected_txs: vec![&tx2],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -295,6 +370,7 @@ fn nontrivial_example() {
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx7, &tx8, &tx9, &tx2, &tx4, &tx5, &tx3, &tx6],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -321,6 +397,7 @@ fn another_non_trivial_example() {
             tx_limit: 128,
             gas_limit: 1024 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx5, &tx6, &tx2, &tx3, &tx4],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -354,6 +431,7 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -361,17 +439,17 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
 #[test]
 #[traced_test]
 fn suboptimal_block() {
-    let tx1 = make_tx(S1, 2 * BASE_FEE, 10 * GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx5 = make_tx(S2, BASE_FEE, GAS_LIMIT, 3, 10);
-    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 4, 10);
-    let tx7 = make_tx(S2, BASE_FEE, GAS_LIMIT, 5, 10);
-    let tx8 = make_tx(S2, BASE_FEE, GAS_LIMIT, 6, 10);
-    let tx9 = make_tx(S2, BASE_FEE, GAS_LIMIT, 7, 10);
-    let tx10 = make_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
-    let tx11 = make_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
+    let tx1 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 3, 10);
+    let tx5 = make_tx(S2, BASE_FEE, GAS_LIMIT, 4, 10);
+    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 5, 10);
+    let tx7 = make_tx(S2, BASE_FEE, GAS_LIMIT, 6, 10);
+    let tx8 = make_tx(S2, BASE_FEE, GAS_LIMIT, 7, 10);
+    let tx9 = make_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
+    let tx10 = make_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
+    let tx11 = make_tx(S1, 2 * BASE_FEE, 10 * GAS_LIMIT, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -384,9 +462,10 @@ fn suboptimal_block() {
             expected_pool_size_change: 11,
         },
         TxPoolTestEvent::CreateProposal {
-            tx_limit: 10,
+            tx_limit: 11,
             gas_limit: 10 * GAS_LIMIT,
-            expected_txs: vec![&tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11],
+            expected_txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -428,6 +507,7 @@ fn nondeterminism() {
             tx_limit: 10,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx9, &tx10, &tx7, &tx8, &tx5, &tx6, &tx3, &tx4, &tx1, &tx2],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -447,12 +527,13 @@ fn test_zero_nonce_included_in_block() {
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1],
+            add_to_blocktree: true,
         },
     ]);
 }
 
 #[test]
-fn test_invalid_nonce_not_in_block() {
+fn test_nonce_gap() {
     // A transaction with nonce 3 should not be included in the block if a tx with nonce 2 is missing
 
     let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
@@ -468,6 +549,7 @@ fn test_invalid_nonce_not_in_block() {
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -498,6 +580,7 @@ fn test_nonce_exists_in_committed_block() {
                 tx_limit: 128,
                 gas_limit: 10 * GAS_LIMIT,
                 expected_txs: vec![&tx2],
+                add_to_blocktree: true,
             },
         ],
     );
@@ -514,8 +597,15 @@ fn test_nonce_exists_in_pending_block() {
     let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_eth_txpool_test([
-        TxPoolTestEvent::SetPendingBlocks {
-            pending_blocks: vec![generate_random_block_with_txns(vec![tx1])],
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            expected_txs: vec![&tx1],
+            add_to_blocktree: true,
         },
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx2, true), (&tx3, true)],
@@ -525,6 +615,7 @@ fn test_nonce_exists_in_pending_block() {
             tx_limit: 128,
             gas_limit: 10 * GAS_LIMIT,
             expected_txs: vec![&tx3],
+            add_to_blocktree: true,
         },
     ]);
 }
@@ -550,22 +641,88 @@ fn test_combine_nonces_of_blocks() {
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, true), (&tx2, true), (&tx3, true)],
-                expected_pool_size_change: 3,
+                txs: vec![(&tx1, true)],
+                expected_pool_size_change: 1,
             },
-            TxPoolTestEvent::SetPendingBlocks {
-                pending_blocks: vec![
-                    generate_random_block_with_txns(vec![tx1.clone()]),
-                    generate_random_block_with_txns(vec![tx2.clone()]),
-                ],
+            TxPoolTestEvent::CreateProposal {
+                tx_limit: 128,
+                gas_limit: 10 * GAS_LIMIT,
+                expected_txs: vec![&tx1],
+                add_to_blocktree: true,
+            },
+            TxPoolTestEvent::CommitPendingBlocks {
+                num_blocks: 1,
+                expected_committed_seq_num: 1,
+            },
+            TxPoolTestEvent::Clear,
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx2, true)],
+                expected_pool_size_change: 1,
+            },
+            TxPoolTestEvent::CreateProposal {
+                tx_limit: 128,
+                gas_limit: 10 * GAS_LIMIT,
+                expected_txs: vec![&tx2],
+                add_to_blocktree: true,
+            },
+            TxPoolTestEvent::Clear,
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx3, true)],
+                expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
                 tx_limit: 128,
                 gas_limit: 10 * GAS_LIMIT,
                 expected_txs: vec![&tx3],
+                add_to_blocktree: true,
             },
         ],
     );
+}
+
+#[traced_test]
+#[test]
+fn test_subsequent_proposals() {
+    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    // let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx4 = make_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
+
+    // TODO(andr-dev): Txs should not be evicted until clear is called or a block is committed
+    run_eth_txpool_test([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true), (&tx4, true)],
+            expected_pool_size_change: 3,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 128,
+            gas_limit: 10 * GAS_LIMIT,
+            expected_txs: vec![&tx1, &tx2],
+            add_to_blocktree: false,
+        },
+        // TxPoolTestEvent::CreateProposal {
+        //     tx_limit: 128,
+        //     gas_limit: 10 * GAS_LIMIT,
+        //     expected_txs: vec![&tx1, &tx2],
+        //     add_to_blocktree: false,
+        // },
+        // TxPoolTestEvent::InsertTxs {
+        //     txs: vec![(&tx3, true)],
+        //     expected_pool_size_change: 1,
+        // },
+        // TxPoolTestEvent::CreateProposal {
+        //     tx_limit: 128,
+        //     gas_limit: 10 * GAS_LIMIT,
+        //     expected_txs: vec![&tx1, &tx2, &tx3, &tx4],
+        //     add_to_blocktree: true,
+        // },
+        // TxPoolTestEvent::CreateProposal {
+        //     tx_limit: 128,
+        //     gas_limit: 10 * GAS_LIMIT,
+        //     expected_txs: vec![],
+        //     add_to_blocktree: true,
+        // },
+    ]);
 }
 
 #[test]
@@ -584,6 +741,7 @@ fn test_invalid_chain_id() {
                 tx_limit: 128,
                 gas_limit: 10 * GAS_LIMIT,
                 expected_txs: vec![],
+                add_to_blocktree: true,
             },
         ],
     );
