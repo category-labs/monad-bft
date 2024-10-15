@@ -4190,6 +4190,7 @@ dependencies = [
  "criterion",
  "futures",
  "futures-util",
+ "hex",
  "itertools 0.10.5",
  "lru",
  "monad-crypto",

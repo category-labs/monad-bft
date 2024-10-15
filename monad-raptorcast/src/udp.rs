@@ -9,7 +9,9 @@ use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
 use lru::LruCache;
 use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    },
     hasher::{Hasher, HasherType},
 };
 use monad_dataplane::event_loop::RecvMsg;
@@ -90,7 +92,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
-        let mut broadcast_batcher = BroadcastBatcher::new(rebroadcast, &message.payload);
+        let mut broadcast_batcher = BroadcastBatcher::new(self_id, rebroadcast, &message.payload);
 
         let mut messages = Vec::new();
 
@@ -154,6 +156,17 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
+            let encoding_symbol_id = parsed_message.chunk_id.into();
+
+            tracing::trace!(
+                self_id =? self.self_id,
+                author =? parsed_message.author,
+                unix_tx_ms = parsed_message.unix_ts_ms,
+                app_message_hash = hex::encode(parsed_message.app_message_hash),
+                encoding_symbol_id,
+                "received encoded symbol"
+            );
+
             let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
             let key = MessageCacheKey {
                 unix_ts_ms: parsed_message.unix_ts_ms,
@@ -188,9 +201,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             // can we assert!(!decoder.decoding_done()) ?
 
-            match decoder
-                .received_encoded_symbol(&parsed_message.chunk, parsed_message.chunk_id.into())
-            {
+            match decoder.received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id) {
                 Ok(()) => {
                     if decoder.try_decode() {
                         let Some(mut decoded) = decoder.reconstruct_source_data() else {
@@ -199,7 +210,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         };
 
                         if app_message_len > 10_000 {
-                            tracing::debug!(app_message_len, "reconstructed large message");
+                            tracing::debug!(
+                                author =? parsed_message.author,
+                                unix_tx_ms = parsed_message.unix_ts_ms,
+                                app_message_hash = hex::encode(parsed_message.app_message_hash),
+                                encoding_symbol_id,
+                                app_message_len,
+                                "reconstructed large message"
+                            );
                         }
 
                         decoded.truncate(app_message_len);
@@ -392,6 +410,11 @@ where
     };
 
     let mut message = BytesMut::zeroed(gso_size as usize * num_packets);
+    let app_message_hash: [u8; 20] = {
+        let mut hasher = HasherType::new();
+        hasher.update(&app_message);
+        hasher.hash().0[..20].try_into().unwrap()
+    };
 
     let mut chunk_datas = message
         .chunks_mut(gso_size.into())
@@ -446,6 +469,14 @@ where
         }
         BuildTarget::Raptorcast(epoch_validators) => {
             assert!(is_broadcast && is_raptor_broadcast);
+
+            tracing::trace!(
+                self_id =? key.pubkey(),
+                unix_ts_ms,
+                app_message_hash = hex::encode(app_message_hash),
+                "raptorcasting message"
+            );
+
             // FIXME should self be included in total_stake?
             let total_stake: i64 = epoch_validators
                 .view()
@@ -521,11 +552,6 @@ where
     let version: u16 = 0;
     let epoch_no: u64 = epoch_no;
     let unix_ts_ms: u64 = unix_ts_ms;
-    let app_message_hash: [u8; 20] = {
-        let mut hasher = HasherType::new();
-        hasher.update(app_message);
-        hasher.hash().0[..20].try_into().unwrap()
-    };
     message
         // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
         .chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
@@ -798,6 +824,7 @@ where
     F: FnMut(Vec<NodeId<PT>>, Bytes),
     PT: PubKey,
 {
+    self_id: NodeId<PT>,
     rebroadcast: F,
     message: &'a Bytes,
 
@@ -817,8 +844,9 @@ where
     F: FnMut(Vec<NodeId<PT>>, Bytes),
     PT: PubKey,
 {
-    pub fn new(rebroadcast: F, message: &'a Bytes) -> Self {
+    pub fn new(self_id: NodeId<PT>, rebroadcast: F, message: &'a Bytes) -> Self {
         Self {
+            self_id,
             rebroadcast,
             message,
             batch: None,
@@ -838,6 +866,7 @@ where
     fn flush(&mut self) {
         if let Some(batch) = self.batch.take() {
             tracing::trace!(
+                self_id =? self.self_id,
                 author =? batch.author,
                 num_targets = batch.targets.len(),
                 num_bytes = batch.end_idx - batch.start_idx,
