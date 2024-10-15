@@ -61,6 +61,7 @@ use crate::{
 
 mod account_handlers;
 mod block_handlers;
+mod block_watcher;
 mod call;
 mod cli;
 mod debug;
@@ -68,6 +69,7 @@ pub mod docs;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod gas_handlers;
+mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
