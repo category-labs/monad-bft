@@ -1,6 +1,9 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{
+    fmt::{Debug, Formatter},
+    net::SocketAddr,
+};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -490,12 +493,20 @@ pub struct BootstrapPeer<PT: PubKey> {
     pub endpoint: NetworkEndpoint,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MonadNameRecord<PT: PubKey> {
     pub endpoint: NetworkEndpoint,
     #[serde(bound = "PT: PubKey")]
     pub node_id: NodeId<PT>,
     pub seq_num: SeqNum,
+}
+
+impl<PT: PubKey> Debug for MonadNameRecord<PT> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MonadNameRecord")
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
