@@ -105,7 +105,7 @@ pub async fn monad_eth_getStorageAt(
         )
         .await
     {
-        TriedbResult::Null => Ok(format!("0x{:x}", 0)),
+        TriedbResult::Null => Ok("0x0000000000000000000000000000000000000000000000000000000000000000".to_string()),
         TriedbResult::Storage(storage) => Ok(hex::encode(&storage)),
         _ => Err(JsonRpcError::internal_error()),
     }
