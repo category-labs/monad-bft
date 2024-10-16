@@ -36,7 +36,7 @@ use trace::{
     monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
     monad_trace_transaction,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -656,7 +656,9 @@ async fn main() -> std::io::Result<()> {
             .expect("failed to create ipc sender");
 
         while let Ok(tx) = ipc_receiver.recv_async().await {
-            sender.send(tx).await.expect("IPC send failed");
+            if let Err(e) = sender.send(tx).await {
+                warn!("IPC send failed, monad-bft likely crashed: {}", e);
+            }
         }
     });
 

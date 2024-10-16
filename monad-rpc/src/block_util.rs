@@ -1,4 +1,4 @@
-use std::{fs::File, io::Read, path::PathBuf};
+use std::path::PathBuf;
 
 use alloy_rlp::{Decodable, Error as AlloyError};
 use monad_types::{BlockId, Hash};
@@ -59,19 +59,6 @@ pub struct TxnValue {
 impl FileBlockReader {
     pub fn new(eth_block_dir_path: PathBuf) -> Self {
         Self { eth_block_dir_path }
-    }
-
-    pub fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
-        let filename = block_num.to_string();
-        let mut file_path = PathBuf::from(&self.eth_block_dir_path);
-        file_path.push(format!("{}", filename));
-        let mut file = File::open(file_path)?;
-
-        let size = file.metadata().unwrap().len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf).unwrap();
-
-        Ok(buf)
     }
 
     pub async fn async_read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
