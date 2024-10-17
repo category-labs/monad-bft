@@ -385,6 +385,12 @@ impl<'a> NetworkSocket<'a> {
                 let now = std::time::Instant::now();
                 if self.next_transmit > now {
                     std::thread::sleep(self.next_transmit - now);
+                } else {
+                    let late = now - self.next_transmit;
+
+                    if late > std::time::Duration::from_millis(100) {
+                        self.next_transmit = now;
+                    }
                 }
 
                 // TODO instead of 1 sendmmsg per msg, we should create 1 sendmmsg per 65k of data
@@ -409,10 +415,10 @@ impl<'a> NetworkSocket<'a> {
                     }
                 }
 
-                let sleep = std::time::Duration::from_micros(
-                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 / self.up_bandwidth_mbps,
+                let sleep = std::time::Duration::from_nanos(
+                    (self.send_ctrl.msgs[i].msg_len as u64) * 8 * 1000 / self.up_bandwidth_mbps,
                 );
-                self.next_transmit = std::time::Instant::now() + sleep;
+                self.next_transmit += sleep;
             }
         }
         // // TODO try sending the stuff that wasn't sent
