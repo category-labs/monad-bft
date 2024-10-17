@@ -95,10 +95,13 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use actix_http::{ws, ws::Frame};
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
     use reth_primitives::TransactionSigned;
+    use tokio::sync::Semaphore;
 
     use crate::{
         create_app, tests::MonadRpcResourcesState, ExecutionLedgerPath, MonadRpcResources,
@@ -115,6 +118,7 @@ mod tests {
             batch_request_limit: 1000,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
+            rate_limiter: Arc::new(Semaphore::new(1000)),
         };
         (
             MonadRpcResourcesState { ipc_receiver },

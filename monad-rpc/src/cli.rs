@@ -45,9 +45,15 @@ pub struct Cli {
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
+    /// Otel endpoint to collect metrics data
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// Allow pre EIP-155 transactions
     #[arg(long, default_value_t = false)]
     pub allow_unprotected_txs: bool,
+
+    /// Set the max concurrent requests for eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 1000)]
+    pub eth_call_max_concurrent_requests: u32,
 }

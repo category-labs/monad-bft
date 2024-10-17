@@ -1,63 +1,62 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use account_handlers::{
-    monad_eth_getBalance, monad_eth_getCode, monad_eth_getProof, monad_eth_getStorageAt,
-    monad_eth_getTransactionCount, monad_eth_syncing,
-};
 use actix::prelude::*;
 use actix_http::body::BoxBody;
 use actix_web::{
     dev::{ServiceFactory, ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use block_handlers::{
-    monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash, monad_eth_getBlockByNumber,
-    monad_eth_getBlockReceipts, monad_eth_getBlockTransactionCountByHash,
-    monad_eth_getBlockTransactionCountByNumber,
-};
 use clap::Parser;
-use cli::Cli;
-use debug::{
-    monad_debug_getRawHeader, monad_debug_getRawReceipts, monad_debug_getRawTransaction,
-    monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceCall,
-    monad_debug_traceTransaction,
-};
-use eth_json_types::serialize_result;
-use eth_txn_handlers::{
-    monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
-    monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
-    monad_eth_getTransactionReceipt,
-};
 use futures::SinkExt;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use trace::{
-    monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
-    monad_trace_transaction,
-};
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
     EnvFilter, Registry,
 };
-use txpool::{
-    monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
-};
 
 use crate::{
+    account_handlers::{
+        monad_eth_getBalance, monad_eth_getCode, monad_eth_getProof, monad_eth_getStorageAt,
+        monad_eth_getTransactionCount, monad_eth_syncing,
+    },
+    block_handlers::{
+        monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash,
+        monad_eth_getBlockByNumber, monad_eth_getBlockReceipts,
+        monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
+    },
     block_util::FileBlockReader,
     call::monad_eth_call,
-    debug::monad_debug_getRawBlock,
-    eth_txn_handlers::monad_eth_sendRawTransaction,
+    cli::Cli,
+    debug::{
+        monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
+        monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
+        monad_debug_traceBlockByNumber, monad_debug_traceCall, monad_debug_traceTransaction,
+    },
+    eth_json_types::serialize_result,
+    eth_txn_handlers::{
+        monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
+        monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
+        monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
+    },
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
+    trace::{
+        monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
+        monad_trace_transaction,
+    },
     triedb::TriedbEnv,
+    txpool::{
+        monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
+    },
     websocket::Disconnect,
 };
 
@@ -255,6 +254,11 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
+            // acquire the concurrent requests permit
+            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
+                JsonRpcError::internal_error("eth_call concurrent requests limit".into())
+            })?;
+
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_call(
                 triedb_env,
@@ -427,6 +431,11 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
+            // acquire the concurrent requests permit
+            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
+                JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
+            })?;
+
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_estimateGas(
                 triedb_env,
@@ -548,6 +557,7 @@ struct MonadRpcResources {
     batch_request_limit: u16,
     max_response_size: u32,
     allow_unprotected_txs: bool,
+    rate_limiter: Arc<Semaphore>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -568,6 +578,7 @@ impl MonadRpcResources {
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
+        rate_limiter: Arc<Semaphore>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -578,6 +589,7 @@ impl MonadRpcResources {
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
+            rate_limiter,
         }
     }
 }
@@ -642,6 +654,11 @@ async fn main() -> std::io::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
 
+    // initialize concurrent requests limiter
+    let concurrent_requests_limiter = Arc::new(Semaphore::new(
+        args.eth_call_max_concurrent_requests as usize,
+    ));
+
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
@@ -672,6 +689,7 @@ async fn main() -> std::io::Result<()> {
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
+        concurrent_requests_limiter,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -767,6 +785,7 @@ mod tests {
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
+            rate_limiter: Arc::new(Semaphore::new(1000)),
         }))
         .await;
         (app, m)
