@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .compile_protos(
             &[
                 "proto/basic.proto",
+                "proto/discovery.proto",
                 "proto/block.proto",
                 "proto/event.proto",
                 "proto/ledger.proto",

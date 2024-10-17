@@ -470,6 +470,25 @@ where
     UpdateLogFilter(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NetworkEndpoint {
+    pub socket_addr: SocketAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapPeer<PT: PubKey> {
+    pub node_id: NodeId<PT>,
+    pub endpoint: NetworkEndpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MonadNameRecord<PT: PubKey> {
+    pub endpoint: NetworkEndpoint,
+    #[serde(bound = "PT: PubKey")]
+    pub node_id: NodeId<PT>,
+    pub seq_num: SeqNum,
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
