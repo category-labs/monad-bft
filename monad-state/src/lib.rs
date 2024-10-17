@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Deref};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref};
 
 use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
@@ -37,8 +37,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, DiscoveryEvent, GetMetrics,
+    GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
     StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
     ValidatorEvent, WriteCommand,
 };
@@ -850,6 +850,12 @@ where
             StateSyncEvent::RequestSync { root, high_qc },
         )));
 
+        init_cmds.extend(monad_state.update(MonadEvent::DiscoveryEvent(
+            DiscoveryEvent::BootstrapPeers {
+                phantom: PhantomData,
+            },
+        )));
+
         (monad_state, init_cmds)
     }
 }
@@ -1130,6 +1136,10 @@ where
             },
             MonadEvent::TimestampUpdateEvent(t) => {
                 self.block_timestamp.update_time(t);
+                vec![]
+            }
+            MonadEvent::DiscoveryEvent(_) => {
+                // TODO(rene)
                 vec![]
             }
         }

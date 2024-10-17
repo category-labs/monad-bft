@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{fmt::Debug, marker::PhantomData, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -489,6 +489,11 @@ pub struct MonadNameRecord<PT: PubKey> {
     pub seq_num: SeqNum,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryEvent<PT: PubKey> {
+    BootstrapPeers { phantom: PhantomData<PT> },
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -514,6 +519,8 @@ where
     TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<SCT>),
+    /// Events for peer discovery
+    DiscoveryEvent(DiscoveryEvent<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -580,6 +587,7 @@ where
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+            MonadEvent::DiscoveryEvent(_) => "DISCOVERY".to_string(),
         };
 
         write!(f, "{}", s)

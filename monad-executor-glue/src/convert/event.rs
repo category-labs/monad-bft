@@ -1,12 +1,14 @@
+use std::marker::PhantomData;
+
 use bytes::Bytes;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent, MempoolEvent,
-    MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ControlPanelEvent,
+    DiscoveryEvent, MempoolEvent, MonadEvent, StateSyncEvent, StateSyncNetworkMessage,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -42,6 +44,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             }
             MonadEvent::StateSyncEvent(event) => {
                 proto_monad_event::Event::StateSyncEvent(event.into())
+            }
+            MonadEvent::DiscoveryEvent(event) => {
+                proto_monad_event::Event::DiscoveryEvent(event.into())
             }
         };
         Self { event: Some(event) }
@@ -87,6 +92,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::DiscoveryEvent(event)) => {
+                MonadEvent::DiscoveryEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -737,6 +745,31 @@ impl<SCT: SignatureCollection> TryFrom<ProtoStateSyncEvent> for StateSyncEvent<S
                 }
             }
         })
+    }
+}
+
+impl<PT: PubKey> From<&DiscoveryEvent<PT>> for ProtoDiscoveryEvent {
+    fn from(value: &DiscoveryEvent<PT>) -> Self {
+        match value {
+            DiscoveryEvent::BootstrapPeers { .. } => Self {
+                event: Some(proto_discovery_event::Event::BootstrapPeers(
+                    ProtoBootstrapPeers {},
+                )),
+            },
+        }
+    }
+}
+
+impl<PT: PubKey> TryFrom<ProtoDiscoveryEvent> for DiscoveryEvent<PT> {
+    type Error = ProtoError;
+    fn try_from(value: ProtoDiscoveryEvent) -> Result<Self, Self::Error> {
+        match value.event.ok_or(ProtoError::MissingRequiredField(
+            "ProtoDiscoveryEvent.event".to_owned(),
+        ))? {
+            proto_discovery_event::Event::BootstrapPeers(_) => Ok(DiscoveryEvent::BootstrapPeers {
+                phantom: PhantomData,
+            }),
+        }
     }
 }
 

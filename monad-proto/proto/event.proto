@@ -4,6 +4,7 @@ package monad_proto.event;
 
 import "basic.proto";
 import "block.proto";
+import "discovery.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
@@ -63,7 +64,7 @@ message ProtoBlockSyncSelfRequest {
 }
 
 message ProtoTimestampUpdate {
-   uint64 update = 1;
+  uint64 update = 1;
 }
 
 message ProtoBlockSyncWithPayload {
@@ -185,6 +186,16 @@ message ProtoStateSyncEvent {
   }
 }
 
+
+message ProtoBootstrapPeers {}
+
+
+message ProtoDiscoveryEvent {
+  oneof event {
+    ProtoBootstrapPeers bootstrap_peers = 3;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -196,5 +207,6 @@ message ProtoMonadEvent{
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
+    ProtoDiscoveryEvent discovery_event = 10;
   }
 }
