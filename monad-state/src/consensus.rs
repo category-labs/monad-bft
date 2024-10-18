@@ -22,8 +22,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, BlockSyncSelfRequester, CheckpointCommand, Command, ConsensusEvent,
-    LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand,
-    StateSyncCommand, StateSyncEvent, TimerCommand, TimestampCommand,
+    DiscoveryCommand, LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum, TimeoutVariant};
@@ -332,9 +332,10 @@ where
         let mut parent_cmds: Vec<Command<_, _, _>> = Vec::new();
 
         match wrapped.command {
-            ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
-                RouterCommand::UpdateCurrentRound(epoch, round),
-            )),
+            ConsensusCommand::EnterRound(epoch, round) => parent_cmds.extend(vec![
+                Command::RouterCommand(RouterCommand::UpdateCurrentRound(epoch, round)),
+                Command::DiscoveryCommand(DiscoveryCommand::UpdateCurrentRound(epoch, round)),
+            ]),
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,

@@ -23,6 +23,7 @@ where
     bootstrap_peers: Vec<BootstrapPeer<SCT::NodeIdPubKey>>,
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<SCT::NodeIdPubKey>>>,
     known_peers: BTreeMap<NodeId<SCT::NodeIdPubKey>, MonadNameRecord<SCT::NodeIdPubKey>>,
+    current_epoch: Epoch,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -43,6 +44,7 @@ where
             bootstrap_peers,
             epoch_validators: Default::default(),
             known_peers: Default::default(),
+            current_epoch: Epoch(0),
             waker: None,
             metrics: Default::default(),
             _phantom_data: PhantomData,
@@ -58,7 +60,45 @@ where
     type Command = DiscoveryCommand<SCT::NodeIdPubKey>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        for command in commands {}
+        for command in commands {
+            match command {
+                DiscoveryCommand::BootstrapPeers => {
+                    todo!()
+                }
+                DiscoveryCommand::AddEpochValidatorSet {
+                    epoch,
+                    validator_set,
+                } => {
+                    if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
+                        assert_eq!(validator_set.len(), epoch_validators.len());
+                        assert_eq!(
+                            epoch_validators.clone().into_iter().collect::<Vec<_>>(),
+                            validator_set
+                        );
+                        tracing::warn!(
+                            "duplicate validator set update (this is safe but unexpected)"
+                        )
+                    } else {
+                        assert!(self
+                            .epoch_validators
+                            .insert(epoch, validator_set.into_iter().collect())
+                            .is_none());
+                    }
+                }
+                DiscoveryCommand::UpdateCurrentRound(epoch, _) => {
+                    assert!(epoch >= self.current_epoch);
+                    self.current_epoch = epoch;
+
+                    while let Some(entry) = self.epoch_validators.first_entry() {
+                        if *entry.key() + Epoch(1) < self.current_epoch {
+                            entry.remove();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {

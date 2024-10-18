@@ -1140,11 +1140,7 @@ where
             }
             MonadEvent::DiscoveryEvent(discovery) => match discovery {
                 DiscoveryEvent::BootstrapPeers { .. } => {
-                    vec![Command::DiscoveryCommand(
-                        DiscoveryCommand::BootstrapPeers {
-                            phantom_data: PhantomData,
-                        },
-                    )]
+                    vec![Command::DiscoveryCommand(DiscoveryCommand::BootstrapPeers)]
                 }
             },
         }

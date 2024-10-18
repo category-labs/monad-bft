@@ -7,7 +7,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
+use monad_executor_glue::{Command, DiscoveryCommand, MonadEvent, RouterCommand, ValidatorEvent};
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Stake};
 use monad_validator::{
@@ -85,12 +85,19 @@ where
     fn from(command: EpochCommand<CertificateSignaturePubKey<ST>>) -> Self {
         match command {
             EpochCommand::AddEpochValidatorSet(epoch, validator_set) => {
-                vec![Command::RouterCommand(
-                    RouterCommand::AddEpochValidatorSet {
+                vec![
+                    Command::RouterCommand(RouterCommand::AddEpochValidatorSet {
                         epoch,
-                        validator_set,
-                    },
-                )]
+                        validator_set: validator_set.clone(),
+                    }),
+                    Command::DiscoveryCommand(DiscoveryCommand::AddEpochValidatorSet {
+                        epoch,
+                        validator_set: validator_set
+                            .into_iter()
+                            .map(|(node_id, _)| node_id)
+                            .collect::<Vec<_>>(),
+                    }),
+                ]
             }
         }
     }

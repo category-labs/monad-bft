@@ -174,7 +174,12 @@ pub enum StateSyncCommand<PT: PubKey> {
 
 #[derive(Debug)]
 pub enum DiscoveryCommand<PT: PubKey> {
-    BootstrapPeers { phantom_data: PhantomData<PT> },
+    BootstrapPeers,
+    AddEpochValidatorSet {
+        epoch: Epoch,
+        validator_set: Vec<NodeId<PT>>,
+    },
+    UpdateCurrentRound(Epoch, Round),
 }
 
 pub enum Command<E, OM, SCT: SignatureCollection> {

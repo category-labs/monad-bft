@@ -3760,6 +3760,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
+ "tracing",
 ]
 
 [[package]]
