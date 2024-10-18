@@ -289,7 +289,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         msg_type: u8,
     ) -> Result<ExecutionMessage, tokio::io::Error> {
         let execution_msg = match msg_type {
-            bindings::monad_sync_type_SyncTypeTarget => {
+            bindings::monad_sync_type_SYNC_TYPE_TARGET => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_target>()];
                 self.stream.read_exact(&mut buf).await?;
                 ExecutionMessage::SyncTarget(unsafe {
@@ -297,7 +297,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     std::mem::transmute(buf)
                 })
             }
-            bindings::monad_sync_type_SyncTypeRequest => {
+            bindings::monad_sync_type_SYNC_TYPE_REQUEST => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_request>()];
                 self.stream.read_exact(&mut buf).await?;
                 ExecutionMessage::SyncRequest(unsafe {
@@ -305,37 +305,37 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     std::mem::transmute(buf)
                 })
             }
-            bindings::monad_sync_type_SyncTypeUpsertCode => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE => {
                 let data_len = self.stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Code, data)
             }
-            bindings::monad_sync_type_SyncTypeUpsertAccount => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT => {
                 let data_len = self.stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Account, data)
             }
-            bindings::monad_sync_type_SyncTypeUpsertStorage => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE => {
                 let data_len = self.stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Storage, data)
             }
-            bindings::monad_sync_type_SyncTypeUpsertAccountDelete => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE => {
                 let data_len = self.stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::AccountDelete, data)
             }
-            bindings::monad_sync_type_SyncTypeUpsertStorageDelete => {
+            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE => {
                 let data_len = self.stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
                 self.stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
             }
-            bindings::monad_sync_type_SyncTypeDone => {
+            bindings::monad_sync_type_SYNC_TYPE_DONE => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_done>()];
                 self.stream.read_exact(&mut buf).await?;
                 ExecutionMessage::SyncDone(unsafe {
@@ -353,7 +353,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         request: bindings::monad_sync_request,
     ) -> Result<(), tokio::io::Error> {
         self.stream
-            .write_u8(bindings::monad_sync_type_SyncTypeRequest)
+            .write_u8(bindings::monad_sync_type_SYNC_TYPE_REQUEST)
             .await?;
         let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
             #[allow(clippy::missing_transmute_annotations)]

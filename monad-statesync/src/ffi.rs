@@ -202,29 +202,34 @@ impl<PT: PubKey> StateSync<PT> {
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
                         unsafe {
-                            for (upsert_type, upsert_data) in response.response {
-                                bindings::monad_statesync_client_handle_upsert(
+                            for (upsert_type, upsert_data) in &response.response {
+                                let upsert_result = bindings::monad_statesync_client_handle_upsert(
                                     sync_ctx.ctx,
                                     match upsert_type {
                                         StateSyncUpsertType::Code => {
-                                            bindings::monad_sync_type_SyncTypeUpsertCode
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE
                                         }
                                         StateSyncUpsertType::Account => {
-                                            bindings::monad_sync_type_SyncTypeUpsertAccount
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT
                                         }
                                         StateSyncUpsertType::Storage => {
-                                            bindings::monad_sync_type_SyncTypeUpsertStorage
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE
                                         }
                                         StateSyncUpsertType::AccountDelete => {
-                                            bindings::monad_sync_type_SyncTypeUpsertAccountDelete
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
                                         }
                                         StateSyncUpsertType::StorageDelete => {
-                                            bindings::monad_sync_type_SyncTypeUpsertStorageDelete
+                                            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
                                         }
                                     },
                                     upsert_data.as_ptr(),
                                     upsert_data.len() as u64,
-                                )
+                                );
+                                assert!(
+                                    upsert_result,
+                                    "failed upsert for response: {:?}",
+                                    &response
+                                );
                             }
                             bindings::monad_statesync_client_handle_done(
                                 sync_ctx.ctx,
