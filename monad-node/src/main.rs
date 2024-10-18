@@ -17,11 +17,14 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
 };
+use monad_discovery::StakedDiscovery;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message};
+use monad_executor_glue::{
+    BootstrapPeer, LogFriendlyMonadEvent, Message, MonadNameRecord, NetworkEndpoint,
+};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
@@ -36,7 +39,7 @@ use monad_types::{
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
-    staked_discovery::NopDiscovery, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{
@@ -68,6 +71,7 @@ use config::{SignatureCollectionType, SignatureType};
 
 mod error;
 use error::NodeSetupError;
+use monad_secp::PubKey;
 
 mod state;
 use state::NodeState;
@@ -223,6 +227,33 @@ async fn run(
             .expect("failed to read triedb path")
             .path();
     }
+    let (local_name_record, bootstrap_peers) = {
+        let pubkey = node_state.secp256k1_identity.pubkey();
+        let local_name_record = &node_state.node_config.network.local_name_record;
+        info!(address = ?local_name_record.address, node_id = ?pubkey, "rene");
+        let local_ip_address = resolve_domain(&local_name_record.address);
+        (
+            MonadNameRecord {
+                endpoint: NetworkEndpoint {
+                    socket_addr: local_ip_address,
+                },
+                node_id: NodeId::new(pubkey),
+                seq_num: local_name_record.seq_num,
+            },
+            node_state
+                .node_config
+                .bootstrap
+                .peers
+                .iter()
+                .map(|peer| BootstrapPeer {
+                    node_id: build_node_id(peer),
+                    endpoint: NetworkEndpoint {
+                        socket_addr: resolve_domain(&peer.address),
+                    },
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -281,7 +312,7 @@ async fn run(
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        discovery: NopDiscovery::default(),
+        discovery: StakedDiscovery::new(local_name_record, bootstrap_peers),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(
@@ -517,17 +548,7 @@ where
         key: identity,
         known_addresses: peers
             .iter()
-            .map(|peer| {
-                let address = peer
-                    .address
-                    .to_socket_addrs()
-                    .unwrap_or_else(|err| {
-                        panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                    })
-                    .next()
-                    .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-            })
+            .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
             .collect(),
         redundancy: 3,
         local_addr: SocketAddr::V4(SocketAddrV4::new(
@@ -537,6 +558,18 @@ where
         .to_string(),
         up_bandwidth_mbps: network_config.max_mbps.into(),
     })
+}
+
+fn build_node_id(peer: &NodeBootstrapPeerConfig) -> NodeId<PubKey> {
+    NodeId::new(peer.secp256k1_pubkey.to_owned())
+}
+
+fn resolve_domain(domain: &String) -> SocketAddr {
+    domain
+        .to_socket_addrs()
+        .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
+        .next()
+        .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
 }
 
 async fn build_mockgossip_router<M, OM, G>(
@@ -565,17 +598,7 @@ where
             ),
             known_addresses: peers
                 .iter()
-                .map(|peer| {
-                    let address = peer
-                        .address
-                        .to_socket_addrs()
-                        .unwrap_or_else(|err| {
-                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                        })
-                        .next()
-                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-                })
+                .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
                 .collect(),
         },
         gossip,

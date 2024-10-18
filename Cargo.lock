@@ -3751,6 +3751,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-discovery"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-types",
+]
+
+[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -4079,6 +4091,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-discovery",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool",
