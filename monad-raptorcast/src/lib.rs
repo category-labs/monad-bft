@@ -28,7 +28,6 @@ pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     pub key: ST::KeyPairType,
@@ -135,6 +134,7 @@ where
                     self.current_epoch = epoch;
                     while let Some(entry) = self.epoch_validators.first_entry() {
                         if *entry.key() + Epoch(1) < self.current_epoch {
+                            // TODO: GC known_addresses
                             entry.remove();
                         } else {
                             break;
@@ -279,6 +279,17 @@ where
                             }
                         }
                     };
+                }
+                RouterCommand::AddPeer {
+                    node_id,
+                    socket_address,
+                } => {
+                    if let Some(old_address) = self.known_addresses.insert(node_id, socket_address)
+                    {
+                        tracing::info!(new_address = ?socket_address, old_address = ?old_address, node_id = ?node_id, "updated peer address");
+                    } else {
+                        tracing::info!(new_address = ?socket_address, node_id = ?node_id, "new peer address");
+                    }
                 }
             }
         }

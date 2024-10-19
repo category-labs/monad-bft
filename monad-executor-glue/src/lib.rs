@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::fmt::Debug;
+use std::{fmt::Debug, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -39,6 +39,10 @@ pub enum RouterCommand<PT: PubKey, OM> {
         validator_set: Vec<(NodeId<PT>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
+    AddPeer {
+        node_id: NodeId<PT>,
+        socket_address: SocketAddr,
+    },
 }
 
 pub trait Message: Clone + Send + Sync {
