@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{fmt::Debug, ops::Deref};
 
 use async_state_verify::AsyncStateVerifyChildState;
 use blocksync::BlockSyncChildState;
@@ -38,9 +38,9 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
     ConsensusEvent, ControlPanelCommand, ControlPanelEvent, DiscoveryCommand, DiscoveryEvent,
-    GetMetrics, GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand,
-    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
-    ValidatorEvent, WriteCommand,
+    DiscoveryNetworkMessage, GetMetrics, GetValidatorSet, InboundDiscoveryMessage, LedgerCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -559,6 +559,7 @@ where
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
     StateSyncMessage(StateSyncNetworkMessage),
+    DiscoveryMessage(DiscoveryNetworkMessage<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -594,6 +595,9 @@ where
 
     /// State Sync msgs
     StateSyncMessage(StateSyncNetworkMessage),
+
+    /// Discovery msgs
+    DiscoveryMessage(DiscoveryNetworkMessage<SCT::NodeIdPubKey>),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -621,6 +625,7 @@ where
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::DiscoveryMessage(msg) => MonadMessage::DiscoveryMessage(msg),
         }
     }
 }
@@ -652,6 +657,7 @@ where
             }
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::DiscoveryMessage(msg) => MonadMessage::DiscoveryMessage(msg),
         }
     }
 }
@@ -703,6 +709,9 @@ where
             }
             MonadMessage::StateSyncMessage(msg) => {
                 MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
+            }
+            MonadMessage::DiscoveryMessage(msg) => {
+                todo!();
             }
         }
     }
@@ -850,11 +859,8 @@ where
             StateSyncEvent::RequestSync { root, high_qc },
         )));
 
-        init_cmds.extend(monad_state.update(MonadEvent::DiscoveryEvent(
-            DiscoveryEvent::BootstrapPeers {
-                phantom: PhantomData,
-            },
-        )));
+        init_cmds
+            .extend(monad_state.update(MonadEvent::DiscoveryEvent(DiscoveryEvent::BootstrapPeers)));
 
         (monad_state, init_cmds)
     }
@@ -1139,7 +1145,23 @@ where
                 vec![]
             }
             MonadEvent::DiscoveryEvent(discovery) => match discovery {
-                DiscoveryEvent::BootstrapPeers { .. } => {
+                DiscoveryEvent::Inbound(InboundDiscoveryMessage { sender, message }) => {
+                    match message {
+                        DiscoveryNetworkMessage::Request(request) => {
+                            // 1. command to let router become aware of the IP
+                            // 2. command to let discovery module become aware of the sender IP
+                            // and send its own peers
+                            todo!()
+                        }
+                        DiscoveryNetworkMessage::Response(response) => {
+                            todo!()
+                        }
+                    }
+                }
+                DiscoveryEvent::Outbound(outbound) => {
+                    todo!()
+                }
+                DiscoveryEvent::BootstrapPeers => {
                     vec![Command::DiscoveryCommand(DiscoveryCommand::BootstrapPeers)]
                 }
             },

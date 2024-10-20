@@ -62,6 +62,8 @@ where
             VerifiedMonadMessage::PeerStateRootMessage(_) => self.drop_state_root,
             VerifiedMonadMessage::ForwardedTx(_) => false,
             VerifiedMonadMessage::StateSyncMessage(_) => false,
+            // TODO: is peer discovery possible to test in mock swarm?
+            VerifiedMonadMessage::DiscoveryMessage(_) => true,
         };
 
         if should_drop {
@@ -160,6 +162,10 @@ where
                 TwinsCapture::Drop
             }
             VerifiedMonadMessage::StateSyncMessage(_) => TwinsCapture::Spread(pid),
+            VerifiedMonadMessage::DiscoveryMessage(_) => {
+                // TODO: is peer discovery possible to test in mock swarm?
+                TwinsCapture::Drop
+            }
         };
 
         match capture {

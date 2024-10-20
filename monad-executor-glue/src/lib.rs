@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, marker::PhantomData, net::SocketAddr};
+use std::{fmt::Debug, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -175,6 +175,7 @@ pub enum StateSyncCommand<PT: PubKey> {
 #[derive(Debug)]
 pub enum DiscoveryCommand<PT: PubKey> {
     BootstrapPeers,
+    Message((NodeId<PT>, DiscoveryNetworkMessage<PT>)),
     AddEpochValidatorSet {
         epoch: Epoch,
         validator_set: Vec<NodeId<PT>>,
@@ -505,8 +506,38 @@ pub struct MonadNameRecord<PT: PubKey> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryRequest<PT: PubKey> {
+    pub sender: MonadNameRecord<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryResponse<PT: PubKey> {
+    pub peers: Vec<MonadNameRecord<PT>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryNetworkMessage<PT: PubKey> {
+    Request(DiscoveryRequest<PT>),
+    Response(DiscoveryResponse<PT>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundDiscoveryMessage<PT: PubKey> {
+    pub sender: NodeId<PT>,
+    pub message: DiscoveryNetworkMessage<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundDiscoveryMessage<PT: PubKey> {
+    pub recipient: NodeId<PT>,
+    pub message: DiscoveryNetworkMessage<PT>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryEvent<PT: PubKey> {
-    BootstrapPeers { phantom: PhantomData<PT> },
+    Inbound(InboundDiscoveryMessage<PT>),
+    Outbound(OutboundDiscoveryMessage<PT>),
+    BootstrapPeers,
 }
 
 /// MonadEvent are inputs to MonadState

@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     marker::PhantomData,
+    ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
@@ -11,7 +12,10 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{BootstrapPeer, DiscoveryCommand, MonadEvent, MonadNameRecord};
+use monad_executor_glue::{
+    BootstrapPeer, DiscoveryCommand, DiscoveryEvent, DiscoveryNetworkMessage, DiscoveryRequest,
+    MonadEvent, MonadNameRecord, OutboundDiscoveryMessage,
+};
 use monad_types::{Epoch, NodeId};
 
 pub struct StakedDiscovery<ST, SCT>
@@ -24,6 +28,7 @@ where
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<SCT::NodeIdPubKey>>>,
     known_peers: BTreeMap<NodeId<SCT::NodeIdPubKey>, MonadNameRecord<SCT::NodeIdPubKey>>,
     current_epoch: Epoch,
+    pending_events: VecDeque<MonadEvent<ST, SCT>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -45,6 +50,7 @@ where
             epoch_validators: Default::default(),
             known_peers: Default::default(),
             current_epoch: Epoch(0),
+            pending_events: Default::default(),
             waker: None,
             metrics: Default::default(),
             _phantom_data: PhantomData,
@@ -63,6 +69,18 @@ where
         for command in commands {
             match command {
                 DiscoveryCommand::BootstrapPeers => {
+                    for bootstrap_peer in &self.bootstrap_peers {
+                        self.pending_events.push_back(MonadEvent::DiscoveryEvent(
+                            DiscoveryEvent::Outbound(OutboundDiscoveryMessage {
+                                recipient: bootstrap_peer.node_id,
+                                message: DiscoveryNetworkMessage::Request(DiscoveryRequest {
+                                    sender: self.local_name_record.clone(),
+                                }),
+                            }),
+                        ));
+                    }
+                }
+                DiscoveryCommand::Message(_) => {
                     todo!()
                 }
                 DiscoveryCommand::AddEpochValidatorSet {
@@ -115,6 +133,11 @@ where
     type Item = MonadEvent<ST, SCT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if let Some(event) = this.pending_events.pop_front() {
+            return Poll::Ready(Some(event));
+        }
         Poll::Pending
     }
 }
