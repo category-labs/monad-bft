@@ -211,6 +211,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
                         if app_message_len > 10_000 {
                             tracing::debug!(
+                                ?self_id,
                                 author =? parsed_message.author,
                                 unix_tx_ms = parsed_message.unix_ts_ms,
                                 app_message_hash = hex::encode(parsed_message.app_message_hash),
@@ -473,6 +474,10 @@ where
             tracing::trace!(
                 self_id =? key.pubkey(),
                 unix_ts_ms,
+                app_message_len,
+                redundancy,
+                data_size,
+                num_packets,
                 app_message_hash = hex::encode(app_message_hash),
                 "raptorcasting message"
             );
