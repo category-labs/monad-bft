@@ -36,7 +36,7 @@ use monad_types::{
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, loopback::LoopbackExecutor, parent::ParentExecutor,
-    timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    staked_discovery::NopDiscovery, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
     triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
 };
 use monad_validator::{
@@ -281,6 +281,7 @@ async fn run(
                 .expect("invalid file name")
                 .to_owned(),
         ),
+        discovery: NopDiscovery::default(),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> = WALoggerConfig::new(

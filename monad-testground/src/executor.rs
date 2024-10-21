@@ -29,9 +29,9 @@ use monad_state_backend::InMemoryState;
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
-    loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    BoxUpdater, Updater,
+    loopback::LoopbackExecutor, parent::ParentExecutor, staked_discovery::NopDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp, BoxUpdater, Updater,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -105,6 +105,7 @@ pub fn make_monad_executor<ST, SCT>(
     LoopbackExecutor<MonadEvent<ST, SCT>>,
     TokioTimestamp<ST, SCT>,
     MockStateSyncExecutor<ST, SCT>,
+    NopDiscovery<ST, SCT>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -172,6 +173,7 @@ where
             // TODO do we test statesync in testground?
             Vec::new(),
         ),
+        discovery: NopDiscovery::new(),
     }
 }
 

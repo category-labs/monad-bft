@@ -172,6 +172,11 @@ pub enum StateSyncCommand<PT: PubKey> {
     StartExecution,
 }
 
+#[derive(Debug)]
+pub enum DiscoveryCommand<PT: PubKey> {
+    BootstrapPeers { phantom_data: PhantomData<PT> },
+}
+
 pub enum Command<E, OM, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
@@ -183,6 +188,7 @@ pub enum Command<E, OM, SCT: SignatureCollection> {
     ControlPanelCommand(ControlPanelCommand<SCT>),
     TimestampCommand(TimestampCommand),
     StateSyncCommand(StateSyncCommand<SCT::NodeIdPubKey>),
+    DiscoveryCommand(DiscoveryCommand<SCT::NodeIdPubKey>),
 }
 
 impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
@@ -198,6 +204,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         Vec<ControlPanelCommand<SCT>>,
         Vec<TimestampCommand>,
         Vec<StateSyncCommand<SCT::NodeIdPubKey>>,
+        Vec<DiscoveryCommand<SCT::NodeIdPubKey>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -208,6 +215,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         let mut control_panel_cmds = Vec::new();
         let mut timestamp_cmds = Vec::new();
         let mut state_sync_cmds = Vec::new();
+        let mut discovery_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -220,6 +228,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::StateSyncCommand(cmd) => state_sync_cmds.push(cmd),
+                Command::DiscoveryCommand(cmd) => discovery_cmds.push(cmd),
             }
         }
         (
@@ -232,6 +241,7 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
             control_panel_cmds,
             timestamp_cmds,
             state_sync_cmds,
+            discovery_cmds,
         )
     }
 }

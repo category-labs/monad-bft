@@ -273,6 +273,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             control_panel_cmds,
             timestamp_cmds,
             statesync_cmds,
+            discovery_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -304,6 +305,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         self.state_root_hash.exec(state_root_hash_cmds);
         self.loopback.exec(loopback_cmds);
         self.statesync.exec(statesync_cmds);
+        // TODO(rene): do we want to test discovery in mock swarm?
 
         for command in router_cmds {
             match command {

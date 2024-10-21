@@ -37,9 +37,9 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, DiscoveryEvent, GetMetrics,
-    GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, DiscoveryCommand, DiscoveryEvent,
+    GetMetrics, GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand,
+    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
     ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
@@ -1138,10 +1138,15 @@ where
                 self.block_timestamp.update_time(t);
                 vec![]
             }
-            MonadEvent::DiscoveryEvent(_) => {
-                // TODO(rene)
-                vec![]
-            }
+            MonadEvent::DiscoveryEvent(discovery) => match discovery {
+                DiscoveryEvent::BootstrapPeers { .. } => {
+                    vec![Command::DiscoveryCommand(
+                        DiscoveryCommand::BootstrapPeers {
+                            phantom_data: PhantomData,
+                        },
+                    )]
+                }
+            },
         }
     }
 
