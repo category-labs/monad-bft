@@ -3774,6 +3774,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-discovery"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-proto",
+ "monad-types",
+ "prost 0.12.6",
+ "serde",
+]
+
+[[package]]
 name = "monad-eth-block-policy"
 version = "0.1.0"
 dependencies = [
@@ -4104,6 +4117,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-discovery",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool",
@@ -4218,6 +4232,7 @@ dependencies = [
  "lru",
  "monad-crypto",
  "monad-dataplane",
+ "monad-discovery",
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",
@@ -4388,6 +4403,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-discovery",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",

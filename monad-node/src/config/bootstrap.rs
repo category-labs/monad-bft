@@ -9,7 +9,17 @@ pub struct NodeBootstrapConfig {
     pub peers: Vec<NodeBootstrapPeerConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalNameRecord {
+    pub address: String,
+    pub seq_num: u64,
+
+    #[serde(deserialize_with = "deserialize_secp256k1_pubkey")]
+    pub secp256k1_pubkey: PubKey,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeBootstrapPeerConfig {
     pub address: String,

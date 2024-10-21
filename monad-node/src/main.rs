@@ -17,6 +17,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
 };
+use monad_discovery::{BootstrapPeer, MonadNameRecord, NetworkEndpoint, StakedDiscovery};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
@@ -68,6 +69,7 @@ use config::{SignatureCollectionType, SignatureType};
 
 mod error;
 use error::NodeSetupError;
+use monad_secp::PubKey;
 
 mod state;
 use state::NodeState;
@@ -155,6 +157,33 @@ async fn run(
         .last()
         .expect("no validator sets")
         .clone();
+    let (local_name_record, bootstrap_peers) = {
+        let pubkey = node_state.secp256k1_identity.pubkey();
+        let local_name_record = &node_state.node_config.network.local_name_record;
+        info!(address = ?local_name_record.address, node_id = ?pubkey, "load local name record");
+        let local_ip_address = resolve_domain(&local_name_record.address);
+        (
+            MonadNameRecord {
+                endpoint: NetworkEndpoint {
+                    socket_addr: local_ip_address,
+                },
+                node_id: NodeId::new(pubkey),
+                seq_num: local_name_record.seq_num,
+            },
+            node_state
+                .node_config
+                .bootstrap
+                .peers
+                .iter()
+                .map(|peer| BootstrapPeer {
+                    node_id: build_node_id(peer),
+                    endpoint: NetworkEndpoint {
+                        socket_addr: resolve_domain(&peer.address),
+                    },
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
 
     let router: BoxUpdater<_, _> = if checkpoint_validators_first
         .validators
@@ -172,6 +201,8 @@ async fn run(
                 node_state.node_config.network.clone(),
                 node_state.router_identity,
                 &node_state.node_config.bootstrap.peers,
+                local_name_record,
+                bootstrap_peers,
             )
             .await,
         )
@@ -501,7 +532,9 @@ async fn build_raptorcast_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
-) -> RaptorCast<SignatureType, M, OM>
+    local_name_record: MonadNameRecord<PubKey>,
+    bootstrap_peers: Vec<BootstrapPeer<PubKey>>,
+) -> RaptorCast<SignatureType, M, OM, StakedDiscovery<SignatureType, SignatureCollectionType>>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
         + Deserializable<Bytes>
@@ -512,30 +545,35 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
 {
-    RaptorCast::new(RaptorCastConfig {
-        key: identity,
-        known_addresses: peers
-            .iter()
-            .map(|peer| {
-                let address = peer
-                    .address
-                    .to_socket_addrs()
-                    .unwrap_or_else(|err| {
-                        panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                    })
-                    .next()
-                    .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-            })
-            .collect(),
-        redundancy: 3,
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        ))
-        .to_string(),
-        up_bandwidth_mbps: network_config.max_mbps.into(),
-    })
+    RaptorCast::new(
+        RaptorCastConfig {
+            key: identity,
+            known_addresses: peers
+                .iter()
+                .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
+                .collect(),
+            redundancy: 3,
+            local_addr: SocketAddr::V4(SocketAddrV4::new(
+                network_config.bind_address_host,
+                network_config.bind_address_port,
+            ))
+            .to_string(),
+            up_bandwidth_mbps: network_config.max_mbps.into(),
+        },
+        StakedDiscovery::new(local_name_record, bootstrap_peers),
+    )
+}
+
+fn build_node_id(peer: &NodeBootstrapPeerConfig) -> NodeId<monad_secp::PubKey> {
+    NodeId::new(peer.secp256k1_pubkey.to_owned())
+}
+
+fn resolve_domain(domain: &String) -> SocketAddr {
+    domain
+        .to_socket_addrs()
+        .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
+        .next()
+        .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
 }
 
 async fn build_mockgossip_router<M, OM, G>(
@@ -564,17 +602,7 @@ where
             ),
             known_addresses: peers
                 .iter()
-                .map(|peer| {
-                    let address = peer
-                        .address
-                        .to_socket_addrs()
-                        .unwrap_or_else(|err| {
-                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                        })
-                        .next()
-                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-                })
+                .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
                 .collect(),
         },
         gossip,

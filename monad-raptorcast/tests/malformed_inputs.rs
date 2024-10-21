@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    marker::PhantomData,
     net::{SocketAddr, UdpSocket},
     num::ParseIntError,
     sync::Once,
@@ -11,6 +12,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
+use monad_discovery::NopDiscovery;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
@@ -287,8 +289,10 @@ pub fn set_up_test(
                 up_bandwidth_mbps: 1_000,
             };
 
-            let mut service =
-                RaptorCast::<SignatureType, MockMessage, MockMessage>::new(service_config);
+            let mut service = RaptorCast::<SignatureType, MockMessage, MockMessage, _>::new(
+                service_config,
+                NopDiscovery(PhantomData),
+            );
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

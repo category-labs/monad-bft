@@ -40,6 +40,7 @@ pub enum RouterCommand<PT: PubKey, OM> {
         validator_set: Vec<(NodeId<PT>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
+    BootstrapPeers,
 }
 
 pub trait Message: Clone + Send + Sync {

@@ -1,0 +1,20 @@
+[package]
+name = "monad-discovery"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto" }
+monad-types = { path = "../monad-types" }
