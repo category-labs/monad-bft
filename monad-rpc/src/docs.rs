@@ -9,7 +9,6 @@ use crate::{
         BlockTagKey, BlockTags, EthAddress, EthHash, MonadBlock, MonadLog, MonadTransaction,
         MonadTransactionReceipt, MonadU256, Quantity, UnformattedData,
     },
-    eth_txn_handlers::{FilterParams, LogFilter},
     trace::{TraceCallObject, Tracer, TracerObject},
 };
 
@@ -91,17 +90,6 @@ pub fn as_openrpc() -> OpenRpc {
     components
         .schemas
         .insert("TraceCallObject".to_string(), tracer_call_obj);
-    let mut filter_params = schemars::schema_for!(FilterParams).schema.into();
-    clean_schema_refs(&mut filter_params);
-    components
-        .schemas
-        .insert("FilterParams".to_string(), filter_params);
-    let mut log_filter = schemars::schema_for!(LogFilter).schema.into();
-    clean_schema_refs(&mut log_filter);
-    components
-        .schemas
-        .insert("LogFilter".to_string(), log_filter);
-
     let mut methods = Vec::new();
     for (name, info) in method_map.iter() {
         println!("{name}");

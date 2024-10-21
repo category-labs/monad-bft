@@ -1,15 +1,13 @@
 use std::cmp::min;
 
-use alloy_primitives::{
-    aliases::{B256, U128, U256, U64},
-    Address, FixedBytes,
-};
+use alloy_primitives::aliases::{B256, U128, U256, U64};
 use monad_blockdb::{BlockValue, EthTxKey};
 use monad_blockdb_utils::BlockDbEnv;
 use monad_rpc_docs::rpc;
 use reth_primitives::{transaction::TransactionKind, TransactionSigned};
 use reth_rpc_types::{
-    AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
+    AccessListItem, BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Parity,
+    Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
@@ -18,8 +16,8 @@ use crate::{
     block_handlers::block_receipts,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, EthAddress, EthHash, MonadLog, MonadTransaction,
-        MonadTransactionReceipt, Quantity, UnformattedData,
+        deserialize_unformatted_data, BlockTagKey, BlockTags, EthHash, FixedData,
+        MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity, UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
     receipt::{decode_receipt, ReceiptDetails},
@@ -184,87 +182,15 @@ impl From<FilterError> for JsonRpcError {
     }
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(transparent)]
 pub struct MonadEthGetLogsParams {
-    filters: Vec<FilterParams>,
-}
-
-#[derive(Debug, schemars::JsonSchema)]
-pub struct FilterParams {
-    filter: LogFilter,
-    address: ValueOrArray<EthAddress>,
-    topics: ValueOrArray<Vec<EthHash>>,
-}
-
-// Must use this impl instead of derive because serde does not support default with flatten: https://github.com/serde-rs/serde/issues/1626
-impl<'de> Deserialize<'de> for FilterParams {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        pub struct ParamsHelper {
-            #[serde(flatten)]
-            filter: Option<LogFilter>,
-            #[serde(default)]
-            address: ValueOrArray<EthAddress>,
-            #[serde(default)]
-            topics: ValueOrArray<Vec<EthHash>>,
-        }
-
-        let result = ParamsHelper::deserialize(deserializer)?;
-
-        Ok(Self {
-            filter: result.filter.unwrap_or_default(),
-            address: result.address,
-            topics: result.topics,
-        })
-    }
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-pub enum LogFilter {
-    Range {
-        #[serde(deserialize_with = "deserialize_block_tags")]
-        from_block: BlockTags,
-        #[serde(deserialize_with = "deserialize_block_tags")]
-        to_block: BlockTags,
-    },
-    BlockHash {
-        #[serde(deserialize_with = "deserialize_fixed_data")]
-        block_hash: EthHash,
-    },
-}
-
-impl Default for LogFilter {
-    fn default() -> Self {
-        Self::Range {
-            from_block: BlockTags::default(),
-            to_block: BlockTags::default(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum ValueOrArray<T> {
-    None,
-    Single(T),
-    Array(Vec<T>),
-}
-
-impl<T> Default for ValueOrArray<T> {
-    fn default() -> Self {
-        Self::None
-    }
+    filters: Vec<Filter>,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 
-#[rpc(method = "eth_getLogs")]
 #[allow(non_snake_case)]
 /// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs(
@@ -277,76 +203,45 @@ pub async fn monad_eth_getLogs(
     let mut logs = Vec::new();
 
     for req in p.filters {
-        let mut filter = Filter::new();
-
-        match req.address {
-            ValueOrArray::Single(address) => {
-                filter = filter.address(Address::from_slice(&address.0));
-            }
-            ValueOrArray::Array(addresses) => {
-                filter = filter.address(
-                    addresses
-                        .iter()
-                        .map(|a| Address::from_slice(&a.0))
-                        .collect::<Vec<_>>(),
-                );
-            }
-            ValueOrArray::None => {}
-        }
-
-        match req.topics {
-            ValueOrArray::Single(topics) => {
-                let topics = topics
-                    .into_iter()
-                    .map(|topic| FixedBytes::<32>::from(&topic.0))
-                    .collect::<Vec<_>>();
-
-                filter = filter.event_signature(topics);
-            }
-            ValueOrArray::Array(topics) => {
-                let topics = topics
-                    .into_iter()
-                    .map(|inner| {
-                        inner
-                            .into_iter()
-                            .map(|topic| FixedBytes::<32>::from(&topic.0))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>();
-                for (idx, topic) in topics.into_iter().enumerate() {
-                    match idx {
-                        0 => filter = filter.event_signature(topic),
-                        1 => filter = filter.topic1(topic),
-                        2 => filter = filter.topic2(topic),
-                        3 => filter = filter.topic3(topic),
-                        _ => return Err(JsonRpcError::eth_filter_error("too many topics".into())),
-                    }
-                }
-            }
-            ValueOrArray::None => {}
-        }
-
-        let (from_block, to_block) = match req.filter {
-            LogFilter::Range {
+        let filter: Filter = req.clone().into();
+        let (from_block, to_block) = match req.block_option {
+            FilterBlockOption::Range {
                 from_block,
                 to_block,
             } => {
+                let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
+                    match block {
+                        None => BlockTags::default(),
+                        Some(b) => match b {
+                            BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
+                            BlockNumberOrTag::Finalized => {
+                                BlockTags::Default(BlockTagKey::Finalized)
+                            }
+                            _ => BlockTags::Default(BlockTagKey::Latest),
+                        },
+                    }
+                };
+                let from_block_Tag = into_block_tag(from_block);
+                let to_block_tag = into_block_tag(to_block);
+
                 let from_block = blockdb_env
-                    .get_block_by_tag(from_block.into())
+                    .get_block_by_tag(from_block_Tag.into())
                     .await
-                    .ok_or(JsonRpcError::internal_error())?;
+                    .ok_or(JsonRpcError::custom(
+                        "could not get starting block range".to_string(),
+                    ))?;
                 let to_block = blockdb_env
-                    .get_block_by_tag(to_block.into())
+                    .get_block_by_tag(to_block_tag.into())
                     .await
-                    .ok_or(JsonRpcError::internal_error())?;
-                filter = filter.from_block(from_block.block.number);
-                filter = filter.to_block(to_block.block.number);
+                    .ok_or(JsonRpcError::custom(
+                        "could not get ending block range".to_string(),
+                    ))?;
                 (from_block.block.number, to_block.block.number)
             }
-            LogFilter::BlockHash { block_hash } => {
-                filter = filter.at_block_hash(Into::<FixedBytes<32>>::into(block_hash.0));
+            FilterBlockOption::AtBlockHash(block_hash) => {
+                let key = FixedData::<32>::from(block_hash).into();
                 let block = blockdb_env
-                    .get_block_by_hash(block_hash.into())
+                    .get_block_by_hash(key)
                     .await
                     .ok_or(JsonRpcError::internal_error())?;
                 (block.block.number, block.block.number)
