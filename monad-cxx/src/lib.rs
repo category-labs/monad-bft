@@ -314,6 +314,7 @@ mod tests {
             reth_primitives::Header {
                 number: 1,
                 beneficiary: hex!("0102030405010203040501020304050102030405").into(),
+                gas_limit: 10000000000,
                 ..Default::default()
             },
             hex!("0000000000000000000000000000000000000000").into(),
@@ -362,6 +363,7 @@ mod tests {
         let header: reth_primitives::Header = reth_primitives::Header {
             number: 1,
             beneficiary: hex!("0102030405010203040501020304050102030405").into(),
+            gas_limit: 100000,
             ..Default::default()
         };
 
@@ -457,6 +459,13 @@ mod tests {
                 input: hex!("ff01").into(),
             });
 
+        let header: reth_primitives::Header = reth_primitives::Header {
+            number: 0,
+            beneficiary: hex!("0102030405010203040501020304050102030405").into(),
+            gas_limit: 10000000000,
+            ..Default::default()
+        };
+
         let sender: Address = hex!("0000000000000000000000000000000000000000").into();
         let block_number = 0;
         let triedb_path: &Path = path.as_path();
@@ -465,7 +474,7 @@ mod tests {
         {
             let result = eth_call(
                 txn.clone(),
-                Default::default(), // header
+                header.clone(),
                 sender,
                 block_number,
                 triedb_path,
@@ -504,7 +513,7 @@ mod tests {
 
             let result = eth_call(
                 txn,
-                Default::default(), // header
+                header.clone(),
                 sender,
                 block_number,
                 triedb_path,
