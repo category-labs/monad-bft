@@ -14,6 +14,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
+use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
@@ -289,6 +290,26 @@ where
     }
 }
 
+#[derive(Debug)]
+struct UnknownMessageError;
+fn handle_message<
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+>(
+    bytes: &Bytes,
+) -> Result<InboundRouterMessage<M, CertificateSignaturePubKey<ST>>, UnknownMessageError> {
+    // try to deserialize as a new message first
+    let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
+    else {
+        // if that fails, try to deserialize as an old message instead
+        let Ok(old_message) = M::deserialize(bytes) else {
+            return Err(UnknownMessageError);
+        };
+        return Ok(InboundRouterMessage::Application(old_message));
+    };
+    Ok(inbound)
+}
+
 impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
 where
     ST: CertificateSignatureRecoverable,
@@ -330,8 +351,19 @@ where
                 message,
             );
             let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match M::deserialize(&decoded) {
-                    Ok(app_message) => Some(app_message.event(from)),
+                |(from, decoded)| match handle_message::<ST, M>(&decoded) {
+                    Ok(inbound) => match inbound {
+                        InboundRouterMessage::Application(app_message) => {
+                            Some(app_message.event(from))
+                        }
+                        InboundRouterMessage::Discovery(_) => {
+                            tracing::error!(
+                                ?from,
+                                "receiving discovery messages over UDP is not supported"
+                            );
+                            None
+                        }
+                    },
                     Err(_) => {
                         tracing::warn!(?from, "failed to deserialize message");
                         None
@@ -355,8 +387,8 @@ where
                 }
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message = match M::deserialize(&app_message_bytes) {
-                Ok(app_message) => app_message,
+            let deserialized_message = match handle_message::<ST, M>(&app_message_bytes) {
+                Ok(message) => message,
                 Err(err) => {
                     tracing::warn!(?err, ?from_addr, "failed to deserialize message");
                     continue;
@@ -370,7 +402,15 @@ where
                 }
             };
 
-            return Poll::Ready(Some(deserialized_message.event(NodeId::new(from))));
+            match deserialized_message {
+                InboundRouterMessage::Application(message) => {
+                    return Poll::Ready(Some(message.event(NodeId::new(from))));
+                }
+                InboundRouterMessage::Discovery(discovery_message) => {
+                    // pass message to self.discovery
+                    tracing::warn!(?from_addr, discovery_message = ?discovery_message, "unhandled discovery message");
+                }
+            }
         }
 
         Poll::Pending

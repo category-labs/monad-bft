@@ -18,6 +18,7 @@ pub mod error;
 
 pub mod proto {
     include_proto!(basic);
+    include_proto!(discovery);
     include_proto!(signing);
     include_proto!(voting);
     include_proto!(ledger);

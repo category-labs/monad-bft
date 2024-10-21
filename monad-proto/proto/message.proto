@@ -5,6 +5,7 @@ package monad_proto.message;
 import "basic.proto";
 import "block.proto";
 import "blocksync.proto";
+import "discovery.proto";
 import "signing.proto";
 import "state_root_hash.proto";
 import "timeout.proto";
@@ -104,5 +105,27 @@ message ProtoMonadMessage {
     ProtoPeerStateRootMessage peer_state_root = 4;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
+  }
+}
+message ProtoDiscoveryRequest {
+  monad_proto.discovery.ProtoMonadNameRecord self = 1;
+}
+
+message ProtoDiscoveryResponse {
+  repeated monad_proto.discovery.ProtoMonadNameRecord peers = 1;
+}
+
+message ProtoDiscoveryMessage {
+  oneof message {
+    ProtoDiscoveryRequest request = 1;
+    ProtoDiscoveryResponse response = 2;
+  }
+}
+
+message ProtoRouterMessage {
+  oneof message {
+    // keep compatible with ProtoMonadMessage
+    bytes app_message = 7;
+    ProtoDiscoveryMessage discovery_message = 8;
   }
 }

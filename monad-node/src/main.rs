@@ -515,17 +515,7 @@ where
         key: identity,
         known_addresses: peers
             .iter()
-            .map(|peer| {
-                let address = peer
-                    .address
-                    .to_socket_addrs()
-                    .unwrap_or_else(|err| {
-                        panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                    })
-                    .next()
-                    .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-            })
+            .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
             .collect(),
         redundancy: 3,
         local_addr: SocketAddr::V4(SocketAddrV4::new(
@@ -535,6 +525,18 @@ where
         .to_string(),
         up_bandwidth_mbps: network_config.max_mbps.into(),
     })
+}
+
+fn build_node_id(peer: &NodeBootstrapPeerConfig) -> NodeId<monad_secp::PubKey> {
+    NodeId::new(peer.secp256k1_pubkey.to_owned())
+}
+
+fn resolve_domain(domain: &String) -> SocketAddr {
+    domain
+        .to_socket_addrs()
+        .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
+        .next()
+        .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
 }
 
 async fn build_mockgossip_router<M, OM, G>(
@@ -563,17 +565,7 @@ where
             ),
             known_addresses: peers
                 .iter()
-                .map(|peer| {
-                    let address = peer
-                        .address
-                        .to_socket_addrs()
-                        .unwrap_or_else(|err| {
-                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                        })
-                        .next()
-                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-                })
+                .map(|peer| (build_node_id(peer), resolve_domain(&peer.address)))
                 .collect(),
         },
         gossip,
