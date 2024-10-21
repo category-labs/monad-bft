@@ -11,8 +11,6 @@ bench = false
 [dependencies]
 bindgen = { workspace = true }
 alloy-primitives = { workspace = true }
-cc = { workspace = true }
-cxx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
@@ -28,5 +26,4 @@ tempfile = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
-cc = { workspace = true }
 cmake = { workspace = true }
