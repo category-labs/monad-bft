@@ -40,6 +40,7 @@ mod test {
     use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
+        staked_discovery::MockStakedDiscovery,
         state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap},
         statesync::MockStateSyncExecutor,
     };
@@ -48,6 +49,7 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use test_case::test_case;
+
     pub struct ValidatorSwapSwarm;
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
@@ -84,6 +86,8 @@ mod test {
             MockStateRootHashSwap<Self::SignatureType, Self::SignatureCollectionType>;
         type StateSyncExecutor =
             MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type DiscoveryExecutor =
+            MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {
@@ -218,6 +222,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -329,6 +334,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -522,6 +528,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         regular_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -710,6 +717,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),

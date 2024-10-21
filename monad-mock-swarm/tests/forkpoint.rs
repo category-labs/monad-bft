@@ -28,6 +28,7 @@ use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyT
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
+    staked_discovery::MockStakedDiscovery,
     state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
 };
@@ -74,6 +75,8 @@ impl SwarmRelation for ForkpointSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]
@@ -256,6 +259,7 @@ fn forkpoint_restart_f(
                                 .map(|validator| validator.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -340,6 +344,7 @@ fn forkpoint_restart_f(
                     .map(|validator| validator.node_id)
                     .collect(),
             ),
+            MockStakedDiscovery::default(),
             vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
             vec![],
             TimestamperConfig::default(),
@@ -558,6 +563,7 @@ fn forkpoint_restart_below_all(
                                 .map(|validator| validator.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -670,6 +676,7 @@ fn forkpoint_restart_below_all(
                         .map(|validator| validator.node_id)
                         .collect(),
                 ),
+                MockStakedDiscovery::default(),
                 vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                 vec![],
                 TimestamperConfig::default(),

@@ -26,6 +26,7 @@ use monad_transformer::{
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
+    staked_discovery::MockStakedDiscovery,
     state_root_hash::MockStateRootHashNop,
     statesync::MockStateSyncExecutor,
 };
@@ -126,6 +127,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),

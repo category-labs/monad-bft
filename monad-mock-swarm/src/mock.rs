@@ -36,6 +36,7 @@ pub struct MockExecutor<S: SwarmRelation> {
     loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     ipc: MockIpcReceiver<S::SignatureType, S::SignatureCollectionType>,
     statesync: S::StateSyncExecutor,
+    discovery: S::DiscoveryExecutor,
     tick: Duration,
 
     timer: PriorityQueue<
@@ -162,6 +163,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
         router: S::RouterScheduler,
         state_root_hash: S::StateRootHashExecutor,
         statesync: S::StateSyncExecutor,
+        discovery: S::DiscoveryExecutor,
         ledger: S::Ledger,
         timestamp_config: TimestamperConfig,
         tick: Duration,
@@ -173,7 +175,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
             ipc: Default::default(),
             loopback: Default::default(),
             statesync,
-
+            discovery,
             tick,
 
             timer: PriorityQueue::new(),

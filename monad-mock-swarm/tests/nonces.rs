@@ -41,8 +41,8 @@ mod test {
     };
     use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use monad_updaters::{
-        ledger::MockableLedger, state_root_hash::MockStateRootHashNop,
-        statesync::MockStateSyncExecutor,
+        ledger::MockableLedger, staked_discovery::MockStakedDiscovery,
+        state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
     };
     use monad_validator::{
         simple_round_robin::SimpleRoundRobin,
@@ -88,6 +88,8 @@ mod test {
             MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
         type StateSyncExecutor =
             MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type DiscoveryExecutor =
+            MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -152,6 +154,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],

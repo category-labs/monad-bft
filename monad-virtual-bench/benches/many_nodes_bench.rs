@@ -30,7 +30,8 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, staked_discovery::MockStakedDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -74,6 +75,8 @@ impl SwarmRelation for NopSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 struct BlsSwarm;
@@ -110,6 +113,8 @@ impl SwarmRelation for BlsSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {
@@ -176,6 +181,7 @@ fn many_nodes_nop_timeout() -> u128 {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,
@@ -264,6 +270,7 @@ fn many_nodes_bls_timeout() -> u128 {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
                             100,

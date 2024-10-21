@@ -13,7 +13,8 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_transformer::BytesTransformerPipeline;
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, staked_discovery::MockStakedDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -54,4 +55,6 @@ impl SwarmRelation for QuicSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }

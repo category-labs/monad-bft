@@ -22,7 +22,8 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, staked_discovery::MockStakedDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
@@ -76,6 +77,7 @@ fn random_latency_test(latency_seed: u64) {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
@@ -148,6 +150,7 @@ fn delayed_message_test(latency_seed: u64) {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![
                         GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),

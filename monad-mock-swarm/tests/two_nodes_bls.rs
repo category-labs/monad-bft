@@ -24,7 +24,8 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, staked_discovery::MockStakedDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
@@ -68,6 +69,8 @@ impl SwarmRelation for BLSSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]
@@ -123,6 +126,7 @@ fn two_nodes_bls() {
                             .map(|v| v.node_id)
                             .collect(),
                     ),
+                    MockStakedDiscovery::default(),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![],
                     TimestamperConfig::default(),

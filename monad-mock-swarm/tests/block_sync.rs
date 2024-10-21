@@ -35,6 +35,7 @@ mod test {
     use monad_types::{NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
+        staked_discovery::MockStakedDiscovery,
         state_root_hash::MockStateRootHashNop,
         statesync::MockStateSyncExecutor,
     };
@@ -106,6 +107,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         outbound_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -229,6 +231,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -320,6 +323,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -463,6 +467,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(

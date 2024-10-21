@@ -23,6 +23,8 @@ use wasm_bindgen::prelude::*;
 
 mod graphql;
 pub use graphql::GraphQLRoot;
+use monad_updaters::staked_discovery::MockStakedDiscovery;
+
 mod simulation;
 use simulation::Simulation;
 
@@ -81,6 +83,7 @@ pub fn simulation_make() -> *mut Simulation {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(10),
                         ))],

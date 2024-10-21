@@ -40,6 +40,7 @@ mod test {
     use monad_types::{NodeId, Round, SeqNum};
     use monad_updaters::{
         ledger::{MockLedger, MockableLedger},
+        staked_discovery::MockStakedDiscovery,
         state_root_hash::MockStateRootHashNop,
         statesync::MockStateSyncExecutor,
     };
@@ -86,6 +87,8 @@ mod test {
             MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
         type StateSyncExecutor =
             MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+        type DiscoveryExecutor =
+            MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -151,6 +154,7 @@ mod test {
                                 .map(|v| v.node_id)
                                 .collect(),
                         ),
+                        MockStakedDiscovery::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             CONSENSUS_DELTA,
                         ))],

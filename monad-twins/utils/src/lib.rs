@@ -19,7 +19,8 @@ use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
-    ledger::MockLedger, state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
+    ledger::MockLedger, staked_discovery::MockStakedDiscovery,
+    state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
@@ -45,6 +46,7 @@ where
         StateRootHashExecutor = MockStateRootHashNop<ST, SCT>,
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT>,
         Ledger = MockLedger<ST, SCT>,
+        DiscoveryExecutor = MockStakedDiscovery<ST, SCT>,
     >,
 {
     let TwinsTestCase {
@@ -108,6 +110,7 @@ where
                     .map(|v| v.node_id)
                     .collect(),
             ),
+            MockStakedDiscovery::<ST, SCT>::default(),
             outbound_pipeline,
             vec![],
             TimestamperConfig::default(),

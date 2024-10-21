@@ -13,7 +13,9 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor_glue::{LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand};
+use monad_executor_glue::{
+    DiscoveryCommand, LedgerCommand, MonadEvent, StateRootHashCommand, StateSyncCommand,
+};
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
@@ -21,6 +23,7 @@ use monad_state_backend::{InMemoryState, StateBackend};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
+    staked_discovery::{MockStakedDiscovery, MockableDiscovery},
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     statesync::{MockStateSyncExecutor, MockableStateSync},
 };
@@ -121,6 +124,12 @@ where
         > + Send
         + Sync
         + Unpin;
+    type DiscoveryExecutor: MockableDiscovery<
+            SignatureType = Self::SignatureType,
+            SignatureCollectionType = Self::SignatureCollectionType,
+        > + Send
+        + Sync
+        + Unpin;
 }
 
 pub struct DebugSwarmRelation;
@@ -202,6 +211,14 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
+    type DiscoveryExecutor = Box<
+        dyn MockableDiscovery<
+                SignatureType = Self::SignatureType,
+                SignatureCollectionType = Self::SignatureCollectionType,
+                Command = DiscoveryCommand<CertificateSignaturePubKey<Self::SignatureType>>,
+            > + Send
+            + Sync,
+    >;
 }
 
 // default swarm relation impl
@@ -242,6 +259,8 @@ impl SwarmRelation for NoSerSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct BytesSwarm;
@@ -280,6 +299,8 @@ impl SwarmRelation for BytesSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -317,4 +338,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
     type StateSyncExecutor =
         MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType>;
+    type DiscoveryExecutor =
+        MockStakedDiscovery<Self::SignatureType, Self::SignatureCollectionType>;
 }
