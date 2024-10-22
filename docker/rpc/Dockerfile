@@ -67,7 +67,7 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 WORKDIR /usr/src/monad-bft
 COPY . .
 
-ARG ETH_CALL_TARGET=monad_rpc_test
+ARG ETH_CALL_TARGET=monad_rpc
 ARG TRIEDB_TARGET=triedb_driver
 
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
