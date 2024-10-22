@@ -102,3 +102,12 @@ message ProtoMonadMessage {
     ProtoStateSyncNetworkMessage state_sync_message = 6;
   }
 }
+
+message ProtoDiscoveryMessage {}
+
+message ProtoRouterMessage {
+  oneof message {
+    ProtoMonadMessage app_message = 1;
+    ProtoDiscoveryMessage discovery_message = 2;
+  }
+}
