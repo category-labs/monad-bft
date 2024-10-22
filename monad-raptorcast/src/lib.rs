@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    fmt::{Display, Formatter},
     marker::PhantomData,
     net::SocketAddr,
     ops::DerefMut,
@@ -295,6 +296,40 @@ where
     }
 }
 
+struct DiscoveryMessage;
+enum RouterMessage<
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+> {
+    App(OM),
+    Router { phantom: PhantomData<(ST, M)> },
+}
+
+#[derive(Debug)]
+enum Error {}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", &self)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl<ST, M, OM> Deserializable<Bytes> for RouterMessage<ST, M, OM>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+{
+    type ReadError = Error;
+
+    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
+        todo!()
+    }
+}
+
 impl<ST, M, OM, D> Stream for RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
@@ -362,13 +397,14 @@ where
                 }
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message = match M::deserialize(&app_message_bytes) {
-                Ok(app_message) => app_message,
-                Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "failed to deserialize message");
-                    continue;
-                }
-            };
+            let deserialized_message =
+                match RouterMessage::<ST, M, OM>::deserialize(&app_message_bytes) {
+                    Ok(app_message) => app_message,
+                    Err(err) => {
+                        tracing::warn!(?err, ?from_addr, "failed to deserialize message");
+                        continue;
+                    }
+                };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {
@@ -377,7 +413,16 @@ where
                 }
             };
 
-            return Poll::Ready(Some(deserialized_message.event(NodeId::new(from))));
+            match deserialized_message {
+                RouterMessage::App(app_message) => {
+                    let app_message: M = app_message.into();
+                    return Poll::Ready(Some(app_message.event(NodeId::new(from))));
+                }
+                RouterMessage::Router { .. } => {
+                    this.discovery.handle_discovery_message();
+                    break;
+                }
+            }
         }
 
         Poll::Pending
