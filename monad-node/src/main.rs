@@ -17,6 +17,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
 };
+use monad_discovery::NopDiscovery;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
@@ -501,7 +502,7 @@ async fn build_raptorcast_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
-) -> RaptorCast<SignatureType, M, OM>
+) -> RaptorCast<SignatureType, M, OM, NopDiscovery>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
         + Deserializable<Bytes>
@@ -512,30 +513,33 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
 {
-    RaptorCast::new(RaptorCastConfig {
-        key: identity,
-        known_addresses: peers
-            .iter()
-            .map(|peer| {
-                let address = peer
-                    .address
-                    .to_socket_addrs()
-                    .unwrap_or_else(|err| {
-                        panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                    })
-                    .next()
-                    .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
-            })
-            .collect(),
-        redundancy: 3,
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        ))
-        .to_string(),
-        up_bandwidth_mbps: network_config.max_mbps.into(),
-    })
+    RaptorCast::new(
+        RaptorCastConfig {
+            key: identity,
+            known_addresses: peers
+                .iter()
+                .map(|peer| {
+                    let address = peer
+                        .address
+                        .to_socket_addrs()
+                        .unwrap_or_else(|err| {
+                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
+                        })
+                        .next()
+                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
+                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
+                })
+                .collect(),
+            redundancy: 3,
+            local_addr: SocketAddr::V4(SocketAddrV4::new(
+                network_config.bind_address_host,
+                network_config.bind_address_port,
+            ))
+            .to_string(),
+            up_bandwidth_mbps: network_config.max_mbps.into(),
+        },
+        NopDiscovery,
+    )
 }
 
 async fn build_mockgossip_router<M, OM, G>(

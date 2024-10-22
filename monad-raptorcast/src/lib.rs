@@ -14,6 +14,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
+use monad_discovery::Discovery;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
@@ -42,11 +43,12 @@ where
     pub up_bandwidth_mbps: u64,
 }
 
-pub struct RaptorCast<ST, M, OM>
+pub struct RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    D: Discovery,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -59,6 +61,7 @@ where
     udp_state: udp::UdpState<ST>,
 
     dataplane: Dataplane,
+    discovery: D,
     pending_events: VecDeque<M::Event>,
 
     waker: Option<Waker>,
@@ -66,13 +69,14 @@ where
     _phantom: PhantomData<OM>,
 }
 
-impl<ST, M, OM> RaptorCast<ST, M, OM>
+impl<ST, M, OM, D> RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    D: Discovery,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST>, discovery: D) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
@@ -87,6 +91,7 @@ where
             udp_state: udp::UdpState::new(self_id),
 
             dataplane,
+            discovery,
             pending_events: Default::default(),
 
             waker: None,
@@ -118,11 +123,12 @@ where
     }
 }
 
-impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
+impl<ST, M, OM, D> Executor for RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    D: Discovery,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -289,11 +295,12 @@ where
     }
 }
 
-impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
+impl<ST, M, OM, D> Stream for RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    D: Discovery,
 
     Self: Unpin,
 {

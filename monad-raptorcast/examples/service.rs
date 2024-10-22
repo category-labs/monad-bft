@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
+use monad_discovery::NopDiscovery;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
@@ -117,8 +118,10 @@ fn service(
                     up_bandwidth_mbps: 1_000,
                 };
 
-                let mut service =
-                    RaptorCast::<SignatureType, MockMessage, MockMessage>::new(service_config);
+                let mut service = RaptorCast::<SignatureType, MockMessage, MockMessage, _>::new(
+                    service_config,
+                    NopDiscovery,
+                );
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
                     validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),

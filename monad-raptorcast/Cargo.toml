@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-dataplane = { path = "../monad-dataplane" }
+monad-discovery = { path = "../monad-discovery" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-merkle = { path = "../monad-merkle" }
