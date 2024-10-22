@@ -1,7 +1,11 @@
 #![allow(unused_imports)]
 
 use std::{
-    collections::HashMap, ffi::CStr, ffi::CString, ops::Deref, path::Path, path::PathBuf, pin::pin,
+    collections::HashMap,
+    ffi::{CStr, CString},
+    ops::Deref,
+    path::{Path, PathBuf},
+    pin::pin,
     slice,
 };
 
