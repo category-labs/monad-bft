@@ -29,16 +29,15 @@ pub trait StateBackend {
         }
         // block <= latest
 
+        let statuses = addresses
+            .map(|address| self.raw_read_account(block, address))
+            .collect();
+
         let earliest = self.raw_read_earliest_block();
         if block < earliest {
             // block < earliest
             return Err(StateBackendError::NeverAvailable);
         }
-        // block >= earliest
-
-        let statuses = addresses
-            .map(|address| self.raw_read_account(block, address))
-            .collect();
 
         // all accounts are now guaranteed to be fully consistent and correct
         Ok(statuses)

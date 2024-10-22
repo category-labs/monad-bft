@@ -147,17 +147,16 @@ impl StateBackend for TriedbReader {
         }
         // block <= latest
 
+        let Some(statuses) = self.get_accounts_async(eth_addresses, block.0) else {
+            // TODO: Use a more descriptive error
+            return Err(StateBackendError::NotAvailableYet);
+        };
+
         let earliest = self.raw_read_earliest_block();
         if block < earliest {
             // block < earliest
             return Err(StateBackendError::NeverAvailable);
         }
-        // block >= earliest
-
-        let Some(statuses) = self.get_accounts_async(eth_addresses, block.0) else {
-            // TODO: Use a more descriptive error
-            return Err(StateBackendError::NotAvailableYet);
-        };
 
         // all accounts are now guaranteed to be fully consistent and correct
         Ok(statuses)
