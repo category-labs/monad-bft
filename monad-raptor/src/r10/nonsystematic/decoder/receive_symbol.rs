@@ -11,15 +11,6 @@ impl Decoder {
         encoding_symbol_id: usize,
         mut xor_buffers: impl FnMut(BufferId, BufferId),
     ) {
-        {
-            let num_buffers_received =
-                self.buffer_state.len() - self.num_redundant_intermediate_symbols() + 1;
-
-            if (num_buffers_received % 100) == 0 {
-                tracing::debug!(?num_buffers_received, "received_encoded_symbol");
-            }
-        }
-
         let buffer_index: u16 = self.buffer_state.len().try_into().unwrap();
 
         let mut buffer = Buffer::new();

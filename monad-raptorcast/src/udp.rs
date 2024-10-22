@@ -199,6 +199,20 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }
             };
 
+            let num_buffers_received = decoder.num_encoded_symbols_received() + 1;
+
+            if (num_buffers_received % 100) == 0 {
+                tracing::debug!(
+                    self_id =? self.self_id,
+                    author =? parsed_message.author,
+                    unix_ts_ms = parsed_message.unix_ts_ms,
+                    app_message_hash = hex::encode(parsed_message.app_message_hash),
+                    encoding_symbol_id,
+                    num_buffers_received,
+                    "received encoded symbol (100th)"
+                );
+            }
+
             // can we assert!(!decoder.decoding_done()) ?
 
             match decoder.received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id) {

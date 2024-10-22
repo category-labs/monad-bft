@@ -14,4 +14,3 @@ bench = false
 bitvec = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-tracing = { workspace = true }

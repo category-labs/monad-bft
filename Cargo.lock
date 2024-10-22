@@ -4178,7 +4178,6 @@ dependencies = [
  "bitvec",
  "rand",
  "rayon",
- "tracing",
 ]
 
 [[package]]
