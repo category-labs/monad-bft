@@ -161,7 +161,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             tracing::trace!(
                 self_id =? self.self_id,
                 author =? parsed_message.author,
-                unix_tx_ms = parsed_message.unix_ts_ms,
+                unix_ts_ms = parsed_message.unix_ts_ms,
                 app_message_hash = hex::encode(parsed_message.app_message_hash),
                 encoding_symbol_id,
                 "received encoded symbol"
@@ -213,7 +213,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                             tracing::debug!(
                                 ?self_id,
                                 author =? parsed_message.author,
-                                unix_tx_ms = parsed_message.unix_ts_ms,
+                                unix_ts_ms = parsed_message.unix_ts_ms,
                                 app_message_hash = hex::encode(parsed_message.app_message_hash),
                                 encoding_symbol_id,
                                 app_message_len,
