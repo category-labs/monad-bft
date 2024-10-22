@@ -11,6 +11,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_discovery::NopDiscovery;
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
 use monad_gossip::{
@@ -132,11 +133,14 @@ where
                     }
                 },
             )),
-            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
-                ST,
-                MonadMessage<ST, SCT>,
-                VerifiedMonadMessage<ST, SCT>,
-            >::new(config)),
+            RouterConfig::RaptorCast(config) => {
+                Updater::boxed(RaptorCast::<
+                    ST,
+                    MonadMessage<ST, SCT>,
+                    VerifiedMonadMessage<ST, SCT>,
+                    _,
+                >::new(config, NopDiscovery))
+            }
         },
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
