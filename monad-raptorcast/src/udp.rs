@@ -446,11 +446,11 @@ where
     };
 
     let mut message = BytesMut::zeroed(gso_size as usize * num_packets);
-    let app_message_hash: [u8; 20] = {
+    let app_message_hash: AppMessageHash = HexBytes({
         let mut hasher = HasherType::new();
         hasher.update(&app_message);
         hasher.hash().0[..20].try_into().unwrap()
-    };
+    });
 
     let mut chunk_datas = message
         .chunks_mut(gso_size.into())
@@ -628,7 +628,7 @@ where
                 let (cursor_unix_ts_ms, cursor) = cursor.split_at_mut(8);
                 cursor_unix_ts_ms.copy_from_slice(&unix_ts_ms.to_le_bytes());
                 let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
-                cursor_app_message_hash.copy_from_slice(&app_message_hash);
+                cursor_app_message_hash.copy_from_slice(&app_message_hash.0);
                 let (cursor_app_message_len, cursor) = cursor.split_at_mut(4);
                 cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
 
