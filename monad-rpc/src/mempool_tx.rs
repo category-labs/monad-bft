@@ -12,7 +12,7 @@ use pin_project::pin_project;
 use reth_primitives::TransactionSigned;
 use tokio::{net::UnixStream, pin};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
-use tracing::debug;
+use tracing::{debug, error};
 
 const MEMPOOL_TX_IPC_FILE: &str = "mempool.sock";
 
@@ -82,16 +82,18 @@ pub struct SocketWatcher {
     #[pin]
     watcher: notify::INotifyWatcher,
     #[pin]
-    rx: tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+    rx: tokio::sync::mpsc::Receiver<notify::Result<notify::Event>>,
 }
 
 impl SocketWatcher {
     pub fn try_new(socket_path: PathBuf) -> std::io::Result<Self> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<notify::Result<notify::Event>>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(100);
         let mut watcher = notify::INotifyWatcher::new(
             move |res| {
                 block_on(async {
-                    tx.send(res).expect("inotify channel");
+                    if let Err(send) = tx.send(res).await {
+                        error!("cannot send on socket watcher channel: {:?}", send);
+                    };
                 })
             },
             notify::Config::default(),
@@ -139,7 +141,7 @@ impl Future for SocketWatcher {
                     Poll::Pending
                 }
             }
-            Poll::Ready(e) => {
+            Poll::Ready(_) => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
