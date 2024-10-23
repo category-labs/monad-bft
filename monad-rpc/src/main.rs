@@ -174,24 +174,16 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "debug_getRawHeader" => {
-            let reader = app_state
-                .file_ledger_reader
-                .as_ref()
-                .method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawHeader(reader, triedb_env, params)
+            monad_debug_getRawHeader(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawReceipts" => {
-            let reader = app_state
-                .file_ledger_reader
-                .as_ref()
-                .method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawReceipts(reader, triedb_env, params)
+            monad_debug_getRawReceipts(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
@@ -243,10 +235,6 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "eth_call" => {
-            let reader = app_state
-                .file_ledger_reader
-                .as_ref()
-                .method_not_supported()?;
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
@@ -262,7 +250,6 @@ async fn rpc_select(
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_call(
                 triedb_env,
-                reader,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
@@ -314,10 +301,9 @@ async fn rpc_select(
             }
         }
         "eth_getBlockByNumber" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
+            if let Some(reader) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, triedb_env, params)
+                monad_eth_getBlockByNumber(reader, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -335,10 +321,9 @@ async fn rpc_select(
             }
         }
         "eth_getTransactionByBlockNumberAndIndex" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            if let Some(reader) = &app_state.file_ledger_reader {
+            if let Some(triedb_env) = &app_state.triedb_reader {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(reader, triedb_env, params)
+                monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -356,10 +341,9 @@ async fn rpc_select(
             }
         }
         "eth_getBlockTransactionCountByNumber" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
+            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(reader, triedb_env, params)
+                monad_eth_getBlockTransactionCountByNumber(triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -418,10 +402,6 @@ async fn rpc_select(
             .map(serialize_result)?,
         "eth_syncing" => monad_eth_syncing().await,
         "eth_estimateGas" => {
-            let Some(reader) = &app_state.file_ledger_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             let Some(triedb_env) = &app_state.triedb_reader else {
                 return Err(JsonRpcError::method_not_supported());
             };
@@ -439,7 +419,6 @@ async fn rpc_select(
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_estimateGas(
                 triedb_env,
-                reader,
                 execution_ledger_path.as_path(),
                 app_state.chain_id,
                 params,
@@ -448,11 +427,8 @@ async fn rpc_select(
             .map(serialize_result)?
         }
         "eth_gasPrice" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            if let Some(reader) = &app_state.file_ledger_reader {
-                monad_eth_gasPrice(reader, triedb_env)
-                    .await
-                    .map(serialize_result)?
+            if let Some(triedb_env) = &app_state.triedb_reader {
+                monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -490,13 +466,8 @@ async fn rpc_select(
         }
         "eth_getBlockReceipts" => {
             let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let file_ledger_reader = app_state
-                .file_ledger_reader
-                .as_ref()
-                .method_not_supported()?;
-
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getBlockReceipts(file_ledger_reader, triedb_reader, params)
+            monad_eth_getBlockReceipts(triedb_reader, params)
                 .await
                 .map(serialize_result)?
         }

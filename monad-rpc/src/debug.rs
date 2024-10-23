@@ -1,9 +1,8 @@
-use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
+    block_util::{get_block_num_from_tag, FileBlockReader},
     eth_json_types::{BlockTags, EthHash, MonadU256},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -40,27 +39,16 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
 pub async fn monad_debug_getRawHeader<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let block = match get_block_from_num(file_ledger_reader, block_num).await {
-        BlockResult::Block(b) => b,
-        BlockResult::NotFound => {
-            return Err(JsonRpcError::internal_error("block not found".into()))
-        }
-        BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::internal_error(format!(
-                "decode block failed: {}",
-                e
-            )))
-        }
-    };
-
-    let mut buf = Vec::default();
-    block.header.encode(&mut buf);
-    Ok(hex::encode(&buf))
+    match triedb_env.get_block_header(block_num).await {
+        TriedbResult::BlockHeader(block_header_rlp) => Ok(hex::encode(&block_header_rlp)),
+        _ => Err(JsonRpcError::internal_error(
+            "error reading block header from db".into(),
+        )),
+    }
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -69,31 +57,27 @@ pub struct MonadDebugGetRawReceiptsResult {
     receipts: Vec<String>,
 }
 
-#[rpc(method = "debug_getRawReceipts", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_getRawReceipts")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded receipts.
 pub async fn monad_debug_getRawReceipts<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let block = match get_block_from_num(file_ledger_reader, block_num).await {
-        BlockResult::Block(b) => b,
-        BlockResult::NotFound => {
-            return Err(JsonRpcError::internal_error("block not found".into()))
-        }
-        BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::internal_error(format!(
-                "decode block failed: {}",
-                e
-            )))
+    let transactions = match triedb_env.get_transactions(block_num).await {
+        TriedbResult::BlockTransactions(transactions) => transactions,
+        TriedbResult::Null => vec![],
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading transactions from db".into(),
+            ))
         }
     };
 
     let mut receipts = Vec::new();
-    for txn_index in 0..block.body.len() {
-        match triedb_env.get_receipt(txn_index as u64, block.number).await {
+    for txn_index in 0..transactions.len() {
+        match triedb_env.get_receipt(txn_index as u64, block_num).await {
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
                 let receipt = hex::encode(&rlp_receipt);

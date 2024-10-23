@@ -29,22 +29,6 @@ pub async fn get_block_num_from_tag<T: Triedb>(
     }
 }
 
-pub enum BlockResult {
-    Block(EthBlock),
-    NotFound,
-    DecodeFailed(AlloyError),
-}
-
-pub async fn get_block_from_num(reader: &FileBlockReader, block_num: u64) -> BlockResult {
-    let Ok(encoded_block) = reader.async_read_encoded_eth_block(block_num).await else {
-        return BlockResult::NotFound;
-    };
-    match reader.decode_eth_block(encoded_block) {
-        Ok(b) => BlockResult::Block(b),
-        Err(e) => BlockResult::DecodeFailed(e),
-    }
-}
-
 #[derive(Clone)]
 pub struct FileBlockReader {
     eth_block_dir_path: PathBuf,

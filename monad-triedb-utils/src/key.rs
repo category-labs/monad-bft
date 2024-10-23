@@ -174,3 +174,29 @@ pub fn create_transaction_key(txn_index: Option<u64>) -> (Vec<u8>, u8) {
 
     (key, num_nibbles)
 }
+
+pub fn create_block_header_key() -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+
+    let block_header_nibble = 4_u8;
+    key_nibbles.push(block_header_nibble);
+
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
+    if num_nibbles % 2 != 0 {
+        key_nibbles.push(0);
+    }
+
+    let key: Vec<_> = key_nibbles
+        .chunks(2)
+        .map(|chunk| (chunk[0] << 4) | chunk[1])
+        .collect();
+
+    (key, num_nibbles)
+}

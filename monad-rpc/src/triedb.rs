@@ -12,8 +12,8 @@ use monad_triedb::TriedbHandle;
 use monad_triedb_utils::{
     decode::{rlp_decode_account, rlp_decode_storage_slot},
     key::{
-        create_addr_key, create_code_key, create_receipt_key, create_storage_at_key,
-        create_transaction_key,
+        create_addr_key, create_block_header_key, create_code_key, create_receipt_key,
+        create_storage_at_key, create_transaction_key,
     },
 };
 use reth_primitives::TransactionSigned;
@@ -82,7 +82,9 @@ pub enum TriedbResult {
     Code(Vec<u8>),
     Receipt(Vec<u8>),
     BlockNum(u64),
+    Transaction(TransactionSigned),
     BlockTransactions(Vec<TransactionSigned>),
+    BlockHeader(Vec<u8>),
 }
 
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
@@ -170,7 +172,16 @@ pub trait Triedb {
         code_hash: EthCodeHash,
         block_tag: BlockTags,
     ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_transaction(
+        &self,
+        txn_index: u64,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
     fn get_transactions(
+        &self,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_block_header(
         &self,
         block_num: u64,
     ) -> impl std::future::Future<Output = TriedbResult> + Send;
@@ -425,6 +436,57 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    async fn get_transaction(&self, txn_index: u64, block_num: u64) -> TriedbResult {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_transaction_key(Some(txn_index));
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(block_num),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(rlp_transaction) => {
+                        match TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice()) {
+                            Ok(transaction) => TriedbResult::Transaction(transaction),
+                            Err(e) => {
+                                warn!("Failed to decode RLP transaction: {e}");
+                                TriedbResult::Error
+                            }
+                        }
+                    }
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
+    }
+
     async fn get_transactions(&self, block_num: u64) -> TriedbResult {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -464,6 +526,49 @@ impl Triedb for TriedbEnv {
                 }
                 None => TriedbResult::Null,
             },
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
+    }
+
+    async fn get_block_header(&self, block_num: u64) -> TriedbResult {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_block_header_key();
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(block_num),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(block_header) => TriedbResult::BlockHeader(block_header),
+                    None => TriedbResult::Null,
+                }
+            }
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 TriedbResult::Error

@@ -1,14 +1,15 @@
 use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
+use alloy_rlp::Decodable;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
-use reth_primitives::Block;
+use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
+    block_util::get_block_num_from_tag,
     eth_json_types::{BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -266,7 +267,7 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
 pub async fn sender_gas_allowance<T: Triedb>(
     triedb_env: &T,
-    block: &Block,
+    block: &Header,
     request: &CallRequest,
 ) -> Result<u64, JsonRpcError> {
     if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
@@ -314,14 +315,9 @@ pub struct MonadEthCallParams {
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
-#[rpc(
-    method = "eth_call",
-    ignore = "chain_id",
-    ignore = "file_ledger_reader"
-)]
+#[rpc(method = "eth_call", ignore = "chain_id")]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    file_ledger_reader: &FileBlockReader,
     execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthCallParams,
@@ -345,16 +341,19 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     // TODO: check duplicate address, duplicate storage key, etc.
 
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let mut block = match get_block_from_num(file_ledger_reader, block_num).await {
-        BlockResult::Block(b) => b,
-        BlockResult::NotFound => {
-            return Err(JsonRpcError::internal_error("block not found".into()))
+    let mut header = match triedb_env.get_block_header(block_num).await {
+        TriedbResult::BlockHeader(block_header_rlp) => {
+            let Ok(header) = Header::decode(&mut block_header_rlp.as_slice()) else {
+                return Err(JsonRpcError::internal_error(
+                    "decode block header failed".into(),
+                ));
+            };
+            header
         }
-        BlockResult::DecodeFailed(e) => {
-            return Err(JsonRpcError::internal_error(format!(
-                "decode block failed: {}",
-                e
-            )))
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading block header from db".into(),
+            ))
         }
     };
 
@@ -364,22 +363,22 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
             // for eth_call from a zero address, we want to override the block base fee to be zero
             // so that reading from the smart contract does not require the zero address
             // to have any gas balance
-            block.header.base_fee_per_gas = Some(0);
+            header.base_fee_per_gas = Some(0);
             params.transaction.fill_gas_prices(U256::from(0))?;
 
             if params.transaction.gas.is_none() {
                 // eth_call from a zero address will default gas limit as block gas limit
-                params.transaction.gas = Some(U256::from(block.header.gas_limit));
+                params.transaction.gas = Some(U256::from(header.gas_limit));
             }
         }
         _ => {
             params
                 .transaction
-                .fill_gas_prices(U256::from(block.base_fee_per_gas.unwrap_or_default()))?;
+                .fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
 
             if params.transaction.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(triedb_env, &block, &params.transaction).await?;
+                    sender_gas_allowance(triedb_env, &header, &params.transaction).await?;
                 params.transaction.gas = Some(U256::from(allowance));
             }
         }
@@ -390,10 +389,10 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     }
 
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
-    let block_number = block.header.number;
+    let block_number = header.number;
     match monad_cxx::eth_call(
         txn,
-        block.header,
+        header,
         sender,
         block_number,
         &triedb_env.path(),
