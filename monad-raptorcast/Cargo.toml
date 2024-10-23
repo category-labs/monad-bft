@@ -17,8 +17,10 @@ monad-discovery = { path = "../monad-discovery" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-merkle = { path = "../monad-merkle" }
+monad-proto = { path = "../monad-proto" }
 monad-raptor = { path = "../monad-raptor" }
 monad-secp = { path = "../monad-secp" }
+monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 
 bytes = { workspace = true }

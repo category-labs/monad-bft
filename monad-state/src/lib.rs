@@ -708,6 +708,18 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct DiscoveryMessage;
+
+pub enum OutboundRouterMessage<OM> {
+    Application(OM),
+    DiscoveryMessage(DiscoveryMessage),
+}
+
+pub enum InboundRouterMessage<M> {
+    Application(M),
+    Discovery(DiscoveryMessage),
+}
 pub struct MonadStateBuilder<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,

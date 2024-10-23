@@ -17,7 +17,13 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_discovery::Discovery;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
+use monad_proto::{
+    error::ProtoError,
+    proto::message::{proto_router_message, ProtoRouterMessage},
+};
+use monad_state::InboundRouterMessage;
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
+use prost::Message as _;
 
 pub mod udp;
 pub mod util;
@@ -362,13 +368,14 @@ where
                 }
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message = match M::deserialize(&app_message_bytes) {
-                Ok(app_message) => app_message,
-                Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "failed to deserialize message");
-                    continue;
-                }
-            };
+            let deserialized_message: InboundRouterMessage<M> =
+                match InboundRouterMessage::deserialize(&app_message_bytes) {
+                    Ok(app_message) => app_message,
+                    Err(err) => {
+                        tracing::warn!(?err, ?from_addr, "failed to deserialize message");
+                        continue;
+                    }
+                };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {
@@ -377,7 +384,15 @@ where
                 }
             };
 
-            return Poll::Ready(Some(deserialized_message.event(NodeId::new(from))));
+            match deserialized_message {
+                InboundRouterMessage::Application(message) => {
+                    return Poll::Ready(Some(message.event(NodeId::new(from))));
+                }
+                InboundRouterMessage::Discovery(discovery_message) => {
+                    // pass message to self.discovery
+                    todo!()
+                }
+            }
         }
 
         Poll::Pending
