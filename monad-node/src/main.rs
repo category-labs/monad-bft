@@ -509,7 +509,11 @@ where
         + From<OM>
         + Send
         + Sync
-        + 'static,
+        + 'static
+        + TryFrom<
+            monad_proto::proto::message::ProtoMonadMessage,
+            Error = monad_proto::error::ProtoError,
+        >,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
 {

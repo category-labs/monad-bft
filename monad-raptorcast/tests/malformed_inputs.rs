@@ -14,6 +14,7 @@ use monad_crypto::certificate_signature::{
 use monad_discovery::NopDiscovery;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_proto::proto::message::ProtoMonadMessage;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::{build_messages, build_messages_with_length},
@@ -353,5 +354,13 @@ impl Deserializable<Bytes> for MockMessage {
             u32::from_le_bytes(message[..4].try_into().unwrap()),
             message.len(),
         ))
+    }
+}
+
+impl TryFrom<ProtoMonadMessage> for MockMessage {
+    type Error = monad_proto::error::ProtoError;
+
+    fn try_from(value: ProtoMonadMessage) -> Result<Self, Self::Error> {
+        unimplemented!("this test is broken :(")
     }
 }

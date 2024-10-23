@@ -4094,6 +4094,7 @@ dependencies = [
  "monad-ipc",
  "monad-keystore",
  "monad-ledger",
+ "monad-proto",
  "monad-quic",
  "monad-raptorcast",
  "monad-secp",

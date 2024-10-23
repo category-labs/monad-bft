@@ -79,7 +79,9 @@ where
     }
 }
 
-impl<M> TryFrom<ProtoRouterMessage> for InboundRouterMessage<M> {
+impl<M: TryFrom<ProtoMonadMessage, Error = ProtoError>> TryFrom<ProtoRouterMessage>
+    for InboundRouterMessage<M>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoRouterMessage) -> Result<Self, Self::Error> {
@@ -96,7 +98,9 @@ impl<M> TryFrom<ProtoRouterMessage> for InboundRouterMessage<M> {
     }
 }
 
-impl<M> monad_types::Deserializable<Bytes> for InboundRouterMessage<M> {
+impl<M: TryFrom<ProtoMonadMessage, Error = ProtoError>> monad_types::Deserializable<Bytes>
+    for InboundRouterMessage<M>
+{
     type ReadError = ProtoError;
 
     fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {

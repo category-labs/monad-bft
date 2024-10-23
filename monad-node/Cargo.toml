@@ -31,6 +31,7 @@ monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
 monad-keystore = { path = "../monad-keystore" }
 monad-ledger = { path = "../monad-ledger" }
+monad-proto = { path = "../monad-proto" }
 monad-quic = { path = "../monad-quic" }
 monad-raptorcast = { path = "../monad-raptorcast" }
 monad-secp = { path = "../monad-secp" }

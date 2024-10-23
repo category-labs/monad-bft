@@ -226,3 +226,12 @@ impl Deserializable<Bytes> for MockMessage {
         ))
     }
 }
+impl TryFrom<monad_proto::proto::message::ProtoMonadMessage> for MockMessage {
+    type Error = monad_proto::error::ProtoError;
+
+    fn try_from(
+        value: monad_proto::proto::message::ProtoMonadMessage,
+    ) -> Result<Self, Self::Error> {
+        unimplemented!("this test is broken :(")
+    }
+}

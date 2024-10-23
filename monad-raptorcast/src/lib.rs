@@ -17,13 +17,9 @@ use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
 use monad_discovery::Discovery;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
-use monad_proto::{
-    error::ProtoError,
-    proto::message::{proto_router_message, ProtoRouterMessage},
-};
+use monad_proto::{error::ProtoError, proto::message::ProtoMonadMessage};
 use monad_state::InboundRouterMessage;
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
-use prost::Message as _;
 
 pub mod udp;
 pub mod util;
@@ -52,7 +48,9 @@ where
 pub struct RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
+        + Deserializable<Bytes>
+        + TryFrom<ProtoMonadMessage, Error = ProtoError>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     D: Discovery,
 {
@@ -78,7 +76,9 @@ where
 impl<ST, M, OM, D> RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
+        + Deserializable<Bytes>
+        + TryFrom<ProtoMonadMessage, Error = ProtoError>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     D: Discovery,
 {
@@ -132,7 +132,9 @@ where
 impl<ST, M, OM, D> Executor for RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
+        + Deserializable<Bytes>
+        + TryFrom<ProtoMonadMessage, Error = ProtoError>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     D: Discovery,
 {
@@ -304,7 +306,9 @@ where
 impl<ST, M, OM, D> Stream for RaptorCast<ST, M, OM, D>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
+        + Deserializable<Bytes>
+        + TryFrom<ProtoMonadMessage, Error = ProtoError>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     D: Discovery,
 
