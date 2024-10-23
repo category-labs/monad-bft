@@ -168,6 +168,7 @@ mod test {
         let val_set_update_interval = SeqNum(1000);
 
         let delta = Duration::from_millis(20);
+        let vote_pace = Duration::from_millis(0);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -183,6 +184,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,                   // delta
+            vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
@@ -276,6 +278,7 @@ mod test {
         let val_set_update_interval = SeqNum(1000);
 
         let delta = Duration::from_millis(20);
+        let vote_pace = Duration::from_millis(0);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -291,6 +294,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,                   // delta
+            vote_pace,               // vote pace
             0,                       // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
@@ -472,6 +476,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             Duration::from_millis(delta), // delta
+            Duration::from_millis(0),     // vote pace
             0,                            // proposal_tx_limit
             val_set_update_interval,      // val_set_update_interval
             Round(20),                    // epoch_start_delay
@@ -670,6 +675,7 @@ mod test {
         until_block: usize,
     ) {
         let delta = Duration::from_millis(20);
+        let vote_pace = Duration::from_millis(2);
         let state_configs = make_state_configs::<ValidatorSwapSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -685,6 +691,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,                   // delta
+            vote_pace,               // vote pace
             10,                      // proposal_tx_limit
             val_set_update_interval, // val_set_update_interval
             epoch_start_delay,       // epoch_start_delay

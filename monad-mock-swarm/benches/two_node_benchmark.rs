@@ -48,6 +48,7 @@ fn two_nodes() {
         },
         PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
+        Duration::from_millis(0), // vote pace
         5_000,                    // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay

@@ -373,6 +373,7 @@ where
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),
                         start_execution_threshold: SeqNum(300),
+                        vote_pace: Duration::from_millis(0),
                         timestamp_latency_estimate_ms: 10,
                     },
                 },

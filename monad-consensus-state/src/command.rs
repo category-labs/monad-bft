@@ -67,6 +67,10 @@ where
     /// Issue to clear mempool
     ClearMempool,
     TimestampUpdate(TimestampAdjustment),
+    ScheduleVote {
+        duration: Duration,
+        round: Round,
+    },
 }
 
 impl<ST, SCT> ConsensusCommand<ST, SCT>

@@ -159,6 +159,7 @@ fn forkpoint_restart_f(
     statesync_threshold: SeqNum,
 ) {
     let delta = Duration::from_millis(100);
+    let vote_pace = Duration::from_millis(0);
     let state_root_delay = SeqNum(4);
     let state_configs = make_state_configs::<ForkpointSwarm>(
         4, // num_nodes
@@ -177,6 +178,7 @@ fn forkpoint_restart_f(
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
         delta,               // delta
+        vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
@@ -211,6 +213,7 @@ fn forkpoint_restart_f(
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,               // delta
+            vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
@@ -234,6 +237,7 @@ fn forkpoint_restart_f(
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,               // delta
+            vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
@@ -474,6 +478,7 @@ fn forkpoint_restart_below_all(
 ) {
     let num_nodes = 4;
     let delta = Duration::from_millis(100);
+    let vote_pace = Duration::from_millis(0);
     let state_root_delay = SeqNum(4);
     let state_configs = make_state_configs::<ForkpointSwarm>(
         num_nodes,
@@ -492,6 +497,7 @@ fn forkpoint_restart_below_all(
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
         delta,               // delta
+        vote_pace,           // vote pace
         10,                  // proposal_tx_limit
         epoch_length,        // val_set_update_interval
         Round(50),           // epoch_start_delay
@@ -536,6 +542,7 @@ fn forkpoint_restart_below_all(
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,               // delta
+            vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay
@@ -559,6 +566,7 @@ fn forkpoint_restart_below_all(
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
             delta,               // delta
+            vote_pace,           // vote pace
             10,                  // proposal_tx_limit
             epoch_length,        // val_set_update_interval
             Round(50),           // epoch_start_delay

@@ -75,6 +75,7 @@ fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
     let delta = Duration::from_millis(20);
+    let vote_pace = Duration::from_millis(5);
 
     let state_configs = make_state_configs::<BLSSwarm>(
         2, // num_nodes
@@ -91,6 +92,7 @@ fn two_nodes_bls() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         0,                  // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay

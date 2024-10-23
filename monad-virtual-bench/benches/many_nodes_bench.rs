@@ -129,6 +129,7 @@ fn many_nodes_nop_timeout() -> u128 {
         },
         PeerAsyncStateVerify::new,
         Duration::from_millis(20), // delta
+        Duration::from_millis(10), // vote pace
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
@@ -217,6 +218,7 @@ fn many_nodes_bls_timeout() -> u128 {
         },
         PeerAsyncStateVerify::new,
         Duration::from_millis(20), // delta
+        Duration::from_millis(10), // vote pace
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay

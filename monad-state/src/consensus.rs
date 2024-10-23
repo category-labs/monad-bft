@@ -226,6 +226,7 @@ where
                 block_range,
                 full_blocks,
             } => consensus.handle_block_sync(block_range, full_blocks),
+            ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
         consensus_cmds
             .into_iter()
@@ -411,6 +412,13 @@ where
             }
             ConsensusCommand::TimestampUpdate(t) => {
                 parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
+            }
+            ConsensusCommand::ScheduleVote { duration, round } => {
+                parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                    duration,
+                    variant: TimeoutVariant::SendVote,
+                    on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::SendVote(round)),
+                }))
             }
         }
         parent_cmds

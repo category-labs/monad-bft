@@ -350,6 +350,7 @@ async fn run(
             live_to_statesync_threshold: SeqNum(statesync_threshold as u64 * 3 / 2),
             // Live starts execution here
             start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
+            vote_pace: Duration::from_millis(500),
             timestamp_latency_estimate_ms: 20,
         },
     };

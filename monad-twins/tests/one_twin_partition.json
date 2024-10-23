@@ -8,6 +8,7 @@
     "round": 10,
     "timeout_ms": 30000,
     "delta_ms": 10,
+    "vote_pace_ms": 5,
     "partition": [
         [["Alice", "Bob", "Carol", "David", "Alice_twin"]],
         [["Alice", "Bob", "Carol", "David", "Alice_twin"]],

@@ -57,6 +57,7 @@ struct TwinsTestCaseRaw {
     timeout_ms: u64,
     // delta of protocol
     delta_ms: u64,
+    vote_pace_ms: u64,
     // round partition setting
     partition: Vec<Vec<Vec<String>>>,
     // what's the behaviour of partition outside of defined
@@ -287,6 +288,7 @@ where
         expected_block,
         timeout_ms,
         delta_ms,
+        vote_pace_ms,
         allow_block_sync,
         liveness,
         partition,
@@ -378,6 +380,7 @@ where
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),
                 start_execution_threshold: SeqNum(300),
+                vote_pace: Duration::from_millis(vote_pace_ms),
                 timestamp_latency_estimate_ms: 10,
             },
         })

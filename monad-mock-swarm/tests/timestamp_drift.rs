@@ -29,6 +29,7 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 #[test]
 fn drift_one_node() {
     let delta = Duration::from_millis(30);
+    let vote_pace = Duration::from_millis(0);
     let latency = Duration::from_millis(20);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
@@ -45,6 +46,7 @@ fn drift_one_node() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         10,                 // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay

@@ -114,6 +114,7 @@ mod test {
             || Box::new(StateRoot::new(execution_delay)),
             PeerAsyncStateVerify::new,
             CONSENSUS_DELTA,
+            Duration::from_millis(0),
             10,                 // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay

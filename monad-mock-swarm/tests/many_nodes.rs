@@ -35,10 +35,11 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 
 #[test]
 fn many_nodes_noser() {
-    // block commits every 2∆ on happy path; 20ms * 1024 = 41s
-    // but consensus starts with a timeout
+    // block commits every 2∆ on happy path; 2 * 20ms * 1024 + (vote_pace*1024) = 47s
+    // and consensus starts with a timeout
+    let runtime = Duration::from_secs(47);
     let delta = Duration::from_millis(20);
-    let runtime = Duration::from_secs(42);
+    let vote_pace = Duration::from_millis(5);
     let num_expected_blocks = 1024;
     let state_configs = make_state_configs::<NoSerSwarm>(
         40, // num_nodes
@@ -55,6 +56,7 @@ fn many_nodes_noser() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         0,                  // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
@@ -112,6 +114,7 @@ fn many_nodes_quic_latency() {
     let zero_instant = Instant::now();
 
     let delta = Duration::from_millis(100);
+    let vote_pace = Duration::from_millis(5);
     let state_configs = make_state_configs::<QuicSwarm>(
         40, // num_nodes
         ValidatorSetFactory::default,
@@ -127,6 +130,7 @@ fn many_nodes_quic_latency() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         0,                  // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay

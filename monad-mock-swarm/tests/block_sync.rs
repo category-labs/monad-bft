@@ -46,6 +46,7 @@ mod test {
     #[test]
     fn bsync_timeout_recovery() {
         let delta = Duration::from_millis(50);
+        let vote_pace = Duration::from_millis(5);
         let state_configs = make_state_configs::<MonadMessageNoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -61,6 +62,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,              // delta
+            vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
@@ -175,6 +177,7 @@ mod test {
     #[should_panic]
     fn lack_of_progress() {
         let delta = Duration::from_millis(50);
+        let vote_pace = Duration::from_millis(5);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -190,6 +193,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,              // delta
+            vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
@@ -265,6 +269,7 @@ mod test {
     #[test]
     fn extreme_delay_recovery_with_block_sync() {
         let delta = Duration::from_millis(50);
+        let vote_pace = Duration::from_millis(5);
 
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
@@ -281,6 +286,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,              // delta
+            vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
@@ -404,6 +410,7 @@ mod test {
         // giving a high delay so state root doesn't trigger
     ) {
         let delta = Duration::from_millis(20);
+        let vote_pace = Duration::from_millis(5);
         assert!(
             from < to
                 && to < until
@@ -427,6 +434,7 @@ mod test {
             },
             PeerAsyncStateVerify::new,
             delta,              // delta
+            vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay

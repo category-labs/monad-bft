@@ -119,12 +119,13 @@ mod test {
             },
             || StateRoot::new(execution_delay),
             PeerAsyncStateVerify::new,
-            CONSENSUS_DELTA,    // delta
-            10,                 // proposal_tx_limit
-            SeqNum(2000),       // val_set_update_interval
-            Round(50),          // epoch_start_delay
-            majority_threshold, // state root quorum threshold
-            SeqNum(100),        // state_sync_threshold
+            CONSENSUS_DELTA,          // delta
+            Duration::from_millis(0), // vote pace
+            10,                       // proposal_tx_limit
+            SeqNum(2000),             // val_set_update_interval
+            Round(50),                // epoch_start_delay
+            majority_threshold,       // state root quorum threshold
+            SeqNum(100),              // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

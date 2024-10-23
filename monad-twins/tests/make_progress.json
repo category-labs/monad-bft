@@ -10,6 +10,7 @@
     "round": 10,
     "timeout_ms": 2000,
     "delta_ms": 10,
+    "vote_pace_ms": 5,
     "partition": [
     ],
     "default_partition": [["Alice", "Bob", "Carol"], ["David"]]

@@ -36,6 +36,7 @@ fn two_nodes_virtual() -> u128 {
         },
         PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
+        Duration::from_millis(1), // vote pace
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay

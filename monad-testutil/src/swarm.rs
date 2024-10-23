@@ -27,6 +27,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     async_state_verify: impl Fn(fn(Stake) -> Stake, usize) -> S::AsyncStateRootVerify,
 
     delta: Duration,
+    vote_pace: Duration,
     proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
@@ -100,6 +101,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 live_to_statesync_threshold: SeqNum(statesync_threshold.0 * 3 / 2),
                 // Live starts execution here
                 start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
+                vote_pace,
                 timestamp_latency_estimate_ms: 10,
             },
         })

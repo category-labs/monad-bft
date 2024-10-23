@@ -37,6 +37,7 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 #[test]
 fn two_nodes_noser() {
     let delta = Duration::from_millis(100);
+    let vote_pace = Duration::from_millis(5);
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
@@ -52,6 +53,7 @@ fn two_nodes_noser() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         10,                 // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
@@ -115,6 +117,7 @@ fn two_nodes_noser() {
 fn two_nodes_quic_latency() {
     let zero_instant = Instant::now();
     let delta = Duration::from_millis(100);
+    let vote_pace = Duration::from_millis(0);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         2, // num_nodes
@@ -131,6 +134,7 @@ fn two_nodes_quic_latency() {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         150,                // proposal_tx_limit
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay

@@ -73,6 +73,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
     use monad_transformer::RandLatencyTransformer;
 
     let delta = Duration::from_millis(200);
+    let vote_pace = Duration::from_millis(10);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -90,6 +91,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         },
         PeerAsyncStateVerify::new,
         delta,              // delta
+        vote_pace,          // vote pace
         0,                  // proposal_tx_limit
         SeqNum(3000),       // val_set_update_interval
         Round(50),          // epoch_start_delay

@@ -29,6 +29,11 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
                 block_range: Some(block_range.into()),
                 full_blocks: full_blocks.iter().map(|b| b.into()).collect::<Vec<_>>(),
             }),
+            ConsensusEvent::SendVote(round) => {
+                proto_consensus_event::Event::SendVote(ProtoSendVote {
+                    round: Some(round.into()),
+                })
+            }
         };
         Self { event: Some(event) }
     }
@@ -72,6 +77,13 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                         .collect::<Result<Vec<_>, _>>()?,
                 }
             }
+            Some(proto_consensus_event::Event::SendVote(x)) => ConsensusEvent::SendVote(
+                x.round
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::send_vote.round".to_owned(),
+                    ))?
+                    .try_into()?,
+            ),
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),
             ))?,

@@ -57,6 +57,7 @@ pub trait Message: Clone + Send + Sync {
 pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
+    SendVote,
 }
 
 #[derive(Debug)]
@@ -261,6 +262,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         block_range: BlockRange,
         full_blocks: Vec<FullBlock<SCT>>,
     },
+    SendVote(Round),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -283,6 +285,9 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("block_range", block_range)
                 .field("full_blocks", full_blocks)
                 .finish(),
+            ConsensusEvent::SendVote(round) => {
+                f.debug_struct("SendVote").field("round", round).finish()
+            }
         }
     }
 }

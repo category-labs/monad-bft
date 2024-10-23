@@ -6,6 +6,7 @@
     "round": 10,
     "timeout_ms": 100000,
     "delta_ms": 100,
+    "vote_pace_ms": 5,
     "allow_block_sync": true,
     "partition": [
     ],
