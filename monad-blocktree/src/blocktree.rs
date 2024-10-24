@@ -7,6 +7,7 @@ use std::{
 use monad_consensus_types::{
     block::{BlockPolicy, BlockPolicyError, BlockType},
     checkpoint::RootInfo,
+    payload::{Payload, PayloadId},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -491,6 +492,16 @@ where
     /// Use get_block_state_root instead?
     pub fn get_block(&self, block_id: &BlockId) -> Option<&BPT::ValidatedBlock> {
         self.tree.get(block_id).map(|block| &block.validated_block)
+    }
+
+    pub fn get_payload(&self, payload_id: &PayloadId) -> Option<Payload> {
+        if let Some((_, block)) = self.tree.iter().find(|(_, blocktree_entry)| {
+            &blocktree_entry.validated_block.get_payload_id() == payload_id
+        }) {
+            Some(block.validated_block.get_payload())
+        } else {
+            None
+        }
     }
 
     pub fn get_block_state_root(&self, block_id: &BlockId) -> Option<StateRootHash> {

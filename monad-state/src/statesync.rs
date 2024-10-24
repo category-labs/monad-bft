@@ -2,9 +2,9 @@ use std::collections::{HashMap, VecDeque};
 
 use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
+    block::{Block, BlockRange, BlockType, FullBlock},
     checkpoint::RootInfo,
-    quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 use monad_types::{BlockId, NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -161,27 +161,38 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         root_parent_chain
     }
 
-    pub fn needs_blocksync(&self, root: &RootInfo) -> Option<BlockId> {
+    pub fn needs_blocksync(&self, root: &RootInfo) -> Option<BlockRange> {
         if root.seq_num == GENESIS_SEQ_NUM {
             return None;
         }
 
+        let mut blocksync_to = root.seq_num.max(NUM_BLOCK_HASH + self.state_root_delay)
+            - NUM_BLOCK_HASH
+            - self.state_root_delay;
+        if blocksync_to == GENESIS_SEQ_NUM {
+            // don't request genesis block
+            // NOTE: this only works because there will be no NULL blocks with SeqNum(0)
+            blocksync_to = SeqNum(1);
+        };
+
         let chain = self.root_parent_chain(root);
 
         let Some(last) = chain.last() else {
-            return Some(root.block_id);
+            return Some(BlockRange {
+                last_block_id: root.block_id,
+                root_seq_num: blocksync_to,
+            });
         };
 
         let block_seq_num = last.get_seq_num();
         let block_is_empty = last.is_empty_block();
         let block_parent_id = last.get_parent_id();
 
-        if block_parent_id != GENESIS_BLOCK_ID
-            && (block_is_empty || // if block is empty, keep requesting until we hit non-empty
-            block_seq_num
-                > root.seq_num.max(NUM_BLOCK_HASH + self.state_root_delay) - NUM_BLOCK_HASH - self.state_root_delay)
-        {
-            Some(block_parent_id)
+        if block_seq_num > blocksync_to || (block_seq_num == blocksync_to && block_is_empty) {
+            Some(BlockRange {
+                last_block_id: block_parent_id,
+                root_seq_num: blocksync_to,
+            })
         } else {
             None
         }

@@ -379,16 +379,6 @@ pub enum RouterTarget<P: PubKey> {
     TcpPointToPoint(NodeId<P>),
 }
 
-// FIXME-4: move to monad-executor-glue after spaghetti fixed
-/// TimeoutVariant distinguishes the source of the timer scheduled
-/// - `Pacemaker`: consensus pacemaker round timeout
-/// - `BlockSync`: timeout for a specific blocksync request
-#[derive(Hash, Debug, Clone, PartialEq, Eq, Copy)]
-pub enum TimeoutVariant {
-    Pacemaker,
-    BlockSync(BlockId),
-}
-
 #[repr(transparent)]
 pub struct EnumDiscriminant(pub i32);
 

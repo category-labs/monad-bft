@@ -4,18 +4,19 @@ use std::fmt::Debug;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
+use monad_blocksync::{
+    blocksync::BlockSyncSelfRequester,
+    messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
+};
 use monad_consensus::{
-    messages::{
-        consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, PeerStateRootMessage, RequestBlockSyncMessage},
-    },
+    messages::{consensus_message::ConsensusMessage, message::PeerStateRootMessage},
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{Block, FullBlock},
+    block::{BlockRange, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
-    payload::Payload,
+    payload::PayloadId,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
@@ -24,7 +25,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,15 @@ pub trait Message: Clone + Send + Sync {
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
 }
 
+/// TimeoutVariant distinguishes the source of the timer scheduled
+/// - `Pacemaker`: consensus pacemaker round timeout
+/// - `BlockSync`: timeout for a specific blocksync request
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Copy)]
+pub enum TimeoutVariant {
+    Pacemaker,
+    BlockSync(BlockSyncRequestMessage),
+}
+
 #[derive(Debug)]
 pub enum TimerCommand<E> {
     /// ScheduleReset should ALMOST ALWAYS be emitted by the state machine after handling E
@@ -64,7 +74,8 @@ pub enum TimerCommand<E> {
 
 pub enum LedgerCommand<SCT: SignatureCollection> {
     LedgerCommit(Vec<FullBlock<SCT>>),
-    LedgerFetch(BlockId),
+    LedgerFetchHeaders(BlockRange),
+    LedgerFetchPayload(PayloadId),
 }
 
 impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
@@ -73,9 +84,14 @@ impl<SCT: SignatureCollection> std::fmt::Debug for LedgerCommand<SCT> {
             LedgerCommand::LedgerCommit(blocks) => {
                 f.debug_tuple("LedgerCommit").field(blocks).finish()
             }
-            LedgerCommand::LedgerFetch(block_id) => {
-                f.debug_tuple("LedgerFetch").field(block_id).finish()
-            }
+            LedgerCommand::LedgerFetchHeaders(block_range) => f
+                .debug_tuple("LedgerFetchHeaders")
+                .field(block_range)
+                .finish(),
+            LedgerCommand::LedgerFetchPayload(payload_id) => f
+                .debug_tuple("LedgerFetchPayload")
+                .field(payload_id)
+                .finish(),
         }
     }
 }
@@ -242,8 +258,8 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     /// a block that was previously requested
     /// this is an invariant
     BlockSync {
-        block: Block<SCT>,
-        payload: Payload,
+        block_range: BlockRange,
+        full_blocks: Vec<FullBlock<SCT>>,
     },
 }
 
@@ -255,25 +271,20 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 unverified_message,
             } => f
                 .debug_struct("Message")
-                .field("sender", &sender)
-                .field("msg", &unverified_message)
+                .field("sender", sender)
+                .field("msg", unverified_message)
                 .finish(),
             ConsensusEvent::Timeout => f.debug_struct("Timeout").finish(),
-            ConsensusEvent::BlockSync { block, payload } => f
+            ConsensusEvent::BlockSync {
+                block_range,
+                full_blocks,
+            } => f
                 .debug_struct("BlockSync")
-                .field("block", block)
-                .field("payload_id", &payload.get_id())
+                .field("block_range", block_range)
+                .field("full_blocks", full_blocks)
                 .finish(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockSyncSelfRequester {
-    /// Consensus requested this blocksync request
-    Consensus,
-    /// Statesync requested this blocksync request
-    StateSync,
 }
 
 /// BlockSync related events
@@ -282,20 +293,20 @@ pub enum BlockSyncEvent<SCT: SignatureCollection> {
     /// A peer (not self) requesting for a missing block
     Request {
         sender: NodeId<SCT::NodeIdPubKey>,
-        request: RequestBlockSyncMessage,
+        request: BlockSyncRequestMessage,
     },
     /// Outbound request timed out
-    Timeout(RequestBlockSyncMessage),
+    Timeout(BlockSyncRequestMessage),
     /// self requesting for a missing block
     /// this request must be retried if necessary
     SelfRequest {
         requester: BlockSyncSelfRequester,
-        request: RequestBlockSyncMessage,
+        block_range: BlockRange,
     },
     /// cancel request for block
     SelfCancelRequest {
         requester: BlockSyncSelfRequester,
-        request: RequestBlockSyncMessage,
+        block_range: BlockRange,
     },
     /// A peer (not self) sending us a block
     Response {
@@ -313,32 +324,35 @@ impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
         match self {
             Self::Request { sender, request } => f
                 .debug_struct("BlockSyncRequest")
-                .field("sender", &sender)
-                .field("request", &request)
+                .field("sender", sender)
+                .field("request", request)
                 .finish(),
-            Self::SelfRequest { requester, request } => f
+            Self::SelfRequest {
+                requester,
+                block_range,
+            } => f
                 .debug_struct("BlockSyncSelfRequest")
-                .field("requester", &requester)
-                .field("request", &request)
+                .field("requester", requester)
+                .field("block_range", block_range)
                 .finish(),
-            Self::SelfCancelRequest { requester, request } => f
+            Self::SelfCancelRequest {
+                requester,
+                block_range,
+            } => f
                 .debug_struct("BlockSyncSelfCancelRequest")
-                .field("requester", &requester)
-                .field("request", &request)
+                .field("requester", requester)
+                .field("block_range", block_range)
                 .finish(),
             Self::Response { sender, response } => f
                 .debug_struct("BlockSyncResponse")
-                .field("sender", &sender)
-                .field("response", &response)
+                .field("sender", sender)
+                .field("response", response)
                 .finish(),
             Self::SelfResponse { response } => f
                 .debug_struct("BlockSyncSelfResponse")
-                .field("response", &response)
+                .field("response", response)
                 .finish(),
-            Self::Timeout(request) => f
-                .debug_struct("Timeout")
-                .field("request", &request)
-                .finish(),
+            Self::Timeout(request) => f.debug_struct("Timeout").field("request", request).finish(),
         }
     }
 }
@@ -445,7 +459,10 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     DoneSync(SeqNum),
 
     // Statesync-requested block
-    BlockSync(FullBlock<SCT>),
+    BlockSync {
+        block_range: BlockRange,
+        full_blocks: Vec<FullBlock<SCT>>,
+    },
 
     /// Consensus request sync
     RequestSync {

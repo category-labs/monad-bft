@@ -15,11 +15,11 @@ use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, Message, MonadEvent, RouterCommand, TimerCommand, TimestampCommand,
+    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
-use monad_types::{NodeId, TimeoutVariant};
+use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, ipc::MockIpcReceiver, ledger::MockableLedger,
     loopback::LoopbackExecutor, state_root_hash::MockableStateRootHash,
@@ -481,25 +481,42 @@ mod tests {
     use std::{collections::HashSet, time::Duration};
 
     use futures::{FutureExt, StreamExt};
+    use monad_blocksync::messages::message::BlockSyncRequestMessage;
+    use monad_consensus_types::{block::BlockRange, payload::PayloadId};
     use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
-    use monad_types::{BlockId, TimeoutVariant};
+    use monad_types::{BlockId, SeqNum};
 
     use super::*;
 
-    fn get_bids() -> [BlockId; 10] {
+    fn get_blocksync_requests() -> [BlockSyncRequestMessage; 10] {
         [
-            BlockId(Hash([0x00_u8; 32])),
-            BlockId(Hash([0x01_u8; 32])),
-            BlockId(Hash([0x02_u8; 32])),
-            BlockId(Hash([0x03_u8; 32])),
-            BlockId(Hash([0x04_u8; 32])),
-            BlockId(Hash([0x05_u8; 32])),
-            BlockId(Hash([0x06_u8; 32])),
-            BlockId(Hash([0x07_u8; 32])),
-            BlockId(Hash([0x08_u8; 32])),
-            BlockId(Hash([0x09_u8; 32])),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x00_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x02_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x03_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x04_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x05_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x06_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x07_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x08_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x09_u8; 32]))),
         ]
     }
 
@@ -637,13 +654,13 @@ mod tests {
             on_timeout: TimeoutVariant::Pacemaker,
         }]);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
-        for (i, id) in bids.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             mock_timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::from_millis(i as u64),
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
+                variant: TimeoutVariant::BlockSync(*req),
+                on_timeout: TimeoutVariant::BlockSync(*req),
             }]);
         }
 
@@ -657,15 +674,15 @@ mod tests {
                         regular_tmo_observed = true
                     }
                 }
-                Some(Some(TimeoutVariant::BlockSync(bid))) => {
-                    assert!(bids.remove(&bid));
+                Some(Some(TimeoutVariant::BlockSync(req))) => {
+                    assert!(requests.remove(&req));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
         assert!(regular_tmo_observed);
-        assert!(bids.is_empty());
+        assert!(requests.is_empty());
 
         assert_eq!(mock_timer.next().now_or_never(), None);
     }
@@ -675,28 +692,28 @@ mod tests {
         let mut mock_timer = MockTimer::default();
         assert_eq!(mock_timer.next().now_or_never(), None);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
         for _ in 0..3 {
-            for id in bids.iter() {
+            for req in requests.iter() {
                 mock_timer.exec(vec![TimerCommand::Schedule {
                     duration: Duration::ZERO,
-                    variant: TimeoutVariant::BlockSync(*id),
-                    on_timeout: TimeoutVariant::BlockSync(*id),
+                    variant: TimeoutVariant::BlockSync(*req),
+                    on_timeout: TimeoutVariant::BlockSync(*req),
                 }]);
             }
         }
 
         for _ in 0..10 {
             match mock_timer.next().now_or_never() {
-                Some(Some(TimeoutVariant::BlockSync(bid))) => {
-                    assert!(bids.remove(&bid));
+                Some(Some(TimeoutVariant::BlockSync(req))) => {
+                    assert!(requests.remove(&req));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
-        assert!(bids.is_empty());
+        assert!(requests.is_empty());
         assert_eq!(mock_timer.next().now_or_never(), None);
     }
 
@@ -707,40 +724,58 @@ mod tests {
 
         // fetch reset submitted earlier should have no impact.
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x00_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x00_u8; 32])),
+                root_seq_num: SeqNum(1),
+            })),
         )]);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
-        for id in bids.iter() {
+        for req in requests.iter() {
             mock_timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::ZERO,
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
+                variant: TimeoutVariant::BlockSync(*req),
+                on_timeout: TimeoutVariant::BlockSync(*req),
             }]);
         }
 
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x01_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            })),
         )]);
-
         mock_timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x02_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x02_u8; 32])),
+                root_seq_num: SeqNum(1),
+            })),
         )]);
 
         for _ in 0..8 {
             match mock_timer.next().now_or_never() {
-                Some(Some(TimeoutVariant::BlockSync(bid))) => {
-                    assert!(bids.remove(&bid));
+                Some(Some(TimeoutVariant::BlockSync(req))) => {
+                    assert!(requests.remove(&req));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
-        assert_eq!(bids.len(), 2);
+        assert_eq!(requests.len(), 2);
         assert_eq!(mock_timer.next().now_or_never(), None);
-        assert!(bids.contains(&BlockId(Hash([0x01_u8; 32]))));
-        assert!(bids.contains(&BlockId(Hash([0x02_u8; 32]))));
+        assert!(
+            requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }))
+        );
+        assert!(
+            requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x02_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }))
+        );
     }
 
     #[test]
@@ -748,20 +783,20 @@ mod tests {
         let mut mock_timer = MockTimer::default();
         assert_eq!(mock_timer.next().now_or_never(), None);
 
-        let bids = get_bids();
+        let requests = get_blocksync_requests();
 
-        for (i, id) in bids.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             mock_timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::from_millis((i as u64) + 10),
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
+                variant: TimeoutVariant::BlockSync(*req),
+                on_timeout: TimeoutVariant::BlockSync(*req),
             }]);
         }
 
-        for bid in bids {
+        for req in requests {
             match mock_timer.next().now_or_never() {
-                Some(Some(TimeoutVariant::BlockSync(id))) => {
-                    assert_eq!(bid, id);
+                Some(Some(TimeoutVariant::BlockSync(timer_req))) => {
+                    assert_eq!(req, timer_req);
                 }
                 _ => panic!("not receiving timeout"),
             }

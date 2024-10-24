@@ -212,7 +212,12 @@ fn two_nodes_quic_latency() {
     verifier
         .metric_exact(
             &node_ids,
-            fetch_metric!(blocksync_events.blocksync_request),
+            fetch_metric!(blocksync_events.self_headers_request),
+            0,
+        )
+        .metric_exact(
+            &node_ids,
+            fetch_metric!(blocksync_events.self_payload_request),
             0,
         )
         // handle proposal for all blocks in ledger

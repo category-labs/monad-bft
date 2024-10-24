@@ -8,12 +8,13 @@ use epoch::EpochChildState;
 use itertools::Itertools;
 use mempool::MempoolChildState;
 use monad_async_state_verify::AsyncStateVerifyProcess;
+use monad_blocksync::{
+    blocksync::{BlockSync, BlockSyncSelfRequester},
+    messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
+};
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::{
-        consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, PeerStateRootMessage, RequestBlockSyncMessage},
-    },
+    messages::{consensus_message::ConsensusMessage, message::PeerStateRootMessage},
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
@@ -36,11 +37,10 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    AsyncStateVerifyEvent, BlockSyncEvent, BlockSyncSelfRequester, ClearMetrics, Command,
-    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
-    ValidatorEvent, WriteCommand,
+    AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
+    ControlPanelCommand, ControlPanelEvent, GetMetrics, GetValidatorSet, LedgerCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand, StateRootHashCommand,
+    StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
@@ -51,8 +51,6 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use statesync::BlockBuffer;
-
-use crate::blocksync::BlockSync;
 
 mod async_state_verify;
 mod blocksync;
@@ -466,7 +464,7 @@ where
     /// Core consensus algorithm state machine
     consensus: ConsensusMode<SCT, BPT, SBT>,
     /// Handles blocksync servicing
-    block_sync: BlockSync<ST>,
+    block_sync: BlockSync<ST, SCT>,
 
     /// Algorithm for choosing leaders for the consensus algorithm
     leader_election: LT,
@@ -554,7 +552,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
-    BlockSyncRequest(RequestBlockSyncMessage),
+    BlockSyncRequest(BlockSyncRequestMessage),
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
     PeerStateRootMessage(Validated<PeerStateRootMessage<SCT>>),
     ForwardedTx(Vec<Bytes>),
@@ -581,7 +579,7 @@ where
     Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
 
     /// Request a missing block given BlockId
-    BlockSyncRequest(RequestBlockSyncMessage),
+    BlockSyncRequest(BlockSyncRequestMessage),
 
     /// Block sync response
     BlockSyncResponse(BlockSyncResponseMessage<SCT>),
@@ -1009,11 +1007,11 @@ where
                     };
 
                     // committed-block-sync
-                    if let Some(block_id) = block_buffer.needs_blocksync(root) {
+                    if let Some(block_range) = block_buffer.needs_blocksync(root) {
                         commands.extend(self.update(MonadEvent::BlockSyncEvent(
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
-                                request: RequestBlockSyncMessage { block_id },
+                                block_range,
                             },
                         )));
                     }
@@ -1048,7 +1046,10 @@ where
                         self.maybe_start_consensus()
                     }
                 }
-                StateSyncEvent::BlockSync(full_block) => {
+                StateSyncEvent::BlockSync {
+                    block_range,
+                    full_blocks,
+                } => {
                     let ConsensusMode::Sync {
                         root, block_buffer, ..
                     } = &mut self.consensus
@@ -1058,13 +1059,16 @@ where
 
                     let mut commands = Vec::new();
 
-                    block_buffer.handle_blocksync(full_block);
+                    for full_block in full_blocks {
+                        block_buffer.handle_blocksync(full_block);
+                    }
+
                     // committed-block-sync
-                    if let Some(block_id) = block_buffer.needs_blocksync(root) {
+                    if let Some(block_range) = block_buffer.needs_blocksync(root) {
                         commands.extend(self.update(MonadEvent::BlockSyncEvent(
                             BlockSyncEvent::SelfRequest {
                                 requester: BlockSyncSelfRequester::StateSync,
-                                request: RequestBlockSyncMessage { block_id },
+                                block_range,
                             },
                         )));
                     }
@@ -1232,7 +1236,7 @@ where
         tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
         self.consensus = ConsensusMode::Live(consensus);
         commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
-        for (sender, proposal) in cached_proposals.into_iter().rev() {
+        for (sender, proposal) in cached_proposals {
             // handle proposals in reverse order because later blocks are more likely to pass
             // timestamp validation
             //

@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-async-state-verify = { path = "../monad-async-state-verify" }
+monad-blocksync = { path = "../monad-blocksync" }
 monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
@@ -25,8 +26,6 @@ monad-state-backend = { path = "../monad-state-backend" }
 bytes = { workspace = true }
 itertools = { workspace = true }
 prost = { workspace = true }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -415,7 +415,12 @@ mod test {
         verifier_after_blackout
             .metric_exact(
                 &running_nodes_ids,
-                fetch_metric!(blocksync_events.blocksync_request),
+                fetch_metric!(blocksync_events.self_headers_request),
+                0,
+            )
+            .metric_exact(
+                &running_nodes_ids,
+                fetch_metric!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger
@@ -432,7 +437,7 @@ mod test {
             )
             .metric_maximum(
                 &vec![blackout_node_id],
-                fetch_metric!(blocksync_events.blocksync_request),
+                fetch_metric!(blocksync_events.self_payload_request),
                 4,
             )
             // initial TC + max timeouts during blackout
@@ -629,7 +634,12 @@ mod test {
         verifier
             .metric_exact(
                 &node_ids,
-                fetch_metric!(blocksync_events.blocksync_request),
+                fetch_metric!(blocksync_events.self_headers_request),
+                0,
+            )
+            .metric_exact(
+                &node_ids,
+                fetch_metric!(blocksync_events.self_payload_request),
                 0,
             )
             // handle proposal for all blocks in ledger

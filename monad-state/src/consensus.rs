@@ -1,9 +1,10 @@
 use std::marker::PhantomData;
 
+use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, RequestBlockSyncMessage},
+        message::ProposalMessage,
     },
     validation::signing::{Unvalidated, Unverified},
 };
@@ -21,12 +22,12 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    BlockSyncEvent, BlockSyncSelfRequester, CheckpointCommand, Command, ConsensusEvent,
-    LedgerCommand, LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand,
-    StateSyncCommand, StateSyncEvent, TimerCommand, TimestampCommand,
+    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncCommand,
+    StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{NodeId, SeqNum, TimeoutVariant};
+use monad_types::{NodeId, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -221,9 +222,10 @@ where
                 }
             }
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
-            ConsensusEvent::BlockSync { block, payload } => {
-                consensus.handle_block_sync(block, payload)
-            }
+            ConsensusEvent::BlockSync {
+                block_range,
+                full_blocks,
+            } => consensus.handle_block_sync(block_range, full_blocks),
         };
         consensus_cmds
             .into_iter()
@@ -351,19 +353,19 @@ where
             ConsensusCommand::ScheduleReset => parent_cmds.push(Command::TimerCommand(
                 TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             )),
-            ConsensusCommand::RequestSync { block_id } => {
+            ConsensusCommand::RequestSync(block_range) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfRequest {
                         requester: BlockSyncSelfRequester::Consensus,
-                        request: RequestBlockSyncMessage { block_id },
+                        block_range,
                     }),
                 )));
             }
-            ConsensusCommand::CancelSync { block_id } => {
+            ConsensusCommand::CancelSync(block_range) => {
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfCancelRequest {
                         requester: BlockSyncSelfRequester::Consensus,
-                        request: RequestBlockSyncMessage { block_id },
+                        block_range,
                     }),
                 )));
             }

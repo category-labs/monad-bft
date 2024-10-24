@@ -166,7 +166,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     verifier_before_delayed_messages
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.blocksync_request),
+            fetch_metric!(blocksync_events.self_headers_request),
+            0,
+        )
+        .metric_exact(
+            &nodes_except_first,
+            fetch_metric!(blocksync_events.self_payload_request),
             0,
         )
         // handle proposal for all blocks in ledger
@@ -232,7 +237,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     verifier_after_delayed_messages
         .metric_exact(
             &nodes_except_first,
-            fetch_metric!(blocksync_events.blocksync_request),
+            fetch_metric!(blocksync_events.self_headers_request),
+            0,
+        )
+        .metric_exact(
+            &nodes_except_first,
+            fetch_metric!(blocksync_events.self_payload_request),
             0,
         )
         // handle proposal for all blocks in ledger
@@ -255,7 +265,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         )
         .metric_range(
             &vec![first_node],
-            fetch_metric!(blocksync_events.blocksync_request),
+            fetch_metric!(blocksync_events.self_headers_request),
             blocksync_requests_range.0 as u64,
             blocksync_requests_range.1 as u64,
         );

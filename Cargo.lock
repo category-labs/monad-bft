@@ -3528,6 +3528,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-blocksync"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "itertools 0.10.5",
+ "monad-blocktree",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-types",
+ "monad-multi-sig",
+ "monad-proto",
+ "monad-state-backend",
+ "monad-testutil",
+ "monad-types",
+ "monad-validator",
+ "rand",
+ "rand_chacha",
+ "test-case",
+ "tracing",
+ "zerocopy 0.6.5",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -3788,7 +3811,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "futures",
- "monad-consensus",
+ "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-tx",
@@ -3890,6 +3913,7 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "monad-blocksync",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
@@ -3981,7 +4005,7 @@ dependencies = [
  "clap 4.4.10",
  "futures",
  "monad-block-persist",
- "monad-consensus",
+ "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-tx",
@@ -4012,6 +4036,7 @@ dependencies = [
  "futures",
  "itertools 0.10.5",
  "monad-async-state-verify",
+ "monad-blocksync",
  "monad-bls",
  "monad-consensus",
  "monad-consensus-types",
@@ -4300,6 +4325,7 @@ dependencies = [
  "glob",
  "itertools 0.10.5",
  "monad-async-state-verify",
+ "monad-blocksync",
  "monad-blocktree",
  "monad-bls",
  "monad-consensus",
@@ -4317,8 +4343,6 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "prost 0.12.6",
- "rand",
- "rand_chacha",
  "test-case",
  "toml 0.7.8",
  "tracing",
@@ -4506,7 +4530,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "futures",
- "monad-consensus",
+ "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",

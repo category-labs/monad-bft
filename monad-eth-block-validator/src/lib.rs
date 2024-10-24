@@ -122,6 +122,11 @@ impl EthValidator {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
 
+        if block.timestamp <= block.get_qc().get_timestamp() {
+            // timestamps must be monotonically increasing
+            return Err(BlockValidationError::TimestampError);
+        }
+
         if let Some(author_pubkey) = author_pubkey {
             if let Err(e) = block
                 .execution

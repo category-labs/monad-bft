@@ -22,12 +22,13 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
             ConsensusEvent::Timeout => {
                 proto_consensus_event::Event::Timeout(ProtoPaceMakerTimeout {})
             }
-            ConsensusEvent::BlockSync { block, payload } => {
-                proto_consensus_event::Event::BlockSync(ProtoBlockSyncWithPayload {
-                    block: Some(block.into()),
-                    payload: Some(payload.into()),
-                })
-            }
+            ConsensusEvent::BlockSync {
+                block_range,
+                full_blocks,
+            } => proto_consensus_event::Event::BlockSync(ProtoBlockSyncFullBlocks {
+                block_range: Some(block_range.into()),
+                full_blocks: full_blocks.iter().map(|b| b.into()).collect::<Vec<_>>(),
+            }),
         };
         Self { event: Some(event) }
     }
@@ -55,21 +56,20 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                     .try_into()?,
             },
             Some(proto_consensus_event::Event::Timeout(_tmo)) => ConsensusEvent::Timeout,
-            Some(proto_consensus_event::Event::BlockSync(event)) => {
+            Some(proto_consensus_event::Event::BlockSync(blocks)) => {
                 //ConsensusEvent::BlockSync(block.try_into()?)
                 ConsensusEvent::BlockSync {
-                    block: event
-                        .block
+                    block_range: blocks
+                        .block_range
                         .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::blocksync.block".to_owned(),
+                            "ConsensusEvent::blocksync.block_range".to_owned(),
                         ))?
                         .try_into()?,
-                    payload: event
-                        .payload
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::blocksync.payload".to_owned(),
-                        ))?
-                        .try_into()?,
+                    full_blocks: blocks
+                        .full_blocks
+                        .into_iter()
+                        .map(|b| b.try_into())
+                        .collect::<Result<Vec<_>, _>>()?,
                 }
             }
             None => Err(ProtoError::MissingRequiredField(

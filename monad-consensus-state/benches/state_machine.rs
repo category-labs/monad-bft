@@ -11,7 +11,7 @@ use monad_consensus_state::{
     ConsensusStateWrapper,
 };
 use monad_consensus_types::{
-    block::BlockKind,
+    block::{BlockKind, BlockRange, FullBlock},
     checkpoint::RootInfo,
     metrics::Metrics,
     payload::{
@@ -39,7 +39,7 @@ use monad_testutil::{
     signing::{create_certificate_keys, create_keys},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -264,8 +264,13 @@ where
         self.wrapped_state().handle_vote_message(author, p)
     }
 
-    fn handle_block_sync(&mut self, b: Block<SCT>, p: Payload) -> Vec<ConsensusCommand<ST, SCT>> {
-        self.wrapped_state().handle_block_sync(b, p)
+    fn handle_block_sync(
+        &mut self,
+        block_range: BlockRange,
+        full_blocks: Vec<FullBlock<SCT>>,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        self.wrapped_state()
+            .handle_block_sync(block_range, full_blocks)
     }
 }
 
@@ -535,14 +540,14 @@ where
         .collect::<Vec<_>>()
 }
 
-fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockId>
+fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockRange>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     cmds.into_iter()
         .filter_map(|c| match c {
-            ConsensusCommand::RequestSync { block_id } => Some(block_id),
+            ConsensusCommand::RequestSync(block_range) => Some(block_range),
             _ => None,
         })
         .collect()

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fs::{self, File},
     io::{ErrorKind, Write},
     marker::PhantomData,
@@ -13,10 +13,13 @@ use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use futures::Stream;
 use monad_block_persist::{BlockPersist, FileBlockPersist};
-use monad_consensus::messages::message::BlockSyncResponseMessage;
+use monad_blocksync::messages::message::{
+    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+};
 use monad_consensus_types::{
-    block::{BlockType, FullBlock as MonadBlock},
-    payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
+    block::{Block, BlockRange, BlockType, FullBlock as MonadBlock},
+    payload::{ExecutionProtocol, FullTransactionList, Payload, PayloadId, TransactionPayload},
+    quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -51,8 +54,9 @@ where
     last_commit: Option<SeqNum>,
 
     block_cache_size: usize,
-    block_cache: HashMap<BlockId, MonadBlock<SCT>>,
-    block_cache_index: BTreeMap<Round, BlockId>,
+    block_header_cache: HashMap<BlockId, Block<SCT>>,
+    block_payload_cache: HashMap<PayloadId, Payload>,
+    block_cache_index: BTreeMap<Round, (BlockId, PayloadId)>,
 
     fetches_tx: tokio::sync::mpsc::UnboundedSender<BlockSyncResponseMessage<SCT>>,
     fetches: tokio::sync::mpsc::UnboundedReceiver<BlockSyncResponseMessage<SCT>>,
@@ -100,7 +104,8 @@ where
             last_commit: Default::default(),
 
             block_cache_size: 100, // TODO configurable
-            block_cache: Default::default(),
+            block_header_cache: Default::default(),
+            block_payload_cache: Default::default(),
             block_cache_index: Default::default(),
 
             fetches_tx,
@@ -114,13 +119,21 @@ where
         self.last_commit
     }
 
-    fn update_cache(&mut self, block: MonadBlock<SCT>) {
-        let block = self.block_cache.entry(block.get_id()).or_insert(block);
+    fn update_cache(&mut self, monad_block: MonadBlock<SCT>) {
+        let block_id = monad_block.get_id();
+        let payload_id = monad_block.get_payload_id();
+        let block_round = monad_block.get_round();
+
+        self.block_header_cache.insert(block_id, monad_block.block);
+        self.block_payload_cache
+            .insert(payload_id, monad_block.payload);
         self.block_cache_index
-            .insert(block.get_round(), block.get_id());
+            .insert(block_round, (block_id, payload_id));
+
         if self.block_cache_index.len() > self.block_cache_size {
-            let (_block_num, block_id) = self.block_cache_index.pop_first().expect("nonempty");
-            self.block_cache.remove(&block_id);
+            let (_, (block_id, payload_id)) = self.block_cache_index.pop_first().expect("nonempty");
+            self.block_header_cache.remove(&block_id);
+            self.block_payload_cache.remove(&payload_id);
         }
     }
 
@@ -219,22 +232,47 @@ where
         }
     }
 
-    fn get_ledger_fetch_response(&self, block_id: BlockId) -> BlockSyncResponseMessage<SCT> {
-        let maybe_response = self
-            .bft_block_persist
-            .read_bft_block(&block_id)
-            .and_then(|block| {
-                let payload_id = block.payload_id;
-                let maybe_payload = self.bft_block_persist.read_bft_payload(&payload_id);
-                match maybe_payload {
-                    Ok(payload) => Ok(MonadBlock { block, payload }),
-                    Err(e) => Err(e),
-                }
-            });
+    fn ledger_fetch_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<SCT> {
+        let mut next_block_id = block_range.last_block_id;
 
-        match maybe_response {
-            Ok(full_block) => BlockSyncResponseMessage::BlockFound(full_block),
-            Err(_) => BlockSyncResponseMessage::NotAvailable(block_id),
+        let mut headers = VecDeque::new();
+        loop {
+            // TODO add max number of headers to read
+            let block_header =
+                if let Some(cached_header) = self.block_header_cache.get(&next_block_id) {
+                    cached_header.clone()
+                } else if let Ok(block) = self.bft_block_persist.read_bft_block(&next_block_id) {
+                    block
+                } else {
+                    return BlockSyncHeadersResponse::NotAvailable(block_range);
+                };
+
+            if block_header.get_seq_num() < block_range.root_seq_num {
+                // if headers is empty here, then block range is invalid
+                break;
+            }
+
+            next_block_id = block_header.get_parent_id();
+            headers.push_front(block_header);
+
+            if next_block_id == GENESIS_BLOCK_ID {
+                // don't try fetching genesis block
+                break;
+            }
+        }
+
+        BlockSyncHeadersResponse::Found((block_range, headers.into()))
+    }
+
+    fn ledger_fetch_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+        if let Some(cached_payload) = self.block_payload_cache.get(&payload_id) {
+            // payload in cache
+            BlockSyncPayloadResponse::Found(cached_payload.clone())
+        } else if let Ok(payload) = self.bft_block_persist.read_bft_payload(&payload_id) {
+            // payload read from block persist
+            BlockSyncPayloadResponse::Found(payload)
+        } else {
+            BlockSyncPayloadResponse::NotAvailable(payload_id)
         }
     }
 }
@@ -261,21 +299,29 @@ where
                         self.write_eth_block(seqnum, &b).unwrap();
                         self.last_commit = Some(seqnum);
                     }
-                }
-                LedgerCommand::LedgerFetch(block_id) => {
-                    // TODO cap max concurrent LedgerFetch? DOS vector
-                    if let Some(cached_block) = self.block_cache.get(&block_id) {
-                        self.fetches_tx
-                            .send(BlockSyncResponseMessage::BlockFound(cached_block.clone()))
-                            .expect("failed to write to fetches_tx");
-                    } else {
-                        let fetches_tx = self.fetches_tx.clone();
 
-                        let response = self.get_ledger_fetch_response(block_id);
-                        fetches_tx
-                            .send(response)
-                            .expect("failed to write to fetches_tx");
+                    for (_, _, full_block) in full_blocks {
+                        self.update_cache(full_block);
                     }
+                }
+                LedgerCommand::LedgerFetchHeaders(block_range) => {
+                    // TODO cap max concurrent LedgerFetch? DOS vector
+                    let fetches_tx = self.fetches_tx.clone();
+                    let response = BlockSyncResponseMessage::HeadersResponse(
+                        self.ledger_fetch_headers(block_range),
+                    );
+                    fetches_tx
+                        .send(response)
+                        .expect("failed to write to fetches_tx");
+                }
+                LedgerCommand::LedgerFetchPayload(payload_id) => {
+                    let fetches_tx = self.fetches_tx.clone();
+                    let response = BlockSyncResponseMessage::PayloadResponse(
+                        self.ledger_fetch_payload(payload_id),
+                    );
+                    fetches_tx
+                        .send(response)
+                        .expect("failed to write to fetches_tx");
                 }
             }
         }
@@ -296,9 +342,6 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.fetches.poll_recv(cx).map(|response| {
             let response = response.expect("fetches_tx never dropped");
-            if let BlockSyncResponseMessage::BlockFound(block) = &response {
-                self.update_cache(block.clone())
-            }
             Some(MonadEvent::BlockSyncEvent(BlockSyncEvent::SelfResponse {
                 response,
             }))

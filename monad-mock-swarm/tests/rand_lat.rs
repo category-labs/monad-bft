@@ -166,7 +166,12 @@ fn nodes_with_random_latency(latency_seed: u64) {
         )
         .metric_maximum(
             &node_ids,
-            fetch_metric!(blocksync_events.blocksync_request),
+            fetch_metric!(blocksync_events.self_headers_request),
+            max_blocksync_requests,
+        )
+        .metric_maximum(
+            &node_ids,
+            fetch_metric!(blocksync_events.self_payload_request),
             max_blocksync_requests,
         );
 

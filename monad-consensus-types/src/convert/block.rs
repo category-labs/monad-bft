@@ -4,11 +4,12 @@ use monad_proto::{
     proto::{
         basic::{ProtoBloom, ProtoGas, ProtoPayloadId},
         block::*,
+        blocksync::ProtoBlockRange,
     },
 };
 
 use crate::{
-    block::{Block, BlockKind, FullBlock},
+    block::{Block, BlockKind, BlockRange, FullBlock},
     payload::{
         Bloom, ExecutionProtocol, FullTransactionList, Gas, Payload, PayloadId, RandaoReveal,
         TransactionPayload,
@@ -35,6 +36,36 @@ impl TryFrom<i32> for BlockKind {
                 "unknown block kind".to_owned(),
             )),
         }
+    }
+}
+
+impl From<&BlockRange> for ProtoBlockRange {
+    fn from(value: &BlockRange) -> Self {
+        Self {
+            last_block_id: Some((&value.last_block_id).into()),
+            root_seq_num: Some((&value.root_seq_num).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoBlockRange> for BlockRange {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockRange) -> Result<Self, Self::Error> {
+        Ok(Self {
+            last_block_id: value
+                .last_block_id
+                .ok_or(Self::Error::MissingRequiredField(
+                    "BlockRange.last_block_id".to_owned(),
+                ))?
+                .try_into()?,
+            root_seq_num: value
+                .root_seq_num
+                .ok_or(Self::Error::MissingRequiredField(
+                    "BlockRange.root_seq_num".to_owned(),
+                ))?
+                .try_into()?,
+        })
     }
 }
 

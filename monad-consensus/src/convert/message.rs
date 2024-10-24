@@ -10,10 +10,7 @@ use monad_proto::{error::ProtoError, proto::message::*};
 use crate::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{
-            BlockSyncResponseMessage, PeerStateRootMessage, ProposalMessage,
-            RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
-        },
+        message::{PeerStateRootMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
@@ -104,64 +101,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
                 .try_into()?,
             last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
         })
-    }
-}
-
-impl From<&RequestBlockSyncMessage> for ProtoRequestBlockSyncMessage {
-    fn from(value: &RequestBlockSyncMessage) -> Self {
-        ProtoRequestBlockSyncMessage {
-            block_id: Some((&value.block_id).into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoRequestBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(RequestBlockSyncMessage {
-            block_id: value
-                .block_id
-                .ok_or(Self::Error::MissingRequiredField(
-                    "RequestBlockSyncMessage.block_id".to_owned(),
-                ))?
-                .try_into()?,
-        })
-    }
-}
-
-impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlockSyncMessage {
-    fn from(response: &BlockSyncResponseMessage<SCT>) -> Self {
-        Self {
-            oneof_message: Some(match response {
-                BlockSyncResponseMessage::BlockFound(b) => {
-                    proto_block_sync_message::OneofMessage::BlockFound(b.into())
-                }
-                BlockSyncResponseMessage::NotAvailable(bid) => {
-                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
-                }
-            }),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncResponseMessage<SCT> {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
-        let msg = match value.oneof_message {
-            Some(proto_block_sync_message::OneofMessage::BlockFound(b)) => {
-                BlockSyncResponseMessage::BlockFound(b.try_into()?)
-            }
-            Some(proto_block_sync_message::OneofMessage::NotAvailable(bid)) => {
-                BlockSyncResponseMessage::NotAvailable(bid.try_into()?)
-            }
-            None => Err(ProtoError::MissingRequiredField(
-                "BlockSyncMessage.oneofmessage".to_owned(),
-            ))?,
-        };
-
-        Ok(msg)
     }
 }
 

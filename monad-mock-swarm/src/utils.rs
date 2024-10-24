@@ -3,15 +3,15 @@
 pub mod test_tool {
     use std::time::Duration;
 
+    use monad_blocksync::messages::message::{
+        BlockSyncHeadersResponse, BlockSyncRequestMessage, BlockSyncResponseMessage,
+    };
     use monad_consensus::messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{
-            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-            VoteMessage,
-        },
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     };
     use monad_consensus_types::{
-        block::{Block, BlockKind},
+        block::{Block, BlockKind, BlockRange},
         ledger::CommitResult,
         payload::{
             ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
@@ -155,14 +155,20 @@ pub mod test_tool {
     }
 
     pub fn fake_request_block_sync() -> VerifiedMonadMessage<ST, SC> {
-        let internal_msg = RequestBlockSyncMessage {
-            block_id: BlockId(Hash([0x00_u8; 32])),
-        };
+        let internal_msg = BlockSyncRequestMessage::Headers(BlockRange {
+            last_block_id: BlockId(Hash([0x01_u8; 32])),
+            root_seq_num: SeqNum(1),
+        });
         VerifiedMonadMessage::BlockSyncRequest(internal_msg)
     }
 
     pub fn fake_block_sync() -> VerifiedMonadMessage<ST, SC> {
-        let internal_msg = BlockSyncResponseMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
+        let internal_msg = BlockSyncResponseMessage::HeadersResponse(
+            BlockSyncHeadersResponse::NotAvailable(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+        );
         VerifiedMonadMessage::BlockSyncResponse(internal_msg)
     }
 }

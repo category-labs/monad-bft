@@ -72,11 +72,21 @@ pub struct BlocktreeEvents {
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct BlocksyncEvents {
     // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub blocksync_response_successful: u64,
-    pub blocksync_response_failed: u64,
-    pub blocksync_response_unexpected: u64,
-    pub blocksync_request: u64,
-    pub blocksync_txn_validation_failed: u64,
+    pub self_headers_request: u64,
+    pub self_payload_request: u64,
+    // must be in sync with the counter in blocksync module
+    pub self_payload_requests_in_flight: u64,
+    pub headers_response_successful: u64,
+    pub headers_response_failed: u64,
+    pub headers_response_unexpected: u64,
+    pub headers_validation_failed: u64,
+    pub payload_response_successful: u64,
+    pub payload_response_failed: u64,
+    pub payload_response_unexpected: u64,
+    pub payload_validation_failed: u64,
+    pub request_timeout: u64,
+    pub peer_headers_request: u64,
+    pub peer_payload_request: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -152,11 +162,18 @@ impl Metrics {
             metric!(self, blocktree_events.add_success),
             metric!(self, blocktree_events.add_dup),
             // BlocksyncEvents
-            metric!(self, blocksync_events.blocksync_response_successful),
-            metric!(self, blocksync_events.blocksync_response_failed),
-            metric!(self, blocksync_events.blocksync_response_unexpected),
-            metric!(self, blocksync_events.blocksync_request),
-            metric!(self, blocksync_events.blocksync_txn_validation_failed),
+            metric!(self, blocksync_events.self_headers_request),
+            metric!(self, blocksync_events.self_payload_request),
+            metric!(self, blocksync_events.self_payload_requests_in_flight),
+            metric!(self, blocksync_events.headers_response_successful),
+            metric!(self, blocksync_events.headers_response_failed),
+            metric!(self, blocksync_events.headers_response_unexpected),
+            metric!(self, blocksync_events.payload_response_successful),
+            metric!(self, blocksync_events.payload_response_failed),
+            metric!(self, blocksync_events.payload_response_unexpected),
+            metric!(self, blocksync_events.request_timeout),
+            metric!(self, blocksync_events.peer_headers_request),
+            metric!(self, blocksync_events.peer_payload_request),
         ]
     }
 }

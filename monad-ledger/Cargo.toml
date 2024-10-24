@@ -10,7 +10,7 @@ bench = false
 
 [dependencies]
 monad-block-persist = { path = "../monad-block-persist" }
-monad-consensus = { path = "../monad-consensus" }
+monad-blocksync = { path = "../monad-blocksync" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }

@@ -18,6 +18,7 @@ pub enum BlockValidationError {
     HeaderError,
     PayloadError,
     HeaderPayloadMismatchError,
+    TimestampError,
 }
 
 #[auto_impl(Box)]

@@ -4,6 +4,7 @@ package monad_proto.event;
 
 import "basic.proto";
 import "block.proto";
+import "blocksync.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
@@ -42,51 +43,41 @@ message ProtoStateUpdateEvent {
   monad_proto.state_root_hash.ProtoStateRootHashInfo info = 1;
 }
 
-message ProtoBlockSyncRequestWithSender {
-  monad_proto.basic.ProtoNodeId sender = 1;
-  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
-}
-
-message ProtoBlockSyncResponseWithSender {
-  monad_proto.basic.ProtoNodeId sender = 1;
-  monad_proto.message.ProtoBlockSyncMessage response = 2;
-}
-
-enum ProtoBlockSyncSelfRequester {
-  CONSENSUS = 0;
-  STATE_SYNC = 1;
-}
-
-message ProtoBlockSyncSelfRequest {
-  ProtoBlockSyncSelfRequester requester = 1;
-  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
-}
-
 message ProtoTimestampUpdate {
    uint64 update = 1;
 }
 
-message ProtoBlockSyncWithPayload {
-  monad_proto.block.ProtoBlock block = 1;
-  monad_proto.block.ProtoPayload payload = 2;
+message ProtoBlockSyncFullBlocks {
+  monad_proto.blocksync.ProtoBlockRange block_range = 1;
+  repeated monad_proto.block.ProtoFullBlock full_blocks = 2;
 }
 
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     ProtoPaceMakerTimeout timeout = 2;
-    ProtoBlockSyncWithPayload block_sync = 3;
+    ProtoBlockSyncFullBlocks block_sync = 3;
   }
+}
+
+message ProtoBlockSyncRequestWithSender {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.message.ProtoBlockSyncRequestMessage request = 2;
+}
+
+message ProtoBlockSyncResponseWithSender {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  monad_proto.message.ProtoBlockSyncResponseMessage response = 2;
 }
 
 message ProtoBlockSyncEvent {
   oneof event {
     ProtoBlockSyncRequestWithSender request = 1;
-    ProtoBlockSyncSelfRequest self_request = 2;
-    ProtoBlockSyncSelfRequest self_cancel_request = 3;
+    monad_proto.blocksync.ProtoBlockSyncSelfRequest self_request = 2;
+    monad_proto.blocksync.ProtoBlockSyncSelfRequest self_cancel_request = 3;
     ProtoBlockSyncResponseWithSender response = 4;
-    monad_proto.message.ProtoBlockSyncMessage self_response = 5;
-    monad_proto.message.ProtoRequestBlockSyncMessage timeout = 6;
+    monad_proto.message.ProtoBlockSyncResponseMessage self_response = 5;
+    monad_proto.message.ProtoBlockSyncRequestMessage timeout = 6;
   }
 }
 
@@ -181,7 +172,7 @@ message ProtoStateSyncEvent {
     ProtoOutboundStateMessage outbound = 2;
     ProtoDoneSync done_sync = 3;
     ProtoRequestSync request_sync = 4;
-    monad_proto.block.ProtoFullBlock block_sync = 5;
+    ProtoBlockSyncFullBlocks block_sync = 5;
   }
 }
 

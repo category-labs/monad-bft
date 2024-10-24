@@ -3,6 +3,7 @@
 members = [
     "monad-async-state-verify",
     "monad-block-persist",
+    "monad-blocksync",
     "monad-blocktree",
     "monad-bls",
     "monad-compress",

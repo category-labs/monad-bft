@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
+    block::Block,
     payload::Payload,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
@@ -12,7 +12,7 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_types::{BlockId, EnumDiscriminant, NodeId};
+use monad_types::NodeId;
 
 /// Consensus protocol vote message
 ///
@@ -95,52 +95,6 @@ pub struct ProposalMessage<SCT: SignatureCollection> {
 impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
-    }
-}
-
-/// Request block sync message
-///
-/// The node sends the block sync request to repair path from a block to the
-/// root in the block tree
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RequestBlockSyncMessage {
-    pub block_id: BlockId,
-}
-
-impl Hashable for RequestBlockSyncMessage {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.block_id.hash(state);
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
-    BlockFound(FullBlock<SCT>),
-    NotAvailable(BlockId),
-}
-
-impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
-    pub fn get_block_id(&self) -> BlockId {
-        match self {
-            BlockSyncResponseMessage::BlockFound(b) => b.get_id(),
-            BlockSyncResponseMessage::NotAvailable(bid) => *bid,
-        }
-    }
-}
-
-impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(std::any::type_name::<Self>().as_bytes());
-        match self {
-            BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
-                EnumDiscriminant(1).hash(state);
-                unverified_full_block.hash(state);
-            }
-            BlockSyncResponseMessage::NotAvailable(bid) => {
-                EnumDiscriminant(2).hash(state);
-                bid.hash(state)
-            }
-        }
     }
 }
 

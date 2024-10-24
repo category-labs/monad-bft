@@ -14,6 +14,22 @@ use crate::{
     state_root_hash::StateRootHash,
 };
 
+/// Represent a range of blocks the last of which is `last_block_id` and includes
+/// all blocks upto to `root_seq_num`
+/// For a valid block range, the seq num of block `last_block_id` >= `root_seq_num`
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct BlockRange {
+    pub last_block_id: BlockId,
+    pub root_seq_num: SeqNum,
+}
+
+impl Hashable for BlockRange {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.last_block_id.hash(state);
+        state.update(self.root_seq_num.as_bytes());
+    }
+}
+
 /// This trait represents a consensus block
 pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     type NodeIdPubKey: PubKey;
@@ -29,6 +45,12 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
 
     /// Node which proposed this block
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey>;
+
+    /// Payload associated with this block
+    fn get_payload(&self) -> Payload;
+
+    /// Unique hash of the associated payload
+    fn get_payload_id(&self) -> PayloadId;
 
     /// returns the BlockId for the block referenced by
     /// the QC contained in this block
@@ -215,6 +237,14 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
         self.author
     }
 
+    fn get_payload(&self) -> Payload {
+        todo!()
+    }
+
+    fn get_payload_id(&self) -> PayloadId {
+        self.payload_id
+    }
+
     fn get_parent_id(&self) -> BlockId {
         self.qc.get_block_id()
     }
@@ -368,6 +398,14 @@ impl<SCT: SignatureCollection> BlockType<SCT> for FullBlock<SCT> {
 
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
         self.block.author
+    }
+
+    fn get_payload(&self) -> Payload {
+        self.payload.clone()
+    }
+
+    fn get_payload_id(&self) -> PayloadId {
+        self.block.payload_id
     }
 
     fn get_parent_id(&self) -> BlockId {

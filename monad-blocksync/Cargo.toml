@@ -1,0 +1,27 @@
+[package]
+name = "monad-blocksync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-blocktree = { path = "../monad-blocktree" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto" }
+monad-state-backend = { path = "../monad-state-backend" }
+monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
+
+itertools = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tracing = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+monad-eth-types = { path = "../monad-eth-types" }
+monad-multi-sig = { path = "../monad-multi-sig" }
+monad-testutil = { path = "../monad-testutil" }
+
+bytes = { workspace = true }
+test-case = { workspace = true }

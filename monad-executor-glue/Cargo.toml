@@ -11,6 +11,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-blocksync = { path = "../monad-blocksync" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }

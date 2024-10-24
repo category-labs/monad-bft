@@ -10,7 +10,7 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::FullBlock,
+    block::{BlockRange, FullBlock},
     checkpoint::{Checkpoint, RootInfo},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -18,7 +18,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{BlockId, Epoch, Round, RouterTarget};
+use monad_types::{Epoch, Round, RouterTarget};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -45,13 +45,9 @@ where
     LedgerCommit(Vec<FullBlock<SCT>>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
-    RequestSync {
-        block_id: BlockId,
-    },
+    RequestSync(BlockRange),
     /// Cancels BlockSync request
-    CancelSync {
-        block_id: BlockId,
-    },
+    CancelSync(BlockRange),
     /// Too far behind, request StateSync with:
     /// 1. New blocktree root
     /// 2. New high_qc

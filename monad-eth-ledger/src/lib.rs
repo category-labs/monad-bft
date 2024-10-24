@@ -8,10 +8,13 @@ use std::{
 
 use alloy_rlp::Decodable;
 use futures::Stream;
-use monad_consensus::messages::message::BlockSyncResponseMessage;
+use monad_blocksync::messages::message::{
+    BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
+};
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
-    payload::TransactionPayload,
+    block::{BlockRange, BlockType, FullBlock},
+    payload::{PayloadId, TransactionPayload},
+    quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -61,6 +64,52 @@ where
             _phantom: Default::default(),
         }
     }
+
+    fn get_headers(&self, block_range: BlockRange) -> BlockSyncHeadersResponse<SCT> {
+        let mut next_block_id = block_range.last_block_id;
+
+        let mut headers = VecDeque::new();
+        loop {
+            // TODO add max number of headers to read
+            let Some(block_round) = self.block_ids.get(&next_block_id) else {
+                return BlockSyncHeadersResponse::NotAvailable(block_range);
+            };
+
+            let block_header = self
+                .blocks
+                .get(block_round)
+                .expect("round to blockid invariant")
+                .get_unvalidated_block_ref();
+
+            if block_header.get_seq_num() < block_range.root_seq_num {
+                // if headers is empty here, then block range is invalid
+                break;
+            }
+
+            headers.push_front(block_header.clone());
+            next_block_id = block_header.get_parent_id();
+
+            if next_block_id == GENESIS_BLOCK_ID {
+                // don't try fetching genesis block
+                break;
+            }
+        }
+
+        BlockSyncHeadersResponse::Found((block_range, headers.into()))
+    }
+
+    fn get_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
+        // TODO: all payloads are stored in memory, facilitate blocksync for only the blocksyncable_range
+        if let Some((_, full_block)) = self
+            .blocks
+            .iter()
+            .find(|(_, full_block)| full_block.get_payload_id() == payload_id)
+        {
+            return BlockSyncPayloadResponse::Found(full_block.payload.clone());
+        }
+
+        BlockSyncPayloadResponse::NotAvailable(payload_id)
+    }
 }
 
 impl<ST, SCT> Executor for MockEthLedger<ST, SCT>
@@ -104,21 +153,19 @@ where
                         }
                     }
                 }
-                LedgerCommand::LedgerFetch(block_id) => {
+                LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
-                        response: match self.block_ids.get(&block_id) {
-                            Some(round) => BlockSyncResponseMessage::BlockFound(
-                                self.blocks
-                                    .get(round)
-                                    .expect("block_id mapping inconsistent")
-                                    .clone(),
-                            ),
-                            None => BlockSyncResponseMessage::NotAvailable(block_id),
-                        },
+                        response: BlockSyncResponseMessage::HeadersResponse(
+                            self.get_headers(block_range),
+                        ),
                     });
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake()
-                    }
+                }
+                LedgerCommand::LedgerFetchPayload(payload_id) => {
+                    self.events.push_back(BlockSyncEvent::SelfResponse {
+                        response: BlockSyncResponseMessage::PayloadResponse(
+                            self.get_payload(payload_id),
+                        ),
+                    });
                 }
             }
         }

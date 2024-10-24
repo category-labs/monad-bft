@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use monad_consensus_types::{
     block::{Block, BlockKind, BlockType},
     ledger::CommitResult,
-    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, PayloadId, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -67,6 +67,14 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
 
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
         unimplemented!()
+    }
+
+    fn get_payload(&self) -> Payload {
+        unimplemented!()
+    }
+
+    fn get_payload_id(&self) -> PayloadId {
+        PayloadId(Hash([0x00_u8; 32]))
     }
 
     fn get_parent_id(&self) -> BlockId {

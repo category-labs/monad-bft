@@ -11,7 +11,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockPolicy, BlockType, FullBlock},
+    block::{Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
@@ -63,7 +63,7 @@ where
     pacemaker: Pacemaker<SCT>,
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety,
-    block_sync_requests: BTreeMap<BlockId, Round>,
+    block_sync_requests: BTreeMap<BlockId, (Round, BlockRange)>,
     last_proposed_round: Round,
 
     /// Set to true once consensus has kicked off execution
@@ -336,20 +336,6 @@ where
         debug!(proposal = ?p, "Proposal Message");
         self.metrics.consensus_events.handle_proposal += 1;
 
-        if self
-            .consensus
-            .block_sync_requests
-            .contains_key(&p.block.get_id())
-        {
-            // we can short-circuit to handle_block_sync in order to avoid doing some validation
-            // notably, we can skip timestamp validation, which is helpful if replaying proposals
-            debug!(
-                proposal = ?p,
-                "short-circuiting handle_proposal_message, blocksync'd prior"
-            );
-            return self.handle_block_sync(p.block, p.payload);
-        }
-
         let mut cmds = Vec::new();
 
         let epoch = self
@@ -426,6 +412,9 @@ where
             Err(BlockValidationError::HeaderError) => {
                 return cmds;
             }
+            Err(BlockValidationError::TimestampError) => {
+                return cmds;
+            }
         };
 
         if let Some(ts_delta) = self
@@ -436,14 +425,6 @@ where
             if block.get_round() > original_round {
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }
-        } else {
-            self.metrics.consensus_events.failed_ts_validation += 1;
-            warn!(prev_block_ts = ?block.get_qc().get_timestamp(),
-                  curr_block_ts = ?block.get_timestamp(),
-                  local_ts = ?self.block_timestamp.get_current_time(),
-                  "Timestamp validation failed"
-            );
-            return cmds;
         }
 
         // at this point, block is valid and can be added to the blocktree
@@ -620,38 +601,48 @@ where
     #[must_use]
     pub fn handle_block_sync(
         &mut self,
-        block: Block<SCT>,
-        payload: Payload,
+        block_range: BlockRange,
+        full_blocks: Vec<FullBlock<SCT>>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
 
-        let author_pubkey = self
-            .val_epoch_map
-            .get_cert_pubkeys(&block.epoch)
-            .expect("epoch should be available for blocksync'd block")
-            .map
-            .get(&block.author)
-            .expect("blocksync'd block author should be in validator set");
-        let block = self
-            .block_validator
-            .validate(block, payload, Some(author_pubkey))
-            .expect("majority extended invalid block"); //FIXME: header payload could mismatch if
-                                                        //they respond with incorrect thing. DONT
-                                                        //UNWRAP THIS
-        if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
-            let removed = self.consensus.block_sync_requests.remove(&block.get_id());
-            if removed.is_none() {
-                // this can happen if corresponding proposal is received before blocksync response
-                return cmds;
-            }
-            assert_eq!(removed, Some(block.get_round()));
-            cmds.extend(self.request_block_if_missing_ancestor(block.get_qc()));
-
-            let res_cmds = self
-                .try_add_and_commit_blocktree(&block, None)
-                .expect("majority extend incoherent block");
-            cmds.extend(res_cmds);
+        let removed = self
+            .consensus
+            .block_sync_requests
+            .remove(&block_range.last_block_id);
+        if removed.is_none() {
+            // this can happen if corresponding proposal is received before blocksync response
+            return cmds;
         }
+        // expected non-empty response from blocksync module
+        assert!(!full_blocks.is_empty());
+
+        let last_block_round = full_blocks.last().unwrap().get_round();
+        let last_block_qc = full_blocks.last().unwrap().get_qc().clone();
+        assert_eq!(removed, Some((last_block_round, block_range)));
+
+        for full_block in full_blocks {
+            let author_pubkey = self
+                .val_epoch_map
+                .get_cert_pubkeys(&full_block.get_epoch())
+                .expect("epoch should be available for blocksync'd block")
+                .map
+                .get(&full_block.get_author())
+                .expect("blocksync'd block author should be in validator set");
+            let block = self
+                .block_validator
+                .validate(full_block.block, full_block.payload, Some(author_pubkey))
+                .expect("majority extended invalid block");
+            if self.consensus.pending_block_tree.is_valid_to_insert(&block) {
+                let res_cmds = self
+                    .try_add_and_commit_blocktree(&block, None)
+                    .expect("majority extend incoherent block");
+                cmds.extend(res_cmds);
+            }
+        }
+
+        cmds.extend(self.request_blocks_if_missing_ancestor(&last_block_qc));
+
         cmds
     }
 
@@ -677,23 +668,18 @@ where
             .consensus
             .block_sync_requests
             .iter()
-            .filter_map(|(block_id, round)| {
+            .filter_map(|(block_id, (round, _))| {
                 if round <= &self.consensus.pending_block_tree.root().round {
-                    Some(block_id)
+                    Some(*block_id)
                 } else {
                     None
                 }
             })
-            .copied()
             .collect();
-        for cancel in &to_cancel {
-            self.consensus.block_sync_requests.remove(cancel);
+        for block_id in &to_cancel {
+            let (_, block_range) = self.consensus.block_sync_requests.remove(block_id).unwrap();
+            cmds.push(ConsensusCommand::CancelSync(block_range));
         }
-        cmds.extend(
-            to_cancel
-                .into_iter()
-                .map(|block_id| ConsensusCommand::CancelSync { block_id }),
-        );
 
         // statesync if too far from tip && have close enough committed block to statesync to
         cmds.extend(self.maybe_statesync());
@@ -853,7 +839,7 @@ where
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
-        cmds.extend(self.request_block_if_missing_ancestor(qc));
+        cmds.extend(self.request_blocks_if_missing_ancestor(qc));
 
         // update vote_state round
         // it's ok if not leader for round; we will never propose
@@ -1019,6 +1005,23 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
         let round = self.consensus.pacemaker.get_current_round();
+
+        if self
+            .block_timestamp
+            .valid_block_timestamp(
+                validated_block.get_qc().get_timestamp(),
+                validated_block.get_timestamp(),
+            )
+            .is_none()
+        {
+            self.metrics.consensus_events.failed_ts_validation += 1;
+            warn!(prev_block_ts = ?validated_block.get_qc().get_timestamp(),
+                curr_block_ts = ?validated_block.get_timestamp(),
+                local_ts = ?self.block_timestamp.get_current_time(),
+                "Timestamp validation failed"
+            );
+            return cmds;
+        }
 
         // check that the block is coherent
         if !self
@@ -1304,7 +1307,7 @@ where
     }
 
     #[must_use]
-    fn request_block_if_missing_ancestor(
+    fn request_blocks_if_missing_ancestor(
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
@@ -1316,19 +1319,49 @@ where
             return Vec::new();
         };
 
-        let already_requested = self
+        if self
             .consensus
             .block_sync_requests
-            .insert(qc.get_block_id(), qc.get_round())
-            .is_some();
-
-        if already_requested {
+            .contains_key(&qc.get_block_id())
+        {
             return Vec::new();
         }
 
-        vec![ConsensusCommand::RequestSync {
-            block_id: qc.get_block_id(),
-        }]
+        let mut root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
+        let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
+        let request_range = if root_seq_num + self.config.state_sync_threshold <= high_qc_seq_num {
+            // should statesync at this point
+            // request only upto delay blocks to trigger statesync
+            let delay = self.state_root_validator.get_delay();
+            let request_range = BlockRange {
+                last_block_id: qc.get_block_id(),
+                root_seq_num: high_qc_seq_num - delay,
+            };
+            info!(
+                ?request_range,
+                "consensus requesting enough blocks to trigger statesync"
+            );
+
+            request_range
+        } else {
+            // request upto root of blocktree
+            // don't request genesis block
+            // NOTE: this only works because there will be no NULL blocks with SeqNum(0)
+            root_seq_num = root_seq_num.max(SeqNum(1));
+            let request_range = BlockRange {
+                last_block_id: qc.get_block_id(),
+                root_seq_num,
+            };
+            info!(?request_range, "consensus requesting blocks upto root");
+
+            request_range
+        };
+
+        self.consensus
+            .block_sync_requests
+            .insert(qc.get_block_id(), (qc.get_round(), request_range));
+
+        vec![ConsensusCommand::RequestSync(request_range)]
     }
 
     #[must_use]
@@ -1422,14 +1455,16 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{Block, BlockKind, BlockPolicy, BlockType, PassthruBlockPolicy},
+        block::{
+            Block, BlockKind, BlockPolicy, BlockRange, BlockType, FullBlock, PassthruBlockPolicy,
+        },
         block_validator::{BlockValidator, MockValidator},
         checkpoint::RootInfo,
         ledger::CommitResult,
         metrics::Metrics,
         payload::{
-            FullTransactionList, MissingNextStateRoot, NopStateRoot, Payload, StateRoot,
-            StateRootValidator, TransactionPayload,
+            FullTransactionList, MissingNextStateRoot, NopStateRoot, StateRoot, StateRootValidator,
+            TransactionPayload, INITIAL_DELAY_STATE_ROOT_HASH,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1590,10 +1625,11 @@ mod test {
 
         fn handle_block_sync(
             &mut self,
-            b: Block<SCT>,
-            p: Payload,
+            block_range: BlockRange,
+            full_blocks: Vec<FullBlock<SCT>>,
         ) -> Vec<ConsensusCommand<ST, SCT>> {
-            self.wrapped_state().handle_block_sync(b, p)
+            self.wrapped_state()
+                .handle_block_sync(block_range, full_blocks)
         }
     }
 
@@ -1875,14 +1911,14 @@ mod test {
             .expect(&format!("couldn't extract proposal: {:?}", cmds))
     }
 
-    fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockId>
+    fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockRange>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         cmds.into_iter()
             .filter_map(|c| match c {
-                ConsensusCommand::RequestSync { block_id } => Some(block_id),
+                ConsensusCommand::RequestSync(block_range) => Some(block_range),
                 _ => None,
             })
             .collect()
@@ -2182,7 +2218,7 @@ mod test {
         // increase the round
         let p1 = env.next_proposal_empty();
         let (author, _, verified_message) = p1.destructure();
-        let cmds = wrapped_state.handle_proposal_message(author, verified_message);
+        let _cmds = wrapped_state.handle_proposal_message(author, verified_message);
 
         let p2 = env.next_proposal_empty();
         let (author, _, verified_message) = p2.destructure();
@@ -2491,6 +2527,11 @@ mod test {
         // First 3 (including a false vote) submitted would not cause a qc to form
         // but the last vote would cause a qc to form locally at second_state, thus causing
         // second state to realize its missing a block.
+        // request blocks up to root
+        let state_2_block_range_req = BlockRange {
+            last_block_id: block_1.get_id(),
+            root_seq_num: SeqNum(1),
+        };
         for (i, vote) in votes.iter().enumerate().take(4) {
             let v = Verified::<SignatureType, VoteMessage<_>>::new(*vote, &env.keys[i]);
             let cmds2 = n2.handle_vote_message(*v.author(), *v);
@@ -2501,20 +2542,18 @@ mod test {
                 assert!(res.is_none());
             } else {
                 assert!(res.is_some());
-                let sync_bid = match res.unwrap() {
-                    ConsensusCommand::RequestSync { block_id } => Some(block_id),
+                let sync_range = match res.unwrap() {
+                    ConsensusCommand::RequestSync(block_range) => Some(block_range),
                     _ => None,
                 }
                 .unwrap();
-                assert!(sync_bid == block_1.get_id());
+                assert_eq!(sync_range, state_2_block_range_req);
             }
         }
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
         assert_eq!(n2.consensus_state.high_qc.info.vote, votes[0].vote);
 
         // use the correct proposal gen to make next proposal and send it to second_state
-        // this should cause it to emit the RequestBlockSync Message because the the QC parent
-        // points to a different proposal (second_state has the malicious proposal in its blocktree)
         let cp2 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_2, _, proposal_message_2) = cp2.destructure();
         let block_2 = proposal_message_2.block.clone();
@@ -2524,7 +2563,7 @@ mod test {
         assert!(find_blocksync_request(&cmds2).is_none());
 
         // first_state has the correct block in its blocktree, so it should not request anything
-        let cmds1 = n1.handle_proposal_message(author_2, proposal_message_2.clone());
+        let cmds1 = n1.handle_proposal_message(author_2, proposal_message_2);
         assert!(find_blocksync_request(&cmds1).is_none());
 
         // next correct proposal is created and we send it to the first two states.
@@ -2546,7 +2585,11 @@ mod test {
         assert!(find_commit_cmd(&cmds1).is_some());
 
         // a block sync request arrived, helping second state to recover
-        let _ = n2.handle_block_sync(block_1, payload_1);
+        let full_block_1 = FullBlock {
+            block: block_1,
+            payload: payload_1,
+        };
+        let _ = n2.handle_block_sync(state_2_block_range_req, vec![full_block_1.clone()]);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2567,35 +2610,39 @@ mod test {
         assert!(find_commit_cmd(&cmds1).is_some());
 
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
-        // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
-
+        // feeding third_state with a proposal from round 4 should trigger a blocksync for the missing range
         let cmds3 = n3.handle_proposal_message(author_4, proposal_message_4);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         let res = find_blocksync_request(&cmds3);
-        let Some(ConsensusCommand::RequestSync { block_id: _ }) = res else {
+        let Some(ConsensusCommand::RequestSync(state_3_block_range_req)) = res else {
             panic!("request sync is not found")
         };
+        // request block up to SeqNum(1) even if block 1 exists in blocktree
+        // (never request down to GENESIS_SEQ_NUM)
+        assert_eq!(state_3_block_range_req.root_seq_num, SeqNum(1));
 
-        let cmds3 = n3.handle_block_sync(block_3.clone(), payload_3.clone());
-
-        assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
-        let res = find_blocksync_request(&cmds3);
-        let Some(ConsensusCommand::RequestSync { block_id: _ }) = res else {
-            panic!("request sync is not found")
+        let full_block_2 = FullBlock {
+            block: block_2,
+            payload: payload_2,
         };
-        // repeated handling of the requested block should be ignored
-        let cmds3 = n3.handle_block_sync(block_3, payload_3);
+        let full_block_3 = FullBlock {
+            block: block_3,
+            payload: payload_3,
+        };
+        let cmds3 = n3.handle_block_sync(
+            *state_3_block_range_req,
+            vec![
+                full_block_1.clone(),
+                full_block_2.clone(),
+                full_block_3.clone(),
+            ],
+        );
 
-        assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
-        assert!(find_blocksync_request(&cmds3).is_none());
-
-        // arrival of proposal should also prevent block_sync_request from modifying the tree
-        // the proposal repairs path to root and block4.qc commits block 1 and 2
-        let cmds2 = n3.handle_proposal_message(author_2, proposal_message_2);
+        // the blocksync repairs path to root and block4.qc commits block 1 and 2
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
-        assert!(find_blocksync_request(&cmds2).is_none());
-        let commit_cmds = find_commit_cmd(&cmds2);
+        assert!(find_blocksync_request(&cmds3).is_none());
+        let commit_cmds = find_commit_cmd(&cmds3);
         assert!(commit_cmds.is_some());
         if let Some(ConsensusCommand::LedgerCommit(blocks)) = commit_cmds {
             assert_eq!(blocks.len(), 2);
@@ -2603,9 +2650,11 @@ mod test {
             unreachable!();
         }
 
-        // request sync which did not arrive in time should be ignored.
-        let cmds3 = n3.handle_block_sync(block_2, payload_2);
-
+        // duplicate blocksync event should be ignored.
+        let cmds3 = n3.handle_block_sync(
+            *state_3_block_range_req,
+            vec![full_block_1, full_block_2, full_block_3],
+        );
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         assert!(find_blocksync_request(&cmds3).is_none());
     }
@@ -3069,6 +3118,8 @@ mod test {
         for c in ctx.iter() {
             assert_eq!(c.consensus_state.get_current_round(), Round(8));
         }
+        // proposal 8 commits block from proposal 6
+        let root_seq_num = SeqNum(6);
 
         // determine the leader of round 11 because we are going to skip sending them the round 9
         // proposal while the other nodes get it and send their votes
@@ -3084,21 +3135,21 @@ mod test {
 
         // generate proposals 9 and 10 and collect the votes for 10 so that we can deliver them to
         // the leader of 11
-        let mut votes = vec![];
+        let mut proposal_10_votes = vec![];
         let mut proposal_10_blockid = BlockId(Hash::default());
-        for j in 0..2 {
+        for round in 9..11 {
             let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             let (author, _, verified_message) = cp.destructure();
             for (i, node) in ctx.iter_mut().enumerate() {
                 if node.nodeid != next_leader {
                     let cmds = node.handle_proposal_message(author, verified_message.clone());
 
-                    if j == 1 {
+                    if round == 10 {
                         proposal_10_blockid = verified_message.block.get_id();
                         let v = extract_vote_msgs(cmds);
                         assert_eq!(v.len(), 1);
                         assert_eq!(v[0].vote.vote_info.round, Round(10));
-                        votes.push((node.nodeid, v[0]));
+                        proposal_10_votes.push((node.nodeid, v[0]));
                     }
                 } else {
                     leader_index = i;
@@ -3106,27 +3157,20 @@ mod test {
             }
         }
         let mut leader_state = ctx[leader_index].wrapped_state();
-        for (i, (author, v)) in votes.iter().enumerate() {
+        for (i, (author, v)) in proposal_10_votes.iter().enumerate() {
             let cmds = leader_state.handle_vote_message(*author, *v);
             if i == (num_state * 2 / 3) {
-                let req: Vec<_> = cmds
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        ConsensusCommand::RequestSync { block_id } => Some(block_id),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(req.len(), 1);
-                assert_eq!(req[0], proposal_10_blockid);
+                let blocksync_req = extract_blocksync_requests(cmds);
+                assert_eq!(blocksync_req.len(), 1);
+                assert_eq!(
+                    blocksync_req[0],
+                    BlockRange {
+                        last_block_id: proposal_10_blockid,
+                        root_seq_num,
+                    }
+                );
             } else {
-                let req: Vec<_> = cmds
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        ConsensusCommand::RequestSync { block_id } => Some(block_id),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(req.len(), 0);
+                assert!(find_blocksync_request(&cmds).is_none());
             }
         }
     }
@@ -3192,7 +3236,14 @@ mod test {
         let cmds = node0.handle_timeout_message(author, timeout_msg);
         let req = extract_blocksync_requests(cmds);
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0], blocks[2].get_id());
+        // last committed block was 0 and high_qc is for block 3. node should request to SeqNum(1)
+        assert_eq!(
+            req[0],
+            BlockRange {
+                last_block_id: blocks[2].get_id(),
+                root_seq_num: SeqNum(1),
+            }
+        );
     }
 
     #[test]
@@ -3231,7 +3282,14 @@ mod test {
         let cmds = node.handle_proposal_message(author, verified_message);
         let req = extract_blocksync_requests(cmds);
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0], blocks[3].get_id());
+        // last committed block was 0 and high_qc is for block 4. node should request to SeqNum(1)
+        assert_eq!(
+            req[0],
+            BlockRange {
+                last_block_id: blocks[3].get_id(),
+                root_seq_num: SeqNum(1),
+            }
+        );
     }
 
     // Expected behaviour when leader N+2 receives the votes for N+1 before receiving the proposal
@@ -3850,12 +3908,12 @@ mod test {
                 assert!(extract_blocksync_requests(cmds).is_empty());
             }
 
-            blocks.push(verified_message.block);
+            blocks.push((verified_message.block, verified_message.payload));
         }
 
-        let mut block_sync_blocks = Vec::new();
+        // let mut block_sync_blocks = Vec::new();
         // handle 3 blocks for only state 0
-        for _ in (update_block_round.0 - 1)..(update_block_round.0 + 2) {
+        for _ in (update_block_round.0)..(update_block_round.0 + 3) {
             let proposal =
                 env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
             println!("proposal seq num {:?}", proposal.block.execution.seq_num);
@@ -3867,7 +3925,7 @@ mod test {
             // state should not request blocksync
             assert!(extract_blocksync_requests(cmds).is_empty());
 
-            block_sync_blocks.push((verified_message.block, verified_message.payload));
+            blocks.push((verified_message.block, verified_message.payload));
         }
         let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
 
@@ -3922,19 +3980,24 @@ mod test {
         let (author, _, verified_message) = proposal.destructure();
         let state = &mut ctx[1];
         let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> =
-            state.handle_proposal_message(author, verified_message.clone());
+            state.handle_proposal_message(author, verified_message);
         // state 1 should request blocksync
-        assert_eq!(extract_blocksync_requests(cmds).len(), 1);
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 1);
+        let requested_range = requested_ranges[0];
+        // last received block was update_block - 1, last committed block was update_block - 3
+        assert_eq!(requested_range.root_seq_num, update_block_num - SeqNum(3));
 
-        blocks.push(verified_message.block);
-
-        let val_set = env.val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-        let nodeid_0 = ctx[0].nodeid;
         let state1 = &mut ctx[1];
-        for (block, payload) in block_sync_blocks.into_iter().rev() {
-            // blocksync response for state 2
-            let _ = state1.handle_block_sync(block, payload);
-        }
+        let (_, requested_blocks) = blocks
+            .as_slice()
+            .split_at((update_block_round.0 as usize) - 3);
+        let blocksync_blocks = requested_blocks
+            .iter()
+            .cloned()
+            .map(|(block, payload)| FullBlock { block, payload })
+            .collect_vec();
+        let _ = state1.handle_block_sync(requested_ranges[0], blocksync_blocks);
 
         // blocks are committed immediately after blocksync is finished
         // state 1 should have scheduled the next epoch
@@ -4104,11 +4167,19 @@ mod test {
             MockTxPool::default(),
             || NopStateRoot,
         );
-        let p1 = env.next_proposal_empty();
+        let p1 = env.next_proposal(FullTransactionList::empty(), INITIAL_DELAY_STATE_ROOT_HASH);
         // there's no child block in the blocktree, so this must be ignored
         // (because invariant is broken)
         let mut wrapped_state = ctx[0].wrapped_state();
-        let cmds = wrapped_state.handle_block_sync(p1.block.clone(), p1.payload.clone());
+        let block_range = BlockRange {
+            last_block_id: p1.block.get_id(),
+            root_seq_num: SeqNum(1),
+        };
+        let full_block = FullBlock {
+            block: p1.block.clone(),
+            payload: p1.payload.clone(),
+        };
+        let cmds = wrapped_state.handle_block_sync(block_range, vec![full_block]);
         assert!(cmds.is_empty());
 
         // assert that consensus state wasn't mutated by comparing it against an unchanged
@@ -4317,6 +4388,11 @@ mod test {
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
 
+        println!(
+            "root seq num: {:?}",
+            n1.consensus_state.pending_block_tree.get_root_seq_num()
+        );
+
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // vote for block 1
         assert!(find_vote_message(&cmds).is_some());
@@ -4329,6 +4405,11 @@ mod test {
             .get_entry(&block_1_id)
             .expect("should be in the blocktree");
         assert!(block_1_blocktree_entry.is_coherent);
+
+        println!(
+            "root seq num: {:?}",
+            n1.consensus_state.pending_block_tree.get_root_seq_num()
+        );
 
         // generate block 2
         let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -4344,8 +4425,9 @@ mod test {
         let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
         // should not vote for block 3
         assert!(find_vote_message(&cmds).is_none());
-        assert!(find_blocksync_request(&cmds).is_some());
-        // block 3 should be in the blocktree as not coherent
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 1);
+        // block 3 should be in the blocktree as incoherent
         let block_3_blocktree_entry = n1
             .consensus_state
             .pending_block_tree
@@ -4356,7 +4438,11 @@ mod test {
         // state receives block 2
         if through_blocksync {
             // blocksync response for state 2
-            let _ = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
+            let full_block_2 = FullBlock {
+                block: proposal_message_2.block,
+                payload: proposal_message_2.payload,
+            };
+            let _ = n1.handle_block_sync(requested_ranges[0], vec![full_block_2]);
         } else {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
@@ -4382,13 +4468,13 @@ mod test {
 
     #[test_case(true; "Delay validation of blocksync block")]
     #[test_case(false; "Delay validation of out of order proposal")]
-    fn test_update_coherency_of_missed_block(through_blocksync: bool) {
+    fn test_update_coherency_of_missed_blocks(through_blocksync: bool) {
         // Scenario and expected result:
         // State 1 receives Block 1. It should store Block 1 as validated in blocktree and send a vote message
-        // State 1 receives Block 4. It should request blocksync for Block 3, skip voting, and store Block 4
-        //      as unvalidated in blocktree
-        // State 1 receives Block 3 (blocksync/out-of-order proposal [ARGUMENT]). It should request blocksync
-        //      for Block 2, and store Block 3 as unvalidated in blocktree
+        // State 1 receives Block 4. It should request blocksync for Blocks 3 -> 1, skip voting, and store
+        //      Block 4 as unvalidated in blocktree
+        // State 1 receives Blocks 3 -> 1 (blocksync/out-of-order proposal [ARGUMENT]). If received through
+        //      proposal, it should request for Blocks 2 -> 1, and store Block 3 as unvalidated in blocktree
         // State 1 receives Block 2. It should store Block 2 as validated in blocktree, and skip voting.
         //      Block 3/4 has a path to root via Block 2. It should be validated. Block 2 is committed
 
@@ -4421,6 +4507,10 @@ mod test {
         let cp = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
         let (author_1, _, proposal_message_1) = cp.destructure();
         let block_1_id = proposal_message_1.block.get_id();
+        let full_block_1 = FullBlock {
+            block: proposal_message_1.block.clone(),
+            payload: proposal_message_1.payload.clone(),
+        };
 
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // vote for block 1
@@ -4454,7 +4544,11 @@ mod test {
         let cmds = n1.handle_proposal_message(author_4, proposal_message_4);
         // should not vote for block 4
         assert!(find_vote_message(&cmds).is_none());
-        assert!(find_blocksync_request(&cmds).is_some());
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 1);
+        let requested_range = requested_ranges[0];
+        // should request all blocks up to root
+        assert_eq!(requested_range.root_seq_num, SeqNum(1));
         // block 4 should be in the blocktree as not coherent
         let block_4_blocktree_entry = n1
             .consensus_state
@@ -4465,37 +4559,21 @@ mod test {
 
         // state receives block 3
         if through_blocksync {
-            // blocksync response for state 3
-            let cmds = n1.handle_block_sync(proposal_message_3.block, proposal_message_3.payload);
-            // request blocksync for block 2
-            assert!(find_blocksync_request(&cmds).is_some());
-        } else {
-            let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+            // blocksync response
+            let full_block_2 = FullBlock {
+                block: proposal_message_2.block,
+                payload: proposal_message_2.payload,
+            };
+            let full_block_3 = FullBlock {
+                block: proposal_message_3.block,
+                payload: proposal_message_3.payload,
+            };
+            let cmds = n1.handle_block_sync(
+                requested_range,
+                vec![full_block_1, full_block_2, full_block_3],
+            );
             // should not vote for block or blocksync
             assert!(find_vote_message(&cmds).is_none());
-            // request blocksync for block 2
-            assert!(find_blocksync_request(&cmds).is_some());
-        }
-        // block 3 should be in the blocktree as not coherent
-        let block_3_blocktree_entry = n1
-            .consensus_state
-            .pending_block_tree
-            .get_entry(&block_3_id)
-            .expect("should be in the blocktree");
-        assert!(!block_3_blocktree_entry.is_coherent);
-
-        // block 4 should still be in the blocktree as not coherent
-        let block_4_blocktree_entry = n1
-            .consensus_state
-            .pending_block_tree
-            .get_entry(&block_4_id)
-            .expect("should be in the blocktree");
-        assert!(!block_4_blocktree_entry.is_coherent);
-
-        // state receives block 2
-        if through_blocksync {
-            // blocksync response for state 2
-            let cmds = n1.handle_block_sync(proposal_message_2.block, proposal_message_2.payload);
             assert!(find_blocksync_request(&cmds).is_none());
             assert!(find_commit_cmd(&cmds).is_some());
             if let ConsensusCommand::LedgerCommit(commit) = find_commit_cmd(&cmds).unwrap() {
@@ -4506,6 +4584,29 @@ mod test {
                 assert_eq!(commit[1].get_seq_num(), GENESIS_SEQ_NUM + SeqNum(2));
             }
         } else {
+            let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+            // should not vote for block or blocksync
+            assert!(find_vote_message(&cmds).is_none());
+            // request blocksync for block 2
+            assert!(find_blocksync_request(&cmds).is_some());
+
+            // block 3 should be in the blocktree as not coherent
+            let block_3_blocktree_entry = n1
+                .consensus_state
+                .pending_block_tree
+                .get_entry(&block_3_id)
+                .expect("should be in the blocktree");
+            assert!(!block_3_blocktree_entry.is_coherent);
+
+            // block 4 should still be in the blocktree as not coherent
+            let block_4_blocktree_entry = n1
+                .consensus_state
+                .pending_block_tree
+                .get_entry(&block_4_id)
+                .expect("should be in the blocktree");
+            assert!(!block_4_blocktree_entry.is_coherent);
+
+            // state receives block 2
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
             assert!(find_vote_message(&cmds).is_none());
@@ -4520,7 +4621,7 @@ mod test {
             }
         }
 
-        // block 3 should still be in the blocktree as coherent
+        // block 3 should be in the blocktree as coherent
         let block_3_blocktree_entry = n1
             .consensus_state
             .pending_block_tree
@@ -4528,7 +4629,7 @@ mod test {
             .expect("should be in the blocktree");
         assert!(block_3_blocktree_entry.is_coherent);
 
-        // block 4 should still be in the blocktree as coherent
+        // block 4 should be in the blocktree as coherent
         let block_4_blocktree_entry = n1
             .consensus_state
             .pending_block_tree

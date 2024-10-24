@@ -9,7 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus = { path = "../monad-consensus" }
+monad-blocksync = { path = "../monad-blocksync" }
 monad-consensus-types = { version = "0.1.0", path = "../monad-consensus-types" }
 monad-crypto = { version = "0.1.0", path = "../monad-crypto" }
 monad-state-backend = { version = "0.1.0", path = "../monad-state-backend" }

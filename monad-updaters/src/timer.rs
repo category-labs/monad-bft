@@ -7,8 +7,7 @@ use std::{
 
 use futures::Stream;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::TimerCommand;
-use monad_types::TimeoutVariant;
+use monad_executor_glue::{TimeoutVariant, TimerCommand};
 use tokio::task::{AbortHandle, JoinSet};
 
 /// This updater allows timer events to be scheduled to fire in the future
@@ -114,24 +113,41 @@ mod tests {
     use std::{collections::HashSet, time::Duration};
 
     use futures::StreamExt;
+    use monad_blocksync::messages::message::BlockSyncRequestMessage;
+    use monad_consensus_types::{block::BlockRange, payload::PayloadId};
     use monad_crypto::hasher::Hash;
-    use monad_types::BlockId;
+    use monad_types::{BlockId, SeqNum};
     use ntest::timeout;
 
     use super::*;
 
-    fn get_bids() -> [BlockId; 10] {
+    fn get_blocksync_requests() -> [BlockSyncRequestMessage; 10] {
         [
-            BlockId(Hash([0x00_u8; 32])),
-            BlockId(Hash([0x01_u8; 32])),
-            BlockId(Hash([0x02_u8; 32])),
-            BlockId(Hash([0x03_u8; 32])),
-            BlockId(Hash([0x04_u8; 32])),
-            BlockId(Hash([0x05_u8; 32])),
-            BlockId(Hash([0x06_u8; 32])),
-            BlockId(Hash([0x07_u8; 32])),
-            BlockId(Hash([0x08_u8; 32])),
-            BlockId(Hash([0x09_u8; 32])),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x00_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x02_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x03_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x04_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x05_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x06_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x07_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x08_u8; 32]))),
+            BlockSyncRequestMessage::Payload(PayloadId(Hash([0x09_u8; 32]))),
         ]
     }
 
@@ -278,13 +294,13 @@ mod tests {
             on_timeout: TimeoutVariant::Pacemaker,
         }]);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
-        for (i, id) in bids.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::from_millis((i + 100) as u64),
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
+                variant: TimeoutVariant::BlockSync(*req),
+                on_timeout: TimeoutVariant::BlockSync(*req),
             }]);
         }
 
@@ -299,15 +315,15 @@ mod tests {
                         regular_tmo_observed = true
                     }
                 }
-                Some(TimeoutVariant::BlockSync(bid)) => {
-                    assert!(bids.remove(&bid));
+                Some(TimeoutVariant::BlockSync(req)) => {
+                    assert!(requests.remove(&req));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
         assert!(regular_tmo_observed);
-        assert!(bids.is_empty());
+        assert!(requests.is_empty());
 
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
         assert!(timer.timers.is_empty());
@@ -320,28 +336,28 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
         for i in 0..3 {
-            for id in bids.iter() {
+            for req in requests.iter() {
                 timer.exec(vec![TimerCommand::Schedule {
                     duration: Duration::from_millis(i * 10),
-                    variant: TimeoutVariant::BlockSync(*id),
-                    on_timeout: TimeoutVariant::BlockSync(*id),
+                    variant: TimeoutVariant::BlockSync(*req),
+                    on_timeout: TimeoutVariant::BlockSync(*req),
                 }]);
             }
         }
 
         for _ in 0..10 {
             match timer.next().await {
-                Some(TimeoutVariant::BlockSync(bid)) => {
-                    assert!(bids.remove(&bid));
+                Some(TimeoutVariant::BlockSync(req)) => {
+                    assert!(requests.remove(&req));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
-        assert!(bids.is_empty());
+        assert!(requests.is_empty());
         assert!(timer.timers.is_empty());
         // this call never returns, test would timeout
         timer.next().await;
@@ -355,39 +371,60 @@ mod tests {
 
         // fetch reset submitted earlier should have no impact.
         timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x00_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x00_u8; 32])),
+                root_seq_num: SeqNum(1),
+            })),
+        )]);
+        timer.exec(vec![TimerCommand::ScheduleReset(
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(PayloadId(Hash(
+                [0x05_u8; 32],
+            )))),
         )]);
 
-        let mut bids = HashSet::from(get_bids());
+        let mut requests = HashSet::from(get_blocksync_requests());
 
-        for (i, id) in bids.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::from_millis((i + 100) as u64),
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
+                variant: TimeoutVariant::BlockSync(*req),
+                on_timeout: TimeoutVariant::BlockSync(*req),
             }]);
         }
         timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x01_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            })),
         )]);
-
         timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockId(Hash([0x02_u8; 32]))),
+            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(PayloadId(Hash(
+                [0x05_u8; 32],
+            )))),
         )]);
 
         for _ in 0..8 {
             match timer.next().await {
                 Some(TimeoutVariant::BlockSync(bid)) => {
-                    assert!(bids.remove(&bid));
+                    assert!(requests.remove(&bid));
                 }
                 _ => panic!("not receiving timeout"),
             }
         }
 
-        assert_eq!(bids.len(), 2);
+        assert_eq!(requests.len(), 2);
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
-        assert!(bids.contains(&BlockId(Hash([0x01_u8; 32]))));
-        assert!(bids.contains(&BlockId(Hash([0x02_u8; 32]))));
+        assert!(
+            requests.contains(&BlockSyncRequestMessage::Headers(BlockRange {
+                last_block_id: BlockId(Hash([0x01_u8; 32])),
+                root_seq_num: SeqNum(1),
+            }))
+        );
+        assert!(
+            requests.contains(&BlockSyncRequestMessage::Payload(PayloadId(Hash(
+                [0x05_u8; 32]
+            ))))
+        );
         assert!(timer.timers.is_empty());
     }
 
@@ -397,9 +434,9 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        let bids = get_bids();
+        let requests = get_blocksync_requests();
 
-        for (i, id) in bids.iter().enumerate() {
+        for (i, id) in requests.iter().enumerate() {
             timer.exec(vec![TimerCommand::Schedule {
                 duration: Duration::from_millis((i as u64) + 3),
                 variant: TimeoutVariant::BlockSync(*id),
@@ -407,10 +444,10 @@ mod tests {
             }]);
         }
 
-        for bid in bids {
+        for request in requests {
             match timer.next().await {
-                Some(TimeoutVariant::BlockSync(id)) => {
-                    assert_eq!(bid, id);
+                Some(TimeoutVariant::BlockSync(timer_req)) => {
+                    assert_eq!(request, timer_req);
                 }
                 _ => panic!("not receiving timeout"),
             }

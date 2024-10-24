@@ -212,22 +212,52 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             // should not request blocksync
             .metric_exact(
                 node_ids,
-                fetch_metric!(blocksync_events.blocksync_request),
+                fetch_metric!(blocksync_events.self_headers_request),
                 0,
             )
             .metric_exact(
                 node_ids,
-                fetch_metric!(blocksync_events.blocksync_response_successful),
+                fetch_metric!(blocksync_events.self_payload_request),
                 0,
             )
             .metric_exact(
                 node_ids,
-                fetch_metric!(blocksync_events.blocksync_response_failed),
+                fetch_metric!(blocksync_events.headers_response_successful),
                 0,
             )
             .metric_exact(
                 node_ids,
-                fetch_metric!(blocksync_events.blocksync_response_unexpected),
+                fetch_metric!(blocksync_events.headers_response_failed),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.headers_response_unexpected),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.headers_validation_failed),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.payload_response_successful),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.payload_response_failed),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.payload_response_unexpected),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.payload_validation_failed),
                 0,
             );
 
