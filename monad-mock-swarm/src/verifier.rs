@@ -254,11 +254,6 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                 node_ids,
                 fetch_metric!(blocksync_events.payload_response_unexpected),
                 0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.payload_validation_failed),
-                0,
             );
 
         for node_id in node_ids {

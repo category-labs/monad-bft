@@ -76,17 +76,28 @@ pub struct BlocksyncEvents {
     pub self_payload_request: u64,
     // must be in sync with the counter in blocksync module
     pub self_payload_requests_in_flight: u64,
+    // headers response for self
     pub headers_response_successful: u64,
     pub headers_response_failed: u64,
     pub headers_response_unexpected: u64,
     pub headers_validation_failed: u64,
+    pub self_headers_response_successful: u64,
+    pub self_headers_response_failed: u64,
+    pub num_headers_received: u64,
+    // payload response for self
     pub payload_response_successful: u64,
     pub payload_response_failed: u64,
     pub payload_response_unexpected: u64,
-    pub payload_validation_failed: u64,
+    pub self_payload_response_successful: u64,
+    pub self_payload_response_failed: u64,
     pub request_timeout: u64,
+    // requests from peers
     pub peer_headers_request: u64,
+    pub peer_headers_request_successful: u64,
+    pub peer_headers_request_failed: u64,
     pub peer_payload_request: u64,
+    pub peer_payload_request_successful: u64,
+    pub peer_payload_request_failed: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -168,12 +179,22 @@ impl Metrics {
             metric!(self, blocksync_events.headers_response_successful),
             metric!(self, blocksync_events.headers_response_failed),
             metric!(self, blocksync_events.headers_response_unexpected),
+            metric!(self, blocksync_events.headers_validation_failed),
+            metric!(self, blocksync_events.self_headers_response_successful),
+            metric!(self, blocksync_events.self_headers_response_failed),
+            metric!(self, blocksync_events.num_headers_received),
             metric!(self, blocksync_events.payload_response_successful),
             metric!(self, blocksync_events.payload_response_failed),
             metric!(self, blocksync_events.payload_response_unexpected),
+            metric!(self, blocksync_events.self_payload_response_successful),
+            metric!(self, blocksync_events.self_payload_response_failed),
             metric!(self, blocksync_events.request_timeout),
             metric!(self, blocksync_events.peer_headers_request),
+            metric!(self, blocksync_events.peer_headers_request_successful),
+            metric!(self, blocksync_events.peer_headers_request_failed),
             metric!(self, blocksync_events.peer_payload_request),
+            metric!(self, blocksync_events.peer_payload_request_successful),
+            metric!(self, blocksync_events.peer_payload_request_failed),
         ]
     }
 }

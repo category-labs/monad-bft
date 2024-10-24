@@ -411,6 +411,7 @@ where
         let Entry::Occupied(mut entry) = self.block_sync.self_headers_requests.entry(block_range)
         else {
             // unexpected respose. could be because the self request was cancelled
+            // or from a self ledger response
             return cmds;
         };
         let self_request = entry.get_mut();
@@ -431,7 +432,15 @@ where
                         ?block_range,
                         "blocksync: headers response verifcation passed"
                     );
-                    self.metrics.blocksync_events.headers_response_successful += 1;
+                    if sender.is_some() {
+                        self.metrics.blocksync_events.headers_response_successful += 1;
+                    } else {
+                        self.metrics
+                            .blocksync_events
+                            .self_headers_response_successful += 1;
+                    }
+                    self.metrics.blocksync_events.num_headers_received +=
+                        block_headers.len() as u64;
 
                     // valid headers, remove entry and reset timeout
                     entry.remove();
@@ -493,7 +502,11 @@ where
                 }
             }
             BlockSyncHeadersResponse::NotAvailable(block_range) => {
-                self.metrics.blocksync_events.headers_response_failed += 1;
+                if sender.is_some() {
+                    self.metrics.blocksync_events.headers_response_failed += 1;
+                } else {
+                    self.metrics.blocksync_events.self_headers_response_failed += 1;
+                }
                 trace!(
                     ?sender,
                     ?block_range,
@@ -537,13 +550,14 @@ where
 
         let Entry::Occupied(mut entry) = self.block_sync.self_payload_requests.entry(payload_id)
         else {
-            // unexpected response
-            self.metrics.blocksync_events.payload_response_unexpected += 1;
+            // unexpected respose. could be because the self request was cancelled
+            // or from a self ledger response
             return cmds;
         };
 
         let Some(self_request) = entry.get_mut() else {
             // got payload response when the request was never initiated
+            self.metrics.blocksync_events.payload_response_unexpected += 1;
             // TODO use it if valid ?
             return cmds;
         };
@@ -573,7 +587,13 @@ where
                 self.metrics
                     .blocksync_events
                     .self_payload_requests_in_flight -= 1;
-                self.metrics.blocksync_events.payload_response_successful += 1;
+                if sender.is_some() {
+                    self.metrics.blocksync_events.payload_response_successful += 1;
+                } else {
+                    self.metrics
+                        .blocksync_events
+                        .self_payload_response_successful += 1;
+                }
 
                 for (_, (_, payload_requests)) in
                     self.block_sync.self_completed_headers_requests.iter_mut()
@@ -587,7 +607,11 @@ where
                 }
             }
             BlockSyncPayloadResponse::NotAvailable(payload_id) => {
-                self.metrics.blocksync_events.payload_response_failed += 1;
+                if sender.is_some() {
+                    self.metrics.blocksync_events.payload_response_failed += 1;
+                } else {
+                    self.metrics.blocksync_events.self_payload_response_failed += 1;
+                }
 
                 // payload not found, request from peer.
                 let to = Self::pick_peer(
@@ -688,12 +712,16 @@ where
                     let headers_response = match headers_response.clone() {
                         BlockSyncHeadersResponse::Found((_, mut requested_blocks)) => {
                             requested_blocks.extend(cached_blocks);
+                            self.metrics
+                                .blocksync_events
+                                .peer_headers_request_successful += 1;
                             BlockSyncHeadersResponse::Found((
                                 requested_block_range,
                                 requested_blocks,
                             ))
                         }
                         BlockSyncHeadersResponse::NotAvailable(_) => {
+                            self.metrics.blocksync_events.peer_headers_request_failed += 1;
                             BlockSyncHeadersResponse::NotAvailable(requested_block_range)
                         }
                     };
@@ -708,6 +736,17 @@ where
             }
             BlockSyncResponseMessage::PayloadResponse(payload_response) => {
                 let payload_id = payload_response.get_payload_id();
+
+                match payload_response {
+                    BlockSyncPayloadResponse::Found(_) => {
+                        self.metrics
+                            .blocksync_events
+                            .peer_payload_request_successful += 1
+                    }
+                    BlockSyncPayloadResponse::NotAvailable(_) => {
+                        self.metrics.blocksync_events.peer_payload_request_failed += 1
+                    }
+                }
 
                 // reply to the requested peers
                 let requesters = self

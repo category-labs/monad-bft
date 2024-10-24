@@ -244,6 +244,7 @@ where
                 } else if let Ok(block) = self.bft_block_persist.read_bft_block(&next_block_id) {
                     block
                 } else {
+                    trace!(?block_range, "requested headers not available in ledger");
                     return BlockSyncHeadersResponse::NotAvailable(block_range);
                 };
 
@@ -261,17 +262,24 @@ where
             }
         }
 
+        trace!(?block_range, "found requested headers in ledger");
         BlockSyncHeadersResponse::Found((block_range, headers.into()))
     }
 
     fn ledger_fetch_payload(&self, payload_id: PayloadId) -> BlockSyncPayloadResponse {
         if let Some(cached_payload) = self.block_payload_cache.get(&payload_id) {
             // payload in cache
+            trace!(?payload_id, "found requested payload in ledger cache");
             BlockSyncPayloadResponse::Found(cached_payload.clone())
         } else if let Ok(payload) = self.bft_block_persist.read_bft_payload(&payload_id) {
             // payload read from block persist
+            trace!(
+                ?payload_id,
+                "found requested payload in ledger blockpersist"
+            );
             BlockSyncPayloadResponse::Found(payload)
         } else {
+            trace!(?payload_id, "requested payload not available in ledger");
             BlockSyncPayloadResponse::NotAvailable(payload_id)
         }
     }
