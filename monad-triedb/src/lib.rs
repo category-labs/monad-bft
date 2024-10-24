@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     ffi::CString,
     path::Path,
     ptr::{null, null_mut},
@@ -9,8 +10,9 @@ use std::{
     },
 };
 
+use alloy_rlp::Decodable;
 use futures::channel::oneshot::Sender;
-use tracing::debug;
+use tracing::{debug, error, warn};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 mod bindings {
@@ -27,6 +29,12 @@ pub struct TriedbHandle {
 pub struct SenderContext {
     sender: Sender<Option<Vec<u8>>>,
     completed_counter: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+pub struct Transactions {
+    // a sorted list of (txn_index, rlp_encoded_transactions)
+    data: std::sync::Mutex<BTreeMap<u64, Vec<u8>>>,
 }
 
 /// # Safety
@@ -58,6 +66,42 @@ pub unsafe extern "C" fn read_async_callback(
     let _ = sender_context.sender.send(result);
 }
 
+/// # Safety
+/// This is used as a callback when traversing the transaction trie
+pub unsafe extern "C" fn transaction_callback(
+    context: *mut std::ffi::c_void,
+    key_ptr: *const u8,
+    key_len: usize,
+    value_ptr: *const u8,
+    value_len: usize,
+) {
+    let transactions = unsafe { Box::from_raw(context as *mut Transactions) };
+
+    let key = unsafe {
+        let key = std::slice::from_raw_parts(key_ptr, key_len).to_vec();
+        key
+    };
+
+    let Ok(tx_index) = <u64>::decode(&mut key.as_slice()) else {
+        debug!("Txn index decode failed");
+        return;
+    };
+
+    let value = unsafe {
+        let value = std::slice::from_raw_parts(value_ptr, value_len).to_vec();
+        value
+    };
+
+    if let Ok(mut data) = transactions.data.lock() {
+        data.insert(tx_index, value);
+    } else {
+        warn!("Failed to acquire lock");
+    };
+
+    // prevent Box<Transactions> from dropping
+    let _ = Box::into_raw(transactions);
+}
+
 impl TriedbHandle {
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
@@ -77,8 +121,16 @@ impl TriedbHandle {
 
     pub fn read(&self, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {
         let mut value_ptr = null();
-        assert!(key_len_nibbles < u8::MAX - 1); // make sure doesn't overflow
-        assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
+        // make sure doesn't overflow
+        if key_len_nibbles >= u8::MAX - 1 {
+            error!("Key length nibbles exceeds maximum allowed value");
+            return None;
+        }
+        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+            error!("Key length is insufficient for the given nibbles");
+            return None;
+        }
+
         let result = unsafe {
             bindings::triedb_read(
                 self.db_ptr,
@@ -97,7 +149,10 @@ impl TriedbHandle {
         }
 
         // check that there's no unexpected error
-        assert!(result > 0);
+        if result <= 0 {
+            error!("Unexpected result from triedb_read_data: {}", result);
+            return None;
+        }
 
         let value_len = result.try_into().unwrap();
         let value = unsafe {
@@ -126,8 +181,15 @@ impl TriedbHandle {
         completed_counter: Arc<AtomicUsize>,
         sender: Sender<Option<Vec<u8>>>,
     ) {
-        assert!(key_len_nibbles < u8::MAX - 1); // make sure doesn't overflow
-        assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
+        // make sure doesn't overflow
+        if key_len_nibbles >= u8::MAX - 1 {
+            error!("Key length nibbles exceeds maximum allowed value");
+            return;
+        }
+        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+            error!("Key length is insufficient for the given nibbles");
+            return;
+        }
 
         // Wrap the sender and completed_counter in a context struct
         let sender_context = Box::new(SenderContext {
@@ -176,7 +238,10 @@ impl TriedbHandle {
         }
 
         // check that there's no unexpected error
-        assert_eq!(result, 32);
+        if result != 32 {
+            error!("Unexpected result from triedb_read_data: {}", result);
+            return None;
+        }
 
         let value_len = result.try_into().unwrap();
         let value = unsafe {
@@ -186,6 +251,54 @@ impl TriedbHandle {
         };
 
         Some(value)
+    }
+
+    pub fn get_transactions(
+        &self,
+        key: &[u8],
+        key_len_nibbles: u8,
+        block_id: u64,
+    ) -> Option<Vec<Vec<u8>>> {
+        // make sure doesn't overflow
+        if key_len_nibbles >= u8::MAX - 1 {
+            error!("Key length nibbles exceeds maximum allowed value");
+            return None;
+        }
+        if (key_len_nibbles as usize + 1) / 2 > key.len() {
+            error!("Key length is insufficient for the given nibbles");
+            return None;
+        }
+
+        let transactions = Box::new(Transactions {
+            data: std::sync::Mutex::new(BTreeMap::new()),
+        });
+
+        let result = unsafe {
+            let context = Box::into_raw(transactions) as *mut std::ffi::c_void;
+            bindings::triedb_traverse(
+                self.db_ptr,
+                key.as_ptr(),
+                key_len_nibbles,
+                block_id,
+                context,
+                Some(transaction_callback),
+            );
+
+            Box::from_raw(context as *mut Transactions)
+        };
+
+        // array containing the transactions in sorted order
+        let mut transactions = Vec::new();
+        match result.data.lock().ok() {
+            Some(data) => {
+                for (_, rlp_tx) in data.iter() {
+                    transactions.push(rlp_tx.to_vec());
+                }
+            }
+            None => return None,
+        }
+
+        Some(transactions)
     }
 
     pub fn earliest_block(&self) -> u64 {
@@ -200,7 +313,9 @@ impl TriedbHandle {
 impl Drop for TriedbHandle {
     fn drop(&mut self) {
         let result = unsafe { bindings::triedb_close(self.db_ptr) };
-        assert_eq!(result, 0);
+        if result != 0 {
+            error!("Unexpected result from triedb close: {}", result);
+        }
     }
 }
 
@@ -227,12 +342,12 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn read_invalid() {
         let handle = TriedbHandle::try_new(Path::new("/dummy")).unwrap();
 
-        // too many nibbles
-        let _ = handle.read(&[1, 2, 3], 7, 0);
+        // too many nibbles - should return None
+        let result = handle.read(&[1, 2, 3], 7, 0);
+        assert_eq!(result, None);
     }
 
     #[test]

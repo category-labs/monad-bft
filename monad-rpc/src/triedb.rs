@@ -11,9 +11,13 @@ use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
 use monad_triedb_utils::{
     decode::{rlp_decode_account, rlp_decode_storage_slot},
-    key::{create_addr_key, create_code_key, create_receipt_key, create_storage_at_key},
+    key::{
+        create_addr_key, create_code_key, create_receipt_key, create_storage_at_key,
+        create_transaction_key,
+    },
 };
-use tracing::error;
+use reth_primitives::TransactionSigned;
+use tracing::{error, warn};
 
 const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 10_000;
 
@@ -35,12 +39,23 @@ impl Default for BlockTags {
 
 enum TriedbRequest {
     BlockNumberRequest(BlockNumberRequest),
+    TransactionsRequest(TransactionsRequest),
     AsyncRequest(AsyncRequest),
 }
 
 struct BlockNumberRequest {
     // a sender to send the block number back to the request handler
     request_sender: oneshot::Sender<u64>,
+}
+
+struct TransactionsRequest {
+    // a sender for the polling thread to send the result back to the request handler
+    request_sender: oneshot::Sender<Option<Vec<Vec<u8>>>>,
+    // triedb_key and key_len_nibbles are used to read items from triedb
+    triedb_key: Vec<u8>,
+    key_len_nibbles: u8,
+    // block number
+    block_tag: BlockTags,
 }
 
 // struct that is sent from the request handler to the polling thread
@@ -67,6 +82,7 @@ pub enum TriedbResult {
     Code(Vec<u8>),
     Receipt(Vec<u8>),
     BlockNum(u64),
+    BlockTransactions(Vec<TransactionSigned>),
 }
 
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
@@ -84,6 +100,21 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                     TriedbRequest::BlockNumberRequest(block_num_request) => {
                         let block_num = triedb_handle.latest_block();
                         let _ = block_num_request.request_sender.send(block_num);
+                    }
+                    TriedbRequest::TransactionsRequest(transaction_request) => {
+                        // Parse block tag
+                        let block_num = match transaction_request.block_tag {
+                            BlockTags::Number(q) => q,
+                            BlockTags::Latest => triedb_handle.latest_block(),
+                        };
+                        let rlp_encoded_transactions = triedb_handle.get_transactions(
+                            &transaction_request.triedb_key,
+                            transaction_request.key_len_nibbles,
+                            block_num,
+                        );
+                        let _ = transaction_request
+                            .request_sender
+                            .send(rlp_encoded_transactions);
                     }
                     TriedbRequest::AsyncRequest(async_request) => {
                         // Process the request directly in this thread
@@ -139,6 +170,10 @@ pub trait Triedb {
         code_hash: EthCodeHash,
         block_tag: BlockTags,
     ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_transactions(
+        &self,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
 }
 
 pub trait TriedbPath {
@@ -181,12 +216,11 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::BlockNumberRequest(BlockNumberRequest {
-                request_sender,
-            }))
+        if let Err(e) =
+            self.mpsc_sender
+                .try_send(TriedbRequest::BlockNumberRequest(BlockNumberRequest {
+                    request_sender,
+                }))
         {
             error!("Polling thread channel full: {e}");
             return TriedbResult::Error;
@@ -210,7 +244,6 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) = self
             .mpsc_sender
-            .clone()
             .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
                 request_sender,
                 completed_counter: completed_counter.clone(),
@@ -317,7 +350,6 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) = self
             .mpsc_sender
-            .clone()
             .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
                 request_sender,
                 completed_counter: completed_counter.clone(),
@@ -360,7 +392,6 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) = self
             .mpsc_sender
-            .clone()
             .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
                 request_sender,
                 completed_counter: completed_counter.clone(),
@@ -387,6 +418,52 @@ impl Triedb for TriedbEnv {
                     None => TriedbResult::Null,
                 }
             }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
+    }
+
+    async fn get_transactions(&self, block_num: u64) -> TriedbResult {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        // txn_index set to None to indiciate return all transactions
+        let (triedb_key, key_len_nibbles) = create_transaction_key(None);
+
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::TransactionsRequest(TransactionsRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(block_num),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => match result {
+                Some(rlp_transactions) => {
+                    let signed_transactions = rlp_transactions
+                        .iter()
+                        .filter_map(|rlp_transaction| {
+                            TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice())
+                                .map_err(|e| {
+                                    warn!("Failed to decode RLP transaction: {e}");
+                                    TriedbResult::Error
+                                })
+                                .ok()
+                        })
+                        .collect();
+                    TriedbResult::BlockTransactions(signed_transactions)
+                }
+                None => TriedbResult::Null,
+            },
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 TriedbResult::Error

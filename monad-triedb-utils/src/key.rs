@@ -1,5 +1,6 @@
 use alloy_primitives::keccak256;
 use alloy_rlp::Encodable;
+use tracing::warn;
 
 pub fn create_addr_key(addr: &[u8; 20]) -> (Vec<u8>, u8) {
     let mut key_nibbles: Vec<u8> = vec![];
@@ -14,10 +15,18 @@ pub fn create_addr_key(addr: &[u8; 20]) -> (Vec<u8>, u8) {
         key_nibbles.push(*byte & 0xF);
     }
 
-    let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
     if num_nibbles % 2 != 0 {
         key_nibbles.push(0);
     }
+
     let key: Vec<_> = key_nibbles
         .chunks(2)
         .map(|chunk| (chunk[0] << 4) | chunk[1])
@@ -44,10 +53,18 @@ pub fn create_storage_at_key(addr: &[u8; 20], at: &[u8; 32]) -> (Vec<u8>, u8) {
         key_nibbles.push(*byte & 0xF);
     }
 
-    let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
     if num_nibbles % 2 != 0 {
         key_nibbles.push(0);
     }
+
     let key: Vec<_> = key_nibbles
         .chunks(2)
         .map(|chunk| (chunk[0] << 4) | chunk[1])
@@ -67,10 +84,18 @@ pub fn create_code_key(code_hash: &[u8; 32]) -> (Vec<u8>, u8) {
         key_nibbles.push(*byte & 0xF);
     }
 
-    let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
     if num_nibbles % 2 != 0 {
         key_nibbles.push(0);
     }
+
     let key: Vec<_> = key_nibbles
         .chunks(2)
         .map(|chunk| (chunk[0] << 4) | chunk[1])
@@ -93,10 +118,55 @@ pub fn create_receipt_key(txn_index: u64) -> (Vec<u8>, u8) {
         key_nibbles.push(byte & 0xF);
     }
 
-    let num_nibbles: u8 = key_nibbles.len().try_into().expect("key too big");
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
     if num_nibbles % 2 != 0 {
         key_nibbles.push(0);
     }
+
+    let key: Vec<_> = key_nibbles
+        .chunks(2)
+        .map(|chunk| (chunk[0] << 4) | chunk[1])
+        .collect();
+
+    (key, num_nibbles)
+}
+
+// if no txn_index is provided, return the key to traverse the entire table
+pub fn create_transaction_key(txn_index: Option<u64>) -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+
+    let transaction_nibble = 3_u8;
+    key_nibbles.push(transaction_nibble);
+
+    if let Some(index) = txn_index {
+        let mut rlp_buf = vec![];
+        index.encode(&mut rlp_buf);
+
+        for byte in rlp_buf {
+            key_nibbles.push(byte >> 4);
+            key_nibbles.push(byte & 0xF);
+        }
+    }
+
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
+    if num_nibbles % 2 != 0 {
+        key_nibbles.push(0);
+    }
+
     let key: Vec<_> = key_nibbles
         .chunks(2)
         .map(|chunk| (chunk[0] << 4) | chunk[1])

@@ -162,6 +162,7 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     trace!("monad_eth_getBlockByNumber: {params:?}");
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
+
     let block = match get_block_from_num(file_ledger_reader, block_num).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => return Ok(None),

@@ -28,6 +28,13 @@ int triedb_read_data(
 void triedb_async_read(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user);
+// traverse the trie
+typedef void (*callback_func)(
+    void *context, bytes path, size_t path_len, bytes value,
+    size_t value_len);
+void triedb_traverse(
+    triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void *context, callback_func callback);
 // pumps async reads, processing no
 // more than count maximum, returning
 // how many were processed.

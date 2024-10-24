@@ -10,7 +10,11 @@ struct triedb
     uint64_t earliest_block_id_;
     uint64_t latest_block_id_;
 
-    triedb() : db_{ {{1, 2, 3}, {4, 5, 6}}, {{7, 8, 9}, {10, 11, 12}} }, latest_block_id_{ 20 } {}
+    triedb()
+        : db_{{{1, 2, 3}, {4, 5, 6}}, {{7, 8, 9}, {10, 11, 12}}}
+        , latest_block_id_{20}
+    {
+    }
 };
 
 extern "C"
@@ -31,7 +35,9 @@ int triedb_close(triedb *db)
     return 0;
 }
 
-int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
+int triedb_read(
+    triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
+    uint64_t block_id)
 {
     std::vector<uint8_t> key_vec{key, key + (key_len_nibbles + 1) / 2};
     auto const it = db->db_.find(key_vec);
@@ -45,7 +51,28 @@ int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, ui
     return value_len;
 }
 
-int triedb_read_data(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
+int triedb_read_data(
+    triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
+    uint64_t block_id)
+{
+    return 0;
+}
+
+void triedb_async_read(
+    triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void (*completed)(bytes value, int length, void *user), void *user)
+{
+    return;
+}
+
+void triedb_traverse(
+    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void *context, callback_func callback)
+{
+    return;
+}
+
+size_t triedb_poll(triedb *, bool blocking, size_t count)
 {
     return 0;
 }
