@@ -557,7 +557,7 @@ impl DataplaneEventLoop {
                     None => debug!(
                         ?addr,
                         ?TCP_INCOMING_MAX_CONNECTIONS,
-                        "no slot available for connection, dropping"
+                        "no slot available for incoming connection, dropping"
                     ),
                     Some(slot) => {
                         trace!(?addr, ?slot, "assigning connection");
@@ -734,6 +734,36 @@ impl DataplaneEventLoop {
             return;
         };
 
+        match &conn.state {
+            IncomingConnectionState::ReadingHeader {
+                header,
+                bytes_received,
+            } => {
+                trace!(
+                    slot,
+                    local_addr =? conn.stream.local_addr().unwrap(),
+                    peer_addr =? conn.stream.peer_addr().unwrap(),
+                    bytes_received,
+                    ?header,
+                    "incoming TCP connection timed out in state ReadingHeader"
+                );
+            }
+            IncomingConnectionState::ReadingMessage {
+                message,
+                bytes_received,
+            } => {
+                debug!(
+                    slot,
+                    local_addr =? conn.stream.local_addr().unwrap(),
+                    peer_addr =? conn.stream.peer_addr().unwrap(),
+                    bytes_received,
+                    message_len = message.len(),
+                    "incoming TCP connection timed out in state ReadingMessage"
+                );
+            }
+            _ => {}
+        }
+
         self.tcp_incoming_connection_timers[slot].handle_event();
 
         conn.state = IncomingConnectionState::TimedOut;
@@ -855,6 +885,37 @@ impl DataplaneEventLoop {
             return;
         };
 
+        match &conn.state {
+            OutgoingConnectionState::Connecting => {
+                trace!(
+                    slot,
+                    message_len = conn.msg.len(),
+                    "outgoing TCP connection timed out in state Connecting"
+                );
+            }
+            OutgoingConnectionState::WritingHeader { bytes_written } => {
+                debug!(
+                    slot,
+                    local_addr =? conn.stream.local_addr().unwrap(),
+                    peer_addr =? conn.stream.peer_addr().unwrap(),
+                    bytes_written,
+                    message_len = conn.msg.len(),
+                    "outgoing TCP connection timed out in state WritingHeader"
+                );
+            }
+            OutgoingConnectionState::WritingMessage { bytes_written } => {
+                debug!(
+                    slot,
+                    local_addr =? conn.stream.local_addr().unwrap(),
+                    peer_addr =? conn.stream.peer_addr().unwrap(),
+                    bytes_written,
+                    message_len = conn.msg.len(),
+                    "outgoing TCP connection timed out in state WritingMessage"
+                );
+            }
+            _ => {}
+        }
+
         self.tcp_outgoing_connection_timers[slot].handle_event();
 
         conn.state = OutgoingConnectionState::TimedOut;
@@ -877,7 +938,7 @@ impl DataplaneEventLoop {
             None => warn!(
                 ?addr,
                 ?TCP_OUTGOING_MAX_CONNECTIONS,
-                "no slot available for connection, dropping"
+                "no slot available for outgoing connection, dropping"
             ),
             Some(slot) => {
                 trace!(?addr, ?slot, "assigning TCP connection");
