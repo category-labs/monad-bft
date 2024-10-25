@@ -14,7 +14,10 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
-use monad_discovery::{message::InboundRouterMessage, Discovery};
+use monad_discovery::{
+    message::{InboundRouterMessage, OutboundRouterMessage},
+    Discovery,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{Deserializable, DropTimer, Epoch, NodeId, RouterTarget, Serializable};
@@ -184,7 +187,11 @@ where
                     }
                 }
                 RouterCommand::Publish { target, message } => {
-                    let app_message = message.serialize();
+                    let outbound_router_message = OutboundRouterMessage::<
+                        _,
+                        CertificateSignaturePubKey<ST>,
+                    >::Application(&message);
+                    let app_message = outbound_router_message.serialize();
                     let app_message_len = app_message.len();
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")
