@@ -1,0 +1,20 @@
+{
+	"root_private_key": "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+	"addresses": {
+		"from": {
+			"type": "random_seeded",
+			"seed": 0,
+			"count": 1
+		},
+		"to": {
+			"type": "random_seeded",
+			"seed": 0,
+			"count": 8192
+		}
+	},
+	"activity": {
+		"type": "native_token_transfer",
+		"quantity": 1000
+	},
+	"interval_ms": 100
+}

@@ -20,6 +20,7 @@ pub struct EthTxGenerator {
     account_pool: AccountPool,
     chain_state: ChainStateView,
     activity: EthTxActivityType,
+    interval: Duration,
 }
 
 impl EthTxGenerator {
@@ -28,6 +29,7 @@ impl EthTxGenerator {
             root_private_key,
             addresses: EthTxAddressConfig { from, to },
             activity,
+            interval_ms,
         } = config;
 
         let (root_account_address, root_account) = PrivateKey::new(root_private_key);
@@ -40,6 +42,7 @@ impl EthTxGenerator {
             account_pool,
             chain_state,
             activity,
+            interval: std::time::Duration::from_millis(interval_ms),
         }
     }
 
@@ -88,8 +91,8 @@ impl EthTxGenerator {
                                         gas_limit: 21_000,
                                         max_fee_per_gas: 1_000,
                                         max_priority_fee_per_gas: 0,
-                                        to: TransactionKind::Call(to_address),
-                                        value: U256::from(1_000_000_000_000u128).into(),
+                                        to: TransactionKind::Call(from_address),
+                                        value: U256::from(1_000_000_000_000_000u128).into(),
                                         access_list: AccessList::default(),
                                         input: Vec::default().into(),
                                     });
@@ -118,7 +121,7 @@ impl EthTxGenerator {
                                     nonce,
                                     gas_limit: 21_000,
                                     max_fee_per_gas: 1_000,
-                                    max_priority_fee_per_gas: 0,
+                                    max_priority_fee_per_gas: 1_000,
                                     to: TransactionKind::Call(to_address),
                                     value: quantity.to_owned().into(),
                                     access_list: AccessList::default(),
@@ -144,11 +147,6 @@ impl EthTxGenerator {
             EthTxActivityType::Erc20TokenTransfer { contract, quantity } => unimplemented!(),
         }
 
-        (
-            txs,
-            Instant::now()
-                .checked_add(Duration::from_millis(1))
-                .unwrap(),
-        )
+        (txs, Instant::now().checked_add(self.interval).unwrap())
     }
 }

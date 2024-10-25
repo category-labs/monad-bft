@@ -8,6 +8,7 @@ pub struct EthTxGeneratorConfig {
     pub(super) root_private_key: String,
     pub(super) addresses: EthTxAddressConfig,
     pub(super) activity: EthTxActivityType,
+    pub(super) interval_ms: u64,
 }
 
 impl EthTxGeneratorConfig {
