@@ -40,6 +40,7 @@ const MIN_CHUNK_LENGTH: usize = 980;
 // to be transmitted.  This can happen in Broadcast mode when the message is large or
 // if we have many peers to transmit the message to.
 const MAX_NUM_PACKETS: usize = 65535;
+const VERSION: u16 = 0;
 
 struct DecoderState {
     decoder: ManagedDecoder,
@@ -589,7 +590,7 @@ where
 
     // At this point, everything BELOW chunk_merkle_leaf_idx is populated
     // populate merkle trees/roots/leaf_idx + signatures (cached)
-    let version: u16 = 0;
+    let version: u16 = VERSION;
     let epoch_no: u64 = epoch_no;
     let unix_ts_ms: u64 = unix_ts_ms;
     message
@@ -742,7 +743,7 @@ where
 
     let cursor_version = split_off(2)?;
     let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));
-    if version != 0 {
+    if version != VERSION {
         return Err(MessageValidationError::UnknownVersion);
     }
 
