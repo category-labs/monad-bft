@@ -114,11 +114,11 @@ message ProtoMonadMessage {
   }
 }
 message ProtoDiscoveryRequest {
-  monad_proto.discovery.ProtoMonadNameRecord self = 1;
+  monad_proto.discovery.ProtoSignedMonadNameRecord self = 2;
 }
 
 message ProtoDiscoveryResponse {
-  repeated monad_proto.discovery.ProtoMonadNameRecord peers = 1;
+  repeated monad_proto.discovery.ProtoSignedMonadNameRecord peers = 2;
 }
 
 message ProtoDiscoveryMessage {

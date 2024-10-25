@@ -12,8 +12,12 @@ bench = false
 bytes = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+zerocopy = { workspace = true }
 
 
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
+
+[dev-dependencies]
+monad-secp = { path = "../monad-secp" }

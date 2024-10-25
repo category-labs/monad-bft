@@ -17,6 +17,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
 };
+use monad_discovery::{BootstrapPeer, MonadNameRecord, NetworkEndpoint};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
@@ -68,6 +69,7 @@ use config::{SignatureCollectionType, SignatureType};
 
 mod error;
 use error::NodeSetupError;
+use monad_secp::PubKey;
 
 mod state;
 use state::NodeState;
@@ -155,6 +157,33 @@ async fn run(
         .last()
         .expect("no validator sets")
         .clone();
+    let (local_name_record, bootstrap_peers) = {
+        let pubkey = node_state.secp256k1_identity.pubkey();
+        let local_name_record = &node_state.node_config.network.local_name_record;
+        info!(address = ?local_name_record.address, node_id = ?pubkey, "load local name record");
+        let local_ip_address = resolve_domain(&local_name_record.address);
+        (
+            MonadNameRecord {
+                endpoint: NetworkEndpoint {
+                    socket_addr: local_ip_address,
+                },
+                node_id: NodeId::new(pubkey),
+                seq_num: local_name_record.seq_num,
+            },
+            node_state
+                .node_config
+                .bootstrap
+                .peers
+                .iter()
+                .map(|peer| BootstrapPeer {
+                    node_id: build_node_id(peer),
+                    endpoint: NetworkEndpoint {
+                        socket_addr: resolve_domain(&peer.address),
+                    },
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
 
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
@@ -165,6 +194,8 @@ async fn run(
             node_state.router_identity,
             &node_state.node_config.bootstrap.peers,
             &node_state.node_config.fullnode.identities,
+            local_name_record,
+            bootstrap_peers,
         )
         .await;
 
@@ -479,6 +510,8 @@ async fn build_raptorcast_router<M, OM>(
     identity: <SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
     full_nodes: &[FullNodeIdentityConfig],
+    local_name_record: MonadNameRecord<PubKey>,
+    bootstrap_peers: Vec<BootstrapPeer<PubKey>>,
 ) -> RaptorCast<SignatureType, M, OM, MonadEvent<SignatureType, SignatureCollectionType>>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
@@ -507,6 +540,8 @@ where
         ))
         .to_string(),
         up_bandwidth_mbps: network_config.max_mbps.into(),
+        local_name_record,
+        bootstrap_peers,
     })
 }
 

@@ -137,6 +137,7 @@ where
                 RouterCommand::UpdatePeers(_) => {}
                 RouterCommand::GetFullNodes => {}
                 RouterCommand::UpdateFullNodes(vec) => {}
+                RouterCommand::BootstrapPeers => {}
             }
         }
     }

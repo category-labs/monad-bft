@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     num::ParseIntError,
     time::{Duration, Instant},
 };
@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
+use monad_discovery::{MonadNameRecord, NetworkEndpoint};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
@@ -109,6 +110,7 @@ fn service(
             let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
+                let pubkey = key.pubkey();
                 let service_config = RaptorCastConfig {
                     key,
                     full_nodes: Default::default(),
@@ -116,6 +118,17 @@ fn service(
                     redundancy: 2,
                     local_addr: server_address.to_string(),
                     up_bandwidth_mbps: 1_000,
+                    local_name_record: MonadNameRecord {
+                        endpoint: NetworkEndpoint {
+                            socket_addr: SocketAddr::V4(SocketAddrV4::new(
+                                Ipv4Addr::new(0, 0, 0, 0),
+                                0,
+                            )),
+                        },
+                        node_id: NodeId::new(pubkey),
+                        seq_num: 0,
+                    },
+                    bootstrap_peers: vec![],
                 };
 
                 let mut service = RaptorCast::<

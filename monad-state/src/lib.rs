@@ -848,6 +848,7 @@ where
         init_cmds.extend(monad_state.update(MonadEvent::StateSyncEvent(
             StateSyncEvent::RequestSync { root, high_qc },
         )));
+        init_cmds.push(Command::RouterCommand(RouterCommand::BootstrapPeers));
 
         (monad_state, init_cmds)
     }

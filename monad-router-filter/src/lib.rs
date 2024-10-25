@@ -60,6 +60,8 @@ where
                 RouterCommand::UpdatePeers(_) => Some(cmd),
                 RouterCommand::GetFullNodes => Some(cmd),
                 RouterCommand::UpdateFullNodes(_vec) => Some(cmd),
+                // TODO(rene): how should full-node handle bootstrap peers command?
+                RouterCommand::BootstrapPeers => None,
             })
             .collect_vec();
 

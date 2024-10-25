@@ -29,3 +29,8 @@ message ProtoMonadNameRecord {
   monad_proto.basic.ProtoNodeId node_id = 2;
   uint64 seq_num = 3;
 }
+
+message ProtoSignedMonadNameRecord {
+  ProtoMonadNameRecord name_record = 1;
+  bytes signature = 2;
+}

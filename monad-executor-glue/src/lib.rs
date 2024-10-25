@@ -44,6 +44,7 @@ pub enum RouterCommand<PT: PubKey, OM> {
     UpdatePeers(Vec<(NodeId<PT>, SocketAddr)>),
     GetFullNodes,
     UpdateFullNodes(Vec<NodeId<PT>>),
+    BootstrapPeers,
 }
 
 pub trait Message: Clone + Send + Sync {

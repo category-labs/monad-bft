@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::{
     error::ProtoError,
     proto::message::{
@@ -10,14 +10,14 @@ use monad_proto::{
 use monad_types::{Deserializable, Serializable};
 use prost::Message as _;
 
-use crate::MonadNameRecord;
+use crate::SignedMonadNameRecord;
 
 #[derive(Debug)]
-pub struct DiscoveryRequest<PT: PubKey> {
-    pub sender: MonadNameRecord<PT>,
+pub struct DiscoveryRequest<ST: CertificateSignatureRecoverable> {
+    pub sender: SignedMonadNameRecord<ST>,
 }
 
-impl<PT: PubKey> TryFrom<ProtoDiscoveryRequest> for DiscoveryRequest<PT> {
+impl<ST: CertificateSignatureRecoverable> TryFrom<ProtoDiscoveryRequest> for DiscoveryRequest<ST> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoDiscoveryRequest) -> Result<Self, Self::Error> {
@@ -30,8 +30,8 @@ impl<PT: PubKey> TryFrom<ProtoDiscoveryRequest> for DiscoveryRequest<PT> {
         Ok(Self { sender })
     }
 }
-impl<PT: PubKey> From<&DiscoveryRequest<PT>> for ProtoDiscoveryRequest {
-    fn from(value: &DiscoveryRequest<PT>) -> Self {
+impl<ST: CertificateSignatureRecoverable> From<&DiscoveryRequest<ST>> for ProtoDiscoveryRequest {
+    fn from(value: &DiscoveryRequest<ST>) -> Self {
         ProtoDiscoveryRequest {
             self_: Some((&value.sender).into()),
         }
@@ -39,24 +39,26 @@ impl<PT: PubKey> From<&DiscoveryRequest<PT>> for ProtoDiscoveryRequest {
 }
 
 #[derive(Debug)]
-pub struct DiscoveryResponse<PT: PubKey> {
-    pub peers: Vec<MonadNameRecord<PT>>,
+pub struct DiscoveryResponse<ST: CertificateSignatureRecoverable> {
+    pub peers: Vec<SignedMonadNameRecord<ST>>,
 }
 
-impl<PT: PubKey> TryFrom<ProtoDiscoveryResponse> for DiscoveryResponse<PT> {
+impl<ST: CertificateSignatureRecoverable> TryFrom<ProtoDiscoveryResponse>
+    for DiscoveryResponse<ST>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoDiscoveryResponse) -> Result<Self, Self::Error> {
         let peers = value
             .peers
             .into_iter()
-            .map(MonadNameRecord::try_from)
+            .map(SignedMonadNameRecord::try_from)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { peers })
     }
 }
-impl<PT: PubKey> From<&DiscoveryResponse<PT>> for ProtoDiscoveryResponse {
-    fn from(value: &DiscoveryResponse<PT>) -> Self {
+impl<ST: CertificateSignatureRecoverable> From<&DiscoveryResponse<ST>> for ProtoDiscoveryResponse {
+    fn from(value: &DiscoveryResponse<ST>) -> Self {
         ProtoDiscoveryResponse {
             peers: value.peers.iter().map(Into::into).collect::<Vec<_>>(),
         }
@@ -64,12 +66,12 @@ impl<PT: PubKey> From<&DiscoveryResponse<PT>> for ProtoDiscoveryResponse {
 }
 
 #[derive(Debug)]
-pub enum DiscoveryMessage<PT: PubKey> {
-    Request(DiscoveryRequest<PT>),
-    Response(DiscoveryResponse<PT>),
+pub enum DiscoveryMessage<ST: CertificateSignatureRecoverable> {
+    Request(DiscoveryRequest<ST>),
+    Response(DiscoveryResponse<ST>),
 }
 
-impl<PT: PubKey> TryFrom<ProtoDiscoveryMessage> for DiscoveryMessage<PT> {
+impl<ST: CertificateSignatureRecoverable> TryFrom<ProtoDiscoveryMessage> for DiscoveryMessage<ST> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoDiscoveryMessage) -> Result<Self, Self::Error> {
@@ -82,8 +84,8 @@ impl<PT: PubKey> TryFrom<ProtoDiscoveryMessage> for DiscoveryMessage<PT> {
     }
 }
 
-impl<PT: PubKey> From<&DiscoveryMessage<PT>> for ProtoDiscoveryMessage {
-    fn from(value: &DiscoveryMessage<PT>) -> Self {
+impl<ST: CertificateSignatureRecoverable> From<&DiscoveryMessage<ST>> for ProtoDiscoveryMessage {
+    fn from(value: &DiscoveryMessage<ST>) -> Self {
         match value {
             DiscoveryMessage::Request(request) => ProtoDiscoveryMessage {
                 message: Some(Message::Request(request.into())),
@@ -95,16 +97,17 @@ impl<PT: PubKey> From<&DiscoveryMessage<PT>> for ProtoDiscoveryMessage {
     }
 }
 
-pub enum OutboundRouterMessage<'a, OM, PT: PubKey> {
+pub enum OutboundRouterMessage<'a, OM, ST: CertificateSignatureRecoverable> {
     Application(&'a OM),
-    Discovery(DiscoveryMessage<PT>),
+    Discovery(DiscoveryMessage<ST>),
 }
 
-impl<'a, OM, PT: PubKey> From<&OutboundRouterMessage<'a, OM, PT>> for ProtoRouterMessage
+impl<'a, OM, ST: CertificateSignatureRecoverable> From<&OutboundRouterMessage<'a, OM, ST>>
+    for ProtoRouterMessage
 where
     OM: Serializable<Bytes>,
 {
-    fn from(value: &OutboundRouterMessage<'a, OM, PT>) -> Self {
+    fn from(value: &OutboundRouterMessage<'a, OM, ST>) -> Self {
         match value {
             OutboundRouterMessage::Application(app_message) => {
                 let serialized_app_message: Bytes = (*app_message).serialize();
@@ -127,8 +130,8 @@ where
     }
 }
 
-impl<OM: Serializable<Bytes>, PT: PubKey> Serializable<Bytes>
-    for OutboundRouterMessage<'_, OM, PT>
+impl<OM: Serializable<Bytes>, ST: CertificateSignatureRecoverable> Serializable<Bytes>
+    for OutboundRouterMessage<'_, OM, ST>
 {
     fn serialize(&self) -> Bytes {
         let msg: ProtoRouterMessage = self.into();
@@ -140,13 +143,13 @@ impl<OM: Serializable<Bytes>, PT: PubKey> Serializable<Bytes>
     }
 }
 
-pub enum InboundRouterMessage<M, PT: PubKey> {
+pub enum InboundRouterMessage<M, ST: CertificateSignatureRecoverable> {
     Application(M),
-    Discovery(DiscoveryMessage<PT>),
+    Discovery(DiscoveryMessage<ST>),
 }
 
-impl<M: Deserializable<Bytes>, PT: PubKey> TryFrom<ProtoRouterMessage>
-    for InboundRouterMessage<M, PT>
+impl<M: Deserializable<Bytes>, ST: CertificateSignatureRecoverable> TryFrom<ProtoRouterMessage>
+    for InboundRouterMessage<M, ST>
 {
     type Error = ProtoError;
 
@@ -181,7 +184,9 @@ impl<M: Deserializable<Bytes>, PT: PubKey> TryFrom<ProtoRouterMessage>
     }
 }
 
-impl<M: Deserializable<Bytes>, PT: PubKey> Deserializable<Bytes> for InboundRouterMessage<M, PT> {
+impl<M: Deserializable<Bytes>, ST: CertificateSignatureRecoverable> Deserializable<Bytes>
+    for InboundRouterMessage<M, ST>
+{
     type ReadError = ProtoError;
 
     fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {

@@ -3718,9 +3718,11 @@ dependencies = [
  "bytes",
  "monad-crypto",
  "monad-proto",
+ "monad-secp",
  "monad-types",
  "prost 0.12.6",
  "serde",
+ "zerocopy 0.6.5",
 ]
 
 [[package]]
@@ -4038,6 +4040,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-discovery",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool",
@@ -4315,6 +4318,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-discovery",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",

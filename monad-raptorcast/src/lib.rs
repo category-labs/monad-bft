@@ -16,7 +16,13 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
-use monad_discovery::message::InboundRouterMessage;
+use monad_discovery::{
+    message::{
+        DiscoveryMessage, DiscoveryRequest, DiscoveryResponse, InboundRouterMessage,
+        OutboundRouterMessage,
+    },
+    BootstrapPeer, DiscoveryError, MonadNameRecord, SignedMonadNameRecord,
+};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand, UpdateFullNodes,
@@ -29,6 +35,8 @@ pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
+
+const GAUGE_RAPTORCAST_KNOWN_PEERS: &str = "monad.discovery.discovery_peers";
 
 pub struct RaptorCastConfig<ST>
 where
@@ -47,6 +55,8 @@ where
 
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub up_bandwidth_mbps: u64,
+    pub local_name_record: MonadNameRecord<CertificateSignaturePubKey<ST>>,
+    pub bootstrap_peers: Vec<BootstrapPeer<CertificateSignaturePubKey<ST>>>,
 }
 
 pub struct RaptorCast<ST, M, OM, SE>
@@ -69,6 +79,9 @@ where
 
     dataplane: Dataplane,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    local_name_record: SignedMonadNameRecord<ST>,
+    bootstrap_peers: Vec<BootstrapPeer<CertificateSignaturePubKey<ST>>>,
+    discovery_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, SignedMonadNameRecord<ST>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -96,6 +109,8 @@ where
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
+        let signed_local_name_record =
+            SignedMonadNameRecord::new(config.local_name_record.clone(), &config.key);
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -110,6 +125,9 @@ where
 
             dataplane,
             pending_events: Default::default(),
+            local_name_record: signed_local_name_record,
+            bootstrap_peers: config.bootstrap_peers,
+            discovery_peers: Default::default(),
 
             waker: None,
             metrics: Default::default(),
@@ -137,6 +155,107 @@ where
                 self.dataplane.tcp_write(*address, signed_message.freeze());
             }
         };
+    }
+
+    fn validate_peer(
+        &self,
+        incoming_signed_record: &SignedMonadNameRecord<ST>,
+    ) -> Result<SignedMonadNameRecord<ST>, DiscoveryError<ST>> {
+        let verified_record = incoming_signed_record.clone().verify()?;
+        let peer = verified_record.record();
+        match self.discovery_peers.get(&peer.node_id) {
+            None => Ok(verified_record),
+            Some(signed_record) => {
+                let existing_peer = signed_record.record();
+                if peer.seq_num > existing_peer.seq_num {
+                    Ok(verified_record)
+                } else if peer == existing_peer {
+                    Err(DiscoveryError::DuplicatePeer(verified_record))
+                } else {
+                    Err(DiscoveryError::InvalidPeer {
+                        existing_peer: existing_peer.clone(),
+                        requesting_peer: peer.clone(),
+                    })
+                }
+            }
+        }
+    }
+
+    fn handle_discovery(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        discovery_message: DiscoveryMessage<ST>,
+    ) {
+        let incoming_prospective_peers = match &discovery_message {
+            DiscoveryMessage::Request(request) => vec![&request.sender],
+            DiscoveryMessage::Response(response) => response.peers.iter().collect(),
+        };
+
+        let validated_peers = incoming_prospective_peers
+            .into_iter()
+            .filter_map(
+                |peer| match self.validate_peer(peer) {
+                    Ok(peer) => Some(peer),
+                    Err(DiscoveryError::DuplicatePeer(duplicate_peer)) => match &discovery_message {
+                        // DiscoveryRequest allows duplicates since the sender might have crashed
+                        // but the receiver retained the sender's IP from a previous request
+                        DiscoveryMessage::Request(_) => Some(duplicate_peer),
+                        // however DiscoveryResponse does not allow duplicates to allow the protocol
+                        // to terminate
+                        DiscoveryMessage::Response(response) => {
+                            tracing::warn!(from = ?from, duplicate_peer = ?duplicate_peer, message = ?response, "ignoring duplicate peer");
+                            None
+                        }
+                    },
+                    Err(error) => {
+                        tracing::warn!(from = ?from, error = ?error, message = ?discovery_message, "ignoring discovery request");
+                        None
+                    }
+                }
+            )
+            .collect::<Vec<_>>();
+
+        for new_peer in &validated_peers {
+            self.known_addresses.insert(
+                new_peer.record().node_id,
+                new_peer.record().endpoint.socket_addr,
+            );
+            self.discovery_peers
+                .insert(new_peer.record().node_id, new_peer.clone());
+        }
+
+        let responses = validated_peers
+            .into_iter()
+            .map(|new_peer| {
+                (
+                    new_peer.record().node_id,
+                    OutboundRouterMessage::<OM, _>::Discovery(match discovery_message {
+                        DiscoveryMessage::Request(_) => {
+                            DiscoveryMessage::Response(DiscoveryResponse {
+                                peers: self
+                                    .discovery_peers
+                                    .values()
+                                    .cloned()
+                                    .chain(std::iter::once(self.local_name_record.clone()))
+                                    .collect::<Vec<_>>(),
+                            })
+                        }
+                        DiscoveryMessage::Response(_) => {
+                            DiscoveryMessage::Request(DiscoveryRequest {
+                                sender: self.local_name_record.clone(),
+                            })
+                        }
+                    })
+                    .serialize(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for (target, response) in responses {
+            self.tcp_build_and_send(&target, response);
+        }
+
+        self.metrics[GAUGE_RAPTORCAST_KNOWN_PEERS] = self.discovery_peers.len() as u64;
     }
 }
 
@@ -200,7 +319,9 @@ where
                     }
                 }
                 RouterCommand::Publish { target, message } => {
-                    let app_message = message.serialize();
+                    let outbound_router_message =
+                        OutboundRouterMessage::<_, ST>::Application(&message);
+                    let app_message = outbound_router_message.serialize();
                     let app_message_len = app_message.len();
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
                         tracing::warn!(?elapsed, app_message_len, "long time to publish message")
@@ -340,6 +461,17 @@ where
                             PeerManagerResponse::UpdateFullNodesSuccess,
                         ));
                 }
+                RouterCommand::BootstrapPeers => {
+                    let request = OutboundRouterMessage::<OM, _>::Discovery(
+                        DiscoveryMessage::Request(DiscoveryRequest {
+                            sender: self.local_name_record.clone(),
+                        }),
+                    )
+                    .serialize();
+                    for peer in self.bootstrap_peers.clone() {
+                        self.tcp_build_and_send(&peer.node_id, request.clone());
+                    }
+                }
             }
         }
     }
@@ -356,10 +488,9 @@ fn handle_message<
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M, CertificateSignaturePubKey<ST>>, UnknownMessageError> {
+) -> Result<InboundRouterMessage<M, ST>, UnknownMessageError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
-    else {
+    let Ok(inbound) = InboundRouterMessage::<M, ST>::deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         let Ok(old_message) = M::deserialize(bytes) else {
             return Err(UnknownMessageError);
@@ -457,8 +588,11 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
-        {
+        loop {
+            let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+            else {
+                break;
+            };
             let signature_bytes = &message[..SIGNATURE_SIZE];
             let signature = match ST::deserialize(signature_bytes) {
                 Ok(signature) => signature,
@@ -490,8 +624,8 @@ where
                     ));
                 }
                 InboundRouterMessage::Discovery(discovery_message) => {
-                    // pass message to self.discovery
-                    tracing::warn!(?from_addr, discovery_message = ?discovery_message, "unhandled discovery message");
+                    tracing::info!(?from_addr, discovery_message = ?discovery_message, "discovery message");
+                    this.handle_discovery(NodeId::new(from), discovery_message);
                 }
             }
         }

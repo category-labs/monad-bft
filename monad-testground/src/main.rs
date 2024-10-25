@@ -17,6 +17,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
+use monad_discovery::{MonadNameRecord, NetworkEndpoint};
 use monad_executor::Executor;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
@@ -271,13 +272,26 @@ where
                         RouterArgs::Local { .. } => RouterConfig::Local(
                             maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
                         ),
-                        RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
-                            key: keypair,
-                            known_addresses: known_addresses.clone(),
-                            full_nodes: Default::default(),
-                            redundancy: 3,
-                            local_addr: address.parse::<SocketAddr>().unwrap().to_string(),
-                            up_bandwidth_mbps: 1_000,
+                        RouterArgs::RaptorCast => RouterConfig::RaptorCast({
+                            let pubkey = keypair.pubkey();
+                            RaptorCastConfig {
+                                key: keypair,
+                                known_addresses: known_addresses.clone(),
+                                full_nodes: Default::default(),
+                                redundancy: 3,
+                                local_addr: address.parse::<SocketAddr>().unwrap().to_string(),
+                                up_bandwidth_mbps: 1_000,
+                                local_name_record: MonadNameRecord {
+                                    endpoint: NetworkEndpoint {
+                                        socket_addr: address.parse::<SocketAddr>().unwrap(),
+                                    },
+                                    node_id: NodeId::new(pubkey),
+                                    seq_num: 0,
+                                },
+                                bootstrap_peers: vec![
+                                    // TODO pick a reasonable bootstrap peer
+                                ],
+                            }
                         }),
                     },
                     ledger_config: match args.ledger {
