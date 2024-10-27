@@ -281,9 +281,9 @@ async fn rpc_select(
                 .map(serialize_result)?
         }
         "eth_getTransactionByHash" => {
-            if let Some(reader) = app_state.file_ledger_reader.as_ref() {
+            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
                 let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByHash(reader, params)
+                monad_eth_getTransactionByHash(triedb_env, params)
                     .await
                     .map(serialize_result)?
             } else {
@@ -455,12 +455,8 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
-            let Some(file_ledger_reader) = &app_state.file_ledger_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(file_ledger_reader, triedb_reader, params)
+            monad_eth_getTransactionReceipt(triedb_reader, params)
                 .await
                 .map(serialize_result)?
         }

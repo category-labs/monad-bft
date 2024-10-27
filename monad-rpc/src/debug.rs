@@ -35,7 +35,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
     Ok(hex::encode(&raw_block))
 }
 
-#[rpc(method = "debug_getRawHeader", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_getRawHeader")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded header.
 pub async fn monad_debug_getRawHeader<T: Triedb>(

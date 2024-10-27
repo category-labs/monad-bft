@@ -316,7 +316,7 @@ pub struct MonadEthGetBlockReceiptsParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
-#[rpc(method = "eth_getBlockReceipts", ignore = "file_ledger_reader")]
+#[rpc(method = "eth_getBlockReceipts")]
 #[allow(non_snake_case)]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(

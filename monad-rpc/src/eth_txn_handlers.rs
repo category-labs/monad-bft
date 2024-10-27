@@ -449,27 +449,27 @@ pub struct MonadEthGetTransactionReceiptParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionReceipt", ignore = "file_ledger_reader")]
+#[rpc(method = "eth_getTransactionReceipt")]
 #[allow(non_snake_case)]
 /// Returns the receipt of a transaction by transaction hash.
 pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
-    p: MonadEthGetTransactionReceiptParams,
+    params: MonadEthGetTransactionReceiptParams,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
-    trace!("monad_eth_getTransactionReceipt: {p:?}");
+    trace!("monad_eth_getTransactionReceipt: {params:?}");
 
-    let Some(txn_value) = file_ledger_reader.get_txn_by_hash(monad_types::Hash(p.tx_hash.0)) else {
-        return Ok(None);
+    let (block_num, tx_index) = match triedb_env
+        .get_transaction_location_by_hash(params.tx_hash.0)
+        .await
+    {
+        TriedbResult::TransactionLocation(block_num, tx_index) => (block_num, tx_index),
+        TriedbResult::Null => return Ok(None),
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading tx hash from db".into(),
+            ))
+        }
     };
-    let txn_index = txn_value.transaction_index;
-
-    // TODO: remove this
-    let Some(block) = file_ledger_reader.get_block_by_hash(txn_value.block_hash) else {
-        return Ok(None);
-    };
-
-    let block_num = block.number;
 
     let block_hash: FixedBytes<32>;
     let header = match triedb_env.get_block_header(block_num).await {
@@ -493,7 +493,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
         }
     };
 
-    match triedb_env.get_receipt(txn_index, block_num).await {
+    match triedb_env.get_receipt(tx_index, block_num).await {
         TriedbResult::Null => Ok(None),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
@@ -501,9 +501,9 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
                 JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
             })?;
 
-            let prev_receipt = if txn_index > 0 {
+            let prev_receipt = if tx_index > 0 {
                 let TriedbResult::Receipt(prev_receipt_rlp_buf) =
-                    triedb_env.get_receipt(txn_index - 1, block_num).await
+                    triedb_env.get_receipt(tx_index - 1, block_num).await
                 else {
                     return Err(JsonRpcError::internal_error("error reading from db".into()));
                 };
@@ -516,16 +516,19 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
                 None
             };
 
-            // FIXME when query transaction by hash is available
-            let tx = block.body.get(txn_index as usize).unwrap();
+            let transaction = match triedb_env.get_transaction(tx_index, block_num).await {
+                TriedbResult::Transaction(transaction) => transaction,
+                _ => return Ok(None),
+            };
+
             let receipt = parse_tx_receipt(
                 &header,
                 block_hash,
-                tx,
+                &transaction,
                 prev_receipt,
                 receipt,
                 block_num,
-                txn_index as usize,
+                tx_index as usize,
             )?;
             Ok(Some(MonadTransactionReceipt(receipt)))
         }
@@ -538,35 +541,61 @@ pub struct MonadEthGetTransactionByHashParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionByHash", ignore = "file_ledger_reader")]
+#[rpc(method = "eth_getTransactionByHash")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
-pub async fn monad_eth_getTransactionByHash(
-    file_ledger_reader: &FileBlockReader,
+pub async fn monad_eth_getTransactionByHash<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    let Some(txn_value) = file_ledger_reader.get_txn_by_hash(monad_types::Hash(params.tx_hash.0))
-    else {
-        return Ok(None);
+    let (block_num, tx_index) = match triedb_env
+        .get_transaction_location_by_hash(params.tx_hash.0)
+        .await
+    {
+        TriedbResult::TransactionLocation(block_num, tx_index) => (block_num, tx_index),
+        TriedbResult::Null => return Ok(None),
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading tx hash from db".into(),
+            ))
+        }
     };
 
-    let Some(block) = file_ledger_reader.get_block_by_hash(txn_value.block_hash) else {
-        return Ok(None);
+    let block_hash: FixedBytes<32>;
+    let header = match triedb_env.get_block_header(block_num).await {
+        TriedbResult::BlockHeader(block_header_rlp) => {
+            block_hash = keccak256(&block_header_rlp);
+            let Ok(header) = Header::decode(&mut block_header_rlp.as_slice()) else {
+                return Err(JsonRpcError::internal_error(
+                    "decode block header failed".into(),
+                ));
+            };
+            header
+        }
+        TriedbResult::Null => {
+            debug!("No block header found");
+            return Ok(None);
+        }
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading block header from db".into(),
+            ))
+        }
     };
 
-    let Some(transaction) = block.body.get(txn_value.transaction_index as usize) else {
-        error!("txn and block found so its index should be correct");
-        return Err(JsonRpcError::txn_decode_error());
+    let transaction = match triedb_env.get_transaction(tx_index, block_num).await {
+        TriedbResult::Transaction(transaction) => transaction,
+        _ => return Ok(None),
     };
 
     parse_tx_content(
-        block.hash_slow(),
-        block.number,
-        block.base_fee_per_gas,
-        transaction,
-        txn_value.transaction_index,
+        block_hash,
+        block_num,
+        header.base_fee_per_gas,
+        &transaction,
+        tx_index,
     )
     .map(|txn| Some(MonadTransaction(txn)))
 }

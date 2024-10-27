@@ -83,3 +83,24 @@ pub fn rlp_decode_storage_slot(storage_rlp: Vec<u8>) -> Option<[u8; 32]> {
         }
     }
 }
+
+pub fn rlp_decode_transaction_location(transaction_location_rlp: Vec<u8>) -> Option<(u64, u64)> {
+    let mut buf = transaction_location_rlp.as_slice();
+
+    let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+        warn!("rlp decode failed: {:?}", buf);
+        return None;
+    };
+
+    let Ok(block_num) = u64::decode(&mut buf) else {
+        warn!("rlp block number decode failed: {:?}", buf);
+        return None;
+    };
+
+    let Ok(tx_index) = u64::decode(&mut buf) else {
+        warn!("rlp transaction index decode failed: {:?}", buf);
+        return None;
+    };
+
+    Some((block_num, tx_index))
+}
