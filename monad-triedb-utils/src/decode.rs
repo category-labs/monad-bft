@@ -104,3 +104,14 @@ pub fn rlp_decode_transaction_location(transaction_location_rlp: Vec<u8>) -> Opt
 
     Some((block_num, tx_index))
 }
+
+pub fn rlp_decode_block_num(block_num_rlp: Vec<u8>) -> Option<u64> {
+    let mut buf = block_num_rlp.as_slice();
+
+    let Ok(block_num) = u64::decode(&mut buf) else {
+        warn!("rlp block number decode failed: {:?}", buf);
+        return None;
+    };
+
+    Some(block_num)
+}

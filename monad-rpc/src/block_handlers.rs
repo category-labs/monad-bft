@@ -4,18 +4,16 @@ use alloy_primitives::{
 };
 use alloy_rlp::Decodable;
 use monad_rpc_docs::rpc;
-use reth_primitives::{keccak256, Header as RlpHeader, TransactionSigned};
+use reth_primitives::{keccak256, Header as RlpHeader, ReceiptWithBloom, TransactionSigned};
 use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace};
 
 use crate::{
-    block_util::{get_block_num_from_tag, FileBlockReader},
     eth_json_types::{BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity},
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    receipt::{decode_receipt, ReceiptDetails},
-    triedb::{Triedb, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbResult},
 };
 
 fn parse_block_content(
@@ -126,26 +124,70 @@ pub struct MonadEthGetBlock {
     block: MonadBlock,
 }
 
-#[rpc(method = "eth_getBlockByHash", ignore = "file_ledger_reader")]
+#[rpc(method = "eth_getBlockByHash")]
 #[allow(non_snake_case)]
 /// Returns information about a block by hash.
-pub async fn monad_eth_getBlockByHash(
-    file_ledger_reader: &FileBlockReader,
+pub async fn monad_eth_getBlockByHash<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
 
-    let key = params.block_hash.into();
-    let Some(block) = file_ledger_reader.get_block_by_hash(key) else {
-        return Ok(None);
+    let block_num = match triedb_env
+        .get_block_number_by_hash(params.block_hash.0)
+        .await
+    {
+        TriedbResult::BlockNum(block_num) => block_num,
+        TriedbResult::Null => return Ok(None),
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading block hash from db".into(),
+            ))
+        }
     };
 
-    // FIXME when triedb migration is done
-    // let retval = parse_block_content(params.block_hash, &header, &transactions, params.return_full_txns);
-    let retval = None;
-    Ok(retval.map(|block| MonadEthGetBlock {
-        block: MonadBlock(block),
-    }))
+    let header = match triedb_env.get_block_header(block_num).await {
+        TriedbResult::BlockHeader(block_header_rlp) => {
+            let Ok(header) = RlpHeader::decode(&mut block_header_rlp.as_slice()) else {
+                return Err(JsonRpcError::internal_error(
+                    "decode block header failed".into(),
+                ));
+            };
+            header
+        }
+        TriedbResult::Null => {
+            debug!("No block header found");
+            return Ok(None);
+        }
+        _ => {
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_num
+            )))
+        }
+    };
+
+    let transactions = match triedb_env.get_transactions(block_num).await {
+        TriedbResult::BlockTransactions(transactions) => transactions,
+        TriedbResult::Null => vec![],
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading transactions from db".into(),
+            ))
+        }
+    };
+
+    parse_block_content(
+        params.block_hash.0.into(),
+        &header,
+        &transactions,
+        params.return_full_txns,
+    )
+    .map(|block| {
+        Some(MonadEthGetBlock {
+            block: MonadBlock(block),
+        })
+    })
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -181,9 +223,10 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
             return Ok(None);
         }
         _ => {
-            return Err(JsonRpcError::internal_error(
-                "error reading block header from db".into(),
-            ))
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_num
+            )))
         }
     };
 
@@ -209,25 +252,37 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
     block_hash: EthHash,
 }
 
-#[rpc(
-    method = "eth_getBlockTransactionCountByHash",
-    ignore = "file_ledger_reader"
-)]
+#[rpc(method = "eth_getBlockTransactionCountByHash")]
 #[allow(non_snake_case)]
 /// Returns the number of transactions in a block from a block matching the given block hash.
-pub async fn monad_eth_getBlockTransactionCountByHash(
-    file_ledger_reader: &FileBlockReader,
+pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
+    triedb_env: &T,
     params: MonadEthGetBlockTransactionCountByHashParams,
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
 
-    let key = params.block_hash.into();
-    let Some(block) = file_ledger_reader.get_block_by_hash(key) else {
-        return Ok(None);
+    let block_num = match triedb_env
+        .get_block_number_by_hash(params.block_hash.0)
+        .await
+    {
+        TriedbResult::BlockNum(block_num) => block_num,
+        TriedbResult::Null => return Ok(None),
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "error reading block hash from db".into(),
+            ))
+        }
     };
 
-    let count = block.body.len() as u64;
-    Ok(Some(format!("0x{:x}", count)))
+    match triedb_env.get_transactions(block_num).await {
+        TriedbResult::BlockTransactions(transactions) => {
+            Ok(Some(format!("0x{:x}", transactions.len())))
+        }
+        TriedbResult::Null => Ok(Some(format!("0x0"))),
+        _ => Err(JsonRpcError::internal_error(
+            "error reading transactions from db".into(),
+        )),
+    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -235,10 +290,7 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
     block_tag: BlockTags,
 }
 
-#[rpc(
-    method = "eth_getBlockTransactionCountByNumber",
-    ignore = "file_ledger_reader"
-)]
+#[rpc(method = "eth_getBlockTransactionCountByNumber")]
 #[allow(non_snake_case)]
 /// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
@@ -268,13 +320,13 @@ pub async fn block_receipts<T: Triedb>(
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
     let block_num: u64 = block_header.number;
     let transaction_count = transactions.len();
-    let mut block_receipts: Vec<(ReceiptDetails, usize)> = vec![];
+    let mut block_receipts: Vec<(ReceiptWithBloom, usize)> = vec![];
     for txn_index in 0..transaction_count {
         match triedb_env.get_receipt(txn_index as u64, block_num).await {
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
                 let mut rlp_buf = rlp_receipt.as_slice();
-                let receipt = decode_receipt(&mut rlp_buf).map_err(|e| {
+                let receipt = ReceiptWithBloom::decode(&mut rlp_buf).map_err(|e| {
                     JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
                 })?;
                 block_receipts.push((receipt, txn_index));
@@ -343,9 +395,10 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
             return Ok(None);
         }
         _ => {
-            return Err(JsonRpcError::internal_error(
-                "error reading block header from db".into(),
-            ))
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_num
+            )))
         }
     };
 

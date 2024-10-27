@@ -394,15 +394,6 @@ impl FromStr for BlockTags {
     }
 }
 
-impl From<BlockTags> for crate::triedb::BlockTags {
-    fn from(value: BlockTags) -> Self {
-        match value {
-            BlockTags::Number(n) => crate::triedb::BlockTags::Number(n.0),
-            BlockTags::Latest => crate::triedb::BlockTags::Latest,
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for BlockTags {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

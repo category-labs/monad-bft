@@ -2,12 +2,11 @@ use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    block_util::{get_block_num_from_tag, FileBlockReader},
     eth_json_types::{BlockTags, EthHash, MonadU256},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
-    triedb::{Triedb, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -15,24 +14,14 @@ pub struct DebugBlockParams {
     block: BlockTags,
 }
 
-#[rpc(method = "debug_getRawBlock", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_getRawBlock")]
 #[allow(non_snake_case)]
 /// Returns an RLP-encoded block.
 pub async fn monad_debug_getRawBlock<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
-    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let Ok(raw_block) = file_ledger_reader
-        .async_read_encoded_eth_block(block_num)
-        .await
-    else {
-        return Err(JsonRpcError::internal_error(
-            "error reading block data".into(),
-        ));
-    };
-    Ok(hex::encode(&raw_block))
+    Err(JsonRpcError::method_not_supported())
 }
 
 #[rpc(method = "debug_getRawHeader")]
@@ -45,9 +34,10 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     match triedb_env.get_block_header(block_num).await {
         TriedbResult::BlockHeader(block_header_rlp) => Ok(hex::encode(&block_header_rlp)),
-        _ => Err(JsonRpcError::internal_error(
-            "error reading block header from db".into(),
-        )),
+        _ => Err(JsonRpcError::internal_error(format!(
+            "error reading block header for block number {}",
+            block_num
+        ))),
     }
 }
 
@@ -95,33 +85,30 @@ pub struct MonadDebugGetRawTransactionParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "debug_getRawTransaction", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_getRawTransaction")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
 pub async fn monad_debug_getRawTransaction<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByHash", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_traceBlockByHash")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block hash with a tracer.
 pub async fn monad_debug_traceBlockByHash<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: EthHash,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
 
-#[rpc(method = "debug_traceBlockByNumber", ignore = "file_ledger_reader")]
+#[rpc(method = "debug_traceBlockByNumber")]
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing all transactions in the block specified by the block number with a tracer.
 pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
-    file_ledger_reader: &FileBlockReader,
     triedb_env: &T,
     params: MonadU256,
 ) -> JsonRpcResult<String> {

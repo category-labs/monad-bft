@@ -231,3 +231,34 @@ pub fn create_transaction_hash_key(tx_hash: &[u8; 32]) -> (Vec<u8>, u8) {
 
     (key, num_nibbles)
 }
+
+pub fn create_block_hash_key(block_hash: &[u8; 32]) -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+
+    let block_hash_nibble = 8_u8;
+    key_nibbles.push(block_hash_nibble);
+
+    for byte in block_hash {
+        key_nibbles.push(*byte >> 4);
+        key_nibbles.push(*byte & 0xF);
+    }
+
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
+    if num_nibbles % 2 != 0 {
+        key_nibbles.push(0);
+    }
+
+    let key: Vec<_> = key_nibbles
+        .chunks(2)
+        .map(|chunk| (chunk[0] << 4) | chunk[1])
+        .collect();
+
+    (key, num_nibbles)
+}

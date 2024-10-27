@@ -10,11 +10,10 @@ use serde::Deserialize;
 use tracing::{error, trace};
 
 use crate::{
-    block_util::get_block_num_from_tag,
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{Triedb, TriedbPath, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbPath, TriedbResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -93,9 +92,10 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
             header
         }
         _ => {
-            return Err(JsonRpcError::internal_error(
-                "error reading block header from db".into(),
-            ))
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_number
+            )))
         }
     };
 
@@ -226,9 +226,10 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
             header
         }
         _ => {
-            return Err(JsonRpcError::internal_error(
-                "error reading block header from db".into(),
-            ))
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_num
+            )))
         }
     };
 
@@ -244,7 +245,7 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
 #[rpc(method = "eth_maxPriorityFeePerGas")]
 #[allow(non_snake_case)]
 /// Returns the current maxPriorityFeePerGas per gas in wei.
-pub async fn monad_eth_maxPriorityFeePerGas() -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_maxPriorityFeePerGas<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_maxPriorityFeePerGas");
 
     let priority_fee = suggested_priority_fee().await.unwrap_or_default();

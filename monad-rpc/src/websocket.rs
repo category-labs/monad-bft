@@ -111,7 +111,6 @@ mod tests {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender,
-            file_ledger_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,

@@ -10,14 +10,23 @@ use std::{
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
 use monad_triedb_utils::{
-    decode::{rlp_decode_account, rlp_decode_storage_slot, rlp_decode_transaction_location},
+    decode::{
+        rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
+        rlp_decode_transaction_location,
+    },
     key::{
-        create_addr_key, create_block_header_key, create_code_key, create_receipt_key,
-        create_storage_at_key, create_transaction_hash_key, create_transaction_key,
+        create_addr_key, create_block_hash_key, create_block_header_key, create_code_key,
+        create_receipt_key, create_storage_at_key, create_transaction_hash_key,
+        create_transaction_key,
     },
 };
 use reth_primitives::TransactionSigned;
 use tracing::{error, warn};
+
+use crate::{
+    eth_json_types::{BlockTags, Quantity},
+    jsonrpc::{JsonRpcError, JsonRpcResult},
+};
 
 const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 10_000;
 
@@ -25,18 +34,7 @@ type EthAddress = [u8; 20];
 type EthStorageKey = [u8; 32];
 type EthCodeHash = [u8; 32];
 type EthTxHash = [u8; 32];
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockTags {
-    Number(u64),
-    Latest,
-}
-
-impl Default for BlockTags {
-    fn default() -> Self {
-        Self::Latest
-    }
-}
+type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
     BlockNumberRequest(BlockNumberRequest),
@@ -109,7 +107,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                     TriedbRequest::TransactionsRequest(transaction_request) => {
                         // Parse block tag
                         let block_num = match transaction_request.block_tag {
-                            BlockTags::Number(q) => q,
+                            BlockTags::Number(q) => q.0,
                             BlockTags::Latest => triedb_handle.latest_block(),
                         };
                         let rlp_encoded_transactions = triedb_handle.get_transactions(
@@ -138,7 +136,7 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
 fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
     // Parse block tag
     let block_num = match async_request.block_tag {
-        BlockTags::Number(q) => q,
+        BlockTags::Number(q) => q.0,
         BlockTags::Latest => triedb_handle.latest_block(),
     };
 
@@ -191,6 +189,10 @@ pub trait Triedb {
     fn get_transaction_location_by_hash(
         &self,
         tx_hash: EthTxHash,
+    ) -> impl std::future::Future<Output = TriedbResult> + Send;
+    fn get_block_number_by_hash(
+        &self,
+        block_hash: EthBlockHash,
     ) -> impl std::future::Future<Output = TriedbResult> + Send;
 }
 
@@ -415,7 +417,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(block_num),
+                block_tag: BlockTags::Number(Quantity(block_num)),
             }))
         {
             error!("Polling thread channel full: {e}");
@@ -458,7 +460,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(block_num),
+                block_tag: BlockTags::Number(Quantity(block_num)),
             }))
         {
             error!("Polling thread channel full: {e}");
@@ -507,7 +509,7 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(block_num),
+                block_tag: BlockTags::Number(Quantity(block_num)),
             }))
         {
             error!("Polling thread channel full: {e}");
@@ -555,7 +557,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(block_num),
+                block_tag: BlockTags::Number(Quantity(block_num)),
             }))
         {
             error!("Polling thread channel full: {e}");
@@ -630,6 +632,72 @@ impl Triedb for TriedbEnv {
                 error!("Error awaiting result: {e}");
                 TriedbResult::Error
             }
+        }
+    }
+
+    async fn get_block_number_by_hash(&self, block_hash: EthBlockHash) -> TriedbResult {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_block_hash_key(&block_hash);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Latest,
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return TriedbResult::Error;
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return TriedbResult::Error;
+                }
+
+                match result {
+                    Some(rlp_output) => rlp_decode_block_num(rlp_output)
+                        .map(TriedbResult::BlockNum)
+                        .unwrap_or_else(|| {
+                            error!("Decoding block number error");
+                            TriedbResult::Error
+                        }),
+                    None => TriedbResult::Null,
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                TriedbResult::Error
+            }
+        }
+    }
+}
+
+pub async fn get_block_num_from_tag<T: Triedb>(
+    triedb_env: &T,
+    tag: BlockTags,
+) -> JsonRpcResult<u64> {
+    match tag {
+        BlockTags::Number(n) => Ok(n.0),
+        BlockTags::Latest => {
+            let result = triedb_env.get_latest_block().await;
+            let TriedbResult::BlockNum(n) = result else {
+                return Err(JsonRpcError::internal_error(
+                    "could not get latest block from triedb".to_string(),
+                ));
+            };
+            Ok(n)
         }
     }
 }

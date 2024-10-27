@@ -9,11 +9,10 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    block_util::get_block_num_from_tag,
     eth_json_types::{BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{Triedb, TriedbPath, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbPath, TriedbResult},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -272,10 +271,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
 ) -> Result<u64, JsonRpcError> {
     if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
         let TriedbResult::Account(_, balance, _) = triedb_env
-            .get_account(
-                from.into(),
-                BlockTags::Number(Quantity(block.number)).into(),
-            )
+            .get_account(from.into(), BlockTags::Number(Quantity(block.number)))
             .await
         else {
             debug!("triedb did not have sender account {from:}");
@@ -351,9 +347,10 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
             header
         }
         _ => {
-            return Err(JsonRpcError::internal_error(
-                "error reading block header from db".into(),
-            ))
+            return Err(JsonRpcError::internal_error(format!(
+                "error reading block header for block number {}",
+                block_num
+            )))
         }
     };
 

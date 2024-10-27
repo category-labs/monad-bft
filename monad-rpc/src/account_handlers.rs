@@ -28,7 +28,7 @@ pub async fn monad_eth_getBalance<T: Triedb>(
     trace!("monad_eth_getBalance: {params:?}");
 
     match triedb_env
-        .get_account(params.account.0, params.block_number.into())
+        .get_account(params.account.0, params.block_number)
         .await
     {
         TriedbResult::Null => Ok(MonadU256(U256::ZERO)),
@@ -53,7 +53,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
     trace!("monad_eth_getCode: {params:?}");
 
     let code_hash = match triedb_env
-        .get_account(params.account.0, params.block_number.clone().into())
+        .get_account(params.account.0, params.block_number.clone())
         .await
     {
         TriedbResult::Null => return Ok("0x".to_string()),
@@ -61,10 +61,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
     };
 
-    match triedb_env
-        .get_code(code_hash, params.block_number.into())
-        .await
-    {
+    match triedb_env.get_code(code_hash, params.block_number).await {
         TriedbResult::Null => Ok("0x".to_string()),
         TriedbResult::Code(code) => Ok(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error("error reading from db".into())),
@@ -91,7 +88,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
         .get_storage_at(
             params.account.0,
             B256::from(params.position.0).0,
-            params.block_number.into(),
+            params.block_number,
         )
         .await
     {
@@ -119,7 +116,7 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
     trace!("monad_eth_getTransactionCount: {params:?}");
 
     match triedb_env
-        .get_account(params.account.0, params.block_number.into())
+        .get_account(params.account.0, params.block_number)
         .await
     {
         TriedbResult::Null => Ok(format!("0x{:x}", 0)),
