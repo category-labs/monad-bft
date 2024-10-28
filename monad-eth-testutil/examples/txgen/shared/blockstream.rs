@@ -1,17 +1,17 @@
 use std::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll},
+    task::{self, Poll},
     time::Duration,
 };
 
 use alloy_json_rpc::RpcError;
-use alloy_rpc_client::ReqwestClient;
 use alloy_transport::TransportErrorKind;
 use futures::{stream::FusedStream, FutureExt, Stream};
 use reth_rpc_types::Block;
 use thiserror::Error;
-use tokio::time::Interval;
+
+use crate::prelude::*;
 
 #[derive(Debug, Error)]
 pub enum BlockStreamError {
@@ -25,46 +25,51 @@ pub struct BlockStream {
     interval: Interval,
     retries: u64,
     request: Option<Pin<Box<dyn Future<Output = Option<Result<Block, BlockStreamError>>> + Send>>>,
+    query_full_txs: bool,
 }
 
 impl BlockStream {
-    pub async fn new(client: ReqwestClient, interval: Duration) -> Self {
-        let next_block_number_str: String = client
+    pub async fn new(
+        client: ReqwestClient,
+        interval: Duration,
+        query_full_txs: bool,
+    ) -> Result<Self> {
+        let next_block_number: U64 = client
             .request("eth_blockNumber", ())
             .await
-            .expect("block number never fails");
+            .context("Failed to fetch initial block number")?;
+        let next_block_number: u64 = next_block_number.to();
 
-        let next_block_number = u64::from_str_radix(
-            next_block_number_str
-                .strip_prefix("0x")
-                .expect("block number string always prefixed by 0x"),
-            16,
-        )
-        .expect("block number string is always valid number");
-
-        Self {
+        Ok(Self {
             client,
             next_block_number,
             interval: tokio::time::interval(interval),
             retries: 0,
             request: None,
-        }
+            query_full_txs,
+        })
     }
 
     fn request_next_block(
         &self,
     ) -> Pin<Box<dyn Future<Output = Option<Result<Block, BlockStreamError>>> + Send>> {
-        Self::request_next_block_impl(self.client.clone(), self.next_block_number).boxed()
+        Self::request_next_block_impl(
+            self.client.clone(),
+            self.next_block_number,
+            self.query_full_txs,
+        )
+        .boxed()
     }
 
     async fn request_next_block_impl(
         client: ReqwestClient,
         next_block_number: u64,
+        query_full_txs: bool,
     ) -> Option<Result<Block, BlockStreamError>> {
         match client
             .request::<_, Option<Block>>(
                 "eth_getBlockByNumber",
-                (format!("0x{next_block_number:x}"), true),
+                (format!("0x{next_block_number:x}"), query_full_txs),
             )
             .await
         {
@@ -83,7 +88,7 @@ impl Stream for BlockStream {
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        cx: &mut task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         loop {
             let Some(request) = self.request.as_mut() else {
@@ -108,28 +113,15 @@ impl Stream for BlockStream {
 
             match result {
                 Ok(block) => {
-                    let [block_number, 0, 0, 0] = block
-                        .header
-                        .number
-                        .expect("block header has number")
-                        .into_limbs()
-                    else {
-                        panic!("block number not u64???");
-                    };
+                    let block_number: u64 = block.header.number.unwrap().to();
+                    debug!("received block {block_number}");
 
-                    println!("received block {block_number}");
-
-                    self.next_block_number = block_number
-                        .checked_add(1)
-                        .expect("block number does not overflow");
+                    self.next_block_number = block_number + 1;
 
                     return Poll::Ready(Some(Ok(block)));
                 }
                 Err(error) => {
-                    self.retries = self
-                        .retries
-                        .checked_add(1)
-                        .expect("retries does not overflow");
+                    self.retries += 1;
 
                     if self.retries >= 5 {
                         return Poll::Ready(Some(Err(error)));

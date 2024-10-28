@@ -4,14 +4,14 @@ use monad_secp::KeyPair;
 use rand::RngCore;
 use reth_primitives::{keccak256, sign_message, Address, Signature, Transaction, B256};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PrivateKey {
     priv_key: B256,
 }
 
 impl PrivateKey {
-    pub fn new(private_key: String) -> (Address, Self) {
-        Self::new_with_pk(B256::from_str(&private_key).unwrap())
+    pub fn new(private_key: impl AsRef<str>) -> (Address, Self) {
+        Self::new_with_pk(B256::from_str(private_key.as_ref()).unwrap())
     }
 
     pub fn new_with_random(random: &mut impl RngCore) -> (Address, Self) {

@@ -21,16 +21,23 @@ reth-primitives = { workspace = true }
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
 alloy-transport = { workspace = true }
-clap = { workspace = true, features = [ "derive" ] }
+clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
+itertools = { workspace = true }
 rand = { workspace = true }
 reth-primitives = { workspace = true }
 reth-rpc-types = { workspace = true }
-ruint = "1.11.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tracing = { workspace = true, features = ["log", "std"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
 url = { workspace = true }
+alloy-sol-macro = { workspace = true }
+alloy-sol-types = { workspace = true }
+dashmap = { workspace = true }
+eyre = { workspace = true }
