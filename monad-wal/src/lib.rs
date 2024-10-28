@@ -11,15 +11,7 @@ pub trait PersistenceLoggerBuilder {
 
     /// Create new file for logging if none exists or load an existing to continue appending
     /// and return the Events it contained for replay
-    fn build(
-        self,
-    ) -> Result<
-        (
-            Self::PersistenceLogger,
-            Vec<<Self::PersistenceLogger as PersistenceLogger>::Event>,
-        ),
-        WALError,
-    >;
+    fn build(self) -> Result<Self::PersistenceLogger, WALError>;
 }
 
 /// PersistenceLogger is used to log all events input to MonadState and have them

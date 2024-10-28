@@ -66,7 +66,7 @@ impl Bencher {
         );
         Bencher {
             data: Datablob::new(byte_len),
-            logger: config.build().unwrap().0,
+            logger: config.build().unwrap(),
             _tmpdir: tmpdir,
         }
     }

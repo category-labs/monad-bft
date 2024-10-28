@@ -63,7 +63,7 @@ impl MonadEventBencher {
         );
         Self {
             event,
-            logger: config.build().unwrap().0,
+            logger: config.build().unwrap(),
             _tmpdir: tmpdir,
         }
     }

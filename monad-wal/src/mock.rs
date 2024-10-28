@@ -18,21 +18,10 @@ impl<M> Default for MockWALoggerConfig<M> {
 impl<M> PersistenceLoggerBuilder for MockWALoggerConfig<M> {
     type PersistenceLogger = MockWALogger<M>;
 
-    fn build(
-        self,
-    ) -> Result<
-        (
-            Self::PersistenceLogger,
-            Vec<<Self::PersistenceLogger as PersistenceLogger>::Event>,
-        ),
-        WALError,
-    > {
-        Ok((
-            Self::PersistenceLogger {
-                _marker: PhantomData,
-            },
-            Vec::new(),
-        ))
+    fn build(self) -> Result<Self::PersistenceLogger, WALError> {
+        Ok(Self::PersistenceLogger {
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -64,17 +53,8 @@ impl<M: Clone> MockMemLoggerConfig<M> {
 impl<M: Clone> PersistenceLoggerBuilder for MockMemLoggerConfig<M> {
     type PersistenceLogger = MockMemLogger<M>;
 
-    fn build(
-        self,
-    ) -> Result<
-        (
-            Self::PersistenceLogger,
-            Vec<<Self::PersistenceLogger as PersistenceLogger>::Event>,
-        ),
-        WALError,
-    > {
-        let log = self.log;
-        Ok((Self::PersistenceLogger { log: log.clone() }, log))
+    fn build(self) -> Result<Self::PersistenceLogger, WALError> {
+        Ok(Self::PersistenceLogger { log: self.log })
     }
 }
 

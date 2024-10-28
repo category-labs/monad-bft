@@ -287,7 +287,7 @@ async fn run(
         node_state.wal_path.clone(), // output wal path
         false,                       // flush on every write
     );
-    let Ok((mut wal, wal_events)) = logger_config.build() else {
+    let Ok(mut wal) = logger_config.build() else {
         event!(
             Level::ERROR,
             path = node_state.wal_path.as_path().display().to_string(),
@@ -295,7 +295,6 @@ async fn run(
         );
         return Err(());
     };
-    assert!(wal_events.is_empty(), "wal must be cleared after restart");
 
     let mut last_ledger_tip = node_state.forkpoint_config.root.seq_num;
     let builder = MonadStateBuilder {
