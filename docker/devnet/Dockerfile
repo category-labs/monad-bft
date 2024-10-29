@@ -1,14 +1,24 @@
 FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
-RUN apt-get update && apt-get upgrade -y
-RUN apt-get update && apt-get install -y binutils iproute2 clang curl make ca-certificates pkg-config gnupg software-properties-common wget cgroup-tools
 
-RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
-RUN add-apt-repository -y ppa:mhier/libboost-latest
-RUN apt-get update && apt-get install -y libstdc++-13-dev gcc-13 g++-13
+RUN apt update && apt install -y \
+  binutils \
+  iproute2 \
+  clang \
+  curl \
+  make \
+  ca-certificates \
+  pkg-config \
+  gnupg \
+  software-properties-common \
+  wget \
+  cgroup-tools \
+  libstdc++-13-dev \
+  gcc-13 \
+  g++-13
 
-RUN apt-get update && apt-get install -y \
+RUN apt update && apt install -y \
   libboost-atomic1.83.0 \
   libboost-container1.83.0 \
   libboost-fiber1.83.0 \
@@ -18,7 +28,7 @@ RUN apt-get update && apt-get install -y \
   libboost-regex1.83.0 \
   libboost-stacktrace1.83.0
 
-RUN apt-get update && apt-get install -y \
+RUN apt update && apt install -y \
   libabsl-dev \
   libarchive-dev \
   libbenchmark-dev \
@@ -36,34 +46,22 @@ RUN apt-get update && apt-get install -y \
 
 FROM base AS builder
 
-######## BEGIN CMAKE
-RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
-  | gpg --dearmor - \
-  | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-RUN echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
-  | tee /etc/apt/sources.list.d/kitware.list >/dev/null
-RUN apt-get update && apt-get -y install kitware-archive-keyring
-RUN rm /usr/share/keyrings/kitware-archive-keyring.gpg
-RUN apt-get update && apt-get -y install cmake
-######## END CMAKE
+RUN apt update && apt install -y \
+  cmake \
+  clang \
+  libssl-dev
 
-RUN apt-get update && apt-get install -y clang libssl-dev
-
-RUN apt-get update && apt-get install -y \
+RUN apt update && apt install -y \
   libboost-fiber1.83-dev \
   libboost-graph1.83-dev \
   libboost-json1.83-dev \
   libboost-stacktrace1.83-dev \
   libboost1.83-dev
 
-
-###
-
 # install cargo
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
-
 ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
