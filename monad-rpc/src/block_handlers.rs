@@ -14,7 +14,7 @@ use crate::{
     triedb::{Triedb, TriedbResult},
 };
 
-fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block> {
+fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Result<Block, JsonRpcError> {
     // parse block header
     let header = Header {
         hash: None, //FIXME: figure out how to get this from consensus
@@ -59,21 +59,20 @@ fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block
     };
 
     // parse transactions
-    let transactions: BlockTransactions = match return_full_txns {
-        true => {
-            let transactions = value
-                .body
-                .iter()
-                .enumerate()
-                .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap_or_default())
-                .collect();
-            BlockTransactions::Full(transactions)
-        }
-        false => {
-            let transactions = value.body.iter().map(|tx| tx.hash()).collect();
-            BlockTransactions::Hashes(transactions)
-        }
+    let transactions: Result<BlockTransactions, JsonRpcError> = if return_full_txns {
+        value
+            .body
+            .iter()
+            .enumerate()
+            .map(|(index, tx)| parse_tx_content(value, tx, index as u64))
+            .collect::<Result<Vec<_>, _>>()
+            .map(BlockTransactions::Full)
+    } else {
+        Ok(BlockTransactions::Hashes(
+            value.body.iter().map(|tx| tx.hash()).collect(),
+        ))
     };
+    let transactions = transactions?;
 
     let retval = Block {
         header,
@@ -85,7 +84,7 @@ fn parse_block_content(value: &EthBlock, return_full_txns: bool) -> Option<Block
         other: Default::default(),
     };
 
-    Some(retval)
+    Ok(retval)
 }
 
 #[rpc(method = "eth_blockNumber")]
@@ -140,8 +139,8 @@ pub async fn monad_eth_getBlockByHash(
         return Ok(None);
     };
 
-    let retval = parse_block_content(&block, params.return_full_txns);
-    Ok(retval.map(|block| MonadEthGetBlock {
+    let block = parse_block_content(&block, params.return_full_txns)?;
+    Ok(Some(MonadEthGetBlock {
         block: MonadBlock(block),
     }))
 }
@@ -174,8 +173,8 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
         }
     };
 
-    let parsed_block = parse_block_content(&block, params.return_full_txns);
-    Ok(parsed_block.map(|block| MonadEthGetBlock {
+    let block = parse_block_content(&block, params.return_full_txns)?;
+    Ok(Some(MonadEthGetBlock {
         block: MonadBlock(block),
     }))
 }
@@ -260,26 +259,26 @@ pub async fn block_receipts<T: Triedb>(
         }
     }
 
-    let block_receipts: Vec<TransactionReceipt> = block_receipts
-        .into_iter()
-        .scan(None, |prev, (receipt, txn_index)| {
-            let parsed_receipt = parse_tx_receipt(
-                &block,
-                prev.to_owned(),
-                receipt.clone(),
-                block_num,
-                txn_index,
-            );
-            *prev = Some(receipt);
-            parsed_receipt
-        })
-        .collect();
+    let mut parsed_receipts = Vec::with_capacity(block_receipts.len());
+    let mut prev = None;
 
-    if block_receipts.len() != block.body.len() {
-        return Err(JsonRpcError::internal_error("receipts unavailable".into()));
+    for (receipt, txn_index) in block_receipts {
+        match parse_tx_receipt(&block, prev.clone(), receipt.clone(), block_num, txn_index) {
+            Ok(parsed_receipt) => {
+                parsed_receipts.push(parsed_receipt);
+                prev = Some(receipt);
+            }
+            Err(e) => return Err(e),
+        }
     }
 
-    Ok(block_receipts)
+    if parsed_receipts.len() != block.body.len() {
+        return Err(JsonRpcError::internal_error(
+            "some receipts unavailable".into(),
+        ));
+    }
+
+    Ok(parsed_receipts)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

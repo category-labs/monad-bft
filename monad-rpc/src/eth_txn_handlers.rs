@@ -12,7 +12,7 @@ use reth_rpc_types::{
     AccessListItem, Filter, FilteredParams, Log, Parity, Signature, Transaction, TransactionReceipt,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     block_handlers::block_receipts,
@@ -30,12 +30,12 @@ pub fn parse_tx_content(
     block: &EthBlock,
     tx: &TransactionSigned,
     tx_index: u64,
-) -> Option<Transaction> {
+) -> Result<Transaction, JsonRpcError> {
     // recover transaction signer
-    let transaction = tx
-        .clone()
-        .into_ecrecovered_unchecked()
-        .expect("transaction sender should exist");
+    let Some(transaction) = tx.clone().into_ecrecovered_unchecked() else {
+        error!("transaction sender should exist");
+        return Err(JsonRpcError::txn_decode_error());
+    };
 
     // parse fee parameters
     let base_fee = block.base_fee_per_gas;
@@ -92,7 +92,7 @@ pub fn parse_tx_content(
         other: Default::default(),
     };
 
-    Some(retval)
+    Ok(retval)
 }
 
 pub fn parse_tx_receipt(
@@ -101,12 +101,16 @@ pub fn parse_tx_receipt(
     receipt: ReceiptDetails,
     block_num: u64,
     tx_index: u64,
-) -> Option<TransactionReceipt> {
-    let tx = block.body.get(tx_index as usize)?;
-    let transaction = tx
-        .clone()
-        .into_ecrecovered_unchecked()
-        .expect("transaction sender should exist");
+) -> Result<TransactionReceipt, JsonRpcError> {
+    let tx = block
+        .body
+        .get(tx_index as usize)
+        .ok_or(JsonRpcError::internal_error("transaction not found".into()))?;
+    let Some(transaction) = tx.clone().into_ecrecovered_unchecked() else {
+        error!("transaction sender should exist");
+        return Err(JsonRpcError::txn_decode_error());
+    };
+
     let base_fee_per_gas = block.base_fee_per_gas.unwrap_or_default() as u128;
     // effective gas price is calculated according to eth json rpc specification
     let effective_gas_price = base_fee_per_gas
@@ -166,7 +170,7 @@ pub fn parse_tx_receipt(
         blob_gas_price: None,
         ..Default::default()
     };
-    Some(tx_receipt)
+    Ok(tx_receipt)
 }
 
 pub enum FilterError {
@@ -475,11 +479,8 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
                 None
             };
 
-            let Some(receipt) =
-                parse_tx_receipt(&block, prev_receipt, receipt, block_num, txn_index)
-            else {
-                return Err(JsonRpcError::internal_error("parse receipt failed".into()));
-            };
+            let receipt = parse_tx_receipt(&block, prev_receipt, receipt, block_num, txn_index)?;
+
             Ok(Some(MonadTransactionReceipt(receipt)))
         }
         _ => Err(JsonRpcError::internal_error("error reading from db".into())),
@@ -509,15 +510,15 @@ pub async fn monad_eth_getTransactionByHash(
         return Ok(None);
     };
 
-    let transaction = block
-        .body
-        .get(txn_value.transaction_index as usize)
-        .expect("txn and block found so its index should be correct");
+    let Some(transaction) = block.body.get(txn_value.transaction_index as usize) else {
+        error!("txn and block found so its index should be correct");
+        return Err(JsonRpcError::txn_decode_error());
+    };
 
     let retval =
-        parse_tx_content(&block, transaction, txn_value.transaction_index).map(MonadTransaction);
+        parse_tx_content(&block, transaction, txn_value.transaction_index).map(MonadTransaction)?;
 
-    Ok(retval)
+    Ok(Some(retval))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -547,9 +548,9 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
         return Ok(None);
     };
 
-    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction);
+    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction)?;
 
-    Ok(retval)
+    Ok(Some(retval))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -582,9 +583,9 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         return Ok(None);
     };
 
-    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction);
+    let retval = parse_tx_content(&block, transaction, params.index.0).map(MonadTransaction)?;
 
-    Ok(retval)
+    Ok(Some(retval))
 }
 
 fn get_block_hash(block: &EthBlock) -> FixedBytes<32> {

@@ -56,7 +56,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .get_account(params.account.0, params.block_number.clone().into())
         .await
     {
-        TriedbResult::Null => return Ok(format!("0x")),
+        TriedbResult::Null => return Ok("0x".to_string()),
         TriedbResult::Account(_, _, code_hash) => code_hash,
         _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
     };
@@ -65,7 +65,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .get_code(code_hash, params.block_number.into())
         .await
     {
-        TriedbResult::Null => Ok(format!("0x")),
+        TriedbResult::Null => Ok("0x".to_string()),
         TriedbResult::Code(code) => Ok(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }
@@ -95,7 +95,9 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
         )
         .await
     {
-        TriedbResult::Null => Ok(format!("0x{:x}", 0)),
+        TriedbResult::Null => {
+            Ok("0x0000000000000000000000000000000000000000000000000000000000000000".to_string())
+        }
         TriedbResult::Storage(storage) => Ok(hex::encode(&storage)),
         _ => Err(JsonRpcError::internal_error("error reading from db".into())),
     }

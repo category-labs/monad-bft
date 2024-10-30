@@ -269,8 +269,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
     block: &Block,
     request: &CallRequest,
 ) -> Result<u64, JsonRpcError> {
-    if request.from.is_some() && request.max_fee_per_gas().is_some() {
-        let from = request.from.expect("sender address");
+    if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
         let TriedbResult::Account(_, balance, _) = triedb_env
             .get_account(
                 from.into(),
@@ -284,7 +283,6 @@ pub async fn sender_gas_allowance<T: Triedb>(
             ));
         };
 
-        let gas_price = request.max_fee_per_gas().expect("max_fee_per_gas");
         let gas_limit = U256::from(balance)
             .checked_sub(request.value.unwrap_or_default())
             .ok_or_else(|| {

@@ -371,17 +371,12 @@ impl Serialize for EthHash {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum BlockTags {
     Number(Quantity),
+    #[default]
     Latest,
-}
-
-impl Default for BlockTags {
-    fn default() -> Self {
-        BlockTags::Latest
-    }
 }
 
 impl FromStr for BlockTags {
