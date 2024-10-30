@@ -6,14 +6,14 @@ use monad_rpc_docs::rpc;
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
-use tracing::{error, trace, warn};
+use tracing::{trace, warn};
 
 use crate::{
     block_util::{get_block_from_num, get_block_num_from_tag, BlockResult, FileBlockReader},
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{Triedb, TriedbPath, TriedbResult},
+    triedb::{Triedb, TriedbPath},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -73,20 +73,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
     let state_override_set = &params.state_override_set;
 
-    let block_number = match params.block {
-        BlockTags::Latest => {
-            let TriedbResult::BlockNum(triedb_block_number) = triedb_env.get_latest_block().await
-            else {
-                error!("triedb did not have latest block number");
-                return Err(JsonRpcError::internal_error(
-                    "missing latest block number".into(),
-                ));
-            };
-            triedb_block_number
-        }
-        BlockTags::Number(block_number) => block_number.0,
-    };
-
+    let block_number = get_block_num_from_tag(triedb_env, params.block).await?;
     let block = match get_block_from_num(file_ledger_reader, block_number).await {
         BlockResult::Block(b) => b,
         BlockResult::NotFound => {
