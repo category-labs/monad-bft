@@ -224,7 +224,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     ) -> Result<(), tokio::io::Error> {
         self.pending_requests.retain(|pending_request| {
             // delete any requests from this peer for an old target
-            pending_request.from != from || pending_request.request.target != request.target
+            !(pending_request.from == from && pending_request.request.target != request.target)
         });
         self.pending_requests.push_back(PendingRequest {
             from,
