@@ -1,0 +1,32 @@
+[package]
+name = "monad-archive"
+description = "Monad archive solution"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "monad-archive"
+bench = false
+
+[lib]
+bench = false
+
+[dependencies]
+monad-triedb = { path = "../monad-triedb" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
+
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+hex = { workspace = true }
+schemars = "0.8.21"
+serde = { workspace = true }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs", "sync"] }
+tokio-retry = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+futures = { workspace = true }
+reth-primitives = { workspace = true }
