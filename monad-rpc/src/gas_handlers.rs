@@ -1,19 +1,18 @@
 use std::{ops::Sub, path::Path};
 
 use alloy_primitives::{U256, U64};
-use alloy_rlp::Decodable;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
-use reth_primitives::{Header, Transaction, TransactionKind};
+use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
-use tracing::{error, trace};
+use tracing::trace;
 
 use crate::{
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{get_block_num_from_tag, Triedb, TriedbPath, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbPath},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -69,42 +68,25 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     let state_override_set = &params.state_override_set;
 
     let block_number = match params.block {
-        BlockTags::Latest => {
-            let TriedbResult::BlockNum(triedb_block_number) = triedb_env.get_latest_block().await
-            else {
-                error!("triedb did not have latest block number");
-                return Err(JsonRpcError::internal_error(
-                    "missing latest block number".into(),
-                ));
-            };
-            triedb_block_number
-        }
+        BlockTags::Latest => triedb_env.get_latest_block().await?,
         BlockTags::Number(block_number) => block_number.0,
     };
 
-    let header = match triedb_env.get_block_header(block_number).await {
-        TriedbResult::BlockHeader(block_header_rlp) => {
-            let Ok(header) = Header::decode(&mut block_header_rlp.as_slice()) else {
-                return Err(JsonRpcError::internal_error(
-                    "decode block header failed".into(),
-                ));
-            };
-            header
-        }
-        _ => {
-            return Err(JsonRpcError::internal_error(format!(
-                "error reading block header for block number {}",
-                block_number
-            )))
+    let header = match triedb_env.get_block_header(block_number).await? {
+        Some(header) => header,
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "error getting block header".into(),
+            ))
         }
     };
 
-    params
-        .tx
-        .fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
+    params.tx.fill_gas_prices(U256::from(
+        header.header.base_fee_per_gas.unwrap_or_default(),
+    ))?;
 
     let allowance: Option<u64> = if params.tx.gas.is_none() {
-        Some(sender_gas_allowance(triedb_env, &header, &params.tx).await?)
+        Some(sender_gas_allowance(triedb_env, &header.header, &params.tx).await?)
     } else {
         None
     };
@@ -126,7 +108,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
     let (gas_used, gas_refund) = match monad_cxx::eth_call(
         txn.clone(),
-        header.clone(),
+        header.header.clone(),
         sender,
         block_number,
         &triedb_env.path(),
@@ -150,7 +132,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         if txn.gas_limit() < upper_bound_gas_limit {
             match monad_cxx::eth_call(
                 txn.clone(),
-                header.clone(),
+                header.header.clone(),
                 sender,
                 block_number,
                 &triedb_env.path(),
@@ -183,7 +165,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
         match monad_cxx::eth_call(
             txn.clone(),
-            header.clone(),
+            header.header.clone(),
             sender,
             block_number,
             &triedb_env.path(),
@@ -215,26 +197,17 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
     trace!("monad_eth_gasPrice");
 
     let block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
-
-    let header = match triedb_env.get_block_header(block_num).await {
-        TriedbResult::BlockHeader(block_header_rlp) => {
-            let Ok(header) = Header::decode(&mut block_header_rlp.as_slice()) else {
-                return Err(JsonRpcError::internal_error(
-                    "decode block header failed".into(),
-                ));
-            };
-            header
-        }
-        _ => {
-            return Err(JsonRpcError::internal_error(format!(
-                "error reading block header for block number {}",
-                block_num
-            )))
+    let header = match triedb_env.get_block_header(block_num).await? {
+        Some(header) => header,
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "error getting latest block header".into(),
+            ))
         }
     };
 
     // Obtain base fee from latest block header
-    let base_fee_per_gas = header.base_fee_per_gas.unwrap_or_default();
+    let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
 
     // Obtain suggested priority fee
     let priority_fee = suggested_priority_fee().await.unwrap_or_default();

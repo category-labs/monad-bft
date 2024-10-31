@@ -1,4 +1,3 @@
-use alloy_primitives::aliases::U256;
 use monad_rpc_docs::rpc;
 use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
@@ -7,9 +6,8 @@ use tracing::trace;
 
 use crate::{
     eth_json_types::{serialize_result, BlockTags, EthAddress, EthHash, MonadU256},
-    hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{Triedb, TriedbResult},
+    triedb::Triedb,
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -24,17 +22,13 @@ pub struct MonadEthGetBalanceParams {
 pub async fn monad_eth_getBalance<T: Triedb>(
     triedb_env: &T,
     params: MonadEthGetBalanceParams,
-) -> JsonRpcResult<MonadU256> {
+) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    match triedb_env
+    let account = triedb_env
         .get_account(params.account.0, params.block_number)
-        .await
-    {
-        TriedbResult::Null => Ok(MonadU256(U256::ZERO)),
-        TriedbResult::Account(_, balance, _) => Ok(MonadU256(U256::from(balance))),
-        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
-    }
+        .await?;
+    Ok(format!("0x{:x}", account.balance))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -52,20 +46,13 @@ pub async fn monad_eth_getCode<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let code_hash = match triedb_env
+    let account = triedb_env
         .get_account(params.account.0, params.block_number.clone())
-        .await
-    {
-        TriedbResult::Null => return Ok("0x".to_string()),
-        TriedbResult::Account(_, _, code_hash) => code_hash,
-        _ => return Err(JsonRpcError::internal_error("error reading from db".into())),
-    };
+        .await?;
 
-    match triedb_env.get_code(code_hash, params.block_number).await {
-        TriedbResult::Null => Ok("0x".to_string()),
-        TriedbResult::Code(code) => Ok(hex::encode(&code)),
-        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
-    }
+    triedb_env
+        .get_code(account.code_hash, params.block_number)
+        .await
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -84,20 +71,13 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
 
-    match triedb_env
+    triedb_env
         .get_storage_at(
             params.account.0,
             B256::from(params.position.0).0,
             params.block_number,
         )
         .await
-    {
-        TriedbResult::Null => {
-            Ok("0x0000000000000000000000000000000000000000000000000000000000000000".to_string())
-        }
-        TriedbResult::Storage(storage) => Ok(hex::encode(&storage)),
-        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
-    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -115,14 +95,10 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    match triedb_env
+    let account = triedb_env
         .get_account(params.account.0, params.block_number)
-        .await
-    {
-        TriedbResult::Null => Ok(format!("0x{:x}", 0)),
-        TriedbResult::Account(nonce, _, _) => Ok(format!("0x{:x}", nonce)),
-        _ => Err(JsonRpcError::internal_error("error reading from db".into())),
-    }
+        .await?;
+    Ok(format!("0x{:x}", account.nonce))
 }
 
 #[allow(non_snake_case)]

@@ -1,18 +1,16 @@
 use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
-use alloy_rlp::Decodable;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 use crate::{
     eth_json_types::{BlockTags, Quantity},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{get_block_num_from_tag, Triedb, TriedbPath, TriedbResult},
+    triedb::{get_block_num_from_tag, Triedb, TriedbPath},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -270,17 +268,11 @@ pub async fn sender_gas_allowance<T: Triedb>(
     request: &CallRequest,
 ) -> Result<u64, JsonRpcError> {
     if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
-        let TriedbResult::Account(_, balance, _) = triedb_env
+        let account = triedb_env
             .get_account(from.into(), BlockTags::Number(Quantity(block.number)))
-            .await
-        else {
-            debug!("triedb did not have sender account {from:}");
-            return Err(JsonRpcError::internal_error(
-                "sender address not in db".into(),
-            ));
-        };
+            .await?;
 
-        let gas_limit = U256::from(balance)
+        let gas_limit = U256::from(account.balance)
             .checked_sub(request.value.unwrap_or_default())
             .ok_or_else(|| {
                 JsonRpcError::eth_call_error(
@@ -337,20 +329,12 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     // TODO: check duplicate address, duplicate storage key, etc.
 
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let mut header = match triedb_env.get_block_header(block_num).await {
-        TriedbResult::BlockHeader(block_header_rlp) => {
-            let Ok(header) = Header::decode(&mut block_header_rlp.as_slice()) else {
-                return Err(JsonRpcError::internal_error(
-                    "decode block header failed".into(),
-                ));
-            };
-            header
-        }
-        _ => {
-            return Err(JsonRpcError::internal_error(format!(
-                "error reading block header for block number {}",
-                block_num
-            )))
+    let mut header = match triedb_env.get_block_header(block_num).await? {
+        Some(header) => header,
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "error getting block header".into(),
+            ))
         }
     };
 
@@ -360,22 +344,22 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
             // for eth_call from a zero address, we want to override the block base fee to be zero
             // so that reading from the smart contract does not require the zero address
             // to have any gas balance
-            header.base_fee_per_gas = Some(0);
+            header.header.base_fee_per_gas = Some(0);
             params.transaction.fill_gas_prices(U256::from(0))?;
 
             if params.transaction.gas.is_none() {
                 // eth_call from a zero address will default gas limit as block gas limit
-                params.transaction.gas = Some(U256::from(header.gas_limit));
+                params.transaction.gas = Some(U256::from(header.header.gas_limit));
             }
         }
         _ => {
-            params
-                .transaction
-                .fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
+            params.transaction.fill_gas_prices(U256::from(
+                header.header.base_fee_per_gas.unwrap_or_default(),
+            ))?;
 
             if params.transaction.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(triedb_env, &header, &params.transaction).await?;
+                    sender_gas_allowance(triedb_env, &header.header, &params.transaction).await?;
                 params.transaction.gas = Some(U256::from(allowance));
             }
         }
@@ -386,10 +370,10 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     }
 
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
-    let block_number = header.number;
+    let block_number = header.header.number;
     match monad_cxx::eth_call(
         txn,
-        header,
+        header.header,
         sender,
         block_number,
         &triedb_env.path(),
