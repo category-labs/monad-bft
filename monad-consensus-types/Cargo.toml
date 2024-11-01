@@ -23,9 +23,9 @@ hex = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
-serde = { workspace = true, features = ["serde_derive"] }
 
 [dev-dependencies]
 test-case = { workspace = true }

@@ -1,200 +1,153 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct ValidationErrors {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub invalid_author: u64,
-    pub not_well_formed_sig: u64,
-    pub invalid_signature: u64,
-    pub author_not_sender: u64,
-    pub invalid_tc_round: u64,
-    pub insufficient_stake: u64,
-    pub invalid_seq_num: u64,
-    pub val_data_unavailable: u64,
-    pub invalid_vote_message: u64,
-    pub invalid_version: u64,
-    pub invalid_epoch: u64,
-}
+macro_rules! metrics {
+    (
+        $(
+            (
+                $class:ident,
+                $class_field:ident,
+                [$($name:ident),* $(,)?]
+            )
+        ),*
+        $(,)?
+    ) => {
+        $(
+            metrics!(
+                @class
+                $class,
+                [$($name),*]
+            );
+        )*
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct ConsensusEvents {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub local_timeout: u64,
-    pub handle_proposal: u64,
-    pub failed_txn_validation: u64,
-    pub failed_ts_validation: u64,
-    pub invalid_proposal_round_leader: u64,
-    pub out_of_order_proposals: u64,
-    pub created_vote: u64,
-    pub old_vote_received: u64,
-    pub vote_received: u64,
-    pub created_qc: u64,
-    pub old_remote_timeout: u64,
-    pub remote_timeout_msg: u64,
-    pub remote_timeout_msg_with_tc: u64,
-    pub created_tc: u64,
-    pub process_old_qc: u64,
-    pub process_qc: u64,
-    pub creating_proposal: u64,
-    pub creating_empty_block_proposal: u64,
-    pub rx_empty_block: u64,
-    pub rx_execution_lagging: u64,
-    pub rx_bad_state_root: u64,
-    pub rx_missing_state_root: u64,
-    pub rx_proposal: u64,
-    pub proposal_with_tc: u64,
-    pub failed_verify_randao_reveal_sig: u64,
-    pub commit_block: u64,
-    pub commit_empty_block: u64,
-    pub committed_bytes: u64,
-    pub state_root_update: u64,
-    pub enter_new_round_qc: u64,
-    pub enter_new_round_tc: u64,
-    pub trigger_state_sync: u64,
-}
+        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        pub struct Metrics {
+            $(
+                pub $class_field: $class
+            ),*
+        }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct TxPoolEvents {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub local_inserted_txns: u64,
-    pub dropped_txns: u64,
-    pub external_inserted_txns: u64,
-}
+        impl Metrics {
+            pub fn metrics(&self) -> Vec<(&'static str, u64)> {
+                vec![
+                    $(
+                        $(
+                            (
+                                concat!("monad.state.", stringify!($class_field), ".", stringify!($name)),
+                                self.$class_field.$name
+                            ),
+                        )*
+                    )*
+                ]
+            }
+        }
+    };
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct BlocktreeEvents {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub prune_success: u64,
-    pub add_success: u64,
-    pub add_dup: u64,
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct BlocksyncEvents {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub self_headers_request: u64,
-    pub self_payload_request: u64,
-    // must be in sync with the counter in blocksync module
-    pub self_payload_requests_in_flight: u64,
-    // headers response for self
-    pub headers_response_successful: u64,
-    pub headers_response_failed: u64,
-    pub headers_response_unexpected: u64,
-    pub headers_validation_failed: u64,
-    pub self_headers_response_successful: u64,
-    pub self_headers_response_failed: u64,
-    pub num_headers_received: u64,
-    // payload response for self
-    pub payload_response_successful: u64,
-    pub payload_response_failed: u64,
-    pub payload_response_unexpected: u64,
-    pub self_payload_response_successful: u64,
-    pub self_payload_response_failed: u64,
-    pub request_timeout: u64,
-    // requests from peers
-    pub peer_headers_request: u64,
-    pub peer_headers_request_successful: u64,
-    pub peer_headers_request_failed: u64,
-    pub peer_payload_request: u64,
-    pub peer_payload_request_successful: u64,
-    pub peer_payload_request_failed: u64,
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
-pub struct Metrics {
-    // if you add stuff here, remember to add it the `Metrics::metrics` impl
-    pub validation_errors: ValidationErrors,
-    pub consensus_events: ConsensusEvents,
-    pub txpool_events: TxPoolEvents,
-    pub blocktree_events: BlocktreeEvents,
-    pub blocksync_events: BlocksyncEvents,
-}
-
-macro_rules! metric {
-    ($self:expr, $($field:ident).+) => {
-        (concat!("monad.state.", stringify!($($field).+)), $self.$($field).+)
+    (
+        @class
+        $class:ident,
+        [$($name:ident),*]
+    ) => {
+        #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+        pub struct $class {
+            $(
+                pub $name: u64
+            ),*
+        }
     };
 }
 
-impl Metrics {
-    pub fn metrics(&self) -> Vec<(&'static str, u64)> {
-        vec![
-            // ValidationErrors
-            metric!(self, validation_errors.invalid_author),
-            metric!(self, validation_errors.not_well_formed_sig),
-            metric!(self, validation_errors.invalid_signature),
-            metric!(self, validation_errors.author_not_sender),
-            metric!(self, validation_errors.invalid_tc_round),
-            metric!(self, validation_errors.insufficient_stake),
-            metric!(self, validation_errors.invalid_seq_num),
-            metric!(self, validation_errors.val_data_unavailable),
-            metric!(self, validation_errors.invalid_vote_message),
-            metric!(self, validation_errors.invalid_version),
-            metric!(self, validation_errors.invalid_epoch),
-            // ConsensusEvents
-            metric!(self, consensus_events.local_timeout),
-            metric!(self, consensus_events.handle_proposal),
-            metric!(self, consensus_events.failed_txn_validation),
-            metric!(self, consensus_events.failed_ts_validation),
-            metric!(self, consensus_events.invalid_proposal_round_leader),
-            metric!(self, consensus_events.out_of_order_proposals),
-            metric!(self, consensus_events.created_vote),
-            metric!(self, consensus_events.old_vote_received),
-            metric!(self, consensus_events.vote_received),
-            metric!(self, consensus_events.created_qc),
-            metric!(self, consensus_events.old_remote_timeout),
-            metric!(self, consensus_events.remote_timeout_msg),
-            metric!(self, consensus_events.remote_timeout_msg_with_tc),
-            metric!(self, consensus_events.created_tc),
-            metric!(self, consensus_events.process_old_qc),
-            metric!(self, consensus_events.process_qc),
-            metric!(self, consensus_events.creating_proposal),
-            metric!(self, consensus_events.creating_empty_block_proposal),
-            metric!(self, consensus_events.rx_empty_block),
-            metric!(self, consensus_events.rx_execution_lagging),
-            metric!(self, consensus_events.rx_bad_state_root),
-            metric!(self, consensus_events.rx_missing_state_root),
-            metric!(self, consensus_events.rx_proposal),
-            metric!(self, consensus_events.proposal_with_tc),
-            metric!(self, consensus_events.failed_verify_randao_reveal_sig),
-            metric!(self, consensus_events.commit_block),
-            metric!(self, consensus_events.commit_empty_block),
-            metric!(self, consensus_events.committed_bytes),
-            metric!(self, consensus_events.state_root_update),
-            metric!(self, consensus_events.enter_new_round_qc),
-            metric!(self, consensus_events.enter_new_round_tc),
-            metric!(self, consensus_events.trigger_state_sync),
-            // TxPoolEvents
-            metric!(self, txpool_events.local_inserted_txns),
-            metric!(self, txpool_events.dropped_txns),
-            metric!(self, txpool_events.external_inserted_txns),
-            // BlocktreeEvents
-            metric!(self, blocktree_events.prune_success),
-            metric!(self, blocktree_events.add_success),
-            metric!(self, blocktree_events.add_dup),
-            // BlocksyncEvents
-            metric!(self, blocksync_events.self_headers_request),
-            metric!(self, blocksync_events.self_payload_request),
-            metric!(self, blocksync_events.self_payload_requests_in_flight),
-            metric!(self, blocksync_events.headers_response_successful),
-            metric!(self, blocksync_events.headers_response_failed),
-            metric!(self, blocksync_events.headers_response_unexpected),
-            metric!(self, blocksync_events.headers_validation_failed),
-            metric!(self, blocksync_events.self_headers_response_successful),
-            metric!(self, blocksync_events.self_headers_response_failed),
-            metric!(self, blocksync_events.num_headers_received),
-            metric!(self, blocksync_events.payload_response_successful),
-            metric!(self, blocksync_events.payload_response_failed),
-            metric!(self, blocksync_events.payload_response_unexpected),
-            metric!(self, blocksync_events.self_payload_response_successful),
-            metric!(self, blocksync_events.self_payload_response_failed),
-            metric!(self, blocksync_events.request_timeout),
-            metric!(self, blocksync_events.peer_headers_request),
-            metric!(self, blocksync_events.peer_headers_request_successful),
-            metric!(self, blocksync_events.peer_headers_request_failed),
-            metric!(self, blocksync_events.peer_payload_request),
-            metric!(self, blocksync_events.peer_payload_request_successful),
-            metric!(self, blocksync_events.peer_payload_request_failed),
+metrics!(
+    (
+        ValidationErrors,
+        validation_errors,
+        [
+            invalid_author,
+            not_well_formed_sig,
+            invalid_signature,
+            author_not_sender,
+            invalid_tc_round,
+            insufficient_stake,
+            invalid_seq_num,
+            val_data_unavailable,
+            invalid_vote_message,
+            invalid_version,
+            invalid_epoch
         ]
-    }
-}
+    ),
+    (
+        ConsensusEvents,
+        consensus_events,
+        [
+            local_timeout,
+            handle_proposal,
+            failed_txn_validation,
+            failed_ts_validation,
+            invalid_proposal_round_leader,
+            out_of_order_proposals,
+            created_vote,
+            old_vote_received,
+            vote_received,
+            created_qc,
+            old_remote_timeout,
+            remote_timeout_msg,
+            remote_timeout_msg_with_tc,
+            created_tc,
+            process_old_qc,
+            process_qc,
+            creating_proposal,
+            creating_empty_block_proposal,
+            rx_empty_block,
+            rx_execution_lagging,
+            rx_bad_state_root,
+            rx_missing_state_root,
+            rx_proposal,
+            proposal_with_tc,
+            failed_verify_randao_reveal_sig,
+            commit_block,
+            commit_empty_block,
+            committed_bytes,
+            state_root_update,
+            enter_new_round_qc,
+            enter_new_round_tc,
+            trigger_state_sync
+        ]
+    ),
+    (
+        TxPoolEvents,
+        txpool_events,
+        [local_inserted_txns, dropped_txns, external_inserted_txns]
+    ),
+    (
+        BlocktreeEvents,
+        blocktree_events,
+        [prune_success, add_success, add_dup]
+    ),
+    (
+        BlocksyncEvents,
+        blocksync_events,
+        [
+            self_headers_request,
+            self_payload_request,
+            self_payload_requests_in_flight,
+            headers_response_successful,
+            headers_response_failed,
+            headers_response_unexpected,
+            headers_validation_failed,
+            self_headers_response_successful,
+            self_headers_response_failed,
+            num_headers_received,
+            payload_response_successful,
+            payload_response_failed,
+            payload_response_unexpected,
+            self_payload_response_successful,
+            self_payload_response_failed,
+            request_timeout,
+            peer_headers_request,
+            peer_headers_request_successful,
+            peer_headers_request_failed,
+            peer_payload_request,
+            peer_payload_request_successful,
+            peer_payload_request_failed
+        ]
+    )
+);
