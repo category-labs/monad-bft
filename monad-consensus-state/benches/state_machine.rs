@@ -192,7 +192,7 @@ where
     block_validator: EthValidator,
     block_policy: EthBlockPolicy,
     state_backend: InMemoryState,
-    block_timestamp: BlockTimestamp,
+    block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
     beneficiary: EthAddress,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
     consensus_config: ConsensusConfig,

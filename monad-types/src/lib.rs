@@ -428,6 +428,9 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PingSequence(pub u64);
+
 #[cfg(test)]
 mod test {
     use test_case::test_case;

@@ -146,7 +146,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a BlockTimestamp,
+    pub block_timestamp: &'a BlockTimestamp<SCT::NodeIdPubKey>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a EthAddress,
@@ -450,6 +450,7 @@ where
         {
             // only update timestamp if the block advanced us our round
             if block.get_round() > original_round {
+                info!(?ts_delta, "update timestamp");
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }
         }
@@ -1646,7 +1647,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
-        block_timestamp: BlockTimestamp,
+        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
         beneficiary: EthAddress,
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig,

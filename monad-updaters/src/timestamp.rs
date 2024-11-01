@@ -1,8 +1,10 @@
+use std::cmp::min;
+
 use monad_consensus_types::quorum_certificate::{
     TimestampAdjustment, TimestampAdjustmentDirection,
 };
 use sorted_vec::SortedVec;
-use tracing::{info, trace};
+use tracing::info;
 
 pub struct TimestampAdjuster {
     /// track adjustments to make to the local time
@@ -31,7 +33,7 @@ impl TimestampAdjuster {
     }
 
     pub fn add_delta(&mut self, delta: i64) {
-        trace!(delta, "add delta");
+        info!(delta, period = self.adjustment_period, "add delta");
         self.deltas.insert(delta);
         if self.deltas.len() == self.adjustment_period {
             let i = self.deltas.len() / 2;
@@ -48,12 +50,7 @@ impl TimestampAdjuster {
     }
 
     pub fn determine_signed_delta(&self, t: TimestampAdjustment) -> i64 {
-        let delta = if t.delta > self.max_delta {
-            self.max_delta
-        } else {
-            t.delta
-        };
-        let delta: i64 = delta.try_into().unwrap_or(0);
+        let delta: i64 = min(t.delta, self.max_delta).try_into().unwrap_or(0);
         match t.direction {
             TimestampAdjustmentDirection::Forward => delta,
             TimestampAdjustmentDirection::Backward => -delta,
