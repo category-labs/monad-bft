@@ -1173,9 +1173,14 @@ where
 
         let mut commands = Vec::new();
 
-        // assert that blocks are coherent
-        let root_parent_chain: Vec<_> = root_parent_chain
-            .into_iter()
+        let mut parent_block_id = root.block_id;
+        for block in &root_parent_chain {
+            assert_eq!(parent_block_id, block.get_id());
+            parent_block_id = block.get_parent_id();
+        }
+        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().cloned().rev().collect();
+        let last_delay_validated_blocks: Vec<_> = blocks_to_commit
+            .iter()
             .map(|full_block| {
                 self.block_validator
                     .validate(
@@ -1187,21 +1192,14 @@ where
                     )
                     .expect("majority committed invalid block")
             })
+            .take(delay.0 as usize)
             .collect();
-        let mut parent_block_id = root.block_id;
-        for block in &root_parent_chain {
-            assert_eq!(parent_block_id, block.get_id());
-            parent_block_id = block.get_parent_id();
-        }
-        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().rev().collect();
         // reset block_policy
-        self.block_policy.reset(blocks_to_commit.iter().collect());
+        self.block_policy
+            .reset(last_delay_validated_blocks.iter().collect());
         // commit blocks
         commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-            blocks_to_commit
-                .into_iter()
-                .map(|block| block.get_full_block())
-                .collect(),
+            blocks_to_commit,
         )));
 
         // if root is N, we need to request the roots from (N-delay, N]
