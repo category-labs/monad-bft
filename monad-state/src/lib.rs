@@ -1178,9 +1178,9 @@ where
             assert_eq!(parent_block_id, block.get_id());
             parent_block_id = block.get_parent_id();
         }
-        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().cloned().rev().collect();
-        let last_delay_validated_blocks: Vec<_> = blocks_to_commit
+        let delay_non_null_validated_blocks_from_root: Vec<_> = root_parent_chain
             .iter()
+            .filter(|block| !block.is_empty_block())
             .map(|full_block| {
                 self.block_validator
                     .validate(
@@ -1194,9 +1194,14 @@ where
             })
             .take(delay.0 as usize)
             .collect();
+        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().cloned().rev().collect();
         // reset block_policy
-        self.block_policy
-            .reset(last_delay_validated_blocks.iter().collect());
+        self.block_policy.reset(
+            delay_non_null_validated_blocks_from_root
+                .iter()
+                .rev()
+                .collect(),
+        );
         // commit blocks
         commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
             blocks_to_commit,

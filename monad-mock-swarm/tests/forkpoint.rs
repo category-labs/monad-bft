@@ -4,16 +4,14 @@ use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{
-    block::{BlockType, PassthruBlockPolicy},
-    block_validator::MockValidator,
-    payload::StateRoot,
-    txpool::MockTxPool,
-};
+use monad_consensus_types::{block::BlockType, payload::StateRoot};
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_block_validator::EthValidator;
+use monad_eth_txpool::EthTxPool;
 use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
@@ -25,7 +23,7 @@ use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_state_backend::{InMemoryState, InMemoryStateInner};
 use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     ledger::{MockLedger, MockableLedger},
     state_root_hash::MockStateRootHashNop,
@@ -42,18 +40,18 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type StateBackendType = InMemoryState;
-    type BlockPolicyType = PassthruBlockPolicy;
+    type BlockPolicyType = EthBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type BlockValidator = MockValidator;
+    type BlockValidator = EthValidator;
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type Ledger = MockLedger<Self::SignatureType, Self::SignatureCollectionType>;
-    type TxPool = MockTxPool;
+    type TxPool = EthTxPool;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -166,9 +164,16 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
-        || PassthruBlockPolicy,
+        Default::default,
+        Default::default,
+        || {
+            EthBlockPolicy::new(
+                GENESIS_SEQ_NUM,
+                1_000_000, // reserve balance
+                state_root_delay.0,
+                10, // chain_id
+            )
+        },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
@@ -194,9 +199,16 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
-            || PassthruBlockPolicy,
+            Default::default,
+            Default::default,
+            || {
+                EthBlockPolicy::new(
+                    GENESIS_SEQ_NUM,
+                    1_000_000, // reserve balance
+                    state_root_delay.0,
+                    10, // chain_id
+                )
+            },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -211,9 +223,16 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
-            || PassthruBlockPolicy,
+            Default::default,
+            Default::default,
+            || {
+                EthBlockPolicy::new(
+                    GENESIS_SEQ_NUM,
+                    1_000_000, // reserve balance
+                    state_root_delay.0,
+                    10, // chain_id
+                )
+            },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -463,9 +482,16 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
-        || PassthruBlockPolicy,
+        Default::default,
+        Default::default,
+        || {
+            EthBlockPolicy::new(
+                GENESIS_SEQ_NUM,
+                1_000_000, // reserve balance
+                state_root_delay.0,
+                10, // chain_id
+            )
+        },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         || StateRoot::new(state_root_delay),
         PeerAsyncStateVerify::new,
@@ -501,9 +527,16 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
-            || PassthruBlockPolicy,
+            Default::default,
+            Default::default,
+            || {
+                EthBlockPolicy::new(
+                    GENESIS_SEQ_NUM,
+                    1_000_000, // reserve balance
+                    state_root_delay.0,
+                    10, // chain_id
+                )
+            },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,
@@ -518,9 +551,16 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
-            || PassthruBlockPolicy,
+            Default::default,
+            Default::default,
+            || {
+                EthBlockPolicy::new(
+                    GENESIS_SEQ_NUM,
+                    1_000_000, // reserve balance
+                    state_root_delay.0,
+                    10, // chain_id
+                )
+            },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
             || StateRoot::new(state_root_delay),
             PeerAsyncStateVerify::new,

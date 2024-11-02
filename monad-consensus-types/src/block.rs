@@ -341,7 +341,7 @@ where
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
+    fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>);
 }
 
 /// A block policy which does not validate the inner contents of the block

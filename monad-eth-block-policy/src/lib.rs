@@ -686,11 +686,11 @@ where
         self.committed_cache.update_committed_block(block);
     }
 
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
+    fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
         // TODO this is error-prone, easy to forget
         // TODO write tests that fail if this doesn't exist
-        let blocks = last_delay_committed_blocks
+        let blocks = last_delay_non_null_committed_blocks
             .into_iter()
             .filter(|block| !block.is_empty_block());
         for block in blocks {
