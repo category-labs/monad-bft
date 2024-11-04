@@ -3,7 +3,7 @@ use alloy_primitives::{
     FixedBytes,
 };
 use monad_rpc_docs::rpc;
-use reth_primitives::{Header as RlpHeader, ReceiptWithBloom, TransactionSigned};
+use reth_primitives::{Header as RlpHeader, TransactionSigned};
 use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
@@ -239,19 +239,12 @@ pub async fn block_receipts<T: Triedb>(
     transactions: &[TransactionSigned],
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
     let block_num: u64 = block_header.number;
-    let transaction_count = transactions.len();
-    let mut block_receipts: Vec<(ReceiptWithBloom, usize)> = vec![];
-    for txn_index in 0..transaction_count {
-        let receipt = match triedb_env.get_receipt(txn_index as u64, block_num).await? {
-            Some(receipt) => receipt,
-            None => continue,
-        };
-        block_receipts.push((receipt, txn_index));
-    }
+    let receipts = triedb_env.get_receipts(block_num).await?;
 
-    let block_receipts: Result<Vec<TransactionReceipt>, JsonRpcError> = block_receipts
+    let block_receipts: Result<Vec<TransactionReceipt>, JsonRpcError> = receipts
         .into_iter()
-        .scan(None, |prev, (receipt, txn_index)| {
+        .enumerate()
+        .scan(None, |prev, (txn_index, receipt)| {
             let parsed_receipt = parse_tx_receipt(
                 block_header,
                 block_hash,
@@ -267,8 +260,10 @@ pub async fn block_receipts<T: Triedb>(
         .collect();
     let block_receipts = block_receipts?;
 
-    if block_receipts.len() != transaction_count {
-        return Err(JsonRpcError::internal_error("receipts unavailable".into()));
+    if block_receipts.len() != transactions.len() {
+        return Err(JsonRpcError::internal_error(
+            "number of receipts and txs mismatch".into(),
+        ));
     }
 
     Ok(block_receipts)

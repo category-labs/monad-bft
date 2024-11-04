@@ -32,8 +32,8 @@ pub struct SenderContext {
 }
 
 #[derive(Debug)]
-pub struct Transactions {
-    // a sorted list of (txn_index, rlp_encoded_transactions)
+pub struct TraverseData {
+    // a sorted list of (txn_index, rlp_encoded_data)
     data: std::sync::Mutex<BTreeMap<u64, Vec<u8>>>,
 }
 
@@ -67,15 +67,15 @@ pub unsafe extern "C" fn read_async_callback(
 }
 
 /// # Safety
-/// This is used as a callback when traversing the transaction trie
-pub unsafe extern "C" fn transaction_callback(
+/// This is used as a callback when traversing the transaction or receipt trie
+pub unsafe extern "C" fn traverse_callback(
     context: *mut std::ffi::c_void,
     key_ptr: *const u8,
     key_len: usize,
     value_ptr: *const u8,
     value_len: usize,
 ) {
-    let transactions = unsafe { Box::from_raw(context as *mut Transactions) };
+    let traverse_data = unsafe { Box::from_raw(context as *mut TraverseData) };
 
     let key = unsafe {
         let key = std::slice::from_raw_parts(key_ptr, key_len).to_vec();
@@ -92,14 +92,14 @@ pub unsafe extern "C" fn transaction_callback(
         value
     };
 
-    if let Ok(mut data) = transactions.data.lock() {
+    if let Ok(mut data) = traverse_data.data.lock() {
         data.insert(tx_index, value);
     } else {
         warn!("Failed to acquire lock");
     };
 
-    // prevent Box<Transactions> from dropping
-    let _ = Box::into_raw(transactions);
+    // prevent Box<TraverseData> from dropping
+    let _ = Box::into_raw(traverse_data);
 }
 
 impl TriedbHandle {
@@ -253,7 +253,7 @@ impl TriedbHandle {
         Some(value)
     }
 
-    pub fn get_transactions(
+    pub fn traverse_triedb(
         &self,
         key: &[u8],
         key_len_nibbles: u8,
@@ -269,36 +269,36 @@ impl TriedbHandle {
             return None;
         }
 
-        let transactions = Box::new(Transactions {
+        let traverse_data = Box::new(TraverseData {
             data: std::sync::Mutex::new(BTreeMap::new()),
         });
 
         let result = unsafe {
-            let context = Box::into_raw(transactions) as *mut std::ffi::c_void;
+            let context = Box::into_raw(traverse_data) as *mut std::ffi::c_void;
             bindings::triedb_traverse(
                 self.db_ptr,
                 key.as_ptr(),
                 key_len_nibbles,
                 block_id,
                 context,
-                Some(transaction_callback),
+                Some(traverse_callback),
             );
 
-            Box::from_raw(context as *mut Transactions)
+            Box::from_raw(context as *mut TraverseData)
         };
 
-        // array containing the transactions in sorted order
-        let mut transactions = Vec::new();
+        // array containing the data in sorted order
+        let mut rlp_data_vec = Vec::new();
         match result.data.lock().ok() {
             Some(data) => {
-                for (_, rlp_tx) in data.iter() {
-                    transactions.push(rlp_tx.to_vec());
+                for (_, rlp_data) in data.iter() {
+                    rlp_data_vec.push(rlp_data.to_vec());
                 }
             }
             None => return None,
         }
 
-        Some(transactions)
+        Some(rlp_data_vec)
     }
 
     pub fn earliest_block(&self) -> u64 {

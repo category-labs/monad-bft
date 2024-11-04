@@ -16,11 +16,7 @@ use monad_triedb_utils::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{
-        create_addr_key, create_block_hash_key, create_block_header_key, create_code_key,
-        create_receipt_key, create_storage_at_key, create_transaction_hash_key,
-        create_transaction_key,
-    },
+    key::{create_triedb_key, KeyInput},
 };
 use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
 use tracing::{error, warn};
@@ -41,7 +37,7 @@ type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
     BlockNumberRequest(BlockNumberRequest),
-    TransactionsRequest(TransactionsRequest),
+    TraverseRequest(TraverseRequest),
     AsyncRequest(AsyncRequest),
 }
 
@@ -50,7 +46,7 @@ struct BlockNumberRequest {
     request_sender: oneshot::Sender<u64>,
 }
 
-struct TransactionsRequest {
+struct TraverseRequest {
     // a sender for the polling thread to send the result back to the request handler
     request_sender: oneshot::Sender<Option<Vec<Vec<u8>>>>,
     // triedb_key and key_len_nibbles are used to read items from triedb
@@ -109,20 +105,18 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                         let block_num = triedb_handle.latest_block();
                         let _ = block_num_request.request_sender.send(block_num);
                     }
-                    TriedbRequest::TransactionsRequest(transaction_request) => {
+                    TriedbRequest::TraverseRequest(traverse_request) => {
                         // Parse block tag
-                        let block_num = match transaction_request.block_tag {
+                        let block_num = match traverse_request.block_tag {
                             BlockTags::Number(q) => q.0,
                             BlockTags::Latest => triedb_handle.latest_block(),
                         };
-                        let rlp_encoded_transactions = triedb_handle.get_transactions(
-                            &transaction_request.triedb_key,
-                            transaction_request.key_len_nibbles,
+                        let rlp_encoded_data = triedb_handle.traverse_triedb(
+                            &traverse_request.triedb_key,
+                            traverse_request.key_len_nibbles,
                             block_num,
                         );
-                        let _ = transaction_request
-                            .request_sender
-                            .send(rlp_encoded_transactions);
+                        let _ = traverse_request.request_sender.send(rlp_encoded_data);
                     }
                     TriedbRequest::AsyncRequest(async_request) => {
                         // Process the request directly in this thread
@@ -180,6 +174,10 @@ pub trait Triedb {
         txn_index: u64,
         block_id: u64,
     ) -> impl std::future::Future<Output = Result<Option<ReceiptWithBloom>, JsonRpcError>> + Send;
+    fn get_receipts(
+        &self,
+        block_id: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, JsonRpcError>> + Send;
     fn get_transaction(
         &self,
         txn_index: u64,
@@ -274,7 +272,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_addr_key(&addr);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Address(&addr));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -338,7 +336,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_storage_at_key(&addr, &at);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Storage(&addr, &at));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -395,7 +393,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_code_key(&code_hash);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CodeHash(&code_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -437,13 +435,14 @@ impl Triedb for TriedbEnv {
 
     async fn get_receipt(
         &self,
-        txn_index: u64,
+        receipt_index: u64,
         block_num: u64,
     ) -> Result<Option<ReceiptWithBloom>, JsonRpcError> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_receipt_key(txn_index);
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(KeyInput::ReceiptIndex(Some(receipt_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -489,6 +488,54 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>, JsonRpcError> {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        // receipt_index set to None to indiciate return all receipts
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::ReceiptIndex(None));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(Quantity(block_num)),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return Err(JsonRpcError::internal_error(
+                "error reading from db due to rate limit".into(),
+            ));
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => match result {
+                Some(rlp_receipts) => {
+                    let receipts = rlp_receipts
+                        .iter()
+                        .filter_map(|rlp_receipt| {
+                            ReceiptWithBloom::decode(&mut rlp_receipt.as_slice())
+                                .map_err(|e| {
+                                    error!("Failed to decode RLP receipt: {e}");
+                                    JsonRpcError::internal_error("error decoding receipt".into())
+                                })
+                                .ok()
+                        })
+                        .collect();
+                    Ok(receipts)
+                }
+                None => Ok(vec![]),
+            },
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(JsonRpcError::internal_error("error reading from db".into()))
+            }
+        }
+    }
+
     async fn get_transaction(
         &self,
         txn_index: u64,
@@ -497,7 +544,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_transaction_key(Some(txn_index));
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -556,11 +603,11 @@ impl Triedb for TriedbEnv {
         let (request_sender, request_receiver) = oneshot::channel();
 
         // txn_index set to None to indiciate return all transactions
-        let (triedb_key, key_len_nibbles) = create_transaction_key(None);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxIndex(None));
 
         if let Err(e) = self
             .mpsc_sender
-            .try_send(TriedbRequest::TransactionsRequest(TransactionsRequest {
+            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
@@ -587,7 +634,7 @@ impl Triedb for TriedbEnv {
                                         "error decoding transaction".into(),
                                     )
                                 })
-                                .ok() // This will convert the Result to Option
+                                .ok()
                         })
                         .collect();
                     Ok(signed_transactions)
@@ -605,7 +652,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_block_header_key();
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHeader);
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -666,7 +713,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_transaction_hash_key(&tx_hash);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::TxHash(&tx_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -724,7 +771,7 @@ impl Triedb for TriedbEnv {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) = create_block_hash_key(&block_hash);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::BlockHash(&block_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self

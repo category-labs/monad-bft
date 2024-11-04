@@ -13,7 +13,10 @@ use monad_triedb::TriedbHandle;
 use monad_types::SeqNum;
 use tracing::{debug, warn};
 
-use crate::{decode::rlp_decode_account, key::create_addr_key};
+use crate::{
+    decode::rlp_decode_account,
+    key::{create_triedb_key, KeyInput},
+};
 
 pub mod decode;
 pub mod key;
@@ -35,7 +38,7 @@ impl TriedbReader {
     }
 
     pub fn get_account(&self, eth_address: &[u8; 20], block_id: u64) -> Option<EthAccount> {
-        let (triedb_key, key_len_nibbles) = create_addr_key(eth_address);
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::Address(eth_address));
 
         let result = self.handle.read(&triedb_key, key_len_nibbles, block_id);
 
@@ -58,7 +61,8 @@ impl TriedbReader {
         let mut num_accounts = 0;
         let eth_account_receivers = eth_addresses.map(|eth_address| {
             num_accounts += 1;
-            let (triedb_key, key_len_nibbles) = create_addr_key(eth_address.as_ref());
+            let (triedb_key, key_len_nibbles) =
+                create_triedb_key(KeyInput::Address(eth_address.as_ref()));
             let (sender, receiver) = oneshot::channel();
             self.handle.read_async(
                 triedb_key.as_ref(),
