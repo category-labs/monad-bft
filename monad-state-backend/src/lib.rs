@@ -61,9 +61,9 @@ pub struct InMemoryStateInner {
     states: BTreeMap<SeqNum, InMemoryBlockState>,
     commits: BTreeSet<SeqNum>,
     /// InMemoryState doesn't have access to an execution engine. It returns
-    /// `max_reserve_balance` as the balance every time so txn reserve balance
-    /// will pass if the sum doesn't exceed the max reserve
-    max_reserve_balance: Balance,
+    /// `max_account_balance` as the balance every time so txn fee balance check
+    /// will pass if the sum doesn't exceed the max account balance
+    max_account_balance: Balance,
     execution_delay: SeqNum,
 }
 
@@ -83,7 +83,7 @@ impl InMemoryBlockState {
 }
 
 impl InMemoryStateInner {
-    pub fn genesis(max_reserve_balance: Balance, execution_delay: SeqNum) -> InMemoryState {
+    pub fn genesis(max_account_balance: Balance, execution_delay: SeqNum) -> InMemoryState {
         Arc::new(Mutex::new(Self {
             states: std::iter::once((
                 GENESIS_SEQ_NUM,
@@ -91,19 +91,19 @@ impl InMemoryStateInner {
             ))
             .collect(),
             commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
-            max_reserve_balance,
+            max_account_balance,
             execution_delay,
         }))
     }
     pub fn new(
-        max_reserve_balance: Balance,
+        max_account_balance: Balance,
         execution_delay: SeqNum,
         init_state: InMemoryBlockState,
     ) -> InMemoryState {
         Arc::new(Mutex::new(Self {
             states: std::iter::once((init_state.block, init_state)).collect(),
             commits: std::iter::once(GENESIS_SEQ_NUM).collect(),
-            max_reserve_balance,
+            max_account_balance,
             execution_delay,
         }))
     }
@@ -153,7 +153,7 @@ impl StateBackend for InMemoryStateInner {
         let nonce = self.states.get(&block)?.nonces.get(address)?;
         Some(EthAccount {
             nonce: *nonce,
-            balance: self.max_reserve_balance,
+            balance: self.max_account_balance,
             code_hash: None,
         })
     }

@@ -54,7 +54,7 @@ type QC = QuorumCertificate<MockSignatures<SignatureType>>;
 type Pool = dyn TxPool<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>;
 
 fn make_test_block_policy() -> EthBlockPolicy {
-    EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, EXECUTION_DELAY, 1337)
+    EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
 }
 
 enum TxPoolTestEvent<'a> {
@@ -730,7 +730,7 @@ fn test_invalid_chain_id() {
     let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_custom_eth_txpool_test(
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, u128::MAX, 0, 1),
+        EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
         None,
         [
             TxPoolTestEvent::InsertTxs {

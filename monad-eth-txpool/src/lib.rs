@@ -9,7 +9,7 @@ use monad_consensus_types::{
     txpool::{TxPool, TxPoolInsertionError},
 };
 use monad_eth_block_policy::{
-    compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_tx::{EthFullTransactionList, EthTransaction};
 use monad_eth_types::{Balance, EthAddress};
@@ -67,7 +67,7 @@ impl EthTxPool {
 
     /// Removes nonces that cannot extend the current block tree branch, as the
     /// txpool is transient and garbage collected after proposal creation
-    fn validate_nonces_and_carriage_fee<SCT>(
+    fn validate_nonces_and_txn_fee<SCT>(
         &mut self,
         proposed_seq_num: SeqNum,
         block_policy: &EthBlockPolicy,
@@ -87,17 +87,17 @@ impl EthTxPool {
             addresses.iter(),
         )?;
 
-        let account_base_reserve_balances = block_policy.compute_account_base_reserve_balances(
+        let account_base_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
             state_backend,
             Some(extending_blocks),
             addresses.iter(),
         )?;
 
-        self.pool.validate_nonces_and_carriage_fee(
+        self.pool.validate_nonces_and_txn_fee(
             proposed_seq_num,
             account_base_nonces,
-            account_base_reserve_balances,
+            account_base_balances,
         );
 
         Ok(())
@@ -107,7 +107,7 @@ impl EthTxPool {
         &mut self,
         valid_chain_id: u64,
         eth_tx: EthTransaction,
-        reserve_balance: &Balance,
+        account_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
         // TODO(abenedito): Smarter tx eviction when pool is full
         if self.pool.num_txs() > MAX_TXPOOL_SIZE {
@@ -129,15 +129,16 @@ impl EthTxPool {
 
         // TODO nonce check
 
-        let txn_carriage_cost = compute_txn_carriage_cost(&eth_tx);
-        if &txn_carriage_cost > reserve_balance {
+        let txn_fee = compute_txn_max_value_to_u128(&eth_tx);
+
+        if &txn_fee > account_balance {
             trace!(
-                "ReserveBalance insert_tx 2 \
+                "AccountBalance insert_tx 2 \
                             do not add txn to the pool. insufficient balance: {:?} \
-                            txn_carriage_cost: {:?} \
+                            txn_fee: {:?} \
                             for address: {:?}",
-                reserve_balance,
-                txn_carriage_cost,
+                account_balance,
+                txn_fee,
                 sender
             );
             return Err(TxPoolInsertionError::InsufficientBalance);
@@ -152,12 +153,12 @@ impl EthTxPool {
             self.pool.add_tx(sender, eth_tx, ratio);
         }
         trace!(
-            "ReserveBalance insert_tx 1 \
-                            reserve balance: {:?} \
-                            txn carriage cost: {:?} \
+            "AccountBalance insert_tx 1 \
+                            account balance: {:?} \
+                            txn fee: {:?} \
                             for address: {:?}",
-            reserve_balance,
-            txn_carriage_cost,
+            account_balance,
+            txn_fee,
             sender
         );
         trace!(txn_hash = ?txn_hash, ?sender, "txn inserted into txpool");
@@ -175,7 +176,7 @@ impl EthTxPool {
     {
         let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
-        let sender_reserve_balances = block_policy.compute_account_base_reserve_balances::<SCT>(
+        let sender_account_balances = block_policy.compute_account_base_balances::<SCT>(
             block_seq_num,
             state_backend,
             None,
@@ -189,9 +190,9 @@ impl EthTxPool {
                 self.validate_and_insert_tx(
                     block_policy.get_chain_id(),
                     eth_tx,
-                    sender_reserve_balances
+                    sender_account_balances
                         .get(sender)
-                        .expect("sender_reserve_balances should be populated"),
+                        .expect("sender_account_balances should be populated"),
                 )
             })
             .collect();
@@ -260,13 +261,13 @@ where
             pool_len -= self.pool.pop_last().expect("pool is not empty");
         }
 
-        if let Err(err) = self.validate_nonces_and_carriage_fee(
+        if let Err(err) = self.validate_nonces_and_txn_fee(
             proposed_seq_num,
             block_policy,
             state_backend,
             &extending_blocks,
         ) {
-            trace!("ReserveBalance create_proposal returned error: {:?}", err);
+            trace!("AccountBalance create_proposal returned error: {:?}", err);
             return Err(err);
         }
 

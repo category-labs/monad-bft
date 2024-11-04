@@ -169,7 +169,6 @@ fn forkpoint_restart_f(
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
-                1_000_000, // reserve balance
                 state_root_delay.0,
                 10, // chain_id
             )
@@ -204,7 +203,6 @@ fn forkpoint_restart_f(
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
-                    1_000_000, // reserve balance
                     state_root_delay.0,
                     10, // chain_id
                 )
@@ -228,7 +226,6 @@ fn forkpoint_restart_f(
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
-                    1_000_000, // reserve balance
                     state_root_delay.0,
                     10, // chain_id
                 )
@@ -487,7 +484,6 @@ fn forkpoint_restart_below_all(
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
-                1_000_000, // reserve balance
                 state_root_delay.0,
                 10, // chain_id
             )
@@ -532,7 +528,6 @@ fn forkpoint_restart_below_all(
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
-                    1_000_000, // reserve balance
                     state_root_delay.0,
                     10, // chain_id
                 )
@@ -556,7 +551,6 @@ fn forkpoint_restart_below_all(
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
-                    1_000_000, // reserve balance
                     state_root_delay.0,
                     10, // chain_id
                 )

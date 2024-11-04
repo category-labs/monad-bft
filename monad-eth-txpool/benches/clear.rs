@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_types::Balance;
 use monad_state_backend::InMemoryState;
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 
@@ -13,7 +12,7 @@ mod common;
 fn criterion_benchmark(c: &mut Criterion) {
     // TODO: change this to something more meaningful, i.e. what's is the block
     // policy state we want to benchmark
-    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, Balance::MAX, EXECUTION_DELAY, 1337);
+    let block_policy = EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337);
 
     run_txpool_benches(
         c,

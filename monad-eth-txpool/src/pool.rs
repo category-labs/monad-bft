@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
+use monad_eth_block_policy::{compute_txn_max_value_to_u128, EthValidatedBlock};
 use monad_eth_tx::EthTransaction;
 use monad_eth_types::{EthAddress, Nonce};
 use monad_types::SeqNum;
@@ -77,11 +77,11 @@ impl Pool {
         self.txs.entry(sender).or_default().add(eth_tx, ratio);
     }
 
-    pub fn validate_nonces_and_carriage_fee(
+    pub fn validate_nonces_and_txn_fee(
         &mut self,
         proposed_seq_num: SeqNum,
         account_base_nonces: BTreeMap<&EthAddress, u64>,
-        account_base_reserve_balances: BTreeMap<&EthAddress, u128>,
+        account_base_balances: BTreeMap<&EthAddress, u128>,
     ) {
         for (address, tx_group) in self.txs.iter_mut() {
             let &lowest_valid_nonce = account_base_nonces
@@ -95,7 +95,7 @@ impl Pool {
                     .filter(|&(nonce, _)| *nonce < lowest_valid_nonce)
                     .for_each(|(nonce, txn)| {
                         trace!(
-                            "validate_nonces_and_carriage_fee \
+                            "validate_nonces_and_txn_fee \
                         txn {:?} will be excluded \
                         nonce is : {:?} < lowest_valid_nonce {:?} \
                         ",
@@ -116,15 +116,15 @@ impl Pool {
                 let _ = tx_group.transactions.split_off(&nonce_gap);
             }
 
-            let mut reserve_balance = *account_base_reserve_balances
+            let mut account_balance = *account_base_balances
                 .get(address)
-                .expect("account_base_reserve_balances must be populated");
+                .expect("account_base_balances must be populated");
             trace!(
-                "ReserveBalance validate_nonces_and_carriage_fee 1 \
+                "AccountBalance validate_nonces_and_txn_fee 1 \
                     balance is: {:?} \
                     at block_id: {:?} \
                     for address: {:?}",
-                reserve_balance,
+                account_balance,
                 proposed_seq_num,
                 address
             );
@@ -132,17 +132,17 @@ impl Pool {
             let mut nonce_to_remove: Option<u64> = None;
 
             for (nonce, txn) in &tx_group.transactions {
-                let txn_carriage_cost = compute_txn_carriage_cost(&txn.0);
+                let txn_fee = compute_txn_max_value_to_u128(&txn.0);
 
-                if reserve_balance >= txn_carriage_cost {
-                    reserve_balance -= txn_carriage_cost;
+                if account_balance >= txn_fee {
+                    account_balance -= txn_fee;
                     trace!(
-                        "ReserveBalance validate_nonces_and_carriage_fee 2 \
+                        "AccountBalance validate_nonces_and_txn_fee 2 \
                             updated balance to: {:?} \
                             at block_id: {:?} \
                             at nonce: {:?} \
                             for address: {:?}",
-                        reserve_balance,
+                        account_balance,
                         proposed_seq_num,
                         nonce,
                         address
@@ -150,7 +150,7 @@ impl Pool {
                 } else {
                     nonce_to_remove = Some(*nonce);
                     trace!(
-                        "ReserveBalance create_proposal 3 \
+                        "AccountBalance create_proposal 3 \
                             insufficient balance at nonce: {:?} \
                             for address: {:?}",
                         nonce,

@@ -1253,7 +1253,7 @@ where
                         )
                     }
                     Err(err) => {
-                        // TODO: add metrics for different carriage cost validation errors
+                        // TODO: add metrics for different transaction fee validation errors
                         debug!(?err, "Creating Proposal error, proposing empty block");
                         self.metrics.consensus_events.creating_empty_block_proposal += 1;
                         // An empty block uses the same SeqNum and state root as its
@@ -4628,14 +4628,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4694,14 +4687,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4761,14 +4747,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4851,14 +4830,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -4974,14 +4946,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || {
                 InMemoryStateInner::new(
                     u128::MAX,
@@ -5092,14 +5057,7 @@ mod test {
             num_states as u32,
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
-            || {
-                EthBlockPolicy::new(
-                    GENESIS_SEQ_NUM,
-                    u128::MAX,
-                    NopStateRoot {}.get_delay().0,
-                    1337,
-                )
-            },
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || EthValidator::new(10000, u64::MAX, 1337),
             EthTxPool::default(),

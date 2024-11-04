@@ -3874,6 +3874,7 @@ dependencies = [
  "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",
+ "reth-primitives",
  "tracing",
 ]
 

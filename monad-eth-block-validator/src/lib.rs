@@ -8,15 +8,17 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_eth_block_policy::{
-    compute_txn_carriage_cost, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
+    checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
+    EthValidatedBlock,
 };
 use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::{EthAddress, Nonce};
 use monad_state_backend::StateBackend;
+use reth_primitives::U256;
 use tracing::warn;
 
 type NonceMap = BTreeMap<EthAddress, Nonce>;
-type CarriageCostMap = BTreeMap<EthAddress, u128>;
+type TxnFeeMap = BTreeMap<EthAddress, U256>;
 type ValidatedTxns = Vec<EthTransaction>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
@@ -43,7 +45,7 @@ impl EthValidator {
     fn validate_payload(
         &self,
         payload: &Payload,
-    ) -> Result<(ValidatedTxns, NonceMap, CarriageCostMap), BlockValidationError> {
+    ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
         if matches!(payload.txns, TransactionPayload::Null) {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
@@ -61,9 +63,9 @@ impl EthValidator {
                 let signers = EthSignedTransaction::recover_signers(&eth_txns, eth_txns.len())
                     .ok_or(BlockValidationError::TxnError)?;
 
-                // recover the account nonces and carriage cost usage in this block
+                // recover the account nonces and txn fee usage in this block
                 let mut nonces = BTreeMap::new();
-                let mut carriage_costs = BTreeMap::new();
+                let mut txn_fees: BTreeMap<EthAddress, U256> = BTreeMap::new();
 
                 let mut validated_txns: Vec<EthTransaction> = Vec::with_capacity(eth_txns.len());
 
@@ -88,8 +90,9 @@ impl EthValidator {
                         }
                     }
 
-                    let carriage_cost_entry = carriage_costs.entry(EthAddress(signer)).or_insert(0);
-                    *carriage_cost_entry += compute_txn_carriage_cost(&eth_txn);
+                    let txn_fee_entry = txn_fees.entry(EthAddress(signer)).or_insert(U256::ZERO);
+
+                    *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
                     validated_txns.push(eth_txn.with_signer(signer));
                 }
 
@@ -104,7 +107,7 @@ impl EthValidator {
                     return Err(BlockValidationError::TxnError);
                 }
 
-                Ok((validated_txns, nonces, carriage_costs))
+                Ok((validated_txns, nonces, txn_fees))
             }
             TransactionPayload::Null => {
                 unreachable!();
@@ -158,15 +161,13 @@ where
             BlockKind::Executable => {
                 self.validate_block_header(&block, &payload, author_pubkey)?;
 
-                if let Ok((validated_txns, nonces, carriage_costs)) =
-                    self.validate_payload(&payload)
-                {
+                if let Ok((validated_txns, nonces, txn_fees)) = self.validate_payload(&payload) {
                     Ok(EthValidatedBlock {
                         block,
                         orig_payload: payload,
                         validated_txns,
                         nonces,
-                        carriage_costs,
+                        txn_fees,
                     })
                 } else {
                     Err(BlockValidationError::PayloadError)
@@ -179,7 +180,7 @@ where
                     orig_payload: payload,
                     validated_txns: Default::default(),
                     nonces: Default::default(), // (address -> highest txn nonce) in the block
-                    carriage_costs: Default::default(), // (address -> carriage cost) in the block
+                    txn_fees: Default::default(), // (address -> txn fee) in the block
                 })
             }
         }

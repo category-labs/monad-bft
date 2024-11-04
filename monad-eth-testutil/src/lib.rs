@@ -6,7 +6,7 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
-use monad_eth_block_policy::{compute_txn_carriage_cost, EthValidatedBlock};
+use monad_eth_block_policy::{compute_txn_max_value, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_secp::KeyPair;
@@ -14,7 +14,7 @@ use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 use reth_primitives::{
     keccak256, revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
-    TxLegacy,
+    TxLegacy, U256,
 };
 
 pub fn make_tx(
@@ -100,11 +100,11 @@ pub fn generate_block_with_txs(
         .map(|t| (EthAddress(t.signer()), t.nonce()))
         .collect();
 
-    let carriage_costs = validated_txns
+    let txn_fees = validated_txns
         .iter()
-        .map(|t| (EthAddress(t.signer()), compute_txn_carriage_cost(t)))
+        .map(|t| (EthAddress(t.signer()), compute_txn_max_value(t)))
         .fold(BTreeMap::new(), |mut costs, (address, cost)| {
-            *costs.entry(address).or_insert(0) += cost;
+            *costs.entry(address).or_insert(U256::ZERO) += cost;
             costs
         });
 
@@ -113,7 +113,7 @@ pub fn generate_block_with_txs(
         orig_payload: payload,
         validated_txns,
         nonces,
-        carriage_costs,
+        txn_fees,
     }
 }
 
