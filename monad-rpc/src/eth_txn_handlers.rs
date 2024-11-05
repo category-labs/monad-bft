@@ -6,7 +6,9 @@ use alloy_primitives::{
 };
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
-use reth_primitives::{transaction::TransactionKind, Header, ReceiptWithBloom, TransactionSigned};
+use reth_primitives::{
+    transaction::TransactionKind, Header, Receipt, ReceiptWithBloom, TransactionSigned,
+};
 use reth_rpc_types::{
     AccessListItem, BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Parity,
     Signature, Transaction, TransactionReceipt,
@@ -28,11 +30,11 @@ pub fn parse_tx_content(
     block_hash: FixedBytes<32>,
     block_number: u64,
     base_fee: Option<u64>,
-    tx: &TransactionSigned,
+    tx: TransactionSigned,
     tx_index: u64,
 ) -> Result<Transaction, JsonRpcError> {
     // recover transaction signer
-    let Some(transaction) = tx.clone().into_ecrecovered_unchecked() else {
+    let Some(tx) = tx.into_ecrecovered_unchecked() else {
         error!("transaction sender should exist");
         return Err(JsonRpcError::txn_decode_error());
     };
@@ -67,7 +69,7 @@ pub fn parse_tx_content(
     let retval = Transaction {
         hash: tx.hash(),
         nonce: U64::from(tx.nonce()),
-        from: transaction.signer(),
+        from: tx.signer(),
         to: tx.to(),
         value: tx.value().into(),
         gas_price: Some(U128::from(gas_price)),
@@ -75,7 +77,7 @@ pub fn parse_tx_content(
         max_priority_fee_per_gas: tx.max_priority_fee_per_gas().map(U128::from),
         signature: Some(signature),
         gas: U256::from(tx.gas_limit()),
-        input: tx.input().clone(),
+        input: tx.input().to_owned(),
         chain_id: tx.chain_id().map(U64::from),
         access_list,
         transaction_type: Some(U64::from(tx.tx_type() as u8)),
@@ -95,13 +97,13 @@ pub fn parse_tx_content(
 pub fn parse_tx_receipt(
     block_header: &Header,
     block_hash: FixedBytes<32>,
-    tx: &TransactionSigned,
-    prev_receipt: Option<ReceiptWithBloom>,
+    tx: TransactionSigned,
+    prev_receipt: Option<Receipt>,
     receipt: ReceiptWithBloom,
     block_num: u64,
     tx_index: usize,
 ) -> Result<TransactionReceipt, JsonRpcError> {
-    let Some(transaction) = tx.clone().into_ecrecovered_unchecked() else {
+    let Some(tx) = tx.into_ecrecovered_unchecked() else {
         error!("transaction sender should exist");
         return Err(JsonRpcError::txn_decode_error());
     };
@@ -115,15 +117,16 @@ pub fn parse_tx_receipt(
 
     let block_hash = Some(block_hash);
     let block_number = Some(U256::from(block_num));
+
     let logs = receipt
         .receipt
         .logs
         .into_iter()
         .enumerate()
-        .map(|(log_index, log_item)| Log {
-            address: log_item.address,
-            topics: log_item.topics,
-            data: log_item.data,
+        .map(|(log_index, log)| Log {
+            address: log.address,
+            topics: log.topics,
+            data: log.data,
             block_hash,
             block_number,
             transaction_hash: Some(tx.hash()),
@@ -133,13 +136,13 @@ pub fn parse_tx_receipt(
         })
         .collect();
 
-    let contract_address = match transaction.kind() {
-        TransactionKind::Create => Some(transaction.signer().create(transaction.nonce())),
+    let contract_address = match tx.kind() {
+        TransactionKind::Create => Some(tx.signer().create(tx.nonce())),
         _ => None,
     };
 
     let gas_used = if let Some(prev_receipt) = prev_receipt {
-        U256::from(receipt.receipt.cumulative_gas_used - prev_receipt.receipt.cumulative_gas_used)
+        U256::from(receipt.receipt.cumulative_gas_used - prev_receipt.cumulative_gas_used)
     } else {
         U256::from(receipt.receipt.cumulative_gas_used)
     };
@@ -150,7 +153,7 @@ pub fn parse_tx_receipt(
         transaction_index: U64::from(tx_index),
         block_hash,
         block_number,
-        from: transaction.signer(),
+        from: tx.signer(),
         to: tx.to(),
         contract_address,
         gas_used: Some(gas_used),
@@ -271,11 +274,10 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                     ))
                 }
             };
-            let transactions = triedb_env.get_transactions(block_num).await?;
 
             // TODO: check block's log_bloom against the filter
-            let block_receipts =
-                block_receipts(triedb_env, &header.header, header.hash, &transactions).await?;
+            let block_receipts = block_receipts(triedb_env, &header.header, header.hash).await?;
+
             let mut receipt_logs: Vec<Log> = block_receipts
                 .into_iter()
                 .flat_map(|receipt| {
@@ -397,26 +399,27 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     };
     let prev_receipt = if tx_index > 0 {
         match triedb_env.get_receipt(tx_index - 1, block_num).await? {
-            Some(receipt) => Some(receipt),
+            Some(receipt) => Some(receipt.receipt),
             None => return Err(JsonRpcError::internal_error("error getting receipt".into())),
         }
     } else {
         None
     };
 
-    let Some(transaction) = triedb_env.get_transaction(tx_index, block_num).await? else {
+    let Some(tx) = triedb_env.get_transaction(tx_index, block_num).await? else {
         return Ok(None);
     };
 
     let receipt = parse_tx_receipt(
         &header.header,
         header.hash,
-        &transaction,
+        tx,
         prev_receipt,
         receipt,
         block_num,
         tx_index as usize,
     )?;
+
     Ok(Some(MonadTransactionReceipt(receipt)))
 }
 
@@ -448,7 +451,7 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
         Some(header) => header,
         None => return Ok(None),
     };
-    let Some(transaction) = triedb_env.get_transaction(tx_index, block_num).await? else {
+    let Some(tx) = triedb_env.get_transaction(tx_index, block_num).await? else {
         return Ok(None);
     };
 
@@ -456,7 +459,7 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
         header.hash,
         block_num,
         header.header.base_fee_per_gas,
-        &transaction,
+        tx,
         tx_index,
     )
     .map(|txn| Some(MonadTransaction(txn)))
@@ -488,7 +491,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
         Some(header) => header,
         None => return Ok(None),
     };
-    let Some(transaction) = triedb_env
+    let Some(tx) = triedb_env
         .get_transaction(params.index.0, block_num)
         .await?
     else {
@@ -499,7 +502,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
         params.block_hash.0.into(),
         header.header.number,
         header.header.base_fee_per_gas,
-        &transaction,
+        tx,
         params.index.0,
     )
     .map(|txn| Some(MonadTransaction(txn)))
@@ -526,7 +529,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         Some(header) => header,
         None => return Ok(None),
     };
-    let Some(transaction) = triedb_env
+    let Some(tx) = triedb_env
         .get_transaction(params.index.0, block_num)
         .await?
     else {
@@ -537,7 +540,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
         header.hash,
         header.header.number,
         header.header.base_fee_per_gas,
-        &transaction,
+        tx,
         params.index.0,
     )
     .map(|txn| Some(MonadTransaction(txn)))

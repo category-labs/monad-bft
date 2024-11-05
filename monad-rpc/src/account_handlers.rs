@@ -28,6 +28,7 @@ pub async fn monad_eth_getBalance<T: Triedb>(
     let account = triedb_env
         .get_account(params.account.0, params.block_number)
         .await?;
+
     Ok(format!("0x{:x}", account.balance))
 }
 
@@ -98,6 +99,7 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
     let account = triedb_env
         .get_account(params.account.0, params.block_number)
         .await?;
+
     Ok(format!("0x{:x}", account.nonce))
 }
 

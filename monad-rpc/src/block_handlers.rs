@@ -17,10 +17,12 @@ use crate::{
 
 fn parse_block_content(
     block_hash: FixedBytes<32>,
-    rlp_header: &RlpHeader,
-    transactions: &[TransactionSigned],
+    rlp_header: RlpHeader,
+    transactions: Vec<TransactionSigned>,
     return_full_txns: bool,
 ) -> Result<Block, JsonRpcError> {
+    let size = rlp_header.size();
+
     // parse block header
     let header = Header {
         hash: Some(block_hash),
@@ -34,7 +36,7 @@ fn parse_block_content(
         number: Some(U256::from(rlp_header.number)),
         gas_used: U256::from(rlp_header.gas_used),
         gas_limit: U256::from(rlp_header.gas_limit),
-        extra_data: rlp_header.clone().extra_data,
+        extra_data: rlp_header.extra_data,
         logs_bloom: rlp_header.logs_bloom,
         timestamp: U256::from(rlp_header.timestamp),
         difficulty: rlp_header.difficulty,
@@ -47,10 +49,10 @@ fn parse_block_content(
     };
 
     // parse transactions
-    let transactions: Result<BlockTransactions, JsonRpcError> = match return_full_txns {
-        true => {
-            let transactions: Result<Vec<Transaction>, JsonRpcError> = transactions
-                .iter()
+    let transactions = if return_full_txns {
+        BlockTransactions::Full(
+            transactions
+                .into_iter()
                 .enumerate()
                 .map(|(index, tx)| {
                     parse_tx_content(
@@ -61,15 +63,11 @@ fn parse_block_content(
                         index as u64,
                     )
                 })
-                .collect();
-            transactions.map(BlockTransactions::Full)
-        }
-        false => {
-            let transactions = transactions.iter().map(|tx| tx.hash()).collect();
-            Ok(BlockTransactions::Hashes(transactions))
-        }
+                .collect::<Result<Vec<Transaction>, JsonRpcError>>()?,
+        )
+    } else {
+        BlockTransactions::Hashes(transactions.iter().map(TransactionSigned::hash).collect())
     };
-    let transactions = transactions?;
 
     // NOTE: no withdrawals currently in monad-bft
     let retval = Block {
@@ -78,7 +76,7 @@ fn parse_block_content(
         uncles: vec![],
         total_difficulty: Some(rlp_header.difficulty),
         withdrawals: None,
-        size: Some(U256::from(rlp_header.size())),
+        size: Some(U256::from(size)),
         other: Default::default(),
     };
 
@@ -140,8 +138,8 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
 
     parse_block_content(
         params.block_hash.0.into(),
-        &header.header,
-        &transactions,
+        header.header,
+        transactions,
         params.return_full_txns,
     )
     .map(|block| {
@@ -176,8 +174,8 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
 
     parse_block_content(
         header.hash,
-        &header.header,
-        &transactions,
+        header.header,
+        transactions,
         params.return_full_txns,
     )
     .map(|block| {
@@ -232,41 +230,53 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     Ok(Some(format!("0x{:x}", transactions.len())))
 }
 
+pub async fn map_block_receipts<T: Triedb, R>(
+    triedb_env: &T,
+    block_header: &RlpHeader,
+    block_hash: FixedBytes<32>,
+    f: impl Fn(TransactionReceipt) -> R,
+) -> Result<Vec<R>, JsonRpcError> {
+    let block_num: u64 = block_header.number;
+
+    let transactions = triedb_env.get_transactions(block_num).await?;
+    let receipts = triedb_env.get_receipts(block_num).await?;
+
+    if transactions.len() != receipts.len() {
+        Err(JsonRpcError::internal_error(
+            "number of receipts and txs mismatch".into(),
+        ))?;
+    }
+
+    let mut prev_receipt = None;
+
+    transactions
+        .into_iter()
+        .zip(receipts.into_iter())
+        .enumerate()
+        .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
+            let prev_receipt = prev_receipt.replace(receipt.receipt.to_owned());
+
+            let parsed_receipt = parse_tx_receipt(
+                block_header,
+                block_hash,
+                tx,
+                prev_receipt,
+                receipt,
+                block_num,
+                tx_index,
+            )?;
+
+            Ok(f(parsed_receipt))
+        })
+        .collect()
+}
+
 pub async fn block_receipts<T: Triedb>(
     triedb_env: &T,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
-    transactions: &[TransactionSigned],
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
-    let block_num: u64 = block_header.number;
-    let receipts = triedb_env.get_receipts(block_num).await?;
-
-    let block_receipts: Result<Vec<TransactionReceipt>, JsonRpcError> = receipts
-        .into_iter()
-        .enumerate()
-        .scan(None, |prev, (txn_index, receipt)| {
-            let parsed_receipt = parse_tx_receipt(
-                block_header,
-                block_hash,
-                &transactions[txn_index],
-                prev.to_owned(),
-                receipt.clone(),
-                block_num,
-                txn_index,
-            );
-            *prev = Some(receipt);
-            Some(parsed_receipt)
-        })
-        .collect();
-    let block_receipts = block_receipts?;
-
-    if block_receipts.len() != transactions.len() {
-        return Err(JsonRpcError::internal_error(
-            "number of receipts and txs mismatch".into(),
-        ));
-    }
-
-    Ok(block_receipts)
+    map_block_receipts(triedb_env, block_header, block_hash, |receipt| receipt).await
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -292,14 +302,14 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
         Some(header) => header,
         None => return Ok(None),
     };
-    let transactions = triedb_env.get_transactions(block_num).await?;
 
-    let block_receipts =
-        block_receipts(triedb_env, &header.header, header.hash, &transactions).await?;
-    Ok(Some(MonadEthGetBlockReceiptsResult(
-        block_receipts
-            .into_iter()
-            .map(MonadTransactionReceipt)
-            .collect(),
-    )))
+    let block_receipts = map_block_receipts(
+        triedb_env,
+        &header.header,
+        header.hash,
+        MonadTransactionReceipt,
+    )
+    .await?;
+
+    Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)))
 }
