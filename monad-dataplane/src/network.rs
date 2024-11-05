@@ -388,7 +388,7 @@ impl<'a> NetworkSocket<'a> {
                 } else {
                     let late = now - self.next_transmit;
 
-                    if late > std::time::Duration::from_millis(100) {
+                    if late > std::time::Duration::from_millis(10) {
                         self.next_transmit = now;
                     }
                 }
