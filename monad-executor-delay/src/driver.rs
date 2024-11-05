@@ -24,7 +24,7 @@ pub struct ScheduledEvent<E> {
 
 impl<E> PartialOrd for ScheduledEvent<E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(other.deliver.cmp(&self.deliver))
+        Some(self.cmp(other))
     }
 }
 
@@ -80,11 +80,7 @@ where
     }
 
     fn peek_tick(&self) -> Option<Duration> {
-        if !self.events.is_empty() {
-            Some(self.events.peek().unwrap().deliver)
-        } else {
-            None
-        }
+        self.events.peek().map(|event| event.deliver)
     }
 
     fn poll(&mut self, now: Duration) -> Option<Trigger<E::Item>> {
