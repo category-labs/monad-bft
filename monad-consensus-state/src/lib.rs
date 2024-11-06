@@ -677,8 +677,6 @@ where
             return vec![];
         };
 
-        assert_eq!(round, v.vote_info.round);
-
         self.send_vote_and_reset_timer(round, v)
     }
 
