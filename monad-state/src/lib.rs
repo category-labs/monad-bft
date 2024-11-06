@@ -1118,7 +1118,10 @@ where
                 }
                 ControlPanelEvent::GetMetricsEvent => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
+                        ReadCommand::GetMetrics(GetMetrics::Response {
+                            state_metrics: self.metrics,
+                            executor_metrics: Default::default(),
+                        }),
                     ))]
                 }
                 ControlPanelEvent::ClearMetricsEvent => {

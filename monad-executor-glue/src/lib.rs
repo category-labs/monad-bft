@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{collections::BTreeMap, fmt::Debug, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -124,7 +124,10 @@ pub enum GetValidatorSet<SCT: SignatureCollection> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GetMetrics {
     Request,
-    Response(Metrics),
+    Response {
+        state_metrics: Metrics,
+        executor_metrics: BTreeMap<String, u64>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
