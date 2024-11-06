@@ -246,7 +246,14 @@ where
             scheduled_vote: None,
             vote_state: VoteState::new(consensus_round),
             high_qc,
-            pacemaker: Pacemaker::new(config.delta, consensus_epoch, consensus_round, None),
+            pacemaker: Pacemaker::new(
+                config.delta,
+                config.vote_pace,
+                config.delta, // TODO: change this to different value later
+                consensus_epoch,
+                consensus_round,
+                None,
+            ),
             safety: Safety::new(
                 // ConsensusState is timed out synchronously on MonadState init, which always sets
                 // highest_vote_round to consensus_round

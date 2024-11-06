@@ -30,6 +30,12 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     /// this is used to calculate the local round timeout duration
     delta: Duration,
 
+    /// the time consensus waits between sending consecutive votes
+    vote_delay: Duration,
+
+    /// estimate of time consensus takes to process a proposal
+    local_processing: Duration,
+
     current_epoch: Epoch,
     current_round: Round,
     /// None if we advanced to the current round via QC
@@ -83,12 +89,16 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn new(
         delta: Duration,
+        vote_delay: Duration,
+        local_processing: Duration,
         current_epoch: Epoch,
         current_round: Round,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
     ) -> Self {
         Self {
             delta,
+            vote_delay,
+            local_processing,
             current_epoch,
             current_round,
             last_round_tc,
@@ -111,8 +121,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     }
 
     fn get_round_timer(&self) -> Duration {
-        // 2 delta from proposal, 1 delta from votes, 2 delta from next proposal
-        self.delta * 5
+        // worse case time is round timer and vote delay start at effectively the same time and so
+        // the round needs to accomdate the full vote-delay time and a local processing time
+        // estimate
+        self.delta * 3 + self.vote_delay + self.local_processing
     }
 
     /// enter a new round. Phase is set to PhaseHonest::Zero and all
@@ -435,6 +447,8 @@ mod test {
     fn all_honest() {
         let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
             Duration::from_secs(1),
+            Duration::from_secs(0),
+            Duration::from_secs(0),
             Epoch(1),
             Round(1),
             None,
@@ -545,6 +559,8 @@ mod test {
     fn phase_supermajority_invalid_no_progress() {
         let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
             Duration::from_secs(1),
+            Duration::from_secs(0),
+            Duration::from_secs(0),
             Epoch(1),
             Round(1),
             None,
@@ -627,6 +643,8 @@ mod test {
     fn phase_supermajority_invalid_progress() {
         let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
             Duration::from_secs(1),
+            Duration::from_secs(0),
+            Duration::from_secs(0),
             Epoch(1),
             Round(1),
             None,
@@ -757,6 +775,8 @@ mod test {
     fn test_advance_epoch_clear() {
         let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
             Duration::from_secs(1),
+            Duration::from_secs(0),
+            Duration::from_secs(0),
             Epoch(1),
             Round(120),
             None,
