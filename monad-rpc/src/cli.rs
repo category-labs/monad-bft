@@ -48,4 +48,8 @@ pub struct Cli {
     /// Set the max concurrent requests for eth_call and eth_estimateGas
     #[arg(long, default_value_t = 1000)]
     pub eth_call_max_concurrent_requests: u32,
+
+    /// Set the max concurrent requests for triedb reads
+    #[arg(long, default_value_t = 20_000)]
+    pub triedb_max_concurrent_requests: u32,
 }

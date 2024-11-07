@@ -27,8 +27,6 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
-const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 10_000;
-
 type EthAddress = [u8; 20];
 type EthStorageKey = [u8; 32];
 type EthCodeHash = [u8; 32];
@@ -223,10 +221,9 @@ pub struct TriedbEnv {
 }
 
 impl TriedbEnv {
-    pub fn new(triedb_path: &Path) -> Self {
+    pub fn new(triedb_path: &Path, max_concurrent_triedb_reads: usize) -> Self {
         // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
-        let (sender, receiver) =
-            mpsc::sync_channel::<TriedbRequest>(MAX_CONCURRENT_TRIEDB_REQUESTS);
+        let (sender, receiver) = mpsc::sync_channel::<TriedbRequest>(max_concurrent_triedb_reads);
 
         // spawn the polling thread in a dedicated thread
         let triedb_path_cloned = triedb_path.to_path_buf();

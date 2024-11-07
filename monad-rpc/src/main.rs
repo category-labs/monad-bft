@@ -625,7 +625,10 @@ async fn main() -> std::io::Result<()> {
 
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
-        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
+        args.triedb_path
+            .clone()
+            .as_deref()
+            .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize)),
         Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
