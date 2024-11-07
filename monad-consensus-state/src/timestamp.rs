@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
-    time,
+    time::{self},
 };
 
 use monad_consensus_types::{
@@ -10,10 +10,16 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{NodeId, PingSequence};
+use monad_types::{NodeId, PingSequence, Round};
 use tracing::info;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    Invalid,     // timestamp did not increment compared to previous block
+    OutOfBounds, // timestamp is out of bounds compared to local time
+}
 
 /// Ping state per validator
 #[derive(Debug)]
@@ -67,7 +73,8 @@ impl ValidatorPingState {
         if sequence != self.sequence {
             return;
         }
-        self.update_latency(self.last_ping_time.elapsed());
+        // estimate latency as half the round trip time
+        self.update_latency(self.last_ping_time.elapsed() / 2);
     }
 
     pub fn avg_latency(&self) -> Option<time::Duration> {
@@ -139,7 +146,6 @@ impl<P: PubKey> PingState<P> {
             let idx = (hasher.finish() as usize) % self.period;
             self.schedule[idx].push(*node);
         }
-        info!("updating validators {:?}", self.schedule);
     }
 
     // returns list of nodes to send pings to on this tick
@@ -153,6 +159,16 @@ impl<P: PubKey> PingState<P> {
         self.tick = (self.tick + 1) % self.period;
         pings
     }
+
+    fn get_latency(&self, node_id: &NodeId<P>) -> Option<time::Duration> {
+        self.validators.get(node_id).and_then(|v| v.avg_latency())
+    }
+}
+
+#[derive(Debug)]
+struct SentVote {
+    round: Round,
+    timestamp: time::Instant,
 }
 
 #[derive(Debug)]
@@ -162,6 +178,8 @@ pub struct BlockTimestamp<P: PubKey> {
     max_delta: u64,
 
     ping_state: PingState<P>,
+
+    sent_vote: Option<SentVote>, // last voted round and timestamp
 
     /// TODO: this needs an upper-bound
     latency_estimate_ms: u64,
@@ -175,6 +193,7 @@ impl<P: PubKey> BlockTimestamp<P> {
             max_delta,
             latency_estimate_ms,
             ping_state: PingState::new(),
+            sent_vote: None,
         }
     }
 
@@ -205,34 +224,39 @@ impl<P: PubKey> BlockTimestamp<P> {
         &self,
         prev_block_ts: u64,
         curr_block_ts: u64,
-    ) -> Option<TimestampAdjustment> {
-        let delta = curr_block_ts.checked_sub(prev_block_ts);
-        match delta {
+        round: Round,
+        author: &NodeId<P>,
+    ) -> Result<Option<TimestampAdjustment>, Error> {
+        if curr_block_ts <= prev_block_ts {
             // block timestamp must be strictly monotonically increasing
-            None => None,
-            Some(0) => None,
-            // check that its not higher than the valid upper bound
-            Some(_) => {
-                if !self.valid_bounds(curr_block_ts) {
-                    None
+            return Err(Error::Invalid);
+        }
+        if !self.valid_bounds(curr_block_ts) {
+            return Err(Error::OutOfBounds);
+        }
+        // return the delta between expected block time and actual block time for adjustment
+        match &self.sent_vote {
+            Some(vote) if vote.round + Round(1) == round => {
+                let latency = self
+                    .ping_state
+                    .get_latency(author)
+                    .unwrap_or(time::Duration::from_millis(self.latency_estimate_ms));
+                let expected_block_ts = self.local_time.saturating_sub(
+                    vote.timestamp.elapsed().saturating_sub(latency).as_millis() as u64,
+                );
+                if curr_block_ts > expected_block_ts {
+                    Ok(Some(TimestampAdjustment {
+                        delta: curr_block_ts - expected_block_ts,
+                        direction: TimestampAdjustmentDirection::Forward,
+                    }))
                 } else {
-                    // return the delta between local time and block time for adjustment
-                    let mut adjustment = self.local_time.abs_diff(curr_block_ts);
-                    // adjust for estimated latency
-                    adjustment = adjustment.saturating_sub(self.latency_estimate_ms);
-                    if curr_block_ts > self.local_time {
-                        Some(TimestampAdjustment {
-                            delta: adjustment,
-                            direction: TimestampAdjustmentDirection::Forward,
-                        })
-                    } else {
-                        Some(TimestampAdjustment {
-                            delta: adjustment,
-                            direction: TimestampAdjustmentDirection::Backward,
-                        })
-                    }
+                    Ok(Some(TimestampAdjustment {
+                        delta: expected_block_ts - curr_block_ts,
+                        direction: TimestampAdjustmentDirection::Backward,
+                    }))
                 }
             }
+            _ => Ok(None),
         }
     }
 
@@ -253,6 +277,21 @@ impl<P: PubKey> BlockTimestamp<P> {
     pub fn pong_received(&mut self, node_id: NodeId<P>, sequence: PingSequence) {
         self.ping_state.pong_received(node_id, sequence);
     }
+
+    pub fn vote_sent(&mut self, round: Round) {
+        info!("vote sent for round {:?}", round);
+        match &self.sent_vote {
+            Some(vote) if vote.round >= round => {
+                info!("vote already sent for round {:?}", round);
+            }
+            _ => {
+                self.sent_vote = Some(SentVote {
+                    round,
+                    timestamp: time::Instant::now(),
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,7 +304,7 @@ mod test {
     use monad_crypto::{
         certificate_signature::CertificateKeyPair, NopKeyPair, NopPubKey, NopSignature,
     };
-    use monad_types::{NodeId, Stake};
+    use monad_types::{NodeId, Round, Stake};
 
     use crate::{
         timestamp::{PingState, ValidatorPingState},
@@ -275,28 +314,41 @@ mod test {
     #[test]
     fn test_block_timestamp_validate() {
         let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
-        b.update_time(0);
+        let author = NodeId::new(NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey());
 
-        assert!(b.valid_block_timestamp(1, 1).is_none());
-        assert!(b.valid_block_timestamp(2, 1).is_none());
-        assert!(b.valid_block_timestamp(0, 11).is_none());
-
-        assert!(matches!(
-            b.valid_block_timestamp(1, 2),
-            Some(TimestampAdjustment {
-                delta: 1,
-                direction: TimestampAdjustmentDirection::Forward
-            })
-        ));
+        b.ping_state
+            .validators
+            .insert(author, ValidatorPingState::new());
+        b.ping_state
+            .validators
+            .get_mut(&author)
+            .unwrap()
+            .update_latency(time::Duration::from_millis(1));
 
         b.update_time(10);
+        b.vote_sent(Round(0));
+
+        assert!(b.valid_block_timestamp(11, 11, Round(1), &author).is_err());
+        assert!(b.valid_block_timestamp(12, 11, Round(1), &author).is_err());
+        assert!(b.valid_block_timestamp(9, 21, Round(1), &author).is_err());
+
+        b.update_time(12);
+        std::thread::sleep(time::Duration::from_millis(2));
 
         assert!(matches!(
-            b.valid_block_timestamp(5, 8),
-            Some(TimestampAdjustment {
+            b.valid_block_timestamp(9, 12, Round(1), &author),
+            Ok(Some(TimestampAdjustment {
+                delta: 1,
+                direction: TimestampAdjustmentDirection::Forward
+            }))
+        ));
+
+        assert!(matches!(
+            b.valid_block_timestamp(5, 10, Round(1), &author),
+            Ok(Some(TimestampAdjustment {
                 delta: 1,
                 direction: TimestampAdjustmentDirection::Backward
-            })
+            }))
         ));
     }
 

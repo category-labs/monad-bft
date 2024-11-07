@@ -64,7 +64,7 @@ where
     version: &'a MonadVersion,
 
     state_root_validator: &'a SVT,
-    block_timestamp: &'a BlockTimestamp<SCT::NodeIdPubKey>,
+    block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
     block_validator: &'a BVT,
     beneficiary: &'a EthAddress,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -106,7 +106,7 @@ where
             version: &monad_state.version,
 
             state_root_validator: &monad_state.state_root_validator,
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
