@@ -20,7 +20,7 @@ use monad_consensus_types::{
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
-    validator_data::{ParsedValidatorData, ValidatorSetData},
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -118,7 +118,7 @@ where
 pub enum GetValidatorSet<SCT: SignatureCollection> {
     Request,
     #[serde(bound = "SCT: SignatureCollection")]
-    Response(ParsedValidatorData<SCT>),
+    Response(ValidatorSetDataWithEpoch<SCT>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,7 +158,7 @@ pub enum UpdateValidatorSet<SCT: SignatureCollection> {
         deserialize = "SCT: SignatureCollection",
         serialize = "SCT: SignatureCollection",
     ))]
-    Request(ParsedValidatorData<SCT>),
+    Request(ValidatorSetDataWithEpoch<SCT>),
     Response,
 }
 
@@ -555,7 +555,7 @@ where
     GetValidatorSet,
     GetMetricsEvent,
     ClearMetricsEvent,
-    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
+    UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
     UpdateLogFilter(String),
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
     UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),

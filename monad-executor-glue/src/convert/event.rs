@@ -1,7 +1,9 @@
 use std::{net::SocketAddr, str::FromStr};
 
 use bytes::Bytes;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
+};
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{
     error::ProtoError,
@@ -406,16 +408,18 @@ where
                     ProtoClearMetricsEvent {},
                 )),
             },
-            ControlPanelEvent::UpdateValidators((validator_set_data, epoch)) => {
-                ProtoControlPanelEvent {
-                    event: Some(proto_control_panel_event::Event::UpdateValidatorsEvent(
-                        ProtoUpdateValidatorsEvent {
-                            validator_set_data: Some(validator_set_data.into()),
-                            epoch: Some(epoch.into()),
-                        },
-                    )),
-                }
-            }
+            ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
+                epoch,
+                validators,
+                ..
+            }) => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::UpdateValidatorsEvent(
+                    ProtoUpdateValidatorsEvent {
+                        validator_set_data: Some(validators.into()),
+                        epoch: Some(epoch.into()),
+                    },
+                )),
+            },
             ControlPanelEvent::UpdateLogFilter(filter) => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::UpdateLogFilter(
                     ProtoUpdateLogFilter {
@@ -553,18 +557,21 @@ where
                     ControlPanelEvent::ClearMetricsEvent
                 }
                 proto_control_panel_event::Event::UpdateValidatorsEvent(v) => {
-                    ControlPanelEvent::UpdateValidators((
-                        v.validator_set_data
+                    ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
+                        epoch: v
+                            .epoch
                             .ok_or(ProtoError::MissingRequiredField(
-                                "ControlPanel::UpdateValidatorsEvent.validator_set_data".to_owned(),
+                                "ProtoUpdateValidatorsEvent.epoch".to_owned(),
                             ))?
                             .try_into()?,
-                        v.epoch
+                        round: None,
+                        validators: v
+                            .validator_set_data
                             .ok_or(ProtoError::MissingRequiredField(
-                                "ControlPanel::UpdateValidatorsEvent.epoch".to_owned(),
+                                "ProtoUpdateValidatorsEvent.epoch".to_owned(),
                             ))?
                             .try_into()?,
-                    ))
+                    })
                 }
                 proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
                     ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)

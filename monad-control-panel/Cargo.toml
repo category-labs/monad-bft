@@ -8,17 +8,11 @@ edition = "2021"
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 bench = false
 
-[[bin]]
-name = "control-panel"
-path = "src/bin/control_panel.rs"
-bench = false
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bincode = { workspace = true }
 futures = { workspace = true }
-inquire = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = [
     "io-util",
     "macros",
@@ -30,9 +24,7 @@ tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-monad-bls = { path = "../monad-bls" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
-monad-secp = { path = "../monad-secp" }

@@ -5,7 +5,7 @@ use futures::{SinkExt, StreamExt};
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    signature_collection::SignatureCollection, validator_data::ParsedValidatorData,
+    signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
@@ -93,8 +93,10 @@ impl Read {
             .read
             .next()
             .await
-            .ok_or(Error::other("client stream ended"))??;
-        bincode::deserialize(&bytes).map_err(Error::other)
+            .ok_or(Error::other("client stream ended"))??
+            .freeze();
+        serde_json::from_str(std::str::from_utf8(&bytes).map_err(Error::other)?)
+            .map_err(Error::other)
     }
 }
 
@@ -107,7 +109,7 @@ impl Write {
         &mut self,
         request: ControlPanelCommand<SCT>,
     ) -> Result<(), Error> {
-        let bytes = bincode::serialize(&request).map_err(Error::other)?;
+        let bytes = serde_json::to_string(&request).map_err(Error::other)?;
         self.write.send(bytes.into()).await
     }
 }
@@ -169,11 +171,10 @@ fn main() -> Result<(), Error> {
         Commands::UpdateValidators { path } => {
             let toml_choice = path;
 
-            let update_validator_set =
-                toml::from_str::<ParsedValidatorData<SignatureCollectionType>>(
-                    &std::fs::read_to_string(toml_choice).unwrap(),
-                )
-                .map_err(Error::other)?;
+            let update_validator_set = toml::from_str::<
+                ValidatorSetDataWithEpoch<SignatureCollectionType>,
+            >(&std::fs::read_to_string(toml_choice).unwrap())
+            .map_err(Error::other)?;
             let request = Command::Write(WriteCommand::UpdateValidatorSet(
                 UpdateValidatorSet::Request(update_validator_set),
             ));

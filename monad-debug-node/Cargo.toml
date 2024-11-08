@@ -12,7 +12,6 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
-bincode = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 itertools = { workspace = true }

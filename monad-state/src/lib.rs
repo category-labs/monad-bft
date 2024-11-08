@@ -29,7 +29,7 @@ use monad_consensus_types::{
     state_root_hash::{StateRootHash, StateRootHashInfo},
     txpool::TxPool,
     validation,
-    validator_data::{ParsedValidatorData, Validator, ValidatorSetData, ValidatorSetDataWithEpoch},
+    validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -1092,22 +1092,27 @@ where
                         .get_cert_pubkeys(&epoch)
                         .unwrap()
                         .map
-                        .clone();
-                    let validators = cert_pubkeys
-                        .iter()
-                        .map(|(node_id, cert_pub_key)| {
-                            let stake = validator_set.get(node_id).unwrap();
-                            Validator {
-                                node_id: *node_id,
-                                stake: *stake,
-                                cert_pubkey: *cert_pub_key,
-                            }
-                        })
-                        .collect::<Vec<_>>();
+                        .iter();
+                    let validators = ValidatorSetData(
+                        cert_pubkeys
+                            .map(|(node_id, cert_pub_key)| {
+                                let stake = validator_set.get(node_id).unwrap();
+                                ValidatorData {
+                                    node_id: *node_id,
+                                    stake: *stake,
+                                    cert_pubkey: *cert_pub_key,
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    );
 
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
                         ReadCommand::GetValidatorSet(GetValidatorSet::Response(
-                            ParsedValidatorData { epoch, validators },
+                            ValidatorSetDataWithEpoch {
+                                epoch,
+                                round: self.epoch_manager.epoch_starts.get(&epoch).copied(),
+                                validators,
+                            },
                         )),
                     ))]
                 }
@@ -1122,7 +1127,11 @@ where
                         WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
                     ))]
                 }
-                ControlPanelEvent::UpdateValidators((validators, epoch)) => {
+                ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
+                    epoch,
+                    validators,
+                    ..
+                }) => {
                     vec![Command::StateRootHashCommand(
                         StateRootHashCommand::UpdateValidators((validators, epoch)),
                     )]
