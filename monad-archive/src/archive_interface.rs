@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 
 use crate::{errors::ArchiveError, triedb::BlockHeader};
@@ -38,7 +37,7 @@ pub trait ArchiveWriterInterface {
     // TODO
     async fn archive_traces(
         &self,
-        traces: Bytes,
+        traces: Vec<Vec<u8>>,
         block_num: u64,
         tx_hashes: Vec<[u8; 32]>,
     ) -> Result<(), ArchiveError>;

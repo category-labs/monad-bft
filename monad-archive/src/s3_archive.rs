@@ -8,7 +8,10 @@ use aws_sdk_s3::{
     Client,
 };
 use bytes::Bytes;
-use futures::stream::{self, StreamExt};
+use futures::{
+    stream::{self, StreamExt},
+    try_join,
+};
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::time::Duration;
 use tokio_retry::{
@@ -45,13 +48,22 @@ pub struct S3Archive {
     // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
     pub receipts_table_prefix: String,
 
-    // key = {receipt_hash}/{$receipt_hash}, value = {RLP(Receipt)}
+    // key = {receipt_hash}/{$tx_hash}, value = {RLP(Receipt)}
     pub receipt_hash_table_prefix: String,
-    // TODO: traces
+
+    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
+    pub traces_table_prefix: String,
+
+    // key = {trace_hash}/{$tx_hash}, value = {RLP(Vec<u8>)}
+    pub trace_hash_table_prefix: String,
 }
 
 impl S3Archive {
-    pub async fn new(bucket: String, region: Option<String>) -> Result<Self, ArchiveError> {
+    pub async fn new(
+        bucket: String,
+        region: Option<String>,
+        concurrency_level: usize,
+    ) -> Result<Self, ArchiveError> {
         let region_provider = RegionProviderChain::default_provider().or_else(
             region
                 .map(Region::new)
@@ -65,12 +77,14 @@ impl S3Archive {
         Ok(S3Archive {
             client,
             bucket,
-            max_concurrent_upload: 30,
+            max_concurrent_upload: concurrency_level,
             block_table_prefix: "block".to_string(),
             block_hash_table_prefix: "block_hash".to_string(),
             tx_hash_table_prefix: "tx_hash".to_string(),
             receipts_table_prefix: "receipts".to_string(),
             receipt_hash_table_prefix: "receipt_hash".to_string(),
+            traces_table_prefix: "traces".to_string(),
+            trace_hash_table_prefix: "trace_hash".to_string(),
             latest_table_key: "latest".to_string(),
         })
     }
@@ -207,36 +221,41 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let block_hash_value_string = block_num.to_string();
         let block_hash_value = block_hash_value_string.as_bytes();
 
-        // 3) Insert into transaction table
-        let tx_uploads_f = transactions.into_iter().map(|transaction| {
-            let tx_hash_key_suffix = hex::encode(transaction.hash);
+        let upload_stream = stream::iter(transactions.into_iter().map(|tx| {
+            let tx_hash_key_suffix = hex::encode(tx.hash); // Use hex encoding for consistency
             let tx_hash_key = format!(
                 "{}/{}",
                 self.archive.tx_hash_table_prefix, tx_hash_key_suffix
             );
+
             let mut rlp_tx = vec![];
-            transaction.encode(&mut rlp_tx);
+            tx.encode(&mut rlp_tx);
             self.archive.upload(tx_hash_key, rlp_tx)
-        });
+        }));
 
-        let tx_uploads = futures::future::join_all(tx_uploads_f).await;
-        for upload_result in tx_uploads {
-            if upload_result.is_err() {
-                error!(
-                    "Failed to upload transaction: {:?}",
-                    upload_result.clone().err()
-                );
-                return Err(ArchiveError::custom_error(format!(
-                    "Failed to upload transaction: {:?}",
-                    upload_result.err()
-                )));
+        let tx_concurrent_uploads = async {
+            let results = upload_stream
+                .buffer_unordered(self.archive.max_concurrent_upload)
+                .collect::<Vec<Result<(), ArchiveError>>>()
+                .await;
+
+            for upload_result in results {
+                if let Err(e) = upload_result {
+                    error!("Failed to upload tx: {:?}", e);
+                    return Err(ArchiveError::custom_error(format!(
+                        "Failed to upload tx: {:?}",
+                        e
+                    )));
+                }
             }
-        }
+            Ok(())
+        };
 
-        futures::try_join!(
+        try_join!(
             self.archive.upload(block_key, rlp_block),
             self.archive
-                .upload(block_hash_key, block_hash_value.to_vec())
+                .upload(block_hash_key, block_hash_value.to_vec()),
+            tx_concurrent_uploads
         )?;
 
         Ok(())
@@ -248,7 +267,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         block_num: u64,
         tx_hashes: Vec<[u8; 32]>,
     ) -> Result<(), ArchiveError> {
-        // 1) Insert into receipts table
+        // 1) Prepare the receipts upload
         let receipts_key = format!(
             "{}/{:0width$}",
             self.archive.receipts_table_prefix,
@@ -256,49 +275,99 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
             width = BLOCK_PADDING_WIDTH
         );
 
-        let mut rlp_receipts = vec![];
+        let mut rlp_receipts = Vec::new();
         receipts.encode(&mut rlp_receipts);
+        let receipts_upload = self.archive.upload(receipts_key, rlp_receipts);
 
-        self.archive.upload(receipts_key, rlp_receipts).await?;
-
+        // 2) Prepare the concurrent receipt hash uploads
         let upload_stream = stream::iter(receipts.into_iter().enumerate().map(|(idx, receipt)| {
             let receipt_hash_key_suffix = hex::encode(tx_hashes[idx]); // Use hex encoding for consistency
             let receipt_hash_key = format!(
                 "{}/{}",
                 self.archive.receipt_hash_table_prefix, receipt_hash_key_suffix
             );
-            let mut rlp_receipt = vec![];
+            let mut rlp_receipt = Vec::new();
             receipt.encode(&mut rlp_receipt);
             self.archive.upload(receipt_hash_key, rlp_receipt)
         }));
 
-        // Process the stream with limited concurrency
-        let results = upload_stream
-            .buffer_unordered(self.archive.max_concurrent_upload)
-            .collect::<Vec<Result<(), ArchiveError>>>()
-            .await;
+        let receipt_concurrent_uploads = async {
+            let results = upload_stream
+                .buffer_unordered(self.archive.max_concurrent_upload)
+                .collect::<Vec<Result<(), ArchiveError>>>()
+                .await;
 
-        // Handle any upload errors
-        for upload_result in results {
-            if let Err(e) = upload_result {
-                error!("Failed to upload receipt: {:?}", e);
-                return Err(ArchiveError::custom_error(format!(
-                    "Failed to upload receipt: {:?}",
-                    e
-                )));
+            for upload_result in results {
+                if let Err(e) = upload_result {
+                    error!("Failed to upload receipt: {:?}", e);
+                    return Err(ArchiveError::custom_error(format!(
+                        "Failed to upload receipt: {:?}",
+                        e
+                    )));
+                }
             }
-        }
+            Ok(())
+        };
+
+        // 3) Run both uploads concurrently
+        try_join!(receipts_upload, receipt_concurrent_uploads)?;
 
         Ok(())
     }
 
     async fn archive_traces(
         &self,
-        traces: Bytes,
+        traces: Vec<Vec<u8>>,
         block_num: u64,
         tx_hashes: Vec<[u8; 32]>,
     ) -> Result<(), ArchiveError> {
-        Err(ArchiveError::custom_error("Not implemented".into()))
+        // 1) Insert into traces table
+        let traces_key = format!(
+            "{}/{:0width$}",
+            self.archive.traces_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        );
+
+        let mut rlp_traces = vec![];
+        traces.encode(&mut rlp_traces);
+
+        let traces_upload = self.archive.upload(traces_key, rlp_traces);
+
+        // 2) Insert to trace_hash table
+        let upload_stream = stream::iter(traces.into_iter().enumerate().map(|(idx, trace)| {
+            let trace_hash_key_suffix = hex::encode(tx_hashes[idx]); // Use hex encoding for consistency
+            let trace_hash_key = format!(
+                "{}/{}",
+                self.archive.trace_hash_table_prefix, trace_hash_key_suffix
+            );
+            let mut rlp_trace = Vec::new();
+            trace.encode(&mut rlp_trace);
+            self.archive.upload(trace_hash_key, rlp_trace)
+        }));
+
+        // Process the stream with limited concurrency
+        let trace_concurrent_uploads = async {
+            let results = upload_stream
+                .buffer_unordered(self.archive.max_concurrent_upload)
+                .collect::<Vec<Result<(), ArchiveError>>>()
+                .await;
+
+            for upload_result in results {
+                if let Err(e) = upload_result {
+                    error!("Failed to upload trace: {:?}", e);
+                    return Err(ArchiveError::custom_error(format!(
+                        "Failed to upload trace: {:?}",
+                        e
+                    )));
+                }
+            }
+            Ok(())
+        };
+
+        try_join!(traces_upload, trace_concurrent_uploads)?;
+
+        Ok(())
     }
 }
 

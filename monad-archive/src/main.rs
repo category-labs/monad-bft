@@ -28,23 +28,23 @@ async fn main() -> Result<(), ArchiveError> {
 
     let args = Cli::parse();
 
+    let concurrency = args.max_concurrency_level;
+
     // This will spin off a polling thread
     let triedb = TriedbEnv::new(&args.triedb_path.unwrap());
 
     // Construct an s3 instance
-    let s3_archive = S3Archive::new(args.s3_bucket, args.s3_region).await?;
+    let s3_archive = S3Archive::new(args.s3_bucket, args.s3_region, concurrency).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
     let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
 
     info!("Latest processed block is : {}", latest_processed_block);
 
-    let concurrency = args.max_concurrency_level;
-
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
     loop {
-        sleep(Duration::from_millis(100)).await; // TODO: better interval
+        sleep(Duration::from_millis(100)).await;
 
         let block_number = match triedb.get_latest_block().await {
             Ok(number) => number,
@@ -63,9 +63,14 @@ async fn main() -> Result<(), ArchiveError> {
             start
         );
 
-        futures::stream::iter(latest_processed_block..block_number + 1)
+        let mut start_block_number = latest_processed_block;
+        if latest_processed_block != 0 {
+            start_block_number += 1;
+        }
+
+        futures::stream::iter(start_block_number..block_number + 1)
             .map(|current_block: u64| handle_block(&triedb, current_block, &s3_archive_writer))
-            .buffer_unordered(concurrency as usize)
+            .buffer_unordered(concurrency)
             .count()
             .await;
 
@@ -99,9 +104,14 @@ async fn handle_block(
         tx_hashes.push(transaction.hash.into());
     }
 
-    let f_receipt = s3_archive.archive_receipts(receipts, current_block, tx_hashes);
+    let f_receipt = s3_archive.archive_receipts(receipts, current_block, tx_hashes.clone());
 
-    match try_join!(f_block, f_receipt) {
+    /* Store Traces */
+    let traces: Vec<Vec<u8>> = triedb.get_call_frames(current_block).await?;
+
+    let f_trace = s3_archive.archive_traces(traces, current_block, tx_hashes);
+
+    match try_join!(f_block, f_receipt, f_trace) {
         Ok(_) => {
             info!("Successfully archived block {}", current_block);
         }

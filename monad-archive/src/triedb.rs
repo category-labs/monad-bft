@@ -17,7 +17,7 @@ use tracing::error;
 
 use crate::errors::ArchiveError;
 
-const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 50;
+const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 1000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
@@ -142,6 +142,10 @@ pub trait Triedb {
         &self,
         block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, ArchiveError>> + Send;
+    fn get_call_frames(
+        &self,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, ArchiveError>> + Send;
 }
 
 pub trait TriedbPath {
@@ -354,6 +358,39 @@ impl Triedb for TriedbEnv {
                     None => Ok(None),
                 }
             }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(ArchiveError::custom_error("error reading from db".into()))
+            }
+        }
+    }
+
+    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, ArchiveError> {
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(None));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_tag: BlockTags::Number(block_num),
+            }))
+        {
+            error!("Polling thread channel full: {e}");
+            return Err(ArchiveError::custom_error(
+                "error reading from db due to rate limit".into(),
+            ));
+        }
+
+        match request_receiver.await {
+            Ok(result) => match result {
+                Some(rlp_call_frames) => Ok(rlp_call_frames),
+                None => Ok(vec![]),
+            },
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(ArchiveError::custom_error("error reading from db".into()))
