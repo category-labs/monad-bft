@@ -3,11 +3,15 @@
 /// DO NOT USE IN PRODUCTION YET
 /// `cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_for_file_to_be_created>`
 use std::path::PathBuf;
+use std::{fs::File, io::Write};
 
 use bip39::{Language, Mnemonic, MnemonicType, Seed};
 use clap::Parser;
 use dialoguer::{theme::ColorfulTheme, Input};
-use hdwallet::ExtendedPrivKey;
+use hdwallet::{
+    traits::{Deserialize, Serialize},
+    ExtendedPrivKey,
+};
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
 
@@ -37,6 +41,13 @@ struct Args {
     /// Password to encrypt private key
     #[arg(long)]
     password: Option<String>,
+
+    /// Path to read/write private key as JSON object
+    #[arg(
+        long,
+        help = "Path to read/write private key as JSON object. WARNING: Using this argument is potentially unsafe. It is ill-advised to write keys to disk."
+    )]
+    private_key_path: Option<PathBuf>,
 }
 
 fn main() {
@@ -44,6 +55,7 @@ fn main() {
     let mode = args.mode;
     let key_type = args.key_type;
     let keystore_path = args.keystore_path;
+    let private_key_path = args.private_key_path;
 
     match mode.as_str() {
         "create" => {
@@ -66,6 +78,15 @@ fn main() {
             let seed = Seed::new(&mnemonic, "");
             let master_private_key = ExtendedPrivKey::with_seed(seed.as_bytes())
                 .expect("Failed to create master private key");
+            if let Some(private_key_path) = private_key_path {
+                let json = serde_json::to_string(&ExtendedPrivKey::serialize(&master_private_key))
+                    .expect("failed to serialize key to JSON");
+                let mut file = File::create(private_key_path.clone())
+                    .expect("failed to open file for writing");
+                file.write_all(json.as_bytes())
+                    .expect("failed to write key to file");
+                println!("Successfully wrote private key to {:?}", private_key_path);
+            }
             let private_key = master_private_key.private_key.as_ref();
             println!(
                 "Keep your private key securely {:?}",
@@ -125,6 +146,41 @@ fn main() {
             );
 
             print_public_key(&private_key, &key_type);
+        }
+        "import" => {
+            let Some(private_key_path) = private_key_path else {
+                println!("error: a value is required for '--private-key-path <PRIVATE_KEY_PATH>' but none was supplied");
+                return;
+            };
+            let Some(password) = args.password else {
+                println!(
+                    "error: a value is required for '--password <PASSWORD>' but none was supplied"
+                );
+                return;
+            };
+            let private_key = ExtendedPrivKey::deserialize(
+                &serde_json::from_str::<Vec<u8>>(
+                    &std::fs::read_to_string(private_key_path)
+                        .expect("failed to read private key JSON file"),
+                )
+                .expect("failed to parse private key file as JSON"),
+            )
+            .expect("failed to deserialize Vec<u8> into ExtendedPrivKey");
+
+            // generate public key
+            print_public_key(private_key.private_key.as_ref(), &key_type);
+
+            // generate keystore json file
+            let result = Keystore::create_keystore_json(
+                private_key.private_key.as_ref(),
+                password.as_str(),
+                &keystore_path,
+            );
+            if result.is_ok() {
+                println!("Successfully generated keystore file.");
+            } else {
+                println!("Keystore file generation failed, try again.");
+            }
         }
         _ => {
             println!("Unknown mode.");
