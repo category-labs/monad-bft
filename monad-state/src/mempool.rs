@@ -120,7 +120,13 @@ where
                 self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
                 self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
 
-                let round = consensus.get_current_round();
+                // Current round leader will only include txn in proposal if it
+                // hasn't observed a TC we locally formed. In all other case,
+                // current round leader has proposed and forwarded txn will not
+                // get included
+                //
+                // Thus forwarding txn to leaders of (current round+1..)
+                let round = consensus.get_current_round() + Round(1);
                 let next_k_leaders = (round.0..)
                     .map(|round| self.get_leader(Round(round)))
                     .take(NUM_LEADERS_FORWARD)
