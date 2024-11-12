@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use clap::Parser;
-use futures::StreamExt;
+use futures::{future::join_all, StreamExt};
 use reth_primitives::ReceiptWithBloom;
 use s3_archive::S3ArchiveWriter;
 use tokio::{
@@ -68,11 +68,15 @@ async fn main() -> Result<(), ArchiveError> {
             start_block_number += 1;
         }
 
-        futures::stream::iter(start_block_number..block_number + 1)
-            .map(|current_block: u64| handle_block(&triedb, current_block, &s3_archive_writer))
-            .buffer_unordered(concurrency)
-            .count()
-            .await;
+        let join_handles = (start_block_number..block_number).map(|current_block: u64| {
+            let triedb = triedb.clone();
+            let s3_archive_writer = s3_archive_writer.clone();
+            tokio::spawn(
+                async move { handle_block(&triedb, current_block, &s3_archive_writer).await },
+            )
+        });
+
+        join_all(join_handles).await;
 
         s3_archive_writer.update_latest(block_number).await?;
         latest_processed_block = block_number;
@@ -104,14 +108,17 @@ async fn handle_block(
         tx_hashes.push(transaction.hash.into());
     }
 
-    let f_receipt = s3_archive.archive_receipts(receipts, current_block, tx_hashes.clone());
+    let f_receipt = s3_archive.archive_receipts(receipts.clone(), current_block);
 
     /* Store Traces */
     let traces: Vec<Vec<u8>> = triedb.get_call_frames(current_block).await?;
 
-    let f_trace = s3_archive.archive_traces(traces, current_block, tx_hashes);
+    let f_trace = s3_archive.archive_traces(traces.clone(), current_block);
 
-    match try_join!(f_block, f_receipt, f_trace) {
+    /* Store hashs */
+    let f_hash = s3_archive.archive_hashes(transactions, receipts, traces, tx_hashes);
+
+    match try_join!(f_block, f_receipt, f_trace, f_hash) {
         Ok(_) => {
             info!("Successfully archived block {}", current_block);
         }

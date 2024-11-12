@@ -19,6 +19,6 @@ pub struct Cli {
     pub max_response_size: u32,
 
     /// Set the concurrency level
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 500)]
     pub max_concurrency_level: usize,
 }

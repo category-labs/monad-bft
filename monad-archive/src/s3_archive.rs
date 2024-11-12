@@ -1,6 +1,6 @@
 use core::str;
 
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{
     config::{BehaviorVersion, Region},
@@ -8,17 +8,14 @@ use aws_sdk_s3::{
     Client,
 };
 use bytes::Bytes;
-use futures::{
-    stream::{self, StreamExt},
-    try_join,
-};
+use futures::{future::join_all, try_join};
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::{sync::Semaphore, time::Duration};
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use std::sync::Arc;
 
@@ -29,6 +26,19 @@ use crate::{
 };
 
 const BLOCK_PADDING_WIDTH: usize = 12;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
+pub struct HashTable {
+    pub tx: TransactionSigned,
+    pub receipt: ReceiptWithBloom,
+    pub trace: Vec<u8>,
+}
+
+impl HashTable {
+    pub fn new(tx: TransactionSigned, receipt: ReceiptWithBloom, trace: Vec<u8>) -> Self {
+        HashTable { tx, receipt, trace }
+    }
+}
 
 #[derive(Clone)]
 pub struct S3Archive {
@@ -59,6 +69,8 @@ pub struct S3Archive {
 
     // key = {trace_hash}/{$tx_hash}, value = {RLP(Vec<u8>)}
     pub trace_hash_table_prefix: String,
+
+    pub hash_table_prefix: String,
 }
 
 impl S3Archive {
@@ -81,6 +93,7 @@ impl S3Archive {
             client,
             bucket,
             max_concurrent_upload: concurrency_level,
+            semaphore: Arc::new(Semaphore::new(concurrency_level)),
             block_table_prefix: "block".to_string(),
             block_hash_table_prefix: "block_hash".to_string(),
             tx_hash_table_prefix: "tx_hash".to_string(),
@@ -88,6 +101,7 @@ impl S3Archive {
             receipt_hash_table_prefix: "receipt_hash".to_string(),
             traces_table_prefix: "traces".to_string(),
             trace_hash_table_prefix: "trace_hash".to_string(),
+            hash_table_prefix: "hash".to_string(),
             latest_table_key: "latest".to_string(),
         })
     }
@@ -97,6 +111,12 @@ impl S3Archive {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
             .map(jitter);
+
+        let permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| ArchiveError::custom_error("Semaphore was closed".into()))?;
 
         Retry::spawn(retry_strategy, || {
             let client = &self.client;
@@ -123,7 +143,11 @@ impl S3Archive {
         .map_err(|e| {
             error!("Failed to upload after retries {}: {:?}", key, e);
             ArchiveError::custom_error(format!("Failed to upload after retries {}: {:?}", key, e))
-        })
+        })?;
+
+        std::mem::drop(permit);
+
+        Ok(())
     }
 
     pub async fn read(&self, key: &str) -> Result<Bytes, ArchiveError> {
@@ -270,109 +294,47 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         self.archive.upload(traces_key, rlp_traces).await
     }
 
-
     async fn archive_hashes(
         &self,
         transactions: Vec<TransactionSigned>,
         receipts: Vec<ReceiptWithBloom>,
         traces: Vec<Vec<u8>>,
-        block_num: u64,
         tx_hashes: Vec<[u8; 32]>,
-    ) -> Result<(), ArchiveError>
-    {
+    ) -> Result<(), ArchiveError> {
+        let mut handles = Vec::with_capacity(transactions.len());
 
-        let upload_stream = stream::iter(transactions.into_iter().map(|tx| {
-            let tx_hash_key_suffix = hex::encode(tx.hash); // Use hex encoding for consistency
-            let tx_hash_key = format!(
-                "{}/{}",
-                self.archive.tx_hash_table_prefix, tx_hash_key_suffix
+        for i in 0..transactions.len() {
+            let archive = self.archive.clone();
+            let tx_hash = tx_hashes[i].clone();
+
+            let hash = HashTable::new(
+                transactions[i].clone(),
+                receipts[i].clone(),
+                traces[i].clone(),
             );
+            let mut rlp_hash = Vec::new();
+            hash.encode(&mut rlp_hash);
 
-            let mut rlp_tx = vec![];
-            tx.encode(&mut rlp_tx);
-            self.archive.upload(tx_hash_key, rlp_tx)
-        }));
+            let handle = tokio::spawn(async move {
+                let hash_key_suffix = hex::encode(tx_hash);
+                let hash_key = format!("{}/{}", archive.hash_table_prefix, hash_key_suffix);
+                archive.upload(hash_key, rlp_hash).await
+            });
 
-        let tx_concurrent_uploads = async {
-            let results = upload_stream
-                .buffer_unordered(self.archive.max_concurrent_upload)
-                .collect::<Vec<Result<(), ArchiveError>>>()
-                .await;
+            handles.push(handle);
+        }
 
-            for upload_result in results {
-                if let Err(e) = upload_result {
-                    error!("Failed to upload tx: {:?}", e);
-                    return Err(ArchiveError::custom_error(format!(
-                        "Failed to upload tx: {:?}",
-                        e
-                    )));
-                }
+        let results = join_all(handles).await;
+
+        for (idx, upload_result) in results.into_iter().enumerate() {
+            if let Err(e) = upload_result {
+                error!("Failed to upload index: {}, {:?}", idx, e);
+                return Err(ArchiveError::custom_error(format!(
+                    "Failed to upload index: {}, {:?}",
+                    idx, e
+                )));
             }
-            Ok(())
-        };
-
-        // 2) Prepare the concurrent receipt hash uploads
-        let upload_stream = stream::iter(receipts.into_iter().enumerate().map(|(idx, receipt)| {
-            let receipt_hash_key_suffix = hex::encode(tx_hashes[idx]); // Use hex encoding for consistency
-            let receipt_hash_key = format!(
-                "{}/{}",
-                self.archive.receipt_hash_table_prefix, receipt_hash_key_suffix
-            );
-            let mut rlp_receipt = Vec::new();
-            receipt.encode(&mut rlp_receipt);
-            self.archive.upload(receipt_hash_key, rlp_receipt)
-        }));
-
-        let receipt_concurrent_uploads = async {
-            let results = upload_stream
-                .buffer_unordered(self.archive.max_concurrent_upload)
-                .collect::<Vec<Result<(), ArchiveError>>>()
-                .await;
-
-            for upload_result in results {
-                if let Err(e) = upload_result {
-                    error!("Failed to upload receipt: {:?}", e);
-                    return Err(ArchiveError::custom_error(format!(
-                        "Failed to upload receipt: {:?}",
-                        e
-                    )));
-                }
-            }
-            Ok(())
-        };
-
-
-         // 2) Insert to trace_hash table
-         let upload_stream = stream::iter(traces.into_iter().enumerate().map(|(idx, trace)| {
-            let trace_hash_key_suffix = hex::encode(tx_hashes[idx]); // Use hex encoding for consistency
-            let trace_hash_key = format!(
-                "{}/{}",
-                self.archive.trace_hash_table_prefix, trace_hash_key_suffix
-            );
-            let mut rlp_trace = Vec::new();
-            trace.encode(&mut rlp_trace);
-            self.archive.upload(trace_hash_key, rlp_trace)
-        }));
-
-        // Process the stream with limited concurrency
-        let trace_concurrent_uploads = async {
-            let results = upload_stream
-                .buffer_unordered(self.archive.max_concurrent_upload)
-                .collect::<Vec<Result<(), ArchiveError>>>()
-                .await;
-
-            for upload_result in results {
-                if let Err(e) = upload_result {
-                    error!("Failed to upload trace: {:?}", e);
-                    return Err(ArchiveError::custom_error(format!(
-                        "Failed to upload trace: {:?}",
-                        e
-                    )));
-                }
-            }
-            Ok(())
-        };
-
+        }
 
         Ok(())
     }

@@ -44,7 +44,6 @@ pub trait ArchiveWriterInterface {
         transactions: Vec<TransactionSigned>,
         receipts: Vec<ReceiptWithBloom>,
         traces: Vec<Vec<u8>>,
-        block_num: u64,
         tx_hashes: Vec<[u8; 32]>,
     ) -> Result<(), ArchiveError>;
 }
