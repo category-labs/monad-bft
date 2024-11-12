@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use clap::Parser;
-use futures::{future::join_all, StreamExt};
+use futures::future::join_all;
 use reth_primitives::ReceiptWithBloom;
 use s3_archive::S3ArchiveWriter;
 use tokio::{
@@ -68,7 +68,7 @@ async fn main() -> Result<(), ArchiveError> {
             start_block_number += 1;
         }
 
-        let join_handles = (start_block_number..block_number).map(|current_block: u64| {
+        let join_handles = (start_block_number..block_number + 1).map(|current_block: u64| {
             let triedb = triedb.clone();
             let s3_archive_writer = s3_archive_writer.clone();
             tokio::spawn(

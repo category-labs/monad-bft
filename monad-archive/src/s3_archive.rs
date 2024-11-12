@@ -1,6 +1,7 @@
 use core::str;
+use std::sync::Arc;
 
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{
     config::{BehaviorVersion, Region},
@@ -15,15 +16,9 @@ use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
-use std::sync::Arc;
-
-use crate::{
-    archive_interface::{ArchiveReaderInterface, ArchiveWriterInterface},
-    errors::ArchiveError,
-    triedb::BlockHeader,
-};
+use crate::{archive_interface::ArchiveWriterInterface, errors::ArchiveError, triedb::BlockHeader};
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
@@ -44,7 +39,6 @@ impl HashTable {
 pub struct S3Archive {
     pub client: Client,
     pub bucket: String,
-    pub max_concurrent_upload: usize,
     pub semaphore: Arc<Semaphore>,
 
     pub latest_table_key: String,
@@ -55,21 +49,13 @@ pub struct S3Archive {
     // key = {block_hash}/{$block_hash}, value = {str(block_number)}
     pub block_hash_table_prefix: String,
 
-    // key = {tx_hash}/{$tx_hash}, value = {RLP(Transaction)}
-    pub tx_hash_table_prefix: String,
-
     // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
     pub receipts_table_prefix: String,
-
-    // key = {receipt_hash}/{$tx_hash}, value = {RLP(Receipt)}
-    pub receipt_hash_table_prefix: String,
 
     // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
     pub traces_table_prefix: String,
 
-    // key = {trace_hash}/{$tx_hash}, value = {RLP(Vec<u8>)}
-    pub trace_hash_table_prefix: String,
-
+    // key = {hash}/{tx_hash}, value = {RLP(TransactionSigned, ReceiptWithBloom, Vec<u8>)}
     pub hash_table_prefix: String,
 }
 
@@ -92,15 +78,11 @@ impl S3Archive {
         Ok(S3Archive {
             client,
             bucket,
-            max_concurrent_upload: concurrency_level,
             semaphore: Arc::new(Semaphore::new(concurrency_level)),
             block_table_prefix: "block".to_string(),
             block_hash_table_prefix: "block_hash".to_string(),
-            tx_hash_table_prefix: "tx_hash".to_string(),
             receipts_table_prefix: "receipts".to_string(),
-            receipt_hash_table_prefix: "receipt_hash".to_string(),
             traces_table_prefix: "traces".to_string(),
-            trace_hash_table_prefix: "trace_hash".to_string(),
             hash_table_prefix: "hash".to_string(),
             latest_table_key: "latest".to_string(),
         })
@@ -337,188 +319,6 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         }
 
         Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct S3ArchiveReader {
-    archive: S3Archive,
-}
-
-impl S3ArchiveReader {
-    pub async fn new(archive: S3Archive) -> Result<Self, ArchiveError> {
-        Ok(S3ArchiveReader { archive })
-    }
-}
-
-impl ArchiveReaderInterface for S3ArchiveReader {
-    async fn get_latest(&self) -> Result<u64, ArchiveError> {
-        let key = &self.archive.latest_table_key;
-
-        let value = self.archive.read(key).await?;
-        let value_str = hex::encode(value.to_vec());
-
-        value_str.parse::<u64>().map_err(|_| {
-            error!("Unable to convert block_number string to number (u64)");
-            ArchiveError::custom_error(
-                "Unable to convert block_number string to number (u64)".into(),
-            )
-        })
-    }
-
-    /*
-        Block Methods
-    */
-
-    // eth_getBlockByHash
-    async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block, ArchiveError> {
-        let block_hash_key_suffix = hex::encode(block_hash);
-        let block_hash_key = format!(
-            "{}/{}",
-            self.archive.block_hash_table_prefix, block_hash_key_suffix
-        );
-
-        let block_num_bytes = self.archive.read(&block_hash_key).await?;
-
-        let block_num_str = String::from_utf8(block_num_bytes.to_vec()).map_err(|e| {
-            error!("Invalid UTF-8 sequence: {}", e);
-            ArchiveError::custom_error("Invalid UTF-8 sequence".into())
-        })?;
-
-        let block_num = block_num_str.parse::<u64>().map_err(|_| {
-            error!(
-                "Unable to convert block_number string to number (u64), value: {}",
-                block_num_str
-            );
-            ArchiveError::custom_error(
-                "Unable to convert block_number string to number (u64)".into(),
-            )
-        })?;
-
-        self.get_block_by_number(block_num).await
-    }
-
-    // eth_getBlockByNumber
-    // eth_getRawBlock
-    // eth_getRawHeader
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block, ArchiveError> {
-        let block_key = format!("block/{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
-
-        let rlp_block = self.archive.read(&block_key).await?;
-        let mut rlp_block_slice: &[u8] = &rlp_block;
-        let block = Block::decode(&mut rlp_block_slice)
-            .map_err(|_| ArchiveError::custom_error("Cannot decode block".into()))?;
-
-        Ok(block)
-    }
-
-    //eth_getBlockTransactionCountByHash
-    async fn get_block_transaction_count_by_hash(
-        &self,
-        block_hash: &[u8; 32],
-    ) -> Result<usize, ArchiveError> {
-        let block = self.get_block_by_hash(block_hash).await?;
-
-        Ok(block.body.length())
-    }
-
-    //eth_getBlockTransactionCountByNumber
-    async fn get_block_transaction_count_by_number(
-        &self,
-        block_num: u64,
-    ) -> Result<usize, ArchiveError> {
-        let block = self.get_block_by_number(block_num).await?;
-
-        Ok(block.body.length())
-    }
-
-    /*
-        Transaction Methods
-    */
-
-    //eth_getTransactionByBlockHashAndIndex
-    async fn get_transaction_by_block_hash_and_index(
-        &self,
-        block_hash: &[u8; 32],
-        tx_index: u64,
-    ) -> Result<TransactionSigned, ArchiveError> {
-        let block = self.get_block_by_hash(block_hash).await?;
-
-        Ok(block.body[tx_index as usize].clone())
-    }
-
-    // eth_getTransactionByBlockNumberAndIndex
-    async fn get_transaction_by_block_number_and_index(
-        &self,
-        block_num: u64,
-        tx_index: u64,
-    ) -> Result<TransactionSigned, ArchiveError> {
-        let block = self.get_block_by_number(block_num).await?;
-
-        Ok(block.body[tx_index as usize].clone())
-    }
-
-    // eth_getTransactionByHash
-    async fn get_transaction_by_hash(
-        &self,
-        tx_hash: &[u8; 32],
-    ) -> Result<TransactionSigned, ArchiveError> {
-        let tx_hash_key_suffix = hex::encode(tx_hash);
-        let tx_hash_key = format!(
-            "{}/{}",
-            self.archive.tx_hash_table_prefix, tx_hash_key_suffix
-        );
-
-        let rlp_tx = self.archive.read(&tx_hash_key).await?;
-        let mut rlp_tx_slice: &[u8] = &rlp_tx;
-        let tx = TransactionSigned::decode(&mut rlp_tx_slice)
-            .map_err(|_| ArchiveError::custom_error("Cannot decode transaction".into()))?;
-
-        Ok(tx)
-    }
-
-    /*
-        Receipt Methods
-    */
-
-    // eth_getBlockReceipts
-    async fn get_block_receipts(
-        &self,
-        block_number: u64,
-    ) -> Result<Vec<ReceiptWithBloom>, ArchiveError> {
-        let receipts_key = format!(
-            "{}/{:0width$}",
-            self.archive.receipts_table_prefix,
-            block_number,
-            width = BLOCK_PADDING_WIDTH
-        );
-
-        let rlp_receipts = self.archive.read(&receipts_key).await?;
-        let mut rlp_receipts_slice: &[u8] = &rlp_receipts;
-
-        let receipts: Vec<ReceiptWithBloom> = Vec::decode(&mut rlp_receipts_slice)
-            .map_err(|_| ArchiveError::custom_error("Cannot decode block".into()))?;
-
-        Ok(receipts)
-    }
-
-    // eth_getTransactionReceipt
-    async fn get_transaction_receipt(
-        self,
-        tx_hash: &[u8; 32],
-    ) -> Result<ReceiptWithBloom, ArchiveError> {
-        let receipt_hash_key_suffix = hex::encode(tx_hash);
-        let receipt_hash_key = format!(
-            "{}/{}",
-            self.archive.receipt_hash_table_prefix, receipt_hash_key_suffix
-        );
-
-        let rlp_receipt = self.archive.read(&receipt_hash_key).await?;
-        let mut rlp_receipt_slice: &[u8] = &rlp_receipt;
-        let receipt = ReceiptWithBloom::decode(&mut rlp_receipt_slice)
-            .map_err(|_| ArchiveError::custom_error("Cannot decode receipt".into()))?;
-
-        Ok(receipt)
     }
 }
 
