@@ -18,7 +18,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
-    /// Set the concurrency level
+    /// Set the concurrent connections
     #[arg(long, default_value_t = 500)]
-    pub max_concurrency_level: usize,
+    pub max_concurrent_connections: usize,
+
+    /// Set the concurrent blocks
+    #[arg(long, default_value_t = 5)]
+    pub max_concurrent_blocks: usize,
 }

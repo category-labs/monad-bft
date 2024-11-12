@@ -63,7 +63,7 @@ impl S3Archive {
     pub async fn new(
         bucket: String,
         region: Option<String>,
-        concurrency_level: usize,
+        max_concurrent_connections: usize,
     ) -> Result<Self, ArchiveError> {
         let region_provider = RegionProviderChain::default_provider().or_else(
             region
@@ -78,7 +78,7 @@ impl S3Archive {
         Ok(S3Archive {
             client,
             bucket,
-            semaphore: Arc::new(Semaphore::new(concurrency_level)),
+            semaphore: Arc::new(Semaphore::new(max_concurrent_connections)),
             block_table_prefix: "block".to_string(),
             block_hash_table_prefix: "block_hash".to_string(),
             receipts_table_prefix: "receipts".to_string(),
@@ -89,7 +89,7 @@ impl S3Archive {
     }
 
     // Upload rlp-encoded bytes with retry
-    pub async fn upload(&self, key: String, data: Vec<u8>) -> Result<(), ArchiveError> {
+    pub async fn upload(&self, key: &str, data: Vec<u8>) -> Result<(), ArchiveError> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
             .map(jitter);
@@ -104,7 +104,7 @@ impl S3Archive {
             let client = &self.client;
             let bucket = &self.bucket;
             let key = key.to_string();
-            let body = ByteStream::from(data.to_vec());
+            let body = ByteStream::from(data.clone());
 
             async move {
                 client
@@ -163,12 +163,14 @@ impl S3Archive {
 
 #[derive(Clone)]
 pub struct S3ArchiveWriter {
-    archive: S3Archive,
+    archive: Arc<S3Archive>,
 }
 
 impl S3ArchiveWriter {
     pub async fn new(archive: S3Archive) -> Result<Self, ArchiveError> {
-        Ok(S3ArchiveWriter { archive })
+        Ok(S3ArchiveWriter {
+            archive: Arc::new(archive),
+        })
     }
 }
 
@@ -199,7 +201,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let key = &self.archive.latest_table_key;
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
         self.archive
-            .upload(key.clone(), latest_value.as_bytes().to_vec())
+            .upload(&key, latest_value.as_bytes().to_vec())
             .await
     }
 
@@ -218,7 +220,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         );
 
         let block = make_block(block_header.clone(), transactions.clone());
-        let mut rlp_block = vec![];
+        let mut rlp_block = Vec::with_capacity(8096);
         block.encode(&mut rlp_block);
 
         // 2) Insert into block_hash table
@@ -232,9 +234,9 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
         // 3) Join futures
         try_join!(
-            self.archive.upload(block_key, rlp_block),
+            self.archive.upload(&block_key, rlp_block),
             self.archive
-                .upload(block_hash_key, block_hash_value.to_vec())
+                .upload(&block_hash_key, block_hash_value.to_vec())
         )?;
 
         Ok(())
@@ -255,7 +257,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
         let mut rlp_receipts = Vec::new();
         receipts.encode(&mut rlp_receipts);
-        self.archive.upload(receipts_key, rlp_receipts).await
+        self.archive.upload(&receipts_key, rlp_receipts).await
     }
 
     async fn archive_traces(
@@ -273,7 +275,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let mut rlp_traces = vec![];
         traces.encode(&mut rlp_traces);
 
-        self.archive.upload(traces_key, rlp_traces).await
+        self.archive.upload(&traces_key, rlp_traces).await
     }
 
     async fn archive_hashes(
@@ -286,21 +288,21 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let mut handles = Vec::with_capacity(transactions.len());
 
         for i in 0..transactions.len() {
-            let archive = self.archive.clone();
-            let tx_hash = tx_hashes[i].clone();
+            let archive = Arc::clone(&self.archive);
+            let tx_hash = tx_hashes[i];
 
             let hash = HashTable::new(
                 transactions[i].clone(),
                 receipts[i].clone(),
                 traces[i].clone(),
             );
-            let mut rlp_hash = Vec::new();
-            hash.encode(&mut rlp_hash);
 
             let handle = tokio::spawn(async move {
+                let mut rlp_hash = Vec::new();
+                hash.encode(&mut rlp_hash);
                 let hash_key_suffix = hex::encode(tx_hash);
                 let hash_key = format!("{}/{}", archive.hash_table_prefix, hash_key_suffix);
-                archive.upload(hash_key, rlp_hash).await
+                archive.upload(&hash_key, rlp_hash).await
             });
 
             handles.push(handle);

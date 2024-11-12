@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser;
@@ -5,6 +6,7 @@ use futures::future::join_all;
 use reth_primitives::ReceiptWithBloom;
 use s3_archive::S3ArchiveWriter;
 use tokio::{
+    sync::Semaphore,
     time::{sleep, Duration},
     try_join,
 };
@@ -28,23 +30,27 @@ async fn main() -> Result<(), ArchiveError> {
 
     let args = Cli::parse();
 
-    let concurrency = args.max_concurrency_level;
+    let max_concurrent_connections = args.max_concurrent_connections;
+
+    let max_concurrent_blocks = args.max_concurrent_blocks;
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
 
     // This will spin off a polling thread
     let triedb = TriedbEnv::new(&args.triedb_path.unwrap());
 
     // Construct an s3 instance
-    let s3_archive = S3Archive::new(args.s3_bucket, args.s3_region, concurrency).await?;
+    let s3_archive =
+        S3Archive::new(args.s3_bucket, args.s3_region, max_concurrent_connections).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
     let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
 
     info!("Latest processed block is : {}", latest_processed_block);
 
-    // Check for new blocks every 100 ms
+    // Check for new blocks every 10 ms
     // Issue requests to triedb, poll data and push to relevant tables
     loop {
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(10)).await;
 
         let block_number = match triedb.get_latest_block().await {
             Ok(number) => number,
@@ -71,9 +77,16 @@ async fn main() -> Result<(), ArchiveError> {
         let join_handles = (start_block_number..block_number + 1).map(|current_block: u64| {
             let triedb = triedb.clone();
             let s3_archive_writer = s3_archive_writer.clone();
-            tokio::spawn(
-                async move { handle_block(&triedb, current_block, &s3_archive_writer).await },
-            )
+
+            let semaphore = concurrent_block_semaphore.clone();
+            tokio::spawn(async move {
+                let permit = semaphore
+                    .acquire()
+                    .await
+                    .expect("Got permit to execute a new block");
+                let _ = handle_block(&triedb, current_block, &s3_archive_writer).await;
+                std::mem::drop(permit);
+            })
         });
 
         join_all(join_handles).await;
