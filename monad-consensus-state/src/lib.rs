@@ -941,7 +941,6 @@ where
         state_root_action: Option<StateRootAction>,
     ) -> Result<Vec<ConsensusCommand<ST, SCT>>, BlockTreeError> {
         trace!(?block, "adding block to blocktree");
-        // this shouldn't happen first
         if let Err(err) = self.consensus.pending_block_tree.add(
             block.clone(),
             self.block_policy,
