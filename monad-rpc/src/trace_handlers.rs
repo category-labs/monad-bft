@@ -6,16 +6,17 @@ use alloy_primitives::{
 };
 use alloy_rlp::Decodable;
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace};
 
 use crate::{
+    block_handlers::get_block_num_from_tag,
     eth_json_types::{
         BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
     },
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::Triedb,
 };
 
 #[derive(Clone, Debug)]
@@ -189,9 +190,11 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
 
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
     let Some(block_num) = triedb_env
-        .get_block_number_by_hash(params.block_hash.0)
-        .await?
+        .get_block_number_by_hash(params.block_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
     else {
         debug!("block not found");
         return Err(JsonRpcError::internal_error("block not found".to_string()));
@@ -201,11 +204,15 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 
     let tx_ids = triedb_env
         .get_transactions(block_num)
-        .await?
+        .await
+        .map_err(JsonRpcError::internal_error)?
         .iter()
         .map(|tx| tx.hash())
         .collect::<Vec<_>>();
-    let call_frames = triedb_env.get_call_frames(block_num).await?;
+    let call_frames = triedb_env
+        .get_call_frames(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
@@ -251,11 +258,15 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 
     let tx_ids = triedb_env
         .get_transactions(block_num)
-        .await?
+        .await
+        .map_err(JsonRpcError::internal_error)?
         .iter()
         .map(|tx| tx.hash())
         .collect::<Vec<_>>();
-    let call_frames = triedb_env.get_call_frames(block_num).await?;
+    let call_frames = triedb_env
+        .get_call_frames(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
         let rlp_call_frame = &mut call_frame.as_slice();
@@ -282,9 +293,11 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
     let Some(tx_loc) = triedb_env
-        .get_transaction_location_by_hash(params.tx_hash.0)
-        .await?
+        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
     else {
         debug!("transaction not found");
         return Err(JsonRpcError::internal_error(
@@ -294,7 +307,8 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     let Some(rlp_call_frame) = triedb_env
         .get_call_frame(tx_loc.tx_index, tx_loc.block_num)
-        .await?
+        .await
+        .map_err(JsonRpcError::internal_error)?
     else {
         return Ok(None);
     };
@@ -363,14 +377,13 @@ async fn include_code_output<T: Triedb>(
         };
 
         let account = triedb_env
-            .get_account(
-                contract_addr.0.into(),
-                BlockTags::Number(Quantity(block_num)),
-            )
-            .await?;
+            .get_account(contract_addr.0.into(), block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)?;
         let code = triedb_env
-            .get_code(account.code_hash, BlockTags::Number(Quantity(block_num)))
-            .await?;
+            .get_code(account.code_hash, block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)?;
 
         frame.output = hex::decode(&code)
             .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))

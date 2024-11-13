@@ -436,10 +436,10 @@ mod tests {
     };
 
     use alloy_primitives::FixedBytes;
+    use monad_triedb_utils::triedb_env::BlockHeader;
     use reth_primitives::{hex::FromHex, sign_message, Header, TxEip1559, B256, U256};
 
     use super::*;
-    use crate::triedb::BlockHeader;
 
     fn accounts() -> Vec<(B256, Address)> {
         vec![

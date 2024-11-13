@@ -4719,7 +4719,6 @@ dependencies = [
  "monad-cxx",
  "monad-eth-block-policy",
  "monad-rpc-docs",
- "monad-triedb",
  "monad-triedb-utils",
  "monad-types",
  "notify",
@@ -4929,11 +4928,13 @@ dependencies = [
  "alloy-rlp",
  "clap 4.4.10",
  "futures",
+ "hex",
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-state-backend",
  "monad-triedb",
  "monad-types",
+ "reth-primitives",
  "tracing",
 ]
 

@@ -5,16 +5,13 @@ use std::{
 };
 
 use futures::{FutureExt, Stream};
+use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};
 use pin_project::pin_project;
 use reth_primitives::{Block, TransactionSigned};
 use reth_rpc_types::TransactionReceipt;
 use tracing::error;
 
-use crate::{
-    block_handlers::block_receipts,
-    jsonrpc::JsonRpcError,
-    triedb::{BlockHeader, Triedb},
-};
+use crate::{block_handlers::block_receipts, jsonrpc::JsonRpcError};
 
 #[pin_project::pin_project(project = StateProj)]
 enum State {
@@ -69,7 +66,10 @@ impl<T: Triedb> TrieDbBlockState<T> {
 
 impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
     async fn get_block(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
-        self.inner.get_block_header(block_num).await
+        self.inner
+            .get_block_header(block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)
     }
 
     async fn get_receipts(
@@ -77,7 +77,11 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
         header: BlockHeader,
         block_num: u64,
     ) -> Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError> {
-        let transactions = self.inner.get_transactions(block_num).await?;
+        let transactions = self
+            .inner
+            .get_transactions(block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)?;
         let receipts = block_receipts(&self.inner, &header.header, header.hash).await?;
 
         let result: Vec<(TransactionSigned, TransactionReceipt)> =

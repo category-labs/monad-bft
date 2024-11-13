@@ -11,20 +11,15 @@ use alloy_primitives::FixedBytes;
 use alloy_rlp::Decodable;
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
-use monad_triedb_utils::{
+use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
+use tracing::{error, warn};
+
+use crate::{
     decode::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
     key::{create_triedb_key, KeyInput},
-};
-use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
-use tracing::{error, warn};
-
-use crate::{
-    eth_json_types::{BlockTags, Quantity},
-    hex,
-    jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
 type EthAddress = [u8; 20];
@@ -50,8 +45,7 @@ struct TraverseRequest {
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
-    // block number
-    block_tag: BlockTags,
+    block_num: u64,
 }
 
 // struct that is sent from the request handler to the polling thread
@@ -64,8 +58,7 @@ struct AsyncRequest {
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
-    // block number
-    block_tag: BlockTags,
+    block_num: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -104,15 +97,10 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                         let _ = block_num_request.request_sender.send(block_num);
                     }
                     TriedbRequest::TraverseRequest(traverse_request) => {
-                        // Parse block tag
-                        let block_num = match traverse_request.block_tag {
-                            BlockTags::Number(q) => q.0,
-                            BlockTags::Latest => triedb_handle.latest_block(),
-                        };
                         let rlp_encoded_data = triedb_handle.traverse_triedb(
                             &traverse_request.triedb_key,
                             traverse_request.key_len_nibbles,
-                            block_num,
+                            traverse_request.block_num,
                         );
                         let _ = traverse_request.request_sender.send(rlp_encoded_data);
                     }
@@ -131,83 +119,77 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
 }
 
 fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
-    // Parse block tag
-    let block_num = match async_request.block_tag {
-        BlockTags::Number(q) => q.0,
-        BlockTags::Latest => triedb_handle.latest_block(),
-    };
-
     // read_async will send back a future to request_receiver of oneshot channel
     triedb_handle.read_async(
         &async_request.triedb_key,
         async_request.key_len_nibbles,
-        block_num,
+        async_request.block_num,
         async_request.completed_counter,
         async_request.request_sender,
     );
 }
 
 pub trait Triedb {
-    fn get_latest_block(
-        &self,
-    ) -> impl std::future::Future<Output = Result<u64, JsonRpcError>> + Send;
+    fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64, String>> + Send;
     fn get_account(
         &self,
         addr: EthAddress,
-        block_tag: BlockTags,
-    ) -> impl std::future::Future<Output = Result<Account, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Account, String>> + Send;
     fn get_storage_at(
         &self,
         addr: EthAddress,
         at: EthStorageKey,
-        block_tag: BlockTags,
-    ) -> impl std::future::Future<Output = Result<String, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<String, String>> + Send;
     fn get_code(
         &self,
         code_hash: EthCodeHash,
-        block_tag: BlockTags,
-    ) -> impl std::future::Future<Output = Result<String, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<String, String>> + Send;
     fn get_receipt(
         &self,
         txn_index: u64,
-        block_id: u64,
-    ) -> impl std::future::Future<Output = Result<Option<ReceiptWithBloom>, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Option<ReceiptWithBloom>, String>> + Send;
     fn get_receipts(
         &self,
-        block_id: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, JsonRpcError>> + Send + Sync;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, String>> + Send + Sync;
     fn get_transaction(
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<TransactionSigned>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<TransactionSigned>, String>> + Send;
     fn get_transactions(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, JsonRpcError>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, String>> + Send + Sync;
     fn get_block_header(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, JsonRpcError>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync;
     fn get_transaction_location_by_hash(
         &self,
         tx_hash: EthTxHash,
-    ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, String>> + Send;
     fn get_block_number_by_hash(
         &self,
         block_hash: EthBlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<u64>, JsonRpcError>> + Send;
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Option<u64>, String>> + Send;
 
     fn get_call_frame(
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, String>> + Send;
 
     fn get_call_frames(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, JsonRpcError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send;
 }
 
 pub trait TriedbPath {
@@ -245,7 +227,7 @@ impl TriedbPath for TriedbEnv {
 }
 
 impl Triedb for TriedbEnv {
-    async fn get_latest_block(&self) -> Result<u64, JsonRpcError> {
+    async fn get_latest_block(&self) -> Result<u64, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -255,28 +237,20 @@ impl Triedb for TriedbEnv {
                     request_sender,
                 }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "could not get latest block from triedb".to_string(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("could not get latest block from triedb"));
         }
 
         match request_receiver.await {
             Ok(block_num) => Ok(block_num),
             Err(e) => {
                 error!("Error when receiving response from polling thread: {e}");
-                Err(JsonRpcError::internal_error(
-                    "could not get latest block from triedb".to_string(),
-                ))
+                Err(String::from("could not get latest block from triedb"))
             }
         }
     }
 
-    async fn get_account(
-        &self,
-        addr: EthAddress,
-        block_tag: BlockTags,
-    ) -> Result<Account, JsonRpcError> {
+    async fn get_account(&self, addr: EthAddress, block_num: u64) -> Result<Account, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -290,13 +264,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag,
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -305,7 +277,7 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
@@ -319,7 +291,7 @@ impl Triedb for TriedbEnv {
                         })
                         .unwrap_or_else(|| {
                             error!("Decoding account error");
-                            Err(JsonRpcError::internal_error("error reading from db".into()))
+                            Err(String::from("error reading from db"))
                         }),
                     None => Ok(Account {
                         nonce: 0,
@@ -330,7 +302,7 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -339,8 +311,8 @@ impl Triedb for TriedbEnv {
         &self,
         addr: EthAddress,
         at: EthStorageKey,
-        block_tag: BlockTags,
-    ) -> Result<String, JsonRpcError> {
+        block_num: u64,
+    ) -> Result<String, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -355,13 +327,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag,
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -370,15 +340,15 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
                     Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
-                        .map(|storage_slot| Ok(hex::encode(&storage_slot)))
+                        .map(|storage_slot| Ok(hex::encode(storage_slot)))
                         .unwrap_or_else(|| {
                             error!("Decoding storage slot error");
-                            Err(JsonRpcError::internal_error("error reading from db".into()))
+                            Err(String::from("error reading from db"))
                         }),
                     None => Ok(
                         "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -388,16 +358,12 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
 
-    async fn get_code(
-        &self,
-        code_hash: EthCodeHash,
-        block_tag: BlockTags,
-    ) -> Result<String, JsonRpcError> {
+    async fn get_code(&self, code_hash: EthCodeHash, block_num: u64) -> Result<String, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -411,13 +377,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag,
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -426,7 +390,7 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
@@ -436,7 +400,7 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -445,7 +409,7 @@ impl Triedb for TriedbEnv {
         &self,
         receipt_index: u64,
         block_num: u64,
-    ) -> Result<Option<ReceiptWithBloom>, JsonRpcError> {
+    ) -> Result<Option<ReceiptWithBloom>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -460,13 +424,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -475,15 +437,14 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
                     Some(rlp_receipt) => {
                         let mut rlp_buf = rlp_receipt.as_slice();
-                        let receipt = ReceiptWithBloom::decode(&mut rlp_buf).map_err(|e| {
-                            JsonRpcError::internal_error(format!("decode receipt failed: {}", e))
-                        })?;
+                        let receipt = ReceiptWithBloom::decode(&mut rlp_buf)
+                            .map_err(|e| format!("decode receipt failed: {}", e))?;
                         Ok(Some(receipt))
                     }
                     None => Ok(None),
@@ -491,12 +452,12 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
 
-    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>, JsonRpcError> {
+    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -509,13 +470,11 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -528,7 +487,7 @@ impl Triedb for TriedbEnv {
                             ReceiptWithBloom::decode(&mut rlp_receipt.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP receipt: {e}");
-                                    JsonRpcError::internal_error("error decoding receipt".into())
+                                    String::from("error decoding receipt")
                                 })
                                 .ok()
                         })
@@ -539,7 +498,7 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -548,7 +507,7 @@ impl Triedb for TriedbEnv {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> Result<Option<TransactionSigned>, JsonRpcError> {
+    ) -> Result<Option<TransactionSigned>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -563,13 +522,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -578,7 +535,7 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
@@ -587,9 +544,7 @@ impl Triedb for TriedbEnv {
                             Ok(transaction) => Ok(Some(transaction)),
                             Err(e) => {
                                 warn!("Failed to decode RLP transaction: {e}");
-                                Err(JsonRpcError::internal_error(
-                                    "error decoding transaction".into(),
-                                ))
+                                Err(String::from("error decoding transaction"))
                             }
                         }
                     }
@@ -598,15 +553,12 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
 
-    async fn get_transactions(
-        &self,
-        block_num: u64,
-    ) -> Result<Vec<TransactionSigned>, JsonRpcError> {
+    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TransactionSigned>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -619,13 +571,11 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -638,9 +588,7 @@ impl Triedb for TriedbEnv {
                             TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP transaction: {e}");
-                                    JsonRpcError::internal_error(
-                                        "error decoding transaction".into(),
-                                    )
+                                    String::from("error decoding transaction")
                                 })
                                 .ok()
                         })
@@ -651,12 +599,12 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
 
-    async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
+    async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -671,13 +619,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -686,19 +632,15 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
                     Some(rlp_block_header) => {
                         let block_hash = keccak256(&rlp_block_header);
                         let mut rlp_buf = rlp_block_header.as_slice();
-                        let block_header = Header::decode(&mut rlp_buf).map_err(|e| {
-                            JsonRpcError::internal_error(format!(
-                                "decode block header failed: {}",
-                                e
-                            ))
-                        })?;
+                        let block_header = Header::decode(&mut rlp_buf)
+                            .map_err(|e| format!("decode block header failed: {}", e))?;
                         Ok(Some(BlockHeader {
                             hash: block_hash,
                             header: block_header,
@@ -709,7 +651,7 @@ impl Triedb for TriedbEnv {
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -717,7 +659,8 @@ impl Triedb for TriedbEnv {
     async fn get_transaction_location_by_hash(
         &self,
         tx_hash: EthTxHash,
-    ) -> Result<Option<TransactionLocation>, JsonRpcError> {
+        block_num: u64,
+    ) -> Result<Option<TransactionLocation>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -732,13 +675,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Latest,
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -747,7 +688,7 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
@@ -760,14 +701,14 @@ impl Triedb for TriedbEnv {
                         })
                         .unwrap_or_else(|| {
                             error!("Decoding transaction location error");
-                            Err(JsonRpcError::internal_error("error reading from db".into()))
+                            Err(String::from("error reading from db"))
                         }),
                     None => Ok(None),
                 }
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -775,7 +716,8 @@ impl Triedb for TriedbEnv {
     async fn get_block_number_by_hash(
         &self,
         block_hash: EthBlockHash,
-    ) -> Result<Option<u64>, JsonRpcError> {
+        block_num: u64,
+    ) -> Result<Option<u64>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -790,13 +732,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Latest,
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         // await the result using request_receiver
@@ -805,7 +745,7 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 match result {
@@ -813,14 +753,14 @@ impl Triedb for TriedbEnv {
                         .map(|block_num| Ok(Some(block_num)))
                         .unwrap_or_else(|| {
                             error!("Decoding block number error");
-                            Err(JsonRpcError::internal_error("error reading from db".into()))
+                            Err(String::from("error reading from db"))
                         }),
                     None => Ok(None),
                 }
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
@@ -829,7 +769,7 @@ impl Triedb for TriedbEnv {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> Result<Option<Vec<u8>>, JsonRpcError> {
+    ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(Some(txn_index)));
@@ -843,13 +783,11 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         match request_receiver.await {
@@ -857,19 +795,19 @@ impl Triedb for TriedbEnv {
                 // sanity check to ensure completed_counter is equal to 1
                 if completed_counter.load(SeqCst) != 1 {
                     error!("Unexpected completed_counter value");
-                    return Err(JsonRpcError::internal_error("error reading from db".into()));
+                    return Err(String::from("error reading from db"));
                 }
 
                 Ok(result)
             }
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
     }
 
-    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, JsonRpcError> {
+    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(None));
@@ -881,13 +819,11 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_tag: BlockTags::Number(Quantity(block_num)),
+                block_num,
             }))
         {
-            error!("Polling thread channel full: {e}");
-            return Err(JsonRpcError::internal_error(
-                "error reading from db due to rate limit".into(),
-            ));
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
         }
 
         match request_receiver.await {
@@ -897,18 +833,8 @@ impl Triedb for TriedbEnv {
             },
             Err(e) => {
                 error!("Error awaiting result: {e}");
-                Err(JsonRpcError::internal_error("error reading from db".into()))
+                Err(String::from("error reading from db"))
             }
         }
-    }
-}
-
-pub async fn get_block_num_from_tag<T: Triedb>(
-    triedb_env: &T,
-    tag: BlockTags,
-) -> JsonRpcResult<u64> {
-    match tag {
-        BlockTags::Number(n) => Ok(n.0),
-        BlockTags::Latest => triedb_env.get_latest_block().await,
     }
 }

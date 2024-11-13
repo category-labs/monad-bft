@@ -1,14 +1,15 @@
 use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::Triedb;
 use reth_primitives::{Header, ReceiptWithBloom};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    block_handlers::get_block_num_from_tag,
     eth_json_types::{BlockTags, EthHash},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     trace::{TraceCallObject, TracerObject},
-    triedb::{get_block_num_from_tag, Triedb},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -34,7 +35,11 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => return Ok("0x0".to_string()),
     };
@@ -57,11 +62,18 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     let mut receipts = Vec::new();
     for txn_index in 0..transactions.len() {
-        let Some(receipt) = triedb_env.get_receipt(txn_index as u64, block_num).await? else {
+        let Some(receipt) = triedb_env
+            .get_receipt(txn_index as u64, block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+        else {
             return Ok(MonadDebugGetRawReceiptsResult { receipts: vec![] });
         };
         let mut rlp_receipt: &mut [u8] = &mut [];

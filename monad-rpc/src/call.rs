@@ -3,14 +3,15 @@ use std::{cmp::min, path::Path};
 use alloy_primitives::{Address, Uint, U256, U64, U8};
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    eth_json_types::{BlockTags, Quantity},
+    block_handlers::get_block_num_from_tag,
+    eth_json_types::BlockTags,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{get_block_num_from_tag, Triedb, TriedbPath},
 };
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -269,8 +270,9 @@ pub async fn sender_gas_allowance<T: Triedb>(
 ) -> Result<u64, JsonRpcError> {
     if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
         let account = triedb_env
-            .get_account(from.into(), BlockTags::Number(Quantity(block.number)))
-            .await?;
+            .get_account(from.into(), block.number)
+            .await
+            .map_err(JsonRpcError::internal_error)?;
 
         let gas_limit = U256::from(account.balance)
             .checked_sub(request.value.unwrap_or_default())
@@ -329,7 +331,11 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     // TODO: check duplicate address, duplicate storage key, etc.
 
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let mut header = match triedb_env.get_block_header(block_num).await? {
+    let mut header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => {
             return Err(JsonRpcError::internal_error(

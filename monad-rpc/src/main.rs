@@ -9,6 +9,7 @@ use actix_web::{
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
+use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
@@ -54,7 +55,6 @@ use crate::{
     trace_handlers::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
-    triedb::TriedbEnv,
     vpool::{
         monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
     },
@@ -78,7 +78,6 @@ mod mempool_tx;
 mod metrics;
 mod trace;
 mod trace_handlers;
-mod triedb;
 mod vpool;
 mod websocket;
 

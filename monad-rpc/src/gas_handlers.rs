@@ -6,16 +6,17 @@ use std::{
 use alloy_primitives::{U256, U64};
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
+    block_handlers::get_block_num_from_tag,
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{get_block_num_from_tag, Triedb, TriedbPath},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -70,12 +71,12 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
     let state_override_set = &params.state_override_set;
 
-    let block_number = match params.block {
-        BlockTags::Latest => triedb_env.get_latest_block().await?,
-        BlockTags::Number(block_number) => block_number.0,
-    };
-
-    let header = match triedb_env.get_block_header(block_number).await? {
+    let block_number = get_block_num_from_tag(triedb_env, params.block).await?;
+    let header = match triedb_env
+        .get_block_header(block_number)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => {
             return Err(JsonRpcError::internal_error(
@@ -200,7 +201,11 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
     trace!("monad_eth_gasPrice");
 
     let block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => {
             return Err(JsonRpcError::internal_error(
@@ -254,7 +259,11 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     }
 
     let block_num = get_block_num_from_tag(triedb_env, params.newest_block).await?;
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => {
             return Err(JsonRpcError::internal_error(

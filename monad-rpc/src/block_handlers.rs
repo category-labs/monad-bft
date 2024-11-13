@@ -3,6 +3,7 @@ use alloy_primitives::{
     FixedBytes,
 };
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::Triedb;
 use reth_primitives::{Header as RlpHeader, TransactionSigned};
 use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
@@ -12,8 +13,20 @@ use crate::{
     eth_json_types::{BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity},
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    triedb::{get_block_num_from_tag, Triedb},
 };
+
+pub async fn get_block_num_from_tag<T: Triedb>(
+    triedb_env: &T,
+    tag: BlockTags,
+) -> JsonRpcResult<u64> {
+    match tag {
+        BlockTags::Number(n) => Ok(n.0),
+        BlockTags::Latest => triedb_env
+            .get_latest_block()
+            .await
+            .map_err(JsonRpcError::internal_error),
+    }
+}
 
 fn parse_block_content(
     block_hash: FixedBytes<32>,
@@ -89,7 +102,10 @@ fn parse_block_content(
 pub async fn monad_eth_blockNumber<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_blockNumber");
 
-    let block_num = triedb_env.get_latest_block().await?;
+    let block_num = triedb_env
+        .get_latest_block()
+        .await
+        .map_err(JsonRpcError::internal_error)?;
     Ok(Quantity(block_num))
 }
 
@@ -123,18 +139,27 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
 
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
     let Some(block_num) = triedb_env
-        .get_block_number_by_hash(params.block_hash.0)
-        .await?
+        .get_block_number_by_hash(params.block_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
     else {
         return Ok(None);
     };
 
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => return Ok(None),
     };
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     parse_block_content(
         params.block_hash.0.into(),
@@ -166,11 +191,18 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
 
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => return Ok(None),
     };
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     parse_block_content(
         header.hash,
@@ -199,14 +231,19 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
 ) -> JsonRpcResult<Option<String>> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
 
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
     let Some(block_num) = triedb_env
-        .get_block_number_by_hash(params.block_hash.0)
-        .await?
+        .get_block_number_by_hash(params.block_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
     else {
         return Ok(None);
     };
 
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
     Ok(Some(format!("0x{:x}", transactions.len())))
 }
 
@@ -226,7 +263,10 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
 
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
     Ok(Some(format!("0x{:x}", transactions.len())))
 }
 
@@ -238,8 +278,14 @@ pub async fn map_block_receipts<T: Triedb, R>(
 ) -> Result<Vec<R>, JsonRpcError> {
     let block_num: u64 = block_header.number;
 
-    let transactions = triedb_env.get_transactions(block_num).await?;
-    let receipts = triedb_env.get_receipts(block_num).await?;
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    let receipts = triedb_env
+        .get_receipts(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
 
     if transactions.len() != receipts.len() {
         Err(JsonRpcError::internal_error(
@@ -298,7 +344,11 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
 
-    let header = match triedb_env.get_block_header(block_num).await? {
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
         Some(header) => header,
         None => return Ok(None),
     };

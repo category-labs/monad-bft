@@ -13,7 +13,6 @@ bench = false
 [dependencies]
 monad-cxx = { path = "../monad-cxx" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-rpc-docs = { path = "./monad-rpc-docs" }
