@@ -133,7 +133,7 @@ impl<B: BlockState + Clone> BlockWatcher<B> {
     pub fn new(triedb: B, current_height: u64) -> Self {
         Self {
             triedb,
-            interval: tokio::time::interval(std::time::Duration::from_secs(1)),
+            interval: tokio::time::interval(std::time::Duration::from_millis(500)),
             state: State::GetBlock(current_height),
         }
     }
