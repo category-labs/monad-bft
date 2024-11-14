@@ -8,9 +8,9 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    CheckpointCommand, Command, ControlPanelCommand, GetMetrics, LedgerCommand, LoopbackCommand,
-    ReadCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
-    TimestampCommand,
+    CheckpointCommand, Command, ControlPanelCommand, GetExecutorMetrics, LedgerCommand,
+    LoopbackCommand, ReadCommand, RouterCommand, StateRootHashCommand, StateSyncCommand,
+    TimerCommand, TimestampCommand,
 };
 
 /// Single top-level executor for all other required by a node.
@@ -72,20 +72,17 @@ where
             control_panel_cmds
                 .into_iter()
                 .map(|cmd| match cmd {
-                    ControlPanelCommand::Read(ReadCommand::GetMetrics(GetMetrics::Response {
-                        state_metrics,
-                        ..
-                    })) => {
-                        ControlPanelCommand::Read(ReadCommand::GetMetrics(GetMetrics::Response {
-                            state_metrics,
-                            executor_metrics: self
-                                .metrics()
+                    ControlPanelCommand::Read(ReadCommand::GetExecutorMetrics(
+                        GetExecutorMetrics::Response(None),
+                    )) => ControlPanelCommand::Read(ReadCommand::GetExecutorMetrics(
+                        GetExecutorMetrics::Response(Some(
+                            self.metrics()
                                 .into_inner()
                                 .into_iter()
                                 .map(|(key, value)| (key.to_string(), value))
                                 .collect(),
-                        }))
-                    }
+                        )),
+                    )),
                     cmd => cmd,
                 })
                 .collect(),

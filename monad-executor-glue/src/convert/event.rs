@@ -403,6 +403,11 @@ where
                     ProtoGetMetricsEvent {},
                 )),
             },
+            ControlPanelEvent::GetExecutorMetricsEvent => ProtoControlPanelEvent {
+                event: Some(proto_control_panel_event::Event::GetExecutorMetricsEvent(
+                    ProtoGetExecutorMetricsEvent {},
+                )),
+            },
             ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
                     ProtoClearMetricsEvent {},
@@ -552,6 +557,9 @@ where
                 }
                 proto_control_panel_event::Event::GetMetricsEvent(_) => {
                     ControlPanelEvent::GetMetricsEvent
+                }
+                proto_control_panel_event::Event::GetExecutorMetricsEvent(_) => {
+                    ControlPanelEvent::GetExecutorMetricsEvent
                 }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent

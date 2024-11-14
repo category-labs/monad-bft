@@ -133,6 +133,7 @@ message ProtoUpdateLogFilter {
 }
 
 message ProtoGetMetricsEvent {}
+message ProtoGetExecutorMetricsEvent {}
 
 message ProtoGetPeersReq {}
 
@@ -207,6 +208,7 @@ message ProtoControlPanelEvent {
     ProtoUpdatePeersEvent update_peers_event = 7;
     ProtoGetFullNodesEvent get_full_nodes_event = 8;
     ProtoUpdateFullNodesEvent update_full_nodes_event = 9;
+    ProtoGetExecutorMetricsEvent get_executor_metrics_event = 10;
   }
 }
 

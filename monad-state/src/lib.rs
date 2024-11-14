@@ -38,8 +38,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ClearMetrics, Command, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
+    ControlPanelCommand, ControlPanelEvent, GetExecutorMetrics, GetFullNodes, GetMetrics, GetPeers,
+    GetValidatorSet, LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, RouterCommand,
     StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
     UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
 };
@@ -1118,10 +1118,16 @@ where
                 }
                 ControlPanelEvent::GetMetricsEvent => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                        ReadCommand::GetMetrics(GetMetrics::Response {
-                            state_metrics: self.metrics,
-                            executor_metrics: Default::default(),
-                        }),
+                        ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
+                    ))]
+                }
+                ControlPanelEvent::GetExecutorMetricsEvent => {
+                    vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
+                        ReadCommand::GetExecutorMetrics(GetExecutorMetrics::Response(
+                            // the real executor metrics have to be filled
+                            // out by the parent executor
+                            None,
+                        )),
                     ))]
                 }
                 ControlPanelEvent::ClearMetricsEvent => {

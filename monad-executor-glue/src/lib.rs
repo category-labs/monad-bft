@@ -124,10 +124,13 @@ pub enum GetValidatorSet<SCT: SignatureCollection> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GetMetrics {
     Request,
-    Response {
-        state_metrics: Metrics,
-        executor_metrics: BTreeMap<String, u64>,
-    },
+    Response(Metrics),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GetExecutorMetrics {
+    Request,
+    Response(Option<BTreeMap<String, u64>>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,6 +152,7 @@ pub enum ReadCommand<SCT: SignatureCollection + Clone> {
     #[serde(bound = "SCT: SignatureCollection")]
     GetValidatorSet(GetValidatorSet<SCT>),
     GetMetrics(GetMetrics),
+    GetExecutorMetrics(GetExecutorMetrics),
     #[serde(bound = "SCT: SignatureCollection")]
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
     #[serde(bound = "SCT: SignatureCollection")]
@@ -557,6 +561,7 @@ where
 {
     GetValidatorSet,
     GetMetricsEvent,
+    GetExecutorMetricsEvent,
     ClearMetricsEvent,
     UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
     UpdateLogFilter(String),
