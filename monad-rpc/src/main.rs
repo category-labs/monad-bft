@@ -553,7 +553,7 @@ impl Actor for MonadRpcResources {
 
 pub fn create_app_with_metrics<S: 'static>(
     app_data: S,
-    with_metrics: metrics::Metrics,
+    with_metrics: metrics::RpcMetrics,
 ) -> App<
     impl ServiceFactory<
         ServiceRequest,
@@ -607,6 +607,18 @@ async fn main() -> std::io::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
 
+    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
+        args.otel_endpoint.map(|endpoint| {
+            let provider = metrics::build_otel_meter_provider(
+                &endpoint,
+                "monad-rpc".to_string(),
+                std::time::Duration::from_millis(500),
+            )
+            .expect("failed to build otel meter");
+            opentelemetry::global::set_meter_provider(provider.clone());
+            provider
+        });
+
     // initialize concurrent requests limiter
     let concurrent_requests_limiter = Arc::new(Semaphore::new(
         args.eth_call_max_concurrent_requests as usize,
@@ -632,9 +644,16 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
+    let vpool_metrics = meter_provider.as_ref().map(|provider| {
+        Arc::new(metrics::VirtualPoolMetrics::new(
+            provider.clone().meter("opentelemetry"),
+        ))
+    });
+
     let tx_pool = Arc::new(vpool::VirtualPool::new(
         ipc_sender.clone(),
         args.vpool_capacity,
+        vpool_metrics,
     ));
 
     let triedb_env = args
@@ -666,21 +685,9 @@ async fn main() -> std::io::Result<()> {
         tx_pool,
     );
 
-    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.map(|endpoint| {
-            let provider = metrics::build_otel_meter_provider(
-                &endpoint,
-                "monad-rpc".to_string(),
-                std::time::Duration::from_secs(5),
-            )
-            .expect("failed to build otel meter");
-            opentelemetry::global::set_meter_provider(provider.clone());
-            provider
-        });
-
     let with_metrics = meter_provider
         .as_ref()
-        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+        .map(|provider| metrics::RpcMetrics::new(provider.clone().meter("opentelemetry")));
 
     // main server app
     match with_metrics {
@@ -759,7 +766,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
+            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000, None)),
         }))
         .await;
         (app, m)

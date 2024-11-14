@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use monad_rpc_docs::rpc;
 use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
@@ -11,6 +11,7 @@ use crate::{
     block_watcher::BlockWithReceipts,
     eth_json_types::EthAddress,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    metrics::VirtualPoolMetrics,
 };
 
 #[rpc(method = "txpool_content")]
@@ -65,6 +66,7 @@ pub struct VirtualPool {
     chain_cache: ChainCache,
     // Publish transactions to validator
     publisher: flume::Sender<TransactionSigned>,
+    metrics: Option<Arc<VirtualPoolMetrics>>,
 }
 
 struct SubPool {
@@ -83,7 +85,8 @@ impl SubPool {
         }
     }
 
-    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) {
+    /// Adds a transaction to the SubPool, and returns the number of transactions evicted.
+    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) -> usize {
         match self.pool.entry(txn.signer()) {
             scc::hash_map::Entry::Occupied(mut entry) => {
                 let tree = entry.get();
@@ -108,22 +111,30 @@ impl SubPool {
         };
 
         let mut lock = self.evict.write().await;
+        let mut removed_count = 0;
         if lock.len() > self.capacity {
             if let Some(evicted) = lock.pop_back() {
-                self.pool.remove(&evicted);
+                if let Some((_, removed)) = self.pool.remove(&evicted) {
+                    removed_count += removed.len();
+                }
             }
         }
+
+        removed_count
     }
 
-    fn clear_included(&self, txs: &[(Address, u64)]) {
+    fn clear_included(&self, txs: &[(Address, u64)]) -> usize {
+        let mut removed = 0;
         for (sender, nonce) in txs {
             if let Some(mut entry) = self.pool.get(sender) {
+                removed += 1;
                 entry.get_mut().remove(nonce);
                 if entry.len() == 0 {
                     let _ = entry.remove();
                 }
             }
         }
+        removed
     }
 
     fn by_addr(&self, address: &Address) -> Vec<TransactionSignedEcRecovered> {
@@ -282,12 +293,17 @@ pub enum TxPoolEvent {
 }
 
 impl VirtualPool {
-    pub fn new(publisher: flume::Sender<TransactionSigned>, capacity: usize) -> Self {
+    pub fn new(
+        publisher: flume::Sender<TransactionSigned>,
+        capacity: usize,
+        metrics: Option<Arc<VirtualPoolMetrics>>,
+    ) -> Self {
         Self {
             pending_pool: SubPool::new(capacity),
             queued_pool: SubPool::new(capacity),
             chain_cache: ChainCache::new(capacity),
             publisher,
+            metrics,
         }
     }
 
@@ -360,16 +376,28 @@ impl VirtualPool {
         match event {
             TxPoolEvent::AddValidTransaction { txn } => match self.decide_pool(&txn).await {
                 TxPoolType::Queue => {
-                    self.queued_pool.add(txn, false).await;
+                    let removed = self.queued_pool.add(txn, false).await;
+                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
+                    self.metrics
+                        .as_ref()
+                        .map(|metrics| metrics.queued_pool.add(removed + 1, &[]));
                 }
                 TxPoolType::Pending => {
-                    self.pending_pool.add(txn.clone(), false).await;
+                    let removed = self.pending_pool.add(txn.clone(), false).await;
+                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
+                    self.metrics
+                        .as_ref()
+                        .map(|metrics| metrics.pending_pool.add(removed + 1, &[]));
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
                 TxPoolType::Replace => {
-                    self.pending_pool.add(txn.clone(), true).await;
+                    let removed = self.pending_pool.add(txn.clone(), true).await;
+                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
+                    self.metrics
+                        .as_ref()
+                        .map(|metrics| metrics.pending_pool.add(removed, &[]));
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
@@ -391,13 +419,29 @@ impl VirtualPool {
                     })
                     .collect::<Vec<_>>();
 
-                self.pending_pool.clear_included(&txs);
-                self.queued_pool.clear_included(&txs);
+                let pending_cleared =
+                    i64::try_from(self.pending_pool.clear_included(&txs)).unwrap_or_default();
+                let queued_cleared =
+                    i64::try_from(self.queued_pool.clear_included(&txs)).unwrap_or_default();
 
                 let senders = self.chain_cache.update(block.clone(), next_base_fee).await;
 
                 // Check for available promotions
                 let promote_queued = self.queued_pool.filter_by_nonce_gap(&senders);
+
+                let promoted_cleared = i64::try_from(promote_queued.len()).unwrap_or_default();
+
+                self.metrics.as_ref().map(|metrics| {
+                    metrics
+                        .pending_pool
+                        .add((pending_cleared * -1) + promoted_cleared, &[])
+                });
+
+                self.metrics.as_ref().map(|metrics| {
+                    metrics
+                        .queued_pool
+                        .add((promoted_cleared + queued_cleared) * -1, &[])
+                });
 
                 // Add promoted transactions to the pending pool
                 for promoted in promote_queued.into_iter() {
@@ -501,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn test_txpool() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
         let (sk, addr) = accounts()[0];
 
         let txs = vec![
@@ -539,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_nonce_gap() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
         let (sk, addr) = accounts()[0];
 
         let txs = vec![
@@ -592,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_fee_replace() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None));
 
         // Add pending transaction with base fee of 1000
         let base = transaction(accounts()[0].0, 0, Some(1000));
@@ -654,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_stress() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
         let (sk, addr) = accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
@@ -710,7 +754,7 @@ mod tests {
         }
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None));
 
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
@@ -782,7 +826,7 @@ mod tests {
     async fn txpool_eviction() {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None));
         tx_pool
             .add_transaction(transaction(accounts()[0].0, 0, None))
             .await;

@@ -13,7 +13,7 @@ use opentelemetry_otlp::WithExportConfig;
 
 pub struct MetricsMiddleware<S> {
     service: S,
-    inner: std::sync::Arc<Metrics>,
+    inner: std::sync::Arc<RpcMetrics>,
 }
 
 impl<S, B> Service<ServiceRequest> for MetricsMiddleware<S>
@@ -37,6 +37,8 @@ where
 
         let request_metrics = self.inner.clone();
         Box::pin(self.service.call(req).map(move |res| {
+            request_metrics.active_requests.add(-1, &attributes);
+
             if let Ok(res) = res {
                 let elapsed = timer.elapsed();
 
@@ -45,7 +47,6 @@ where
                     res.status().as_u16() as i64,
                 ));
 
-                request_metrics.active_requests.add(-1, &attributes);
                 request_metrics
                     .request_duration
                     .record(elapsed.as_secs_f64(), &attributes);
@@ -57,7 +58,7 @@ where
     }
 }
 
-impl<S, B> Transform<S, ServiceRequest> for Metrics
+impl<S, B> Transform<S, ServiceRequest> for RpcMetrics
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
     S::Future: 'static,
@@ -94,12 +95,12 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 }
 
 #[derive(Clone)]
-pub struct Metrics {
+pub struct RpcMetrics {
     request_duration: Histogram<f64>,
     active_requests: UpDownCounter<i64>,
 }
 
-impl Metrics {
+impl RpcMetrics {
     pub fn new(meter: Meter) -> Self {
         let request_duration = meter
             .f64_histogram("monad.rpc.request_duration")
@@ -115,6 +116,30 @@ impl Metrics {
         Self {
             request_duration,
             active_requests,
+        }
+    }
+}
+
+pub struct VirtualPoolMetrics {
+    pub pending_pool: UpDownCounter<i64>,
+    pub queued_pool: UpDownCounter<i64>,
+}
+
+impl VirtualPoolMetrics {
+    pub fn new(meter: Meter) -> Self {
+        let pending_pool = meter
+            .i64_up_down_counter("monad.vpool.pending_pool")
+            .with_description("Number of transactions in the pending pool")
+            .init();
+
+        let queued_pool = meter
+            .i64_up_down_counter("monad.vpool.queued_pool")
+            .with_description("Number of transactions in the queued pool")
+            .init();
+
+        Self {
+            pending_pool,
+            queued_pool,
         }
     }
 }
