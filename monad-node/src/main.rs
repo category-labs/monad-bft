@@ -157,32 +157,18 @@ async fn run(
         .last()
         .expect("no validator sets")
         .clone();
-    let (local_name_record, bootstrap_peers) = {
+    let local_name_record = {
         let pubkey = node_state.secp256k1_identity.pubkey();
         let local_name_record = &node_state.node_config.network.local_name_record;
         info!(address = ?local_name_record.address, node_id = ?pubkey, "load local name record");
         let local_ip_address = resolve_domain(&local_name_record.address);
-        (
-            MonadNameRecord {
-                endpoint: NetworkEndpoint {
-                    socket_addr: local_ip_address,
-                },
-                node_id: NodeId::new(pubkey),
-                seq_num: local_name_record.seq_num,
+        MonadNameRecord {
+            endpoint: NetworkEndpoint {
+                socket_addr: local_ip_address,
             },
-            node_state
-                .node_config
-                .bootstrap
-                .peers
-                .iter()
-                .map(|peer| BootstrapPeer {
-                    node_id: build_node_id(peer),
-                    endpoint: NetworkEndpoint {
-                        socket_addr: resolve_domain(&peer.address),
-                    },
-                })
-                .collect::<Vec<_>>(),
-        )
+            node_id: NodeId::new(pubkey),
+            seq_num: local_name_record.seq_num,
+        }
     };
 
     let router: BoxUpdater<_, _> = {
@@ -195,7 +181,6 @@ async fn run(
             &node_state.node_config.bootstrap.peers,
             &node_state.node_config.fullnode.identities,
             local_name_record,
-            bootstrap_peers,
         )
         .await;
 
@@ -511,7 +496,6 @@ async fn build_raptorcast_router<M, OM>(
     peers: &[NodeBootstrapPeerConfig],
     full_nodes: &[FullNodeIdentityConfig],
     local_name_record: MonadNameRecord<PubKey>,
-    bootstrap_peers: Vec<BootstrapPeer<PubKey>>,
 ) -> RaptorCast<SignatureType, M, OM, MonadEvent<SignatureType, SignatureCollectionType>>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>
@@ -541,7 +525,15 @@ where
         .to_string(),
         up_bandwidth_mbps: network_config.max_mbps.into(),
         local_name_record,
-        bootstrap_peers,
+        bootstrap_peers: peers
+            .iter()
+            .map(|peer| BootstrapPeer {
+                node_id: build_node_id(peer),
+                endpoint: NetworkEndpoint {
+                    socket_addr: resolve_domain(&peer.address),
+                },
+            })
+            .collect::<Vec<_>>(),
     })
 }
 

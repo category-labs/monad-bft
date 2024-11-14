@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    net::{SocketAddr, UdpSocket},
     num::ParseIntError,
     sync::Once,
     time::Duration,
@@ -282,6 +282,7 @@ pub fn set_up_test(
                 .unwrap(),
         ));
 
+        let tx_addr = tx_addr.to_string();
         rt.spawn(async move {
             let pubkey = rx_keypair.pubkey();
             let service_config = RaptorCastConfig {
@@ -293,10 +294,7 @@ pub fn set_up_test(
                 up_bandwidth_mbps: 1_000,
                 local_name_record: MonadNameRecord {
                     endpoint: NetworkEndpoint {
-                        socket_addr: SocketAddr::V4(SocketAddrV4::new(
-                            Ipv4Addr::new(0, 0, 0, 0),
-                            0,
-                        )),
+                        socket_addr: tx_addr.parse::<SocketAddr>().unwrap(),
                     },
                     node_id: NodeId::new(pubkey),
                     seq_num: 0,

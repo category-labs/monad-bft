@@ -21,7 +21,7 @@ use monad_discovery::{
         DiscoveryMessage, DiscoveryRequest, DiscoveryResponse, InboundRouterMessage,
         OutboundRouterMessage,
     },
-    BootstrapPeer, DiscoveryError, MonadNameRecord, SignedMonadNameRecord,
+    BootstrapPeer, DiscoveryError, MonadNameRecord, SignedMonadNameRecord, VerifiedMonadNameRecord,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -79,9 +79,9 @@ where
 
     dataplane: Dataplane,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
-    local_name_record: SignedMonadNameRecord<ST>,
+    local_name_record: VerifiedMonadNameRecord<ST>,
     bootstrap_peers: Vec<BootstrapPeer<CertificateSignaturePubKey<ST>>>,
-    discovery_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, SignedMonadNameRecord<ST>>,
+    discovery_peers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, VerifiedMonadNameRecord<ST>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -109,8 +109,10 @@ where
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
-        let signed_local_name_record =
-            SignedMonadNameRecord::new(config.local_name_record.clone(), &config.key);
+        let verified_local_name_record = VerifiedMonadNameRecord::try_from(
+            SignedMonadNameRecord::new(config.local_name_record.clone(), &config.key),
+        )
+        .expect("verifying a locally signed monad name record should never fail");
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -125,7 +127,7 @@ where
 
             dataplane,
             pending_events: Default::default(),
-            local_name_record: signed_local_name_record,
+            local_name_record: verified_local_name_record,
             bootstrap_peers: config.bootstrap_peers,
             discovery_peers: Default::default(),
 
@@ -159,22 +161,20 @@ where
 
     fn validate_peer(
         &self,
-        incoming_signed_record: &SignedMonadNameRecord<ST>,
-    ) -> Result<SignedMonadNameRecord<ST>, DiscoveryError<ST>> {
-        let verified_record = incoming_signed_record.clone().verify()?;
-        let peer = verified_record.record();
-        match self.discovery_peers.get(&peer.node_id) {
-            None => Ok(verified_record),
-            Some(signed_record) => {
-                let existing_peer = signed_record.record();
-                if peer.seq_num > existing_peer.seq_num {
-                    Ok(verified_record)
-                } else if peer == existing_peer {
-                    Err(DiscoveryError::DuplicatePeer(verified_record))
+        incoming_signed_record: SignedMonadNameRecord<ST>,
+    ) -> Result<VerifiedMonadNameRecord<ST>, DiscoveryError<ST>> {
+        let incoming_record = VerifiedMonadNameRecord::<ST>::try_from(incoming_signed_record)?;
+        match self.discovery_peers.get(incoming_record.node_id()) {
+            None => Ok(incoming_record),
+            Some(existing_record) => {
+                if incoming_record.seq_num() > existing_record.seq_num() {
+                    Ok(incoming_record)
+                } else if incoming_record.record() == existing_record.record() {
+                    Err(DiscoveryError::DuplicatePeer(incoming_record))
                 } else {
                     Err(DiscoveryError::InvalidPeer {
-                        existing_peer: existing_peer.clone(),
-                        requesting_peer: peer.clone(),
+                        existing_peer: existing_record.record().clone(),
+                        requesting_peer: incoming_record.record().clone(),
                     })
                 }
             }
@@ -193,6 +193,7 @@ where
 
         let validated_peers = incoming_prospective_peers
             .into_iter()
+            .cloned()
             .filter_map(
                 |peer| match self.validate_peer(peer) {
                     Ok(peer) => Some(peer),
@@ -215,13 +216,12 @@ where
             )
             .collect::<Vec<_>>();
 
-        for new_peer in &validated_peers {
-            self.known_addresses.insert(
-                new_peer.record().node_id,
-                new_peer.record().endpoint.socket_addr,
-            );
+        for verified_record in &validated_peers {
+            let name_record = verified_record.record();
+            self.known_addresses
+                .insert(name_record.node_id, name_record.endpoint.socket_addr);
             self.discovery_peers
-                .insert(new_peer.record().node_id, new_peer.clone());
+                .insert(name_record.node_id, verified_record.clone());
         }
 
         let responses = validated_peers
@@ -237,12 +237,13 @@ where
                                     .values()
                                     .cloned()
                                     .chain(std::iter::once(self.local_name_record.clone()))
+                                    .map(Into::into)
                                     .collect::<Vec<_>>(),
                             })
                         }
                         DiscoveryMessage::Response(_) => {
                             DiscoveryMessage::Request(DiscoveryRequest {
-                                sender: self.local_name_record.clone(),
+                                sender: self.local_name_record.clone().into(),
                             })
                         }
                     })
@@ -464,7 +465,7 @@ where
                 RouterCommand::BootstrapPeers => {
                     let request = OutboundRouterMessage::<OM, _>::Discovery(
                         DiscoveryMessage::Request(DiscoveryRequest {
-                            sender: self.local_name_record.clone(),
+                            sender: self.local_name_record.clone().into(),
                         }),
                     )
                     .serialize();

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     num::ParseIntError,
     time::{Duration, Instant},
 };
@@ -120,10 +120,7 @@ fn service(
                     up_bandwidth_mbps: 1_000,
                     local_name_record: MonadNameRecord {
                         endpoint: NetworkEndpoint {
-                            socket_addr: SocketAddr::V4(SocketAddrV4::new(
-                                Ipv4Addr::new(0, 0, 0, 0),
-                                0,
-                            )),
+                            socket_addr: server_address,
                         },
                         node_id: NodeId::new(pubkey),
                         seq_num: 0,

@@ -3,6 +3,7 @@ syntax = "proto3";
 package monad_proto.discovery;
 
 import "basic.proto";
+import "signing.proto";
 
 message ProtoIPv4 {
   bytes address = 1;
@@ -32,5 +33,5 @@ message ProtoMonadNameRecord {
 
 message ProtoSignedMonadNameRecord {
   ProtoMonadNameRecord name_record = 1;
-  bytes signature = 2;
+  monad_proto.signing.ProtoSignature signature = 2;
 }

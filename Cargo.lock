@@ -3716,6 +3716,7 @@ name = "monad-discovery"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-proto",
  "monad-secp",
