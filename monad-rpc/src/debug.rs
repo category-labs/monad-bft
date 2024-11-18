@@ -1,7 +1,7 @@
 use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::Triedb;
-use reth_primitives::{Header, ReceiptWithBloom};
+use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
+use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -24,7 +24,35 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        Some(header) => header,
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "block header not found".into(),
+            ))
+        }
+    };
+    let transactions = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+
+    let block = Block {
+        header: header.header,
+        body: transactions,
+        ommers: vec![],
+        withdrawals: None,
+    };
+
+    let mut res = Vec::new();
+    block.encode(&mut res);
+    Ok(hex::encode(&res))
 }
 
 #[rpc(method = "debug_getRawHeader")]
@@ -41,11 +69,16 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
     {
         Some(header) => header,
-        None => return Ok("0x0".to_string()),
+        None => {
+            return Err(JsonRpcError::internal_error(
+                "block header not found".into(),
+            ))
+        }
     };
-    let mut rlp_header: &mut [u8] = &mut [];
-    Header::encode(&header.header, &mut rlp_header);
-    Ok(hex::encode(rlp_header))
+
+    let mut res = Vec::new();
+    header.header.encode(&mut res);
+    Ok(hex::encode(&res))
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -62,26 +95,21 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let transactions = triedb_env
-        .get_transactions(block_num)
+    let receipts = triedb_env
+        .get_receipts(block_num)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    let mut receipts = Vec::new();
-    for txn_index in 0..transactions.len() {
-        let Some(receipt) = triedb_env
-            .get_receipt(txn_index as u64, block_num)
-            .await
-            .map_err(JsonRpcError::internal_error)?
-        else {
-            return Ok(MonadDebugGetRawReceiptsResult { receipts: vec![] });
-        };
-        let mut rlp_receipt: &mut [u8] = &mut [];
-        ReceiptWithBloom::encode(&receipt, &mut rlp_receipt);
-        receipts.push(hex::encode(rlp_receipt));
+    let mut rlp_receipts = Vec::new();
+    for receipt in receipts {
+        let mut res = Vec::new();
+        receipt.encode(&mut res);
+        rlp_receipts.push(hex::encode(&res));
     }
 
-    Ok(MonadDebugGetRawReceiptsResult { receipts })
+    Ok(MonadDebugGetRawReceiptsResult {
+        receipts: rlp_receipts,
+    })
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -96,7 +124,29 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     triedb_env: &T,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let Some(TransactionLocation {
+        tx_index,
+        block_num,
+    }) = triedb_env
+        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        return Err(JsonRpcError::internal_error("transaction not found".into()));
+    };
+
+    let Some(tx) = triedb_env
+        .get_transaction(tx_index, block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        return Err(JsonRpcError::internal_error("transaction not found".into()));
+    };
+
+    let mut res = Vec::new();
+    tx.encode(&mut res);
+    Ok(hex::encode(&res))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
