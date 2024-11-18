@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use reth_primitives::{Block, TransactionSigned};
-use reth_rpc_types::TransactionReceipt;
+use reth_primitives::TransactionSigned;
 use tracing::warn;
+
+use crate::block_watcher::BlockWithReceipts;
 
 /// Number of transactions to sample in a block
 const BLOCK_TX_SAMPLE_SIZE: usize = 3;
@@ -20,6 +21,7 @@ const IGNORE_PRICE: u128 = 2;
 /// Number of recent blocks to cache
 const CACHE_CAPACITY: usize = 100;
 
+#[derive(Clone)]
 pub struct Oracle {
     cache: Arc<std::sync::Mutex<VecDeque<ProcessedBlock>>>,
     block_sample_size: usize,
@@ -27,11 +29,7 @@ pub struct Oracle {
 
 pub trait GasOracle: Send + Sync {
     // Adds a block to the gas oracle's cache to process tips and base fees.
-    fn process_block(
-        &self,
-        block: Block,
-        receipts: Vec<TransactionReceipt>,
-    ) -> Result<(), GasOracleError>;
+    fn process_block(&self, block: BlockWithReceipts) -> Result<(), GasOracleError>;
     // Returns the expected base fee for the next block.
     fn base_fee(&self) -> Option<u64>;
     // Returns the suggested priority tip block inclusion.
@@ -71,12 +69,8 @@ impl GasOracle for Oracle {
             .cloned()
     }
 
-    fn process_block(
-        &self,
-        block: Block,
-        receipts: Vec<TransactionReceipt>,
-    ) -> Result<(), GasOracleError> {
-        let processed_block = process_block(block, receipts)?;
+    fn process_block(&self, block: BlockWithReceipts) -> Result<(), GasOracleError> {
+        let processed_block = process_block(block)?;
 
         let Ok(mut cache) = self.cache.lock() else {
             warn!("could not access gas oracle cache");
@@ -126,15 +120,17 @@ pub struct ProcessedBlock {
     rewards: Vec<u128>,
 }
 
-fn process_block(
-    block: Block,
-    receipts: Vec<TransactionReceipt>,
-) -> Result<ProcessedBlock, GasOracleError> {
+fn process_block(block: BlockWithReceipts) -> Result<ProcessedBlock, GasOracleError> {
     let base_fee = block
+        .block_header
+        .header
         .base_fee_per_gas
         .ok_or(GasOracleError::MissingBaseFee)?;
 
-    let mut transactions = block.body.iter().collect::<Vec<&TransactionSigned>>();
+    let mut transactions = block
+        .transactions
+        .iter()
+        .collect::<Vec<&TransactionSigned>>();
     transactions.sort_by_cached_key(|tx| tx.effective_tip_per_gas(Some(base_fee)));
 
     let mut prices = Vec::new();
@@ -150,7 +146,8 @@ fn process_block(
         };
 
         // For each receipt, calculate gas_used_ratio
-        let receipt = receipts
+        let receipt = block
+            .receipts
             .get(idx)
             .ok_or(GasOracleError::TransactionReceiptMissing)?;
         let Some(gas_used) = receipt.gas_used else {
@@ -162,7 +159,7 @@ fn process_block(
         };
 
         let gas_used: f64 = gas_used.into();
-        let gas_used_ratio = gas_used / block.gas_limit as f64;
+        let gas_used_ratio = gas_used / block.block_header.header.gas_limit as f64;
         gas_used_ratios.push(gas_used_ratio);
 
         if tip < IGNORE_PRICE {
@@ -180,8 +177,8 @@ fn process_block(
     }
 
     Ok(ProcessedBlock {
-        block_gas_limit: block.gas_limit,
-        block_gas_used: block.gas_used,
+        block_gas_limit: block.block_header.header.gas_limit,
+        block_gas_used: block.block_header.header.gas_used,
         sampled_tips: prices,
         base_fee,
         gas_used_ratios,
@@ -192,8 +189,10 @@ fn process_block(
 #[cfg(test)]
 mod tests {
     use reth_primitives::{Header, Signature, TxEip1559, U256};
+    use reth_rpc_types::TransactionReceipt;
 
     use super::*;
+    use crate::triedb::BlockHeader;
 
     fn make_tx(price: u128) -> TransactionSigned {
         TransactionSigned {
@@ -222,30 +221,67 @@ mod tests {
     #[tokio::test]
     async fn oracle_gas_tip() {
         let blocks = [
-            Block {
-                header: Header {
-                    base_fee_per_gas: Some(1000),
-                    number: 0,
+            BlockWithReceipts {
+                block_header: BlockHeader {
+                    header: Header {
+                        base_fee_per_gas: Some(1000),
+                        number: 0,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()
             },
-            Block {
-                header: Header {
-                    base_fee_per_gas: Some(1000),
-                    number: 1,
+            BlockWithReceipts {
+                block_header: BlockHeader {
+                    header: Header {
+                        base_fee_per_gas: Some(1000),
+                        number: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                body: vec![make_tx(1100), make_tx(1101), make_tx(1102)],
+                transactions: vec![make_tx(1100), make_tx(1101), make_tx(1102)],
+                receipts: vec![
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                ],
                 ..Default::default()
             },
-            Block {
-                header: Header {
-                    base_fee_per_gas: Some(1000),
-                    number: 2,
+            BlockWithReceipts {
+                block_header: BlockHeader {
+                    header: Header {
+                        base_fee_per_gas: Some(1000),
+                        number: 2,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                body: vec![make_tx(1103), make_tx(1104), make_tx(1105)],
+                transactions: vec![make_tx(1103), make_tx(1104), make_tx(1105)],
+                receipts: vec![
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                    TransactionReceipt {
+                        gas_used: Some(U256::from(21_000)),
+                        ..Default::default()
+                    },
+                ],
                 ..Default::default()
             },
         ];
@@ -253,14 +289,7 @@ mod tests {
         let oracle = Oracle::new(Some(2));
 
         for block in blocks {
-            let mut receipts = Vec::new();
-            for _ in block.body.iter() {
-                receipts.push(TransactionReceipt {
-                    gas_used: Some(U256::from(21_000)),
-                    ..Default::default()
-                });
-            }
-            oracle.process_block(block, receipts).unwrap();
+            oracle.process_block(block).unwrap();
         }
 
         let tip = oracle.tip().unwrap();

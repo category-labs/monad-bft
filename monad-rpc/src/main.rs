@@ -9,6 +9,7 @@ use actix_web::{
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
+use gas_oracle::{GasOracle, Oracle};
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
@@ -409,20 +410,17 @@ async fn rpc_select(
             .map(serialize_result)?
         }
         "eth_gasPrice" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let oracle = app_state.gas_oracle.as_ref().method_not_supported()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            monad_eth_gasPrice(triedb_env, oracle)
+                .await
+                .map(serialize_result)?
         }
         "eth_maxPriorityFeePerGas" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_maxPriorityFeePerGas(triedb_env)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
+            let oracle = app_state.gas_oracle.as_ref().method_not_supported()?;
+            monad_eth_maxPriorityFeePerGas(oracle)
+                .await
+                .map(serialize_result)?
         }
         "eth_feeHistory" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
@@ -508,6 +506,7 @@ struct MonadRpcResources {
     execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
     batch_request_limit: u16,
+    gas_oracle: Option<Arc<Oracle>>,
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
@@ -529,6 +528,7 @@ impl MonadRpcResources {
         execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
         batch_request_limit: u16,
+        gas_oracle: Option<Arc<Oracle>>,
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
@@ -540,6 +540,7 @@ impl MonadRpcResources {
             execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
             chain_id,
             batch_request_limit,
+            gas_oracle,
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
@@ -645,13 +646,18 @@ async fn main() -> std::io::Result<()> {
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
     // We need to spawn a task to handle changes to the base fee, and block updates
+    let oracle = Arc::new(Oracle::new(None));
     let tx_pool2 = tx_pool.clone();
     let triedb_env2 = triedb_env.clone();
+    let oracle2 = Arc::clone(&oracle);
     tokio::task::spawn(async move {
         let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
         let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
         while let Some(block) = watcher.next().await {
-            tx_pool2.new_block(block, 1_000).await;
+            tx_pool2.new_block(block.clone(), 1_000).await;
+            if let Err(e) = oracle2.process_block(block) {
+                warn!("issue processing block for gas oracle: {e:?}")
+            }
         }
     });
 
@@ -661,6 +667,7 @@ async fn main() -> std::io::Result<()> {
         Some(args.execution_ledger_path),
         args.chain_id,
         args.batch_request_limit,
+        Some(oracle),
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
@@ -757,6 +764,7 @@ mod tests {
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 1337,
             batch_request_limit: 5,
+            gas_oracle: None,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),

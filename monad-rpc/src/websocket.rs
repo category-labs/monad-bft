@@ -115,6 +115,7 @@ mod tests {
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,
             batch_request_limit: 1000,
+            gas_oracle: None,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),

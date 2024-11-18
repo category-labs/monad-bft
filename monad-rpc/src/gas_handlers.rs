@@ -14,6 +14,7 @@ use tracing::trace;
 use crate::{
     call::{sender_gas_allowance, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
+    gas_oracle::{GasOracle, Oracle},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     triedb::{get_block_num_from_tag, Triedb, TriedbPath},
 };
@@ -187,16 +188,13 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     Ok(Quantity(upper_bound_gas_limit))
 }
 
-pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
-    // TODO: hardcoded as 2 gwei for now, need to implement gas oracle
-    // Refer to <https://github.com/ethereum/pm/issues/328#issuecomment-853234014>
-    Ok(2000000000)
-}
-
 #[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_gasPrice<T: Triedb>(
+    triedb_env: &T,
+    gas_oracle: &Oracle,
+) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
     let block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
@@ -213,7 +211,7 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
     let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
 
     // Obtain suggested priority fee
-    let priority_fee = suggested_priority_fee().await.unwrap_or_default();
+    let priority_fee = gas_oracle.tip().unwrap_or(0);
 
     Ok(Quantity(base_fee_per_gas + priority_fee))
 }
@@ -221,11 +219,10 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
 #[rpc(method = "eth_maxPriorityFeePerGas")]
 #[allow(non_snake_case)]
 /// Returns the current maxPriorityFeePerGas per gas in wei.
-pub async fn monad_eth_maxPriorityFeePerGas<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_maxPriorityFeePerGas(gas_oracle: &Oracle) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_maxPriorityFeePerGas");
 
-    let priority_fee = suggested_priority_fee().await.unwrap_or_default();
-    Ok(Quantity(priority_fee))
+    Ok(gas_oracle.tip().map(Quantity).unwrap_or(Quantity(0)))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

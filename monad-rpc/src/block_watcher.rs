@@ -139,7 +139,7 @@ impl<B: BlockState + Clone> BlockWatcher<B> {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct BlockWithReceipts {
     pub block_header: BlockHeader,
     pub transactions: Vec<TransactionSigned>,
