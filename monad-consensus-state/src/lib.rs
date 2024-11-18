@@ -451,7 +451,7 @@ where
             &author,
         ) {
             // only update timestamp if the block advanced us our round
-            if block.get_round() > original_round {
+            if block.get_qc().get_round() == original_round {
                 info!(?ts_delta, "update timestamp");
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }

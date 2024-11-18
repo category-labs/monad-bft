@@ -1,4 +1,3 @@
-use core::time;
 use std::{fmt::Debug, ops::Deref};
 
 use async_state_verify::AsyncStateVerifyChildState;
@@ -18,7 +17,9 @@ use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::PeerStateRootMessage},
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
+use monad_consensus_state::{
+    timestamp::BlockTimestamp, timestamp::PING_TICK_DURATION, ConsensusConfig, ConsensusState,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
@@ -869,7 +870,7 @@ where
         )));
 
         init_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
-            duration: time::Duration::from_secs(1),
+            duration: PING_TICK_DURATION,
             variant: TimeoutVariant::Ping,
             on_timeout: MonadEvent::PingTickEvent,
         }));
@@ -979,7 +980,7 @@ where
                 }
                 StateSyncEvent::Outbound(to, message) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::TcpPointToPoint(to),
+                        target: RouterTarget::PointToPoint(to),
                         message: VerifiedMonadMessage::StateSyncMessage(message),
                     })]
                 }

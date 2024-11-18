@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
-    time::{self},
+    time::{Duration, Instant},
 };
 
 use monad_consensus_types::{
@@ -15,6 +15,10 @@ use tracing::info;
 
 const MAX_LATENCY_SAMPLES: usize = 100;
 
+const PING_PERIOD: Duration = Duration::from_secs(30);
+
+pub const PING_TICK_DURATION: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Invalid,     // timestamp did not increment compared to previous block
@@ -24,12 +28,12 @@ pub enum Error {
 /// Ping state per validator
 #[derive(Debug)]
 pub struct ValidatorPingState {
-    sequence: PingSequence,              // sequence number of the last ping sent
-    latencies: Vec<time::Duration>,      // latencies of the last pings
-    sum: time::Duration,                 // sum of the last latencies
-    next_index: usize,                   // index of the next latency to be replaced
-    last_ping_time: time::Instant,       // time of the last ping sent
-    avg_latency: Option<time::Duration>, // average latency
+    sequence: PingSequence,        // sequence number of the last ping sent
+    latencies: Vec<Duration>,      // latencies of the last pings
+    sum: Duration,                 // sum of the last latencies
+    next_index: usize,             // index of the next latency to be replaced
+    last_ping_time: Instant,       // time of the last ping sent
+    avg_latency: Option<Duration>, // average latency
 }
 
 impl Default for ValidatorPingState {
@@ -39,7 +43,7 @@ impl Default for ValidatorPingState {
             next_index: 0,
             sum: Default::default(),
             latencies: Vec::new(),
-            last_ping_time: time::Instant::now(),
+            last_ping_time: Instant::now(),
             avg_latency: None,
         }
     }
@@ -53,11 +57,11 @@ impl ValidatorPingState {
     // initiate a new ping
     pub fn start_next(&mut self) -> PingSequence {
         self.sequence.0 += 1;
-        self.last_ping_time = time::Instant::now();
+        self.last_ping_time = Instant::now();
         self.sequence
     }
 
-    fn update_latency(&mut self, latency: time::Duration) {
+    fn update_latency(&mut self, latency: Duration) {
         if self.latencies.len() == MAX_LATENCY_SAMPLES {
             self.sum -= self.latencies[self.next_index];
             self.latencies[self.next_index] = latency;
@@ -77,12 +81,10 @@ impl ValidatorPingState {
         self.update_latency(self.last_ping_time.elapsed() / 2);
     }
 
-    pub fn avg_latency(&self) -> Option<time::Duration> {
+    pub fn avg_latency(&self) -> Option<Duration> {
         self.avg_latency
     }
 }
-
-const PING_PERIOD: time::Duration = time::Duration::from_secs(30);
 
 #[derive(Debug)]
 struct PingState<P: PubKey> {
@@ -160,7 +162,7 @@ impl<P: PubKey> PingState<P> {
         pings
     }
 
-    fn get_latency(&self, node_id: &NodeId<P>) -> Option<time::Duration> {
+    fn get_latency(&self, node_id: &NodeId<P>) -> Option<Duration> {
         self.validators.get(node_id).and_then(|v| v.avg_latency())
     }
 }
@@ -168,7 +170,7 @@ impl<P: PubKey> PingState<P> {
 #[derive(Debug)]
 struct SentVote {
     round: Round,
-    timestamp: time::Instant,
+    timestamp: Instant,
 }
 
 #[derive(Debug)]
@@ -240,7 +242,7 @@ impl<P: PubKey> BlockTimestamp<P> {
                 let latency = self
                     .ping_state
                     .get_latency(author)
-                    .unwrap_or(time::Duration::from_millis(self.latency_estimate_ms));
+                    .unwrap_or(Duration::from_millis(self.latency_estimate_ms));
                 let expected_block_ts = self.local_time.saturating_sub(
                     vote.timestamp.elapsed().saturating_sub(latency).as_millis() as u64,
                 );
@@ -279,24 +281,16 @@ impl<P: PubKey> BlockTimestamp<P> {
     }
 
     pub fn vote_sent(&mut self, round: Round) {
-        info!("vote sent for round {:?}", round);
-        match &self.sent_vote {
-            Some(vote) if vote.round >= round => {
-                info!("vote already sent for round {:?}", round);
-            }
-            _ => {
-                self.sent_vote = Some(SentVote {
-                    round,
-                    timestamp: time::Instant::now(),
-                });
-            }
-        }
+        self.sent_vote = Some(SentVote {
+            round,
+            timestamp: Instant::now(),
+        });
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::time;
+    use std::time::Duration;
 
     use monad_consensus_types::quorum_certificate::{
         TimestampAdjustment, TimestampAdjustmentDirection,
@@ -311,6 +305,8 @@ mod test {
         BlockTimestamp, ValidatorData,
     };
 
+    use monad_testutil::signing::create_keys;
+
     #[test]
     fn test_block_timestamp_validate() {
         let mut b = BlockTimestamp::<NopPubKey>::new(10, 1);
@@ -323,7 +319,7 @@ mod test {
             .validators
             .get_mut(&author)
             .unwrap()
-            .update_latency(time::Duration::from_millis(1));
+            .update_latency(Duration::from_millis(1));
 
         b.update_time(10);
         b.vote_sent(Round(0));
@@ -333,7 +329,7 @@ mod test {
         assert!(b.valid_block_timestamp(9, 21, Round(1), &author).is_err());
 
         b.update_time(12);
-        std::thread::sleep(time::Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2));
 
         assert!(matches!(
             b.valid_block_timestamp(9, 12, Round(1), &author),
@@ -356,29 +352,29 @@ mod test {
     fn test_ping_state() {
         let mut state = ValidatorPingState::new();
         let seq = state.start_next();
-        state.update_latency(time::Duration::from_millis(1));
+        state.update_latency(Duration::from_millis(1));
 
         assert_eq!(state.avg_latency().unwrap().as_millis(), 1);
-        state.update_latency(time::Duration::from_millis(3));
+        state.update_latency(Duration::from_millis(3));
         assert_eq!(state.avg_latency().unwrap().as_millis(), 2);
-        state.update_latency(time::Duration::from_millis(6));
+        state.update_latency(Duration::from_millis(6));
         assert_eq!(state.avg_latency().unwrap().as_millis(), 3);
 
         for _ in 0..100 {
-            state.update_latency(time::Duration::from_millis(10));
+            state.update_latency(Duration::from_millis(10));
         }
 
-        assert_eq!(state.sum, state.latencies.iter().sum::<time::Duration>());
+        assert_eq!(state.sum, state.latencies.iter().sum::<Duration>());
         assert_eq!(
             state.avg_latency().unwrap(),
             state.sum / state.latencies.len() as u32
         );
 
         for _ in 0..50 {
-            state.update_latency(time::Duration::from_millis(50));
+            state.update_latency(Duration::from_millis(50));
         }
 
-        assert_eq!(state.sum, state.latencies.iter().sum::<time::Duration>());
+        assert_eq!(state.sum, state.latencies.iter().sum::<Duration>());
         assert_eq!(
             state.avg_latency().unwrap(),
             state.sum / state.latencies.len() as u32
@@ -396,25 +392,22 @@ mod test {
     fn test_update_validators() {
         let mut s = PingState::<NopPubKey>::new();
 
-        let my_key = NopKeyPair::from_bytes(&mut [0; 32]).unwrap().pubkey();
-        let my_node = NodeId::new(my_key);
+        let keys = create_keys::<NopSignature>(3);
+        let nodes: Vec<_> = keys.iter().map(|k| NodeId::new(k.pubkey())).collect();
 
-        let k_1 = NopKeyPair::from_bytes(&mut [1; 32]).unwrap().pubkey();
-        let node_1 = NodeId::new(k_1);
-
-        let k_2 = NopKeyPair::from_bytes(&mut [2; 32]).unwrap().pubkey();
-        let node_2 = NodeId::new(k_2);
+        let my_key = keys[0].pubkey();
+        let my_node = nodes[0];
 
         let validators = vec![
             ValidatorData::<SignatureCollection> {
-                node_id: node_1,
+                node_id: nodes[1],
                 stake: Stake(1),
-                cert_pubkey: node_1.pubkey(),
+                cert_pubkey: nodes[1].pubkey(),
             },
             ValidatorData {
-                node_id: node_2,
+                node_id: nodes[2],
                 stake: Stake(1),
-                cert_pubkey: node_2.pubkey(),
+                cert_pubkey: nodes[1].pubkey(),
             },
         ];
 
@@ -427,13 +420,13 @@ mod test {
         s.update_validators(&validators_1, &my_node);
 
         assert_eq!(s.validators.len(), 1);
-        assert!(s.validators.contains_key(&node_1));
+        assert!(s.validators.contains_key(&nodes[1]));
 
         let validators_2 = vec![validators[1].clone()];
         s.update_validators(&validators_2, &my_node);
 
         assert_eq!(s.validators.len(), 1);
-        assert!(s.validators.contains_key(&node_2));
+        assert!(s.validators.contains_key(&nodes[2]));
     }
 
     #[test]

@@ -535,7 +535,7 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
     /// Execution done syncing
     DoneSync(SeqNum),
 
-    // St 212atesync-requested block
+    // Statesync-requested block
     BlockSync {
         block_range: BlockRange,
         full_blocks: Vec<FullBlock<SCT>>,
