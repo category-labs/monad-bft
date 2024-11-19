@@ -9,7 +9,7 @@ use tokio::{
     time::{sleep, Duration},
     try_join,
 };
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use triedb::Triedb;
 
 use crate::{
@@ -39,14 +39,14 @@ async fn main() -> Result<(), ArchiveError> {
     let s3_archive = S3Archive::new(args.s3_bucket, args.db_table, args.region).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
-    let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or(12000000);
+    let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
 
     info!("Latest processed block is : {}", latest_processed_block);
 
-    // Check for new blocks every 10 ms
+    // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
     loop {
-        sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(100)).await;
 
         let block_number = match triedb.get_latest_block().await {
             Ok(number) => number,
@@ -54,6 +54,10 @@ async fn main() -> Result<(), ArchiveError> {
         };
 
         if block_number <= latest_processed_block {
+            info!(
+                "Nothing to process. S3 archive progress: {}, triedb progress: {}",
+                latest_processed_block, block_number
+            );
             continue;
         }
 
@@ -123,7 +127,10 @@ async fn handle_block(
     /*  Store Blocks */
     let block_header = match triedb.get_block_header(current_block).await? {
         Some(header) => header,
-        None => return Ok(()),
+        None => {
+            warn!("Can't find block {} in triedb", current_block);
+            return Ok(());
+        }
     };
     let transactions = triedb.get_transactions(current_block).await?;
 
