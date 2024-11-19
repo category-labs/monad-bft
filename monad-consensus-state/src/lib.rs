@@ -2379,7 +2379,7 @@ mod test {
             wrapped_state.block_timestamp.tick();
         }
         std::thread::sleep(Duration::from_millis(1));
-        for (val, _) in val_set.get_members() {
+        for val in val_set.get_members().keys() {
             wrapped_state
                 .block_timestamp
                 .pong_received(*val, PingSequence(1));
