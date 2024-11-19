@@ -18,7 +18,8 @@ use monad_consensus::{
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{
-    timestamp::BlockTimestamp, timestamp::PING_TICK_DURATION, ConsensusConfig, ConsensusState,
+    timestamp::{BlockTimestamp, PING_TICK_DURATION},
+    ConsensusConfig, ConsensusState,
 };
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},

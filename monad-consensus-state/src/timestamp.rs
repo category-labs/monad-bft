@@ -298,14 +298,13 @@ mod test {
     use monad_crypto::{
         certificate_signature::CertificateKeyPair, NopKeyPair, NopPubKey, NopSignature,
     };
+    use monad_testutil::signing::create_keys;
     use monad_types::{NodeId, Round, Stake};
 
     use crate::{
         timestamp::{PingState, ValidatorPingState},
         BlockTimestamp, ValidatorData,
     };
-
-    use monad_testutil::signing::create_keys;
 
     #[test]
     fn test_block_timestamp_validate() {
