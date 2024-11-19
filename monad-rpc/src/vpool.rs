@@ -307,6 +307,20 @@ impl VirtualPool {
             .map(|cur_nonce| nonce.checked_sub(cur_nonce).map(|v| v > 1).unwrap_or(false))
             .unwrap_or(false)
         {
+            // The chain cache is updated at each new block, and we can receive transactions before chain cache is updated.
+            // Check recently forward transactions to see if the transaction has a nonce gap.
+            let pending = self.pending_pool.by_addr(&sender);
+            if let Some(entry) = pending.last() {
+                if entry
+                    .nonce()
+                    .checked_add(1)
+                    .map(|v| v == nonce)
+                    .unwrap_or(false)
+                {
+                    return TxPoolType::Pending;
+                }
+            }
+
             return TxPoolType::Queue;
         }
 
