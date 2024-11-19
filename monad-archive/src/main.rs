@@ -36,10 +36,10 @@ async fn main() -> Result<(), ArchiveError> {
     let triedb = TriedbEnv::new(&args.triedb_path);
 
     // Construct an s3 instance
-    let s3_archive = S3Archive::new(args.s3_bucket, args.s3_region).await?;
+    let s3_archive = S3Archive::new(args.s3_bucket, args.db_table, args.region).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
-    let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
+    let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or(12000000);
 
     info!("Latest processed block is : {}", latest_processed_block);
 

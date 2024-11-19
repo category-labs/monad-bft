@@ -12,7 +12,10 @@ pub struct Cli {
     pub s3_bucket: String,
 
     #[arg(long)]
-    pub s3_region: Option<String>,
+    pub region: Option<String>,
+
+    #[arg(long)]
+    pub db_table: String,
 
     /// Set the max response size in bytes (the same as monad-rpc)
     #[arg(long, default_value_t = 25_000_000)]
