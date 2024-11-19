@@ -1,12 +1,16 @@
 use core::str;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use alloy_rlp::Encodable;
 use aws_config::meta::region::RegionProviderChain;
+use aws_sdk_dynamodb::{
+    types::{AttributeValue, PutRequest, WriteRequest},
+    Client as DbClient,
+};
 use aws_sdk_s3::{
     config::{BehaviorVersion, Region},
     primitives::ByteStream,
-    Client,
+    Client as S3Client,
 };
 use bytes::Bytes;
 use futures::try_join;
@@ -24,7 +28,7 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 
 #[derive(Clone)]
 pub struct S3Archive {
-    pub client: Client,
+    pub s3_client: S3Client,
     pub bucket: String,
 
     pub latest_table_key: String,
@@ -40,6 +44,9 @@ pub struct S3Archive {
 
     // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
     pub traces_table_prefix: String,
+
+    // For DynamoDB
+    pub db_client: DbClient,
 }
 
 impl S3Archive {
@@ -49,30 +56,34 @@ impl S3Archive {
                 .map(Region::new)
                 .unwrap_or_else(|| Region::new("us-east-2")),
         );
+
         let config = aws_config::defaults(BehaviorVersion::latest())
             .region(region_provider)
             .load()
             .await;
-        let client = Client::new(&config);
+        let s3_client = S3Client::new(&config);
+        let db_client = DbClient::new(&config);
+
         Ok(S3Archive {
-            client,
+            s3_client,
             bucket,
             block_table_prefix: "block".to_string(),
             block_hash_table_prefix: "block_hash".to_string(),
             receipts_table_prefix: "receipts".to_string(),
             traces_table_prefix: "traces".to_string(),
             latest_table_key: "latest".to_string(),
+            db_client,
         })
     }
 
     // Upload rlp-encoded bytes with retry
-    pub async fn upload(&self, key: &str, data: Vec<u8>) -> Result<(), ArchiveError> {
+    pub async fn upload_to_s3(&self, key: &str, data: Vec<u8>) -> Result<(), ArchiveError> {
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
             .map(jitter);
 
         Retry::spawn(retry_strategy, || {
-            let client = &self.client;
+            let client = &self.s3_client;
             let bucket = &self.bucket;
             let key = key.to_string();
             let body = ByteStream::from(data.clone());
@@ -101,9 +112,9 @@ impl S3Archive {
         Ok(())
     }
 
-    pub async fn read(&self, key: &str) -> Result<Bytes, ArchiveError> {
+    pub async fn read_from_s3(&self, key: &str) -> Result<Bytes, ArchiveError> {
         let resp = match self
-            .client
+            .s3_client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
@@ -128,6 +139,62 @@ impl S3Archive {
 
         Ok(data_bytes)
     }
+
+    pub async fn upload_to_db(
+        &self,
+        table: String,
+        values: Vec<WriteRequest>,
+    ) -> Result<(), ArchiveError> {
+        let chunk_size = 25;
+        let value_chunks = values.chunks(chunk_size);
+
+        for value_chunk in value_chunks {
+            let mut request_items = HashMap::new();
+            request_items.insert(table.clone(), value_chunk.to_vec());
+
+            let batch_write = self
+                .db_client
+                .batch_write_item()
+                .set_request_items(Some(request_items.clone()))
+                .send()
+                .await;
+
+            if batch_write.is_err() {
+                error!("Error is batch writing");
+                return Err(ArchiveError::custom_error("error in batch writing".into()));
+            }
+
+            // let retry_strategy = ExponentialBackoff::from_millis(10)
+            // .max_delay(Duration::from_secs(1))
+            // .map(jitter);
+            // Retry::spawn(retry_strategy, || {
+            //     match batch_write {
+            //         Ok(output) => {
+            //             if let Some(unprocessed_items) = output.unprocessed_items().and_then(|items| items.get(&table.clone())) {
+            //                 if !unprocessed_items.is_empty() {
+            //                     remaining_items.insert(table.clone(), unprocessed_items.clone());
+            //                     warn!("Failed to upload all items");
+            //                     Err(ArchiveError::custom_error("Failed to upload all items".into()))
+            //                 }else{
+            //                     Ok(())
+            //                 }
+            //             }else{
+            //                 Ok(())
+            //             }
+            //         },
+            //         Err(e) => {
+            //             Err(ArchiveError::custom_error("Failed to upload all items".into()))
+            //         }
+            //     }
+            // }).await
+            // .map(|_| ())
+            // .map_err(|_| {
+            //     ArchiveError::custom_error("message".into())
+            // })?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -147,7 +214,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
     async fn get_latest(&self) -> Result<u64, ArchiveError> {
         let key = &self.archive.latest_table_key;
 
-        let value = self.archive.read(key).await?;
+        let value = self.archive.read_from_s3(key).await?;
 
         let value_str = String::from_utf8(value.to_vec()).map_err(|e| {
             error!("Invalid UTF-8 sequence: {}", e);
@@ -170,7 +237,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let key = &self.archive.latest_table_key;
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
         self.archive
-            .upload(key, latest_value.as_bytes().to_vec())
+            .upload_to_s3(key, latest_value.as_bytes().to_vec())
             .await
     }
 
@@ -203,12 +270,36 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
         // 3) Join futures
         try_join!(
-            self.archive.upload(&block_key, rlp_block),
+            self.archive.upload_to_s3(&block_key, rlp_block),
             self.archive
-                .upload(&block_hash_key, block_hash_value.to_vec())
+                .upload_to_s3(&block_hash_key, block_hash_value.to_vec())
         )?;
 
-        Ok(())
+        // 4) Update DynamoDB
+        let mut requests = Vec::new();
+
+        for tx in transactions {
+            let mut attribute_map = HashMap::new();
+            attribute_map.insert(
+                "tx_hash".to_string(),
+                AttributeValue::S(hex::encode(tx.hash)),
+            );
+            attribute_map.insert(
+                "block_number".to_string(),
+                AttributeValue::S(block_num.to_string()),
+            );
+
+            let put_request = PutRequest::builder()
+                .set_item(Some(attribute_map))
+                .build()
+                .expect("Build successful");
+
+            let write_request = WriteRequest::builder().put_request(put_request).build();
+
+            requests.push(write_request);
+        }
+
+        self.archive.upload_to_db("tx-hash".into(), requests).await
     }
 
     async fn archive_receipts(
@@ -226,7 +317,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
 
         let mut rlp_receipts = Vec::new();
         receipts.encode(&mut rlp_receipts);
-        self.archive.upload(&receipts_key, rlp_receipts).await
+        self.archive.upload_to_s3(&receipts_key, rlp_receipts).await
     }
 
     async fn archive_traces(
@@ -244,7 +335,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         let mut rlp_traces = vec![];
         traces.encode(&mut rlp_traces);
 
-        self.archive.upload(&traces_key, rlp_traces).await
+        self.archive.upload_to_s3(&traces_key, rlp_traces).await
     }
 }
 

@@ -18,6 +18,7 @@ monad-triedb-utils = { path = "../monad-triedb-utils" }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 aws-config = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
