@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Instant};
 use clap::Parser;
 use futures::future::join_all;
 use reth_primitives::ReceiptWithBloom;
-use s3_archive::S3ArchiveWriter;
+use s3_archive::{DynamoDBArchive, S3ArchiveWriter};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
@@ -36,7 +36,8 @@ async fn main() -> Result<(), ArchiveError> {
     let triedb = TriedbEnv::new(&args.triedb_path);
 
     // Construct an s3 instance
-    let s3_archive = S3Archive::new(args.s3_bucket, args.db_table, args.region).await?;
+    let (s3_archive, dynamodb_archive) =
+        S3Archive::new(args.s3_bucket, args.db_table, args.region).await?;
     let s3_archive_writer = S3ArchiveWriter::new(s3_archive).await?;
 
     let mut latest_processed_block = (s3_archive_writer.get_latest().await).unwrap_or_default();
@@ -78,6 +79,7 @@ async fn main() -> Result<(), ArchiveError> {
         let join_handles = (start_block_number..=block_number).map(|current_block: u64| {
             let triedb = triedb.clone();
             let s3_archive_writer = s3_archive_writer.clone();
+            let dynamodb_archive = dynamodb_archive.clone();
 
             let semaphore = concurrent_block_semaphore.clone();
             tokio::spawn(async move {
@@ -85,7 +87,13 @@ async fn main() -> Result<(), ArchiveError> {
                     .acquire()
                     .await
                     .expect("Got permit to execute a new block");
-                let _ = handle_block(&triedb, current_block, &s3_archive_writer).await;
+                let _ = handle_block(
+                    &triedb,
+                    current_block,
+                    &s3_archive_writer,
+                    &dynamodb_archive,
+                )
+                .await;
                 std::mem::drop(permit);
             })
         });
@@ -123,6 +131,7 @@ async fn handle_block(
     triedb: &TriedbEnv,
     current_block: u64,
     s3_archive: &S3ArchiveWriter,
+    dynamodb_archive: &DynamoDBArchive,
 ) -> Result<(), ArchiveError> {
     /*  Store Blocks */
     let block_header = match triedb.get_block_header(current_block).await? {
@@ -133,6 +142,12 @@ async fn handle_block(
         }
     };
     let transactions = triedb.get_transactions(current_block).await?;
+
+    /* Upload tx indexes */
+    let f_index = dynamodb_archive.index_block(
+        transactions.iter().map(|tx| tx.hash).collect(),
+        current_block,
+    );
 
     let f_block = s3_archive.archive_block(block_header, transactions, current_block);
 
@@ -146,7 +161,7 @@ async fn handle_block(
 
     let f_trace = s3_archive.archive_traces(traces, current_block);
 
-    match try_join!(f_block, f_receipt, f_trace) {
+    match try_join!(f_block, f_receipt, f_trace, f_index) {
         Ok(_) => {
             info!("Successfully archived block {}", current_block);
         }

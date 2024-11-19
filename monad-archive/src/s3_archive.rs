@@ -2,7 +2,7 @@ use core::str;
 use std::{collections::HashMap, sync::Arc};
 
 use alloy_rlp::Encodable;
-use aws_config::meta::region::RegionProviderChain;
+use aws_config::{meta::region::RegionProviderChain, SdkConfig};
 use aws_sdk_dynamodb::{
     types::{AttributeValue, PutRequest, WriteRequest},
     Client as DbClient,
@@ -14,7 +14,7 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use futures::{future::join_all, try_join};
-use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
+use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned, TxHash};
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -45,19 +45,142 @@ pub struct S3Archive {
 
     // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
     pub traces_table_prefix: String,
+}
 
+#[derive(Clone)]
+pub struct DynamoDBArchive {
     // For DynamoDB
-    pub db_client: DbClient,
+    pub client: DbClient,
+    pub table: String,
+}
 
-    pub db_table: String,
+impl DynamoDBArchive {
+    pub fn new(table: String, config: SdkConfig) -> Self {
+        let client = DbClient::new(&config);
+        Self { client, table }
+    }
+
+    pub async fn index_block(
+        &self,
+        hashes: Vec<TxHash>,
+        block_num: u64,
+    ) -> Result<(), ArchiveError> {
+        let mut requests = Vec::new();
+
+        for hash in hashes {
+            let mut attribute_map = HashMap::new();
+            attribute_map.insert("tx_hash".to_string(), AttributeValue::S(hex::encode(hash)));
+            attribute_map.insert(
+                "block_number".to_string(),
+                AttributeValue::S(block_num.to_string()),
+            );
+
+            let put_request = PutRequest::builder()
+                .set_item(Some(attribute_map))
+                .build()
+                .expect("Build successful");
+
+            let write_request = WriteRequest::builder().put_request(put_request).build();
+
+            requests.push(write_request);
+        }
+
+        let batch_writes = split_into_batches(requests, MAX_BATCH_SIZE);
+        let mut batch_write_handles = Vec::new();
+        for batch_write in batch_writes {
+            let batch_write = batch_write.clone();
+
+            let this = (*self).clone();
+            let handle = tokio::spawn(async move { this.upload_to_db(batch_write).await });
+
+            batch_write_handles.push(handle);
+        }
+
+        let results = join_all(batch_write_handles).await;
+
+        for (idx, batch_write_result) in results.into_iter().enumerate() {
+            if let Err(e) = batch_write_result {
+                error!("Failed to upload index: {}, {:?}", idx, e);
+                return Err(ArchiveError::custom_error(format!(
+                    "Failed to upload index: {}, {:?}",
+                    idx, e
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn upload_to_db(&self, values: Vec<WriteRequest>) -> Result<(), ArchiveError> {
+        if values.len() > 25 {
+            panic!("Batch size larger than limit = 25")
+        }
+
+        let retry_strategy = ExponentialBackoff::from_millis(10)
+            .max_delay(Duration::from_secs(1))
+            .map(jitter);
+
+        // TODO: Only deal with unprocessed items, but it's pretty complicated
+        Retry::spawn(retry_strategy, || {
+            let values = values.clone();
+            // let client = client;
+            let client = &self.client;
+            let table = self.table.clone();
+
+            async move {
+                let mut batch_write: HashMap<String, Vec<WriteRequest>> = HashMap::new();
+                batch_write.insert(table.clone(), values.clone());
+
+                let response = client
+                    .batch_write_item()
+                    .set_request_items(Some(batch_write.clone()))
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        warn!("Failed to upload to table {}: {}. Retrying...", table, e);
+                        ArchiveError::custom_error(format!(
+                            "Failed to upload to table {}: {}",
+                            table, e
+                        ))
+                    })?;
+
+                // Check for unprocessed items
+                if let Some(unprocessed) = response.unprocessed_items() {
+                    if !unprocessed.is_empty() {
+                        warn!(
+                            "Unprocessed items detected for table {}: {}. Retrying...",
+                            table,
+                            unprocessed.get(&table).map(|v| v.len()).unwrap_or(0)
+                        );
+                        return Err(ArchiveError::custom_error(
+                            "Unprocessed items detected".into(),
+                        ));
+                    }
+                }
+
+                Ok(())
+            }
+        })
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            error!(
+                "Failed to upload to table {} after retries: {:?}",
+                self.table, e
+            );
+            ArchiveError::custom_error(format!(
+                "Failed to upload to table {} after retries: {:?}",
+                self.table, e
+            ))
+        })
+    }
 }
 
 impl S3Archive {
     pub async fn new(
         bucket: String,
-        db_table: String,
+        table: String,
         region: Option<String>,
-    ) -> Result<Self, ArchiveError> {
+    ) -> Result<(Self, DynamoDBArchive), ArchiveError> {
         let region_provider = RegionProviderChain::default_provider().or_else(
             region
                 .map(Region::new)
@@ -69,19 +192,19 @@ impl S3Archive {
             .load()
             .await;
         let s3_client = S3Client::new(&config);
-        let db_client = DbClient::new(&config);
 
-        Ok(S3Archive {
-            s3_client,
-            bucket,
-            block_table_prefix: "block".to_string(),
-            block_hash_table_prefix: "block_hash".to_string(),
-            receipts_table_prefix: "receipts".to_string(),
-            traces_table_prefix: "traces".to_string(),
-            latest_table_key: "latest".to_string(),
-            db_client,
-            db_table: db_table,
-        })
+        Ok((
+            S3Archive {
+                s3_client,
+                bucket,
+                block_table_prefix: "block".to_string(),
+                block_hash_table_prefix: "block_hash".to_string(),
+                receipts_table_prefix: "receipts".to_string(),
+                traces_table_prefix: "traces".to_string(),
+                latest_table_key: "latest".to_string(),
+            },
+            DynamoDBArchive::new(table, config),
+        ))
     }
 
     // Upload rlp-encoded bytes with retry
@@ -146,72 +269,6 @@ impl S3Archive {
         let data_bytes = data.into_bytes();
 
         Ok(data_bytes)
-    }
-
-    pub async fn upload_to_db(
-        &self,
-        table: String,
-        values: Vec<WriteRequest>,
-    ) -> Result<(), ArchiveError> {
-        if values.len() > 25 {
-            panic!("Batch size larger than limit = 25")
-        }
-
-        let retry_strategy = ExponentialBackoff::from_millis(10)
-            .max_delay(Duration::from_secs(1))
-            .map(jitter);
-
-        // TODO: Only deal with unprocessed items, but it's pretty complicated
-        Retry::spawn(retry_strategy, || {
-            let client = &self.db_client;
-            let table = table.to_string();
-            let values = values.clone();
-
-            async move {
-                let mut batch_write: HashMap<String, Vec<WriteRequest>> = HashMap::new();
-                batch_write.insert(table.clone(), values.clone());
-
-                let response = client
-                    .batch_write_item()
-                    .set_request_items(Some(batch_write.clone()))
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        warn!("Failed to upload to table {}: {}. Retrying...", table, e);
-                        ArchiveError::custom_error(format!(
-                            "Failed to upload to table {}: {}",
-                            table, e
-                        ))
-                    })?;
-
-                // Check for unprocessed items
-                if let Some(unprocessed) = response.unprocessed_items() {
-                    if !unprocessed.is_empty() {
-                        warn!(
-                            "Unprocessed items detected for table {}: {}. Retrying...",
-                            table,
-                            unprocessed.get(&table).map(|v| v.len()).unwrap_or(0)
-                        );
-                        return Err(ArchiveError::custom_error(
-                            "Unprocessed items detected".into(),
-                        ));
-                    }
-                }
-
-                Ok(())
-            }
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            error!("Failed to upload to table {} after retries: {:?}", table, e);
-            ArchiveError::custom_error(format!(
-                "Failed to upload to table {} after retries: {:?}",
-                table, e
-            ))
-        })?;
-
-        Ok(())
     }
 }
 
@@ -292,56 +349,6 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
             self.archive
                 .upload_to_s3(&block_hash_key, block_hash_value.to_vec())
         )?;
-
-        // 4) Update DynamoDB
-        let mut requests = Vec::new();
-
-        for tx in transactions {
-            let mut attribute_map = HashMap::new();
-            attribute_map.insert(
-                "tx_hash".to_string(),
-                AttributeValue::S(hex::encode(tx.hash)),
-            );
-            attribute_map.insert(
-                "block_number".to_string(),
-                AttributeValue::S(block_num.to_string()),
-            );
-
-            let put_request = PutRequest::builder()
-                .set_item(Some(attribute_map))
-                .build()
-                .expect("Build successful");
-
-            let write_request = WriteRequest::builder().put_request(put_request).build();
-
-            requests.push(write_request);
-        }
-
-        let batch_writes = split_into_batches(requests, MAX_BATCH_SIZE);
-        let mut batch_write_handles = Vec::new();
-        for batch_write in batch_writes {
-            let archive = Arc::clone(&self.archive);
-            let table = self.archive.db_table.clone();
-            let batch_write = batch_write.clone();
-
-            let handle =
-                tokio::spawn(async move { archive.upload_to_db(table, batch_write).await });
-
-            batch_write_handles.push(handle);
-        }
-
-        let results = join_all(batch_write_handles).await;
-
-        for (idx, batch_write_result) in results.into_iter().enumerate() {
-            if let Err(e) = batch_write_result {
-                error!("Failed to upload index: {}, {:?}", idx, e);
-                return Err(ArchiveError::custom_error(format!(
-                    "Failed to upload index: {}, {:?}",
-                    idx, e
-                )));
-            }
-        }
-
         Ok(())
     }
 
