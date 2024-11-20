@@ -17,7 +17,6 @@ monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-state-backend = { path = "../monad-state-backend" }
-monad-triedb = { path = "../monad-triedb", optional = true }
 monad-types = { path = "../monad-types" }
 bytes = { workspace = true }
 futures = { workspace = true }

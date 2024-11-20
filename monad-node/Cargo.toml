@@ -35,10 +35,7 @@ monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-statesync = { path = "../monad-statesync" }
 monad-types = { path = "../monad-types" }
-monad-updaters = { path = "../monad-updaters", features = [
-    "monad-triedb",
-    "tokio",
-] }
+monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 monad-triedb-cache = { path = "../monad-triedb-cache" }

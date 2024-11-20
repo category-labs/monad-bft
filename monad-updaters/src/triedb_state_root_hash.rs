@@ -16,7 +16,6 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_triedb::TriedbHandle;
 use monad_types::{Epoch, SeqNum};
 use tracing::{debug, error, warn};
 
@@ -55,40 +54,41 @@ impl<ST, SCT: SignatureCollection> StateRootHashTriedbPoll<ST, SCT> {
 
         let path = triedb_path.to_path_buf();
         rayon::spawn(move || {
-            // FIXME: handle error, maybe retry
-            let handle = TriedbHandle::try_new(path.as_path()).unwrap();
+            todo!()
+            // // FIXME: handle error, maybe retry
+            // let handle = TriedbHandle::try_new(path.as_path()).unwrap();
 
-            loop {
-                let seq_num: SeqNum = seq_num_recv.recv().unwrap(); //FIXME
-                let mut num_tries = 0_usize;
-                'poll_triedb: loop {
-                    if seq_num < *cancel_below_clone.lock().unwrap() {
-                        break 'poll_triedb;
-                    }
-                    num_tries += 1;
-                    let result = handle.get_state_root(seq_num.0);
-                    debug!(?seq_num, ?result, "polled state_root_hash");
-                    if let Some(state_root) = result {
-                        let state_root = state_root
-                            .try_into()
-                            .expect("state root from triedb must be 32 Bytes");
-                        let s = StateRootHashInfo {
-                            state_root_hash: StateRootHash(Hash(state_root)),
-                            seq_num,
-                        };
+            // loop {
+            //     let seq_num: SeqNum = seq_num_recv.recv().unwrap(); //FIXME
+            //     let mut num_tries = 0_usize;
+            //     'poll_triedb: loop {
+            //         if seq_num < *cancel_below_clone.lock().unwrap() {
+            //             break 'poll_triedb;
+            //         }
+            //         num_tries += 1;
+            //         let result = handle.get_state_root(seq_num.0);
+            //         debug!(?seq_num, ?result, "polled state_root_hash");
+            //         if let Some(state_root) = result {
+            //             let state_root = state_root
+            //                 .try_into()
+            //                 .expect("state root from triedb must be 32 Bytes");
+            //             let s = StateRootHashInfo {
+            //                 state_root_hash: StateRootHash(Hash(state_root)),
+            //                 seq_num,
+            //             };
 
-                        triedb_send.send(s).unwrap();
-                        break 'poll_triedb;
-                    }
+            //             triedb_send.send(s).unwrap();
+            //             break 'poll_triedb;
+            //         }
 
-                    if num_tries > 1 {
-                        warn!(?seq_num, ?num_tries, "no state root");
-                    } else {
-                        debug!(?seq_num, ?num_tries, "no state root");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            }
+            //         if num_tries > 1 {
+            //             warn!(?seq_num, ?num_tries, "no state root");
+            //         } else {
+            //             debug!(?seq_num, ?num_tries, "no state root");
+            //         }
+            //         std::thread::sleep(std::time::Duration::from_millis(50));
+            //     }
+            // }
         });
 
         Self {

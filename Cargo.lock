@@ -4462,7 +4462,6 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-state-backend",
- "monad-triedb",
  "monad-types",
  "ntest",
  "rand",
