@@ -6,5 +6,4 @@ pub struct NodeConsensusConfig {
     pub block_txn_limit: usize,
     pub block_gas_limit: u64,
     pub execution_delay: u64,
-    pub max_reserve_balance: u64,
 }
