@@ -20,7 +20,7 @@ use tokio_retry::{
 use tracing::info;
 
 use crate::{
-    archive_interface::{ArchiveWriterInterface, LatestKind},
+    archive_interface::{ArchiveReaderInterface, ArchiveWriterInterface, LatestKind},
     triedb::BlockHeader,
 };
 
@@ -249,6 +249,133 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
         traces.encode(&mut rlp_traces);
 
         self.bucket.upload(&traces_key, rlp_traces).await
+    }
+}
+
+pub struct S3ArchiveReader {
+    pub bucket: Arc<S3Bucket>,
+
+    pub latest_uploaded_table_key: &'static str,
+    pub latest_indexed_table_key: &'static str,
+
+    // key =  {block}/{block_number}, value = {RLP(Block)}
+    pub block_table_prefix: &'static str,
+
+    // key = {block_hash}/{$block_hash}, value = {str(block_number)}
+    pub block_hash_table_prefix: &'static str,
+
+    // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
+    pub receipts_table_prefix: &'static str,
+
+    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
+    pub traces_table_prefix: &'static str,
+}
+
+impl S3ArchiveReader {
+    pub async fn new(archive: S3Bucket) -> Result<Self> {
+        Ok(S3ArchiveReader {
+            bucket: Arc::new(archive),
+            block_table_prefix: "block",
+            block_hash_table_prefix: "block_hash",
+            receipts_table_prefix: "receipts",
+            traces_table_prefix: "traces",
+            latest_uploaded_table_key: "latest",
+            latest_indexed_table_key: "latest_indexed",
+        })
+    }
+
+    pub async fn read_block(&self, block_num: u64) -> Result<Block> {
+        let bytes = self.bucket.read(&self.block_key(block_num)).await?;
+        let mut bytes: &[u8] = &bytes;
+        let block = Block::decode(&mut bytes)?;
+        Ok(block)
+    }
+
+    pub fn block_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.block_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+
+    pub fn receipts_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.receipts_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+
+    pub fn traces_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.traces_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+}
+
+impl ArchiveReaderInterface for S3ArchiveReader {
+    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
+        let key = match latest_kind {
+            LatestKind::Uploaded => &self.latest_uploaded_table_key,
+            LatestKind::Indexed => &self.latest_indexed_table_key,
+        };
+
+        let value = self.bucket.read(key).await?;
+
+        let value_str = String::from_utf8(value.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
+
+        // Parse the string as u64
+        value_str.parse::<u64>().wrap_err_with(|| {
+            format!("Unable to convert block_number string to number (u64), value: {value_str}")
+        })
+    }
+
+    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
+        self.read_block(block_num).await
+    }
+
+    async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block> {
+        let block_hash_key_suffix = hex::encode(block_hash);
+        let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
+
+        let block_num_bytes = self.bucket.read(&block_hash_key).await?;
+
+        let block_num_str =
+            String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
+
+        let block_num = block_num_str.parse::<u64>().wrap_err_with(|| {
+            format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
+        })?;
+
+        self.get_block_by_number(block_num).await
+    }
+
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+        let receipts_key = self.receipts_key(block_number);
+
+        let rlp_receipts = self.bucket.read(&receipts_key).await?;
+        let mut rlp_receipts_slice: &[u8] = &rlp_receipts;
+
+        let receipts = Vec::decode(&mut rlp_receipts_slice).wrap_err("Cannot decode block")?;
+
+        Ok(receipts)
+    }
+
+    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
+        let traces_key = self.traces_key(block_number);
+
+        let rlp_traces = self.bucket.read(&traces_key).await?;
+        let mut rlp_traces_slice: &[u8] = &rlp_traces;
+
+        let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
+
+        Ok(traces)
     }
 }
 

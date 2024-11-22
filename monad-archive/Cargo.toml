@@ -5,6 +5,10 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
+name = "monad-archive-checker"
+bench = false
+
+[[bin]]
 name = "monad-archiver"
 bench = false
 

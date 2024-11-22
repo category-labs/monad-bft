@@ -121,9 +121,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        s3_archive_writer
-            .update_latest(current_join_block, LatestKind::Uploaded)
-            .await?;
+        if current_join_block != 0 {
+            s3_archive_writer
+                .update_latest(current_join_block - 1, LatestKind::Uploaded)
+                .await?;
+        }
 
         let duration = start.elapsed();
         info!("Time spent = {:?}", duration);
