@@ -207,6 +207,8 @@ void triedb_traverse(
                     path_bytes,
                     node.value().data(),
                     node.value().size());
+
+                delete[] path_data;
             }
 
             return true;
