@@ -4,7 +4,7 @@ use monad_blocksync::blocksync::{
     BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
 };
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock, metrics::Metrics,
     payload::StateRootValidator, signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -57,8 +57,8 @@ where
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<CL: Clock>(
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,

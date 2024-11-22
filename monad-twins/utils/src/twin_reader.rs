@@ -12,6 +12,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
+    clock::AdjusterConfig,
     payload::{StateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -144,6 +145,10 @@ where
                 beneficiary: self.state_config.beneficiary,
 
                 consensus_config: self.state_config.consensus_config,
+                adjuster_config: AdjusterConfig::Enabled {
+                    max_delta: 100,
+                    adjustment_period: 10001,
+                },
             },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
@@ -382,6 +387,10 @@ where
                 start_execution_threshold: SeqNum(300),
                 vote_pace: Duration::from_millis(vote_pace_ms),
                 timestamp_latency_estimate_ms: 10,
+            },
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta: 100,
+                adjustment_period: 10001,
             },
         })
         .collect();

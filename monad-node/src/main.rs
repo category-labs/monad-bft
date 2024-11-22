@@ -11,7 +11,11 @@ use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig}
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
+use monad_consensus_types::{
+    clock::{AdjusterConfig, SystemClock},
+    metrics::Metrics,
+    payload::StateRoot,
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -214,7 +218,7 @@ async fn run(
             checkpoint_validators_last.validators,
             val_set_update_interval,
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::new(Duration::from_millis(5)),
         ipc: IpcReceiver::new(
             node_state.mempool_ipc_path,
             node_state.node_config.ipc_tx_batch_size as usize, // tx_batch_size
@@ -315,9 +319,10 @@ async fn run(
             vote_pace: Duration::from_millis(500),
             timestamp_latency_estimate_ms: 20,
         },
+        adjuster_config: AdjusterConfig::Disabled, // TODO: enable timestamp adjuster
     };
 
-    let (mut state, init_commands) = builder.build();
+    let (mut state, init_commands) = builder.build::<SystemClock>();
     executor.exec(init_commands);
 
     let network_name_hash = {

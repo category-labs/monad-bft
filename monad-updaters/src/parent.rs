@@ -9,7 +9,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     CheckpointCommand, Command, ControlPanelCommand, LedgerCommand, LoopbackCommand, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, TimerCommand, TimestampCommand,
+    StateRootHashCommand, StateSyncCommand, TimerCommand,
 };
 
 /// Single top-level executor for all other required by a node.
@@ -41,7 +41,6 @@ where
     SE: Executor<Command = StateRootHashCommand<SCT>>,
     CPE: Executor<Command = ControlPanelCommand<SCT>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
-    TSE: Executor<Command = TimestampCommand>,
     SSE: Executor<Command = StateSyncCommand<SCT::NodeIdPubKey>>,
 {
     type Command = Command<E, OM, SCT>;
@@ -56,7 +55,6 @@ where
             state_root_hash_cmds,
             loopback_cmds,
             control_panel_cmds,
-            timestamp_cmds,
             state_sync_cmds,
         ) = Command::split_commands(commands);
 
@@ -65,7 +63,6 @@ where
         self.ledger.exec(ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
-        self.timestamp.exec(timestamp_cmds);
         self.loopback.exec(loopback_cmds);
         self.control_panel.exec(control_panel_cmds);
         self.state_sync.exec(state_sync_cmds);
@@ -78,7 +75,6 @@ where
             .chain(self.ledger.metrics())
             .chain(self.checkpoint.metrics())
             .chain(self.state_root_hash.metrics())
-            .chain(self.timestamp.metrics())
             .chain(self.loopback.metrics())
             .chain(self.control_panel.metrics())
             .chain(self.state_sync.metrics())

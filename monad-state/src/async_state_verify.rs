@@ -5,6 +5,7 @@ use monad_consensus::{messages::message::PeerStateRootMessage, validation::signi
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
+    clock::Clock,
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -61,8 +62,8 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<CL: Clock>(
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,

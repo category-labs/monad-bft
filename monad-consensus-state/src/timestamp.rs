@@ -1,46 +1,74 @@
-use monad_consensus_types::quorum_certificate::{
-    TimestampAdjustment, TimestampAdjustmentDirection,
+use std::cmp::max;
+
+use monad_consensus_types::{
+    clock::{AdjusterConfig, Clock},
+    quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
 };
 
+use crate::timestamp_adjuster::TimestampAdjuster;
+
 #[derive(Debug)]
-pub struct BlockTimestamp {
-    local_time: u64,
+pub struct BlockTimestamp<T: Clock> {
+    clock: T,
 
     max_delta: u64,
 
     /// TODO: this needs an upper-bound
     latency_estimate_ms: u64,
+
+    adjuster: Option<TimestampAdjuster>,
 }
 
-impl BlockTimestamp {
-    pub fn new(max_delta: u64, latency_estimate_ms: u64) -> Self {
+impl<T: Clock> BlockTimestamp<T> {
+    pub fn new(max_delta: u64, latency_estimate_ms: u64, adjuster_config: AdjusterConfig) -> Self {
         assert!(latency_estimate_ms > 0);
+        println!("adjuster_config: {:?}", adjuster_config);
         Self {
-            local_time: 0,
+            clock: T::new(),
             max_delta,
             latency_estimate_ms,
+            adjuster: match adjuster_config {
+                AdjusterConfig::Disabled => None,
+                AdjusterConfig::Enabled {
+                    max_delta,
+                    adjustment_period,
+                } => Some(TimestampAdjuster::new(max_delta, adjustment_period)),
+            },
         }
     }
 
     pub fn update_time(&mut self, time: u64) {
-        self.local_time = time;
+        self.clock.update(time);
     }
 
-    pub fn get_current_time(&self) -> u64 {
-        self.local_time
-    }
-
-    pub fn get_valid_block_timestamp(&self, prev_block_ts: u64) -> u64 {
-        if self.local_time <= prev_block_ts {
-            prev_block_ts + 1
-        } else {
-            self.local_time
+    pub fn handle_adjustment(&mut self, delta: TimestampAdjustment) {
+        if let Some(adjuster) = &mut self.adjuster {
+            adjuster.handle_adjustment(delta);
         }
     }
 
+    pub fn get_current_time(&self) -> u64 {
+        let now = self.clock.get();
+        if let Some(adjuster) = &self.adjuster {
+            let adjustment = adjuster.get_adjustment();
+            if adjustment >= 0 {
+                now.checked_add(adjustment as u64).unwrap_or(now)
+            } else {
+                now.saturating_sub(adjustment.unsigned_abs())
+            }
+        } else {
+            now
+        }
+    }
+
+    pub fn get_valid_block_timestamp(&self, prev_block_ts: u64) -> u64 {
+        max(prev_block_ts + 1, self.get_current_time())
+    }
+
     fn valid_bounds(&self, timestamp: u64) -> bool {
-        let lower_bound = self.local_time.saturating_sub(self.max_delta);
-        let upper_bound = self.local_time.saturating_add(self.max_delta);
+        let now = self.get_current_time();
+        let lower_bound = now.saturating_sub(self.max_delta);
+        let upper_bound = now.saturating_add(self.max_delta);
 
         lower_bound <= timestamp && timestamp <= upper_bound
     }
@@ -61,10 +89,11 @@ impl BlockTimestamp {
                     None
                 } else {
                     // return the delta between local time and block time for adjustment
-                    let mut adjustment = self.local_time.abs_diff(curr_block_ts);
+                    let now = self.get_current_time();
+                    let mut adjustment = now.abs_diff(curr_block_ts);
                     // adjust for estimated latency
                     adjustment = adjustment.saturating_sub(self.latency_estimate_ms);
-                    if curr_block_ts > self.local_time {
+                    if curr_block_ts > now {
                         Some(TimestampAdjustment {
                             delta: adjustment,
                             direction: TimestampAdjustmentDirection::Forward,
@@ -83,15 +112,16 @@ impl BlockTimestamp {
 
 #[cfg(test)]
 mod test {
-    use monad_consensus_types::quorum_certificate::{
-        TimestampAdjustment, TimestampAdjustmentDirection,
+    use monad_consensus_types::{
+        clock::TestClock,
+        quorum_certificate::{TimestampAdjustment, TimestampAdjustmentDirection},
     };
 
-    use crate::BlockTimestamp;
+    use crate::{timestamp::AdjusterConfig, BlockTimestamp};
 
     #[test]
     fn test_block_timestamp_validate() {
-        let mut b = BlockTimestamp::new(10, 1);
+        let mut b = BlockTimestamp::<TestClock>::new(10, 1, AdjusterConfig::Disabled);
         b.update_time(0);
 
         assert!(b.valid_block_timestamp(1, 1).is_none());

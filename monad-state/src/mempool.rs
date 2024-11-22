@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock, metrics::Metrics,
     payload::StateRootValidator, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
@@ -69,8 +69,8 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<CL: Clock>(
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,

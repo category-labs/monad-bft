@@ -90,17 +90,17 @@ impl SubPool {
                 match tree.contains(&txn.nonce()) {
                     true if overwrite => {
                         entry.get_mut().remove(&txn.nonce());
-                        entry.get_mut().insert(txn.nonce(), txn.clone());
+                        let _ = entry.get_mut().insert(txn.nonce(), txn.clone());
                     }
                     false => {
-                        entry.get_mut().insert(txn.nonce(), txn.clone());
+                        let _ = entry.get_mut().insert(txn.nonce(), txn.clone());
                     }
                     _ => {}
                 }
             }
             scc::hash_map::Entry::Vacant(entry) => {
                 let tree = TreeIndex::new();
-                tree.insert(txn.nonce(), txn.clone());
+                let _ = tree.insert(txn.nonce(), txn.clone());
                 entry.insert_entry(tree);
 
                 self.evict.write().await.push_front(txn.signer());
@@ -221,7 +221,7 @@ impl ChainCache {
         for txn in block.transactions.iter().rev() {
             let sender = txn.recover_signer_unchecked().unwrap_or_default();
             let nonce = txn.nonce();
-            senders.insert(sender, nonce);
+            let _ = senders.insert(sender, nonce);
         }
 
         let mut add_to_eviction_list = Vec::<(Address, u64)>::new();
@@ -231,7 +231,7 @@ impl ChainCache {
                     entry.update(*nonce);
                 }
                 None => {
-                    self.inner.accounts.insert(*sender, *nonce);
+                    let _ = self.inner.accounts.insert(*sender, *nonce);
                 }
             }
             add_to_eviction_list.push((*sender, *nonce));

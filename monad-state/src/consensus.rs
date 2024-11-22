@@ -12,6 +12,7 @@ use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, Consensu
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
+    clock::Clock,
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -24,7 +25,7 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
     MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncCommand,
-    StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand,
+    StateSyncEvent, TimeoutVariant, TimerCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum};
@@ -39,7 +40,7 @@ use crate::{
     VerifiedMonadMessage,
 };
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -50,6 +51,7 @@ where
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
+    CL: Clock,
 {
     consensus: &'a mut ConsensusMode<SCT, BPT, SBT>,
 
@@ -64,7 +66,7 @@ where
     version: &'a MonadVersion,
 
     state_root_validator: &'a SVT,
-    block_timestamp: &'a BlockTimestamp,
+    block_timestamp: &'a mut BlockTimestamp<CL>,
     block_validator: &'a BVT,
     beneficiary: &'a EthAddress,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -76,8 +78,8 @@ where
     _phantom: PhantomData<ASVT>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
+    ConsensusChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -88,9 +90,10 @@ where
     TT: TxPool<SCT, BPT, SBT>,
     BVT: BlockValidator<SCT, BPT, SBT>,
     SVT: StateRootValidator,
+    CL: Clock,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -106,7 +109,7 @@ where
             version: &monad_state.version,
 
             state_root_validator: &monad_state.state_root_validator,
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -409,9 +412,6 @@ where
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::MempoolEvent(MempoolEvent::Clear),
                 )));
-            }
-            ConsensusCommand::TimestampUpdate(t) => {
-                parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }
             ConsensusCommand::ScheduleVote { duration, round } => {
                 parent_cmds.push(Command::TimerCommand(TimerCommand::Schedule {

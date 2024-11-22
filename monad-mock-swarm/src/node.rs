@@ -6,6 +6,7 @@ use std::{
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_consensus_types::{
+    clock::AdjusterConfig,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorData, ValidatorSetData},
     voting::ValidatorMapping,
@@ -126,6 +127,10 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
+                adjuster_config: AdjusterConfig::Enabled {
+                    max_delta: 10000,
+                    adjustment_period: 9,
+                },
             },
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),

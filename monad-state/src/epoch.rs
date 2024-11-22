@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
-    voting::ValidatorMapping,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock,
+    signature_collection::SignatureCollection, voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -47,8 +47,8 @@ where
     BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<CL: Clock>(
+        monad_state: &'a mut MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

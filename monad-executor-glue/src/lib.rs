@@ -17,7 +17,7 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, RootInfo},
     metrics::Metrics,
     payload::PayloadId,
-    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHashInfo,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -207,11 +207,6 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-#[derive(Debug)]
-pub enum TimestampCommand {
-    AdjustDelta(TimestampAdjustment),
-}
-
 pub enum StateSyncCommand<PT: PubKey> {
     /// The *last* RequestSync(n) called is guaranteed to be followed up with DoneSync(n).
     ///
@@ -231,7 +226,6 @@ pub enum Command<E, OM, SCT: SignatureCollection> {
     StateRootHashCommand(StateRootHashCommand<SCT>),
     LoopbackCommand(LoopbackCommand<E>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
-    TimestampCommand(TimestampCommand),
     StateSyncCommand(StateSyncCommand<SCT::NodeIdPubKey>),
 }
 
@@ -246,7 +240,6 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         Vec<StateRootHashCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
         Vec<ControlPanelCommand<SCT>>,
-        Vec<TimestampCommand>,
         Vec<StateSyncCommand<SCT::NodeIdPubKey>>,
     ) {
         let mut router_cmds = Vec::new();
@@ -256,7 +249,6 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
         let mut state_root_hash_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
-        let mut timestamp_cmds = Vec::new();
         let mut state_sync_cmds = Vec::new();
 
         for command in commands {
@@ -268,7 +260,6 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
-                Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::StateSyncCommand(cmd) => state_sync_cmds.push(cmd),
             }
         }
@@ -280,7 +271,6 @@ impl<E, OM, SCT: SignatureCollection> Command<E, OM, SCT> {
             state_root_hash_cmds,
             loopback_cmds,
             control_panel_cmds,
-            timestamp_cmds,
             state_sync_cmds,
         )
     }

@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::FullBlock, signature_collection::SignatureCollection, state_root_hash::StateRootHash,
-    validator_data::ValidatorSetData,
+    block::FullBlock, clock::AdjusterConfig, signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash, validator_data::ValidatorSetData,
 };
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
@@ -103,6 +103,11 @@ pub fn make_state_configs<S: SwarmRelation>(
                 start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
                 vote_pace,
                 timestamp_latency_estimate_ms: 10,
+            },
+
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta: 10000,
+                adjustment_period: 9,
             },
         })
         .collect()

@@ -25,7 +25,6 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 serde_json = { workspace = true }
-sorted-vec = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "rt",

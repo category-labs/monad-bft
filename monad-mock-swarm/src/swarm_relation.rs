@@ -5,6 +5,7 @@ use monad_async_state_verify::{
 use monad_consensus_types::{
     block::{BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
+    clock::TestClock,
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
     txpool::{MockTxPool, TxPool},
@@ -43,6 +44,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::StateRootValidator,
     <S as SwarmRelation>::AsyncStateRootVerify,
+    TestClock,
 >;
 pub trait SwarmRelation
 where

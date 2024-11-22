@@ -3,8 +3,13 @@ use std::time::Duration;
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, state_root_hash::StateRootHash, txpool::MockTxPool,
+    block::PassthruBlockPolicy,
+    block_validator::MockValidator,
+    clock::{AdjusterConfig, TestClock},
+    payload::NopStateRoot,
+    signature_collection::SignatureCollection,
+    state_root_hash::StateRootHash,
+    txpool::MockTxPool,
     validator_data::ValidatorSetData,
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -121,7 +126,7 @@ where
                 val_set_update_interval,
             )),
         },
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        timestamp: TokioTimestamp::new(Duration::from_millis(5)),
         ipc: IpcReceiver::new(
             format!("./monad_mempool_{}.sock", instance_id).into(),
             500, // tx_batch_size
@@ -154,7 +159,8 @@ type MonadStateType<ST, SCT> = MonadState<
     MockTxPool,
     MockValidator,
     NopStateRoot,
-    PeerAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>>;
+    PeerAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>,
+    TestClock>;
 
 pub struct StateConfig<ST, SCT>
 where
@@ -200,6 +206,7 @@ where
         beneficiary: EthAddress::default(),
         forkpoint: Forkpoint::genesis(config.validators, StateRootHash::default()),
         consensus_config: config.consensus_config,
+        adjuster_config: AdjusterConfig::Disabled,
     }
     .build()
 }

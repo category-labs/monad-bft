@@ -18,6 +18,7 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+sorted-vec = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 

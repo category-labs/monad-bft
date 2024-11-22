@@ -22,6 +22,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
     block_validator::BlockValidator,
     checkpoint::{Checkpoint, RootInfo},
+    clock::{AdjusterConfig, Clock},
     metrics::Metrics,
     payload::StateRootValidator,
     quorum_certificate::{QuorumCertificate, GENESIS_BLOCK_ID},
@@ -447,7 +448,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -455,6 +456,7 @@ where
     SBT: StateBackend,
     BVT: BlockValidator<SCT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CL: Clock,
 {
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
@@ -479,7 +481,7 @@ where
     async_state_verify: ASVT,
 
     state_root_validator: SVT,
-    block_timestamp: BlockTimestamp,
+    block_timestamp: BlockTimestamp<CL>,
     block_validator: BVT,
     block_policy: BPT,
     state_backend: SBT,
@@ -495,8 +497,8 @@ where
 // execution needs NumBlockHash blocks before tip to execute tip
 const NUM_BLOCK_HASH: SeqNum = SeqNum(256);
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
+    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -510,6 +512,7 @@ where
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
+    CL: Clock,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<SCT, BPT, SBT>> {
         match &self.consensus {
@@ -741,6 +744,7 @@ where
     pub beneficiary: EthAddress,
 
     pub consensus_config: ConsensusConfig,
+    pub adjuster_config: AdjusterConfig,
 }
 
 impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -761,10 +765,10 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn build(
+    pub fn build<CL: Clock>(
         self,
     ) -> (
-        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>,
+        MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>,
         Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, SCT>>,
     ) {
         assert_eq!(
@@ -791,9 +795,10 @@ where
             .as_millis()
             .try_into()
             .expect("consensus config delta should not be too large for a u64");
-        let block_timestamp = BlockTimestamp::new(
+        let block_timestamp = BlockTimestamp::<CL>::new(
             5 * delta,
             self.consensus_config.timestamp_latency_estimate_ms,
+            self.adjuster_config,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
         let mut monad_state = MonadState {
@@ -853,8 +858,8 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
-    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
+    MonadState<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -870,6 +875,7 @@ where
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
+    CL: Clock,
 {
     pub fn update(
         &mut self,
