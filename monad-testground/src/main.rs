@@ -152,7 +152,8 @@ async fn main() {
             &testground_args,
         )
         .into_iter()
-        .map(|config| {
+        .enumerate()
+        .map(|(index, config)| {
             let maybe_provider = args.otel_endpoint.as_ref().map(|endpoint| {
                 make_provider(
                     endpoint.to_owned(),
@@ -163,7 +164,7 @@ async fn main() {
             let context = context.clone();
             let (wg_tx, wg_rx) = (wg_tx.clone(), wg_tx.subscribe());
             let fut = async move {
-                let fut = run(context, wg_tx, wg_rx, config);
+                let fut = run(index, context, wg_tx, wg_rx, config);
                 if let Some(provider) = &maybe_provider {
                     fut.with_subscriber({
                         use opentelemetry::trace::TracerProvider;
@@ -312,6 +313,7 @@ where
 }
 
 async fn run<ST, SCT>(
+    index: usize,
     cx: Option<opentelemetry::Context>,
     wg_tx: tokio::sync::broadcast::Sender<()>,
     mut wg_rx: tokio::sync::broadcast::Receiver<()>,
@@ -324,7 +326,7 @@ async fn run<ST, SCT>(
 {
     let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
-    let mut executor = make_monad_executor(state_backend, config.executor_config);
+    let mut executor = make_monad_executor(index, state_backend, config.executor_config);
 
     executor.exec(init_commands);
 
@@ -356,9 +358,11 @@ async fn run<ST, SCT>(
         if ledger_len >= last_printed_len + BLOCK_INTERVAL {
             event!(
                 Level::INFO,
+                instance = index,
                 ledger_len = ledger_len,
                 elapsed_ms = start.elapsed().as_millis(),
-                "100 blocks"
+                "{}",
+                format!("{} blocks", BLOCK_INTERVAL),
             );
             start = Instant::now();
             last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;

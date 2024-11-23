@@ -30,7 +30,6 @@ use monad_validator::{
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
-use rand::distributions::{Alphanumeric, DistString};
 use tracing_subscriber::EnvFilter;
 
 pub enum RouterConfig<ST, SCT>
@@ -71,6 +70,7 @@ where
 }
 
 pub fn make_monad_executor<ST, SCT>(
+    index: usize,
     state_backend: InMemoryState,
     config: ExecutorConfig<ST, SCT>,
 ) -> ParentExecutor<
@@ -96,7 +96,6 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
-    let instance_id = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
@@ -123,14 +122,14 @@ where
         },
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         ipc: IpcReceiver::new(
-            format!("./monad_mempool_{}.sock", instance_id).into(),
+            format!("./monad_mempool_{}.sock", index).into(),
             500, // tx_batch_size
             6,   // max_queued_batches
             3,   // queued_batches_watermark
         )
         .expect("uds bind failed"),
         control_panel: ControlPanelIpcReceiver::new(
-            format!("./monad_controlpanel_{}.sock", instance_id).into(),
+            format!("./monad_controlpanel_{}.sock", index).into(),
             reload_handle,
             1000,
         )
