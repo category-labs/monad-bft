@@ -8,10 +8,7 @@ pub enum LatestKind {
     Indexed,
 }
 
-pub trait ArchiveWriterInterface {
-    // Get the latest stored block
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
-
+pub trait ArchiveWriter: ArchiveReader {
     // Update latest processed block
     async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()>;
 
@@ -37,15 +34,30 @@ pub trait ArchiveWriterInterface {
     async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()>;
 }
 
-pub trait ArchiveReaderInterface {
+pub trait ArchiveReader: Clone + Send {
     // Get the latest stored block
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
+    fn get_latest(
+        &self,
+        latest_kind: LatestKind,
+    ) -> impl std::future::Future<Output = Result<u64>> + Send;
 
-    async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block>;
+    fn get_block_by_hash(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> impl std::future::Future<Output = Result<Block>> + Send;
 
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
+    fn get_block_by_number(
+        &self,
+        block_num: u64,
+    ) -> impl std::future::Future<Output = Result<Block>> + Send;
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>>;
+    fn get_block_receipts(
+        &self,
+        block_number: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>>> + Send;
 
-    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>>;
+    fn get_block_traces(
+        &self,
+        block_number: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>>> + Send;
 }

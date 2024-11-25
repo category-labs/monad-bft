@@ -7,18 +7,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use archive_interface::{ArchiveWriterInterface, LatestKind::*};
+use archive_interface::{ArchiveReader, ArchiveWriter, LatestKind::*};
 use chrono::{
     format::{DelayedFormat, StrftimeItems},
     prelude::*,
 };
 use clap::Parser;
-use dynamodb::DynamoDBArchive;
+use dynamodb::{DynamoDBArchive, TxIndexReader, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use monad_archive::*;
-use s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket};
+use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
@@ -38,7 +38,9 @@ async fn main() -> Result<()> {
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let archive = S3ArchiveWriter::new(S3Bucket::new(args.archive_bucket, &sdk_config)).await?;
+    let archive = S3Archive::new(S3Bucket::new(args.archive_bucket, &sdk_config))
+        .await?
+        .as_reader();
     let dynamodb_archive =
         DynamoDBArchive::new(args.db_table, &sdk_config, args.max_concurrent_connections);
 
@@ -99,7 +101,7 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_blocks(
-    archive: &S3ArchiveWriter,
+    archive: &(impl ArchiveReader + 'static),
     dynamodb: &DynamoDBArchive,
     start_block_num: u64,
     end_block_num: u64,
@@ -148,11 +150,11 @@ async fn handle_blocks(
 }
 
 async fn handle_block(
-    archive: S3ArchiveWriter,
+    archive: impl ArchiveReader,
     dynamodb: DynamoDBArchive,
     block_num: u64,
 ) -> Result<BlockCheckResult> {
-    let block = archive.read_block(block_num).await?;
+    let block = archive.get_block_by_number(block_num).await?;
     info!(num_txs = block.body.len(), block_num, "Handling block");
 
     if block.body.is_empty() {
@@ -166,13 +168,15 @@ async fn handle_block(
         .collect::<Vec<_>>();
 
     let mut faults = dynamodb
-        .batch_get_block_nums(&hashes)
+        .batch_get_data(&hashes)
         .await?
         .into_iter()
         .zip(hashes.into_iter())
-        .filter_map(|(resp_bnum, txhash)| match resp_bnum {
+        .filter_map(|(resp, txhash)| match resp {
             None => Some(Fault::MissingTxhash { txhash }),
-            Some(bnum) if bnum != block_num => Some(Fault::WrongBlockNumber {
+            Some(TxIndexedData {
+                block_num: bnum, ..
+            }) if bnum != block_num => Some(Fault::WrongBlockNumber {
                 txhash,
                 wrong_block_num: bnum,
             }),

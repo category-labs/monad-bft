@@ -13,8 +13,8 @@ use tokio::{
 use tracing::{error, info, warn, Level};
 
 use monad_archive::{
-    archive_interface::{ArchiveWriterInterface, LatestKind},
-    s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket},
+    archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
+    s3_archive::{get_aws_config, S3Archive, S3Bucket},
     triedb::{Triedb, TriedbEnv},
 };
 
@@ -34,8 +34,7 @@ async fn main() -> Result<()> {
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let s3_archive_writer =
-        S3ArchiveWriter::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
+    let s3_archive_writer = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
 
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
@@ -135,7 +134,7 @@ async fn main() -> Result<()> {
 async fn handle_block(
     triedb: &TriedbEnv,
     current_block: u64,
-    s3_archive: &S3ArchiveWriter,
+    s3_archive: &S3Archive,
 ) -> Result<()> {
     /*  Store Blocks */
     let block_header = match triedb.get_block_header(current_block).await? {

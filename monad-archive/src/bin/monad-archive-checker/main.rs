@@ -8,8 +8,8 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, Level};
 
 use monad_archive::{
-    archive_interface::{ArchiveReaderInterface, LatestKind},
-    s3_archive::{get_aws_config, S3ArchiveReader, S3Bucket},
+    archive_interface::{ArchiveReader, LatestKind},
+    s3_archive::{get_aws_config, S3Archive, S3Bucket},
 };
 
 mod cli;
@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     for idx in 0..s3_buckets.len() {
         let config = get_aws_config(Some(args.regions[idx].clone())).await;
         let s3_archive_reader =
-            S3ArchiveReader::new(S3Bucket::new(s3_buckets[idx].clone(), &config)).await?;
+            S3Archive::new(S3Bucket::new(s3_buckets[idx].clone(), &config)).await?;
 
         s3_archive_readers.push(s3_archive_reader);
     }
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
 }
 
 async fn latest_uploaded_block(
-    s3_archive_readers: &[S3ArchiveReader],
+    s3_archive_readers: &[S3Archive],
     max_lag: &u64,
     s3_buckets: &[String],
 ) -> u64 {
@@ -134,10 +134,7 @@ struct BlockData {
     pub traces: Option<Vec<Vec<u8>>>,
 }
 
-async fn get_block_data(
-    s3_archive_readers: &[S3ArchiveReader],
-    block_number: u64,
-) -> Vec<BlockData> {
+async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> Vec<BlockData> {
     let mut blocks_data = Vec::new();
 
     for reader in s3_archive_readers {

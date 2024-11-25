@@ -20,7 +20,7 @@ use tokio_retry::{
 use tracing::info;
 
 use crate::{
-    archive_interface::{ArchiveReaderInterface, ArchiveWriterInterface, LatestKind},
+    archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
     triedb::BlockHeader,
 };
 
@@ -114,8 +114,8 @@ impl S3Bucket {
 }
 
 #[derive(Clone)]
-pub struct S3ArchiveWriter {
-    bucket: Arc<S3Bucket>,
+pub struct S3Archive {
+    pub bucket: Arc<S3Bucket>,
 
     pub latest_uploaded_table_key: &'static str,
     pub latest_indexed_table_key: &'static str,
@@ -133,9 +133,9 @@ pub struct S3ArchiveWriter {
     pub traces_table_prefix: &'static str,
 }
 
-impl S3ArchiveWriter {
+impl S3Archive {
     pub async fn new(archive: S3Bucket) -> Result<Self> {
-        Ok(S3ArchiveWriter {
+        Ok(S3Archive {
             bucket: Arc::new(archive),
             block_table_prefix: "block",
             block_hash_table_prefix: "block_hash",
@@ -144,6 +144,10 @@ impl S3ArchiveWriter {
             latest_uploaded_table_key: "latest",
             latest_indexed_table_key: "latest_indexed",
         })
+    }
+
+    pub fn as_reader(self) -> impl ArchiveReader {
+        self
     }
 
     pub async fn read_block(&self, block_num: u64) -> Result<Block> {
@@ -161,25 +165,27 @@ impl S3ArchiveWriter {
             width = BLOCK_PADDING_WIDTH
         )
     }
-}
 
-impl ArchiveWriterInterface for S3ArchiveWriter {
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
-        let key = match latest_kind {
-            LatestKind::Uploaded => &self.latest_uploaded_table_key,
-            LatestKind::Indexed => &self.latest_indexed_table_key,
-        };
-
-        let value = self.bucket.read(key).await?;
-
-        let value_str = String::from_utf8(value.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
-
-        // Parse the string as u64
-        value_str.parse::<u64>().wrap_err_with(|| {
-            format!("Unable to convert block_number string to number (u64), value: {value_str}")
-        })
+    pub fn receipts_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.receipts_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
     }
 
+    pub fn traces_key(&self, block_num: u64) -> String {
+        format!(
+            "{}/{:0width$}",
+            self.traces_table_prefix,
+            block_num,
+            width = BLOCK_PADDING_WIDTH
+        )
+    }
+}
+
+impl ArchiveWriter for S3Archive {
     async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,
@@ -252,74 +258,7 @@ impl ArchiveWriterInterface for S3ArchiveWriter {
     }
 }
 
-pub struct S3ArchiveReader {
-    pub bucket: Arc<S3Bucket>,
-
-    pub latest_uploaded_table_key: &'static str,
-    pub latest_indexed_table_key: &'static str,
-
-    // key =  {block}/{block_number}, value = {RLP(Block)}
-    pub block_table_prefix: &'static str,
-
-    // key = {block_hash}/{$block_hash}, value = {str(block_number)}
-    pub block_hash_table_prefix: &'static str,
-
-    // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
-    pub receipts_table_prefix: &'static str,
-
-    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
-    pub traces_table_prefix: &'static str,
-}
-
-impl S3ArchiveReader {
-    pub async fn new(archive: S3Bucket) -> Result<Self> {
-        Ok(S3ArchiveReader {
-            bucket: Arc::new(archive),
-            block_table_prefix: "block",
-            block_hash_table_prefix: "block_hash",
-            receipts_table_prefix: "receipts",
-            traces_table_prefix: "traces",
-            latest_uploaded_table_key: "latest",
-            latest_indexed_table_key: "latest_indexed",
-        })
-    }
-
-    pub async fn read_block(&self, block_num: u64) -> Result<Block> {
-        let bytes = self.bucket.read(&self.block_key(block_num)).await?;
-        let mut bytes: &[u8] = &bytes;
-        let block = Block::decode(&mut bytes)?;
-        Ok(block)
-    }
-
-    pub fn block_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.block_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-
-    pub fn receipts_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.receipts_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-
-    pub fn traces_key(&self, block_num: u64) -> String {
-        format!(
-            "{}/{:0width$}",
-            self.traces_table_prefix,
-            block_num,
-            width = BLOCK_PADDING_WIDTH
-        )
-    }
-}
-
-impl ArchiveReaderInterface for S3ArchiveReader {
+impl ArchiveReader for S3Archive {
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,

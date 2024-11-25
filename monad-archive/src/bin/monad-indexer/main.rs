@@ -5,14 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use archive_interface::{ArchiveWriterInterface, LatestKind::*};
+use archive_interface::{ArchiveReader, ArchiveWriter, LatestKind::*};
 use clap::Parser;
-use dynamodb::DynamoDBArchive;
+use dynamodb::{DynamoDBArchive, TxIndexArchiver, TxIndexReader};
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
 use monad_archive::*;
-use s3_archive::{get_aws_config, S3ArchiveWriter, S3Bucket};
-use tokio::{join, sync::Semaphore, time::sleep};
+use s3_archive::{get_aws_config, S3Archive, S3Bucket};
+use tokio::{join, sync::Semaphore, time::sleep, try_join};
 use tracing::{error, info, warn, Level};
 
 mod cli;
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let sdk_config = get_aws_config(args.region).await;
     let dynamodb_archive =
         DynamoDBArchive::new(args.db_table, &sdk_config, args.max_concurrent_connections);
-    let archive = S3ArchiveWriter::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
+    let archive = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
 
     // for testing
     if args.reset_index {
@@ -147,27 +147,31 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_block(
-    archive: &S3ArchiveWriter,
+    archive: &S3Archive,
     dynamodb: DynamoDBArchive,
     block_num: u64,
 ) -> Result<usize> {
-    let block = archive.read_block(block_num).await?;
-    info!(num_txs = block.body.len(), block_num, "block");
+    let (block, traces, receipts) = try_join!(
+        archive.read_block(block_num),
+        archive.get_block_traces(block_num),
+        archive.get_block_receipts(block_num)
+    )?;
+    let num_txs = block.body.len();
+    info!(num_txs, block_num, "Block");
 
-    let hashes = block.body.iter().map(|tx| tx.hash());
-
-    dynamodb.index_block(hashes.collect(), block.number).await?;
+    let first = block.body.first().cloned();
+    dynamodb.index_block(block, traces, receipts).await?;
 
     // check 1 key
-    if let Some(tx) = block.body.first() {
+    if let Some(tx) = first {
         let key = tx.hash.to_string();
         tokio::spawn(async move {
-            match dynamodb.get_block_number_by_tx_hash(&key).await {
+            match dynamodb.get_data(&key).await {
                 Ok(resp) => {
-                    if resp != Some(block_num) {
-                        warn!(key, resp, "Returned mapping not as expected");
+                    if resp.is_some() && resp.as_ref().unwrap().block_num == block_num {
+                        info!(key, ?resp, "Check successful")
                     } else {
-                        info!(key, resp, "Check successful")
+                        warn!(key, ?resp, "Returned mapping not as expected");
                     }
                 }
                 Err(e) => warn!("Error while checking: {e}"),
@@ -175,5 +179,5 @@ async fn handle_block(
         });
     }
 
-    Ok(block.body.len())
+    Ok(num_txs)
 }

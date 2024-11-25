@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     error::SdkError,
@@ -12,19 +13,137 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::TxHash;
+use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned, TxHash};
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::{error, warn};
+use tracing::error;
+
+pub trait TxIndexReader {
+    async fn batch_get_data(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>>;
+    async fn get_data(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>>;
+}
+
+pub trait TxIndexArchiver {
+    async fn index_block(
+        &self,
+        block: Block,
+        traces: Vec<Vec<u8>>,
+        receipts: Vec<ReceiptWithBloom>,
+    ) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
+pub struct TxIndexedData {
+    pub block_num: u64,
+    pub tx: TransactionSigned,
+    pub trace: Vec<u8>,
+    pub receipt: ReceiptWithBloom,
+}
 
 #[derive(Clone)]
 pub struct DynamoDBArchive {
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
+}
+
+impl TxIndexReader for DynamoDBArchive {
+    async fn batch_get_data(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
+        let output = self
+            .batch_get(keys)
+            .await?
+            .into_iter()
+            .map(|map| {
+                Some(TxIndexedData {
+                    block_num: block_number_from_map(&map)?,
+                    tx: decode_from_map(&map, "tx")?,
+                    receipt: decode_from_map(&map, "receipt")?,
+                    trace: decode_from_map(&map, "trace")?,
+                })
+            })
+            .collect::<Vec<Option<TxIndexedData>>>();
+        Ok(output)
+    }
+
+    async fn get_data(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+        self.batch_get_data(&[key.into()])
+            .await
+            .map(|mut v| v.remove(0))
+    }
+}
+
+impl TxIndexArchiver for DynamoDBArchive {
+    async fn index_block(
+        &self,
+        block: Block,
+        traces: Vec<Vec<u8>>,
+        receipts: Vec<ReceiptWithBloom>,
+    ) -> Result<()> {
+        let mut requests = Vec::new();
+        let block_num = block.number.to_string();
+
+        for ((tx, trace), receipt) in block
+            .body
+            .into_iter()
+            .zip(traces.into_iter())
+            .zip(receipts.into_iter())
+        {
+            let hash = tx.hash();
+            let mut attribute_map = HashMap::new();
+            attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hex::encode(hash)));
+
+            // block_number
+            attribute_map.insert(
+                "block_number".to_owned(),
+                AttributeValue::S(block_num.clone()),
+            );
+
+            // tx
+            let mut rlp_tx = Vec::with_capacity(512);
+            tx.encode(&mut rlp_tx);
+            attribute_map.insert("tx".to_owned(), AttributeValue::B(rlp_tx.into()));
+
+            // trace
+            let mut rlp_trace = Vec::with_capacity(trace.capacity());
+            trace.encode(&mut rlp_trace);
+            attribute_map.insert("trace".to_owned(), AttributeValue::B(rlp_trace.into()));
+
+            // receipt
+            let mut rlp_receipt = Vec::with_capacity(512);
+            receipt.encode(&mut rlp_receipt);
+            attribute_map.insert("receipt".to_owned(), AttributeValue::B(rlp_receipt.into()));
+
+            let put_request = PutRequest::builder()
+                .set_item(Some(attribute_map))
+                .build()?;
+
+            let write_request = WriteRequest::builder().put_request(put_request).build();
+
+            requests.push(write_request);
+        }
+
+        let batch_writes = split_into_batches(requests, Self::WRITE_BATCH_SIZE);
+        // let batch_writes = split_into_batches(requests, 1);
+        let mut batch_write_handles = Vec::new();
+        for batch_write in batch_writes {
+            let batch_write = batch_write.clone();
+
+            let this = (*self).clone();
+            let handle = tokio::spawn(async move { this.upload_to_db(batch_write).await });
+
+            batch_write_handles.push(handle);
+        }
+
+        let results = join_all(batch_write_handles).await;
+
+        for (idx, batch_write_result) in results.into_iter().enumerate() {
+            batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))??;
+        }
+        Ok(())
+    }
 }
 
 impl DynamoDBArchive {
@@ -40,7 +159,7 @@ impl DynamoDBArchive {
         }
     }
 
-    pub async fn batch_get_block_nums(&self, keys: &[String]) -> Result<Vec<Option<u64>>> {
+    async fn batch_get(&self, keys: &[String]) -> Result<Vec<HashMap<String, AttributeValue>>> {
         let mut results = Vec::new();
         let batches = keys.chunks(Self::READ_BATCH_SIZE);
 
@@ -74,9 +193,9 @@ impl DynamoDBArchive {
             .await?;
 
             // Collect retrieved items
-            if let Some(responses) = response.responses {
-                if let Some(items) = responses.get(&self.table) {
-                    results.extend(items.iter().map(block_number_from_map));
+            if let Some(mut responses) = response.responses {
+                if let Some(items) = responses.remove(&self.table) {
+                    results.extend(items.into_iter());
                 }
             }
 
@@ -95,81 +214,18 @@ impl DynamoDBArchive {
                 })
                 .await?;
 
-                if let Some(responses_retry) = response_retry.responses {
-                    if let Some(items_retry) = responses_retry.get(&self.table) {
-                        results.extend(items_retry.iter().map(block_number_from_map));
+                if let Some(mut responses_retry) = response_retry.responses {
+                    if let Some(items_retry) = responses_retry.remove(&self.table) {
+                        results.extend(items_retry.into_iter());
                     }
                 }
                 unprocessed_keys = response_retry.unprocessed_keys;
             }
         }
-
         Ok(results)
     }
 
-    pub async fn get_block_number_by_tx_hash(&self, tx_hash: &str) -> Result<Option<u64>> {
-        // Create the key map
-        let tx_hash = tx_hash.trim_start_matches("0x");
-        let mut key = HashMap::new();
-        key.insert(
-            "tx_hash".to_string(),
-            AttributeValue::S(tx_hash.to_string()),
-        );
-
-        // Perform the get_item operation
-        let result = self
-            .client
-            .get_item()
-            .table_name(&self.table)
-            .set_key(Some(key))
-            .send()
-            .await?;
-
-        // Extract and return the block_number attribute if the item is found
-        Ok(block_number_from_resp(result))
-    }
-
-    pub async fn index_block(&self, hashes: Vec<TxHash>, block_num: u64) -> Result<()> {
-        let mut requests = Vec::new();
-
-        for hash in hashes {
-            let mut attribute_map = HashMap::new();
-            attribute_map.insert("tx_hash".to_string(), AttributeValue::S(hex::encode(hash)));
-            attribute_map.insert(
-                "block_number".to_string(),
-                AttributeValue::S(block_num.to_string()),
-            );
-
-            let put_request = PutRequest::builder()
-                .set_item(Some(attribute_map))
-                .build()?;
-
-            let write_request = WriteRequest::builder().put_request(put_request).build();
-
-            requests.push(write_request);
-        }
-
-        let batch_writes = split_into_batches(requests, Self::WRITE_BATCH_SIZE);
-        // let batch_writes = split_into_batches(requests, 1);
-        let mut batch_write_handles = Vec::new();
-        for batch_write in batch_writes {
-            let batch_write = batch_write.clone();
-
-            let this = (*self).clone();
-            let handle = tokio::spawn(async move { this.upload_to_db(batch_write).await });
-
-            batch_write_handles.push(handle);
-        }
-
-        let results = join_all(batch_write_handles).await;
-
-        for (idx, batch_write_result) in results.into_iter().enumerate() {
-            batch_write_result.wrap_err_with(|| format!("Failed to upload index {idx}"))??;
-        }
-        Ok(())
-    }
-
-    pub async fn upload_to_db(&self, values: Vec<WriteRequest>) -> Result<()> {
+    async fn upload_to_db(&self, values: Vec<WriteRequest>) -> Result<()> {
         if values.len() > 25 {
             panic!("Batch size larger than limit = 25")
         }
@@ -227,6 +283,22 @@ fn split_into_batches(values: Vec<WriteRequest>, batch_size: usize) -> Vec<Vec<W
         .collect()
 }
 
+fn decode_from_map<T: Decodable>(
+    item: &HashMap<String, AttributeValue>,
+    key: &'static str,
+) -> Option<T> {
+    if let Some(attr) = item.get(key) {
+        if let AttributeValue::B(tx_blob) = attr {
+            return T::decode(&mut tx_blob.as_ref()).ok();
+        } else {
+            error!("failed to get {key} from attr");
+        }
+    } else {
+        error!("{key} not found");
+    }
+    None
+}
+
 fn block_number_from_map(item: &HashMap<String, AttributeValue>) -> Option<u64> {
     if let Some(block_number_attr) = item.get("block_number") {
         if let AttributeValue::S(block_number) = block_number_attr {
@@ -236,15 +308,6 @@ fn block_number_from_map(item: &HashMap<String, AttributeValue>) -> Option<u64> 
         }
     } else {
         dbg!("block number attr not found");
-    }
-    None
-}
-
-fn block_number_from_resp(result: GetItemOutput) -> Option<u64> {
-    if let Some(item) = result.item {
-        return block_number_from_map(&item);
-    } else {
-        dbg!("no item in result");
     }
     None
 }
