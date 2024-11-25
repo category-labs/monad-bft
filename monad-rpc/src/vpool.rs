@@ -72,7 +72,7 @@ pub struct VirtualPool {
 struct SubPool {
     // Mapping of sender to a transaction tree ordered by nonce
     pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
-    evict: RwLock<VecDeque<Address>>,
+    evict: RwLock<VecDeque<(Address, tokio::time::Instant)>>,
     capacity: usize,
 }
 
@@ -86,7 +86,7 @@ impl SubPool {
     }
 
     /// Adds a transaction to the SubPool, and returns the number of transactions evicted.
-    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) -> usize {
+    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) {
         match self.pool.entry(txn.signer()) {
             scc::hash_map::Entry::Occupied(mut entry) => {
                 let tree = entry.get();
@@ -106,17 +106,35 @@ impl SubPool {
                 tree.insert(txn.nonce(), txn.clone());
                 entry.insert_entry(tree);
 
-                self.evict.write().await.push_front(txn.signer());
+                self.evict
+                    .write()
+                    .await
+                    .push_front((txn.signer(), tokio::time::Instant::now()));
             }
         };
+    }
 
-        let mut lock = self.evict.write().await;
+    async fn evict(&self) -> usize {
+        let Ok(mut lock) = self.evict.try_write() else {
+            return 0;
+        };
         let mut removed_count = 0;
-        if lock.len() > self.capacity {
-            if let Some(evicted) = lock.pop_back() {
-                if let Some((_, removed)) = self.pool.remove(&evicted) {
-                    removed_count += removed.len();
+        while lock.len() > self.capacity {
+            if let Some((evicted, _)) = lock.pop_back() {
+                if let Some((_, tree)) = self.pool.remove(&evicted) {
+                    removed_count += tree.len();
                 }
+            }
+        }
+
+        while let Some((entry_addr, added)) = lock.pop_back() {
+            if added.elapsed() >= tokio::time::Duration::from_secs(30) {
+                if let Some((_, tree)) = self.pool.remove(&entry_addr) {
+                    removed_count += tree.len();
+                }
+            } else {
+                lock.push_back((entry_addr, added));
+                break;
             }
         }
 
@@ -127,10 +145,12 @@ impl SubPool {
         let mut removed = 0;
         for (sender, nonce) in txs {
             if let Some(mut entry) = self.pool.get(sender) {
-                removed += 1;
-                entry.get_mut().remove(nonce);
+                if entry.get_mut().remove(nonce) {
+                    removed += 1;
+                }
                 if entry.len() == 0 {
                     let _ = entry.remove();
+                    self.pool.remove(sender);
                 }
             }
         }
@@ -336,7 +356,6 @@ impl VirtualPool {
                     return TxPoolType::Pending;
                 }
             }
-
             return TxPoolType::Queue;
         }
 
@@ -376,28 +395,41 @@ impl VirtualPool {
         match event {
             TxPoolEvent::AddValidTransaction { txn } => match self.decide_pool(&txn).await {
                 TxPoolType::Queue => {
-                    let removed = self.queued_pool.add(txn, false).await;
-                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
-                    self.metrics
-                        .as_ref()
-                        .map(|metrics| metrics.queued_pool.add(removed + 1, &[]));
+                    let tree = HashIndex::new();
+                    tree.insert(txn.signer(), txn.nonce()).unwrap();
+                    let mut promoted = self.queued_pool.filter_by_nonce_gap(&tree);
+                    if promoted.len() > 0 {
+                        promoted.push(txn.clone());
+                        for promoted in promoted.into_iter() {
+                            self.pending_pool.add(promoted.clone(), false).await;
+                            self.metrics
+                                .as_ref()
+                                .map(|metrics| metrics.pending_pool.add(1, &[]));
+                            if let Err(error) = self.publisher.send(promoted.into()) {
+                                warn!(
+                                    "issue broadcasting transaction from pending pool: {:?}",
+                                    error
+                                );
+                            }
+                        }
+                    } else {
+                        self.queued_pool.add(txn, false).await;
+                        self.metrics
+                            .as_ref()
+                            .map(|metrics| metrics.queued_pool.add(1, &[]));
+                    }
                 }
                 TxPoolType::Pending => {
-                    let removed = self.pending_pool.add(txn.clone(), false).await;
-                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
+                    self.pending_pool.add(txn.clone(), false).await;
                     self.metrics
                         .as_ref()
-                        .map(|metrics| metrics.pending_pool.add(removed + 1, &[]));
+                        .map(|metrics| metrics.pending_pool.add(1, &[]));
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
                 TxPoolType::Replace => {
-                    let removed = self.pending_pool.add(txn.clone(), true).await;
-                    let removed = i64::try_from(removed).unwrap_or_default() * -1;
-                    self.metrics
-                        .as_ref()
-                        .map(|metrics| metrics.pending_pool.add(removed, &[]));
+                    self.pending_pool.add(txn.clone(), true).await;
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
@@ -421,9 +453,12 @@ impl VirtualPool {
 
                 let pending_cleared =
                     i64::try_from(self.pending_pool.clear_included(&txs)).unwrap_or_default();
+                let pending_evicted =
+                    i64::try_from(self.pending_pool.evict().await).unwrap_or_default();
                 let queued_cleared =
                     i64::try_from(self.queued_pool.clear_included(&txs)).unwrap_or_default();
-
+                let queued_evicted =
+                    i64::try_from(self.queued_pool.evict().await).unwrap_or_default();
                 let senders = self.chain_cache.update(block.clone(), next_base_fee).await;
 
                 // Check for available promotions
@@ -432,15 +467,17 @@ impl VirtualPool {
                 let promoted_cleared = i64::try_from(promote_queued.len()).unwrap_or_default();
 
                 self.metrics.as_ref().map(|metrics| {
-                    metrics
-                        .pending_pool
-                        .add((pending_cleared * -1) + promoted_cleared, &[])
+                    metrics.pending_pool.add(
+                        (pending_cleared * -1) + (pending_evicted * -1) + promoted_cleared,
+                        &[],
+                    )
                 });
 
                 self.metrics.as_ref().map(|metrics| {
-                    metrics
-                        .queued_pool
-                        .add((promoted_cleared + queued_cleared) * -1, &[])
+                    metrics.queued_pool.add(
+                        (promoted_cleared + queued_cleared + queued_evicted) * -1,
+                        &[],
+                    )
                 });
 
                 // Add promoted transactions to the pending pool
