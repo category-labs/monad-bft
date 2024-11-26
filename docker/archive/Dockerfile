@@ -70,13 +70,25 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-archive && \
-    mv target/release/monad-archive archive && \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-archiver && \
+    mv target/release/monad-archiver archiver && \
+    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
+
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
+    --mount=type=cache,target=${CARGO_ROOT}/git          \
+    --mount=type=cache,target=/usr/src/monad-bft/target \
+    ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-indexer && \
+    mv target/release/monad-indexer indexer && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
     
 
 RUN strip \
-    archive \
+    archiver \
+    *.so 
+
+RUN strip \
+    indexer \
     *.so 
 
 # Runner
@@ -84,7 +96,8 @@ FROM base AS runner
 WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
-COPY --from=builder /usr/src/monad-bft/archive /usr/local/bin/monad-archive
+COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
+COPY --from=builder /usr/src/monad-bft/indexer /usr/local/bin/monad-indexer
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 
 ENV RUST_LOG=info

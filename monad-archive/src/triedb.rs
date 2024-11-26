@@ -9,14 +9,12 @@ use std::{
 
 use alloy_primitives::FixedBytes;
 use alloy_rlp::Decodable;
-use eyre::{bail, Context};
+use eyre::{bail, Context, Result};
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
 use monad_triedb_utils::key::{create_triedb_key, KeyInput};
 use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
 use tracing::error;
-
-use crate::errors::ArchiveError;
 
 const MAX_CONCURRENT_TRIEDB_REQUESTS: usize = 1000;
 
@@ -128,25 +126,23 @@ fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
 }
 
 pub trait Triedb {
-    fn get_latest_block(
-        &self,
-    ) -> impl std::future::Future<Output = Result<u64, ArchiveError>> + Send;
+    fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64>> + Send;
     fn get_receipts(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>, ArchiveError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>>> + Send;
     fn get_transactions(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>, ArchiveError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<TransactionSigned>>> + Send;
     fn get_block_header(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, ArchiveError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<BlockHeader>>> + Send;
     fn get_call_frames(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, ArchiveError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>>> + Send;
 }
 
 pub trait TriedbPath {
@@ -185,7 +181,7 @@ impl TriedbPath for TriedbEnv {
 }
 
 impl Triedb for TriedbEnv {
-    async fn get_latest_block(&self) -> Result<u64, ArchiveError> {
+    async fn get_latest_block(&self) -> Result<u64> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -202,7 +198,7 @@ impl Triedb for TriedbEnv {
             .wrap_err("Error when receiving response from polling thread")
     }
 
-    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>, ArchiveError> {
+    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithBloom>> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -242,10 +238,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_transactions(
-        &self,
-        block_num: u64,
-    ) -> Result<Vec<TransactionSigned>, ArchiveError> {
+    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TransactionSigned>> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -285,7 +278,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>, ArchiveError> {
+    async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -328,7 +321,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, ArchiveError> {
+    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>> {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) = create_triedb_key(KeyInput::CallFrame(None));

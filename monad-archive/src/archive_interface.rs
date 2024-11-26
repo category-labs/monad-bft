@@ -1,13 +1,16 @@
-use reth_primitives::{ReceiptWithBloom, TransactionSigned};
+use eyre::Result;
+use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 
-use crate::{errors::ArchiveError, triedb::BlockHeader};
+use crate::triedb::BlockHeader;
 
-pub trait ArchiveWriterInterface {
-    // Get the latest stored block
-    async fn get_latest(&self) -> Result<u64, ArchiveError>;
+pub enum LatestKind {
+    Uploaded,
+    Indexed,
+}
 
+pub trait ArchiveWriter: ArchiveReader {
     // Update latest processed block
-    async fn update_latest(&self, block_num: u64) -> Result<(), ArchiveError>;
+    async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()>;
 
     /*
         Archive Block
@@ -19,21 +22,42 @@ pub trait ArchiveWriterInterface {
         block_header: BlockHeader,
         transactions: Vec<TransactionSigned>,
         block_num: u64,
-    ) -> Result<(), ArchiveError>;
+    ) -> Result<()>;
 
     /*
         Archive Receipt
         Table: key = block_number, value = RLP(Vec<Receipt>)
     */
-    async fn archive_receipts(
-        &self,
-        receipts: Vec<ReceiptWithBloom>,
-        block_num: u64,
-    ) -> Result<(), ArchiveError>;
+    async fn archive_receipts(&self, receipts: Vec<ReceiptWithBloom>, block_num: u64)
+        -> Result<()>;
 
-    async fn archive_traces(
+    async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()>;
+}
+
+pub trait ArchiveReader: Clone + Send {
+    // Get the latest stored block
+    fn get_latest(
         &self,
-        traces: Vec<Vec<u8>>,
+        latest_kind: LatestKind,
+    ) -> impl std::future::Future<Output = Result<u64>> + Send;
+
+    fn get_block_by_hash(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> impl std::future::Future<Output = Result<Block>> + Send;
+
+    fn get_block_by_number(
+        &self,
         block_num: u64,
-    ) -> Result<(), ArchiveError>;
+    ) -> impl std::future::Future<Output = Result<Block>> + Send;
+
+    fn get_block_receipts(
+        &self,
+        block_number: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithBloom>>> + Send;
+
+    fn get_block_traces(
+        &self,
+        block_number: u64,
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>>> + Send;
 }
