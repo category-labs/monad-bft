@@ -5,7 +5,7 @@ use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlockCheckResult {
     pub timestamp: String,
     pub block_num: u64,
@@ -30,14 +30,15 @@ impl BlockCheckResult {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Fault {
     ErrorChecking {
         err: String,
     },
-    MissingBlock,
+
+    // DynamoDB errors
     CorruptedBlock,
-    MissingAllTxHash{
+    MissingAllTxHash {
         num_txs: u64,
     },
     MissingTxhash {
@@ -46,6 +47,30 @@ pub enum Fault {
     WrongBlockNumber {
         txhash: String,
         wrong_block_num: u64,
+    },
+
+    // S3 errors
+    S3MissingBlock {
+        buckets: Vec<String>,
+    },
+    S3MissingReceipts {
+        buckets: Vec<String>,
+    },
+    S3MissingTraces {
+        buckets: Vec<String>,
+    },
+    // pairwise inconsistency
+    S3InconsistentBlock {
+        bucket1: String,
+        bucket2: String,
+    },
+    S3InconsistentReceipts {
+        bucket1: String,
+        bucket2: String,
+    },
+    S3InconsistentTraces {
+        bucket1: String,
+        bucket2: String,
     },
 }
 

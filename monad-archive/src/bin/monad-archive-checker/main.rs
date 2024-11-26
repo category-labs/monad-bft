@@ -5,10 +5,11 @@ use eyre::Result;
 use futures::join;
 use reth_primitives::{Block, ReceiptWithBloom};
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, Level};
+use tracing::{debug, error, info, Level};
 
 use monad_archive::{
     archive_interface::{ArchiveReader, LatestKind},
+    fault::{BlockCheckResult, Fault, FaultWriter},
     metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
 };
@@ -20,7 +21,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-archiver",
+        Duration::from_secs(15),
+    )?;
 
     let mut s3_archive_readers = Vec::new();
 
@@ -52,8 +57,11 @@ async fn main() -> Result<()> {
         s3_archive_readers.push(s3_archive_reader);
     }
 
-    let mut start_block_number = args.start_block_number;
+    // Initialize fault writer
+    let mut fault_writer = FaultWriter::new(&args.checker_path).await?;
+    info!("Writing S3 checking result at {:?}", &args.checker_path);
 
+    let mut start_block_number = args.start_block_number;
     info!(
         "Checking buckets {:?} from regions {:?}. Starting from block: {}",
         &s3_buckets, &regions, start_block_number
@@ -78,12 +86,16 @@ async fn main() -> Result<()> {
 
         for block_number in start_block_number..end_block_number {
             let blocks_data = get_block_data(&s3_archive_readers, block_number).await;
-            let block_result_has_error = pairwise_check(&blocks_data, block_number);
+            let block_faults_cnt =
+                pairwise_check(&blocks_data, block_number, &mut fault_writer, &metrics).await;
 
-            if !block_result_has_error {
+            if block_faults_cnt == 0 {
                 info!("Block {} is consistant across buckets", block_number);
             } else {
-                error!("Block {} is inconsistant across buckets", block_number);
+                error!(
+                    "Block {} is inconsistant across buckets. Number of faults = {}",
+                    block_number, block_faults_cnt
+                );
             }
         }
 
@@ -201,52 +213,156 @@ async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> 
     return blocks_data;
 }
 
-fn pairwise_check(blocks_data: &[BlockData], block_number: u64) -> bool {
-    let mut has_error = false;
+async fn pairwise_check(
+    blocks_data: &[BlockData],
+    block_number: u64,
+    fault_writer: &mut FaultWriter,
+    metrics: &Metrics,
+) -> usize {
+    let mut faults = Vec::new();
+
+    let mut missing_block = Vec::new();
+    let mut missing_receipts = Vec::new();
+    let mut missing_traces = Vec::new();
+
+    // checking for missing stuff
+    for block_data in blocks_data {
+        let bucket = &block_data.bucket;
+
+        if block_data.block.is_none() {
+            missing_block.push(bucket.clone());
+        }
+
+        if block_data.receipts.is_none() {
+            missing_receipts.push(bucket.clone());
+        }
+
+        if block_data.traces.is_none() {
+            missing_traces.push(bucket.clone());
+        }
+    }
+
+    if !missing_block.is_empty() {
+        faults.push(Fault::S3MissingBlock {
+            buckets: missing_block,
+        });
+    }
+    if !missing_receipts.is_empty() {
+        faults.push(Fault::S3MissingReceipts {
+            buckets: missing_receipts,
+        });
+    }
+    if !missing_traces.is_empty() {
+        faults.push(Fault::S3MissingTraces {
+            buckets: missing_traces,
+        });
+    }
 
     // pairwise comparison
     for i in 0..blocks_data.len() {
         for j in i + 1..blocks_data.len() {
+            let bucket1 = &blocks_data[i].bucket;
+            let bucket2 = &blocks_data[j].bucket;
+
+            // TODO: Should we still log if one of them is "Missing"
             if blocks_data[i].block != blocks_data[j].block {
                 error!(
                     "Block {} is different between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
-                has_error = true;
+                faults.push(Fault::S3InconsistentBlock {
+                    bucket1: bucket1.clone(),
+                    bucket2: bucket2.clone(),
+                });
             } else {
-                info!(
+                debug!(
                     "Block {} is same between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
             }
 
             if blocks_data[i].receipts != blocks_data[j].receipts {
                 error!(
                     "Receipts {} is different between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
-                has_error = true;
+                faults.push(Fault::S3InconsistentReceipts {
+                    bucket1: bucket1.clone(),
+                    bucket2: bucket2.clone(),
+                });
             } else {
-                info!(
+                debug!(
                     "Receipts {} is same between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
             }
 
             if blocks_data[i].traces != blocks_data[j].traces {
                 error!(
                     "Traces {} is different between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
-                has_error = true;
+                faults.push(Fault::S3InconsistentTraces {
+                    bucket1: bucket1.clone(),
+                    bucket2: bucket2.clone(),
+                });
             } else {
-                info!(
+                debug!(
                     "Traces {} is same between bucket '{}' and bucket '{}'",
-                    block_number, blocks_data[i].bucket, blocks_data[j].bucket
+                    block_number, bucket1, bucket2
                 );
             }
         }
     }
 
-    return has_error;
+    let faults_cnt = faults.len();
+
+    if !faults.is_empty() {
+        metrics.counter("faults_blocks_with_faults", 1);
+
+        let block_check_result = BlockCheckResult::new(block_number, faults);
+        for fault in &block_check_result.faults {
+            match fault {
+                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                Fault::S3MissingBlock { buckets } => {
+                    metrics.counter("faults_s3_missing_block", 1);
+                    metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
+                }
+                Fault::S3MissingReceipts { buckets } => {
+                    metrics.counter("faults_s3_missing_receipts", 1);
+                    metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
+                }
+                Fault::S3MissingTraces { buckets } => {
+                    metrics.counter("faults_s3_missing_traces", 1);
+                    metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
+                }
+                // TODO: Should we use increment?
+                Fault::S3InconsistentBlock { .. } => {
+                    metrics.counter("faults_s3_inconsistent_block", 1)
+                }
+                Fault::S3InconsistentReceipts { .. } => {
+                    metrics.counter("faults_s3_inconsistent_receipts", 1)
+                }
+                Fault::S3InconsistentTraces { .. } => {
+                    metrics.counter("faults_s3_inconsistent_traces", 1)
+                }
+
+                // Other faults are not S3 faults
+                _ => (),
+            }
+        }
+
+        if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
+            error!(
+                "Failed to write results for block {}: {:?}",
+                block_number, e
+            );
+            error!(
+                "BlockCheckResults should be written: {:?}",
+                block_check_result
+            );
+        }
+    }
+
+    faults_cnt
 }

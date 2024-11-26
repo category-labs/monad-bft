@@ -1,8 +1,13 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive-checker", about, long_about = None)]
 pub struct Cli {
+    #[arg(long)]
+    pub checker_path: PathBuf,
+
     #[arg(long, value_delimiter = ',')]
     pub s3_buckets: Vec<String>,
 

@@ -165,7 +165,6 @@ async fn handle_blocks(
         for fault in &block_check.faults {
             match fault {
                 Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-                Fault::MissingBlock => metrics.counter("faults_missing_blocks", 1),
                 Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
                 Fault::MissingAllTxHash { num_txs } => {
                     metrics.counter("faults_blocks_missing_all_txhash", 1);
@@ -173,6 +172,9 @@ async fn handle_blocks(
                 }
                 Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
                 Fault::WrongBlockNumber { .. } => metrics.counter("faults_wrong_block_number", 1),
+
+                // Other faults are not DynamoDB faults
+                _ => (),
             }
         }
     }

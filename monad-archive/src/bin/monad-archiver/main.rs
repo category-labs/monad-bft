@@ -26,7 +26,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
+    let metrics = Metrics::new(
+        args.otel_endpoint,
+        "monad-archiver",
+        Duration::from_secs(15),
+    )?;
 
     let max_concurrent_blocks = args.max_concurrent_blocks;
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
