@@ -10,6 +10,7 @@ use clap::Parser;
 use dynamodb::{DynamoDBArchive, TxIndexArchiver, TxIndexReader};
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
+use metrics::Metrics;
 use monad_archive::*;
 use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use tokio::{join, sync::Semaphore, time::sleep, try_join};
@@ -24,12 +25,18 @@ async fn main() -> Result<()> {
     let args = cli::Cli::parse();
 
     let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_connections));
+    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let dynamodb_archive =
-        DynamoDBArchive::new(args.db_table, &sdk_config, args.max_concurrent_connections);
-    let archive = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
+    let dynamodb_archive = DynamoDBArchive::new(
+        args.db_table,
+        &sdk_config,
+        args.max_concurrent_connections,
+        metrics.clone(),
+    );
+    let archive =
+        S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone())).await?;
 
     // for testing
     if args.reset_index {
@@ -61,6 +68,7 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+        metrics.gauge("latest_uploaded", latest_uploaded);
 
         if latest_uploaded <= latest_indexed {
             info!(latest_indexed, latest_uploaded, "Nothing to process");
@@ -100,46 +108,32 @@ async fn main() -> Result<()> {
         let mut current_join_block = start_block_number;
         for block_result in block_results {
             // two match arm error conditions are similar but have different error types
-            let on_err = |e: String| {
-                let archive = archive.clone();
-                async move {
-                    if current_join_block != 0 {
-                        info!(current_join_block, "Updating latest");
-                        if let Err(e) = archive.update_latest(current_join_block - 1, Indexed).await
-                        {
-                            error!(
-                                "Failed to update latest indexed s3 object, continuing. Error: {e:?}"
-                            );
-                            return false;
-                        };
-                    }
-                    error!(
-                        current_join_block,
-                        latest_uploaded, start_block_number, "Error indexing block: {e:?}"
-                    );
-                    true
-                }
-            };
             match block_result {
                 Ok(Ok(num_txs)) => {
                     current_join_block += 1;
                     num_txs_indexed += num_txs
                 }
                 Ok(Err(e)) => {
-                    if !on_err(e.to_string()).await {
-                        continue;
-                    }
+                    error!(
+                        current_join_block,
+                        latest_uploaded, start_block_number, "Error indexing block: {e:?}"
+                    );
+                    break;
                 }
                 Err(e) => {
-                    if !on_err(e.to_string()).await {
-                        continue;
-                    }
+                    error!(
+                        current_join_block,
+                        latest_uploaded, start_block_number, "Error indexing block: {e:?}"
+                    );
+                    break;
                 }
             }
         }
 
-        archive.update_latest(end_block_number, Indexed).await?;
-        latest_indexed = end_block_number;
+        latest_indexed = current_join_block - 1;
+        archive.update_latest(latest_indexed, Indexed).await?;
+        metrics.gauge("latest_indexed", latest_indexed);
+        metrics.counter("txs_indexed", num_txs_indexed as u64);
 
         let duration = start.elapsed();
         info!(num_txs_indexed, "Time spent = {:?}", duration);

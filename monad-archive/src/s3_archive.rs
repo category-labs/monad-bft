@@ -21,8 +21,13 @@ use tracing::info;
 
 use crate::{
     archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
+    metrics::Metrics,
     triedb::BlockHeader,
 };
+
+const AWS_S3_ERRORS: &'static str = "aws_s3_errors";
+const AWS_S3_READS: &'static str = "aws_s3_reads";
+const AWS_S3_WRITES: &'static str = "aws_s3_writes";
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
@@ -30,6 +35,7 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 pub struct S3Bucket {
     pub client: Client,
     pub bucket: String,
+    pub metrics: Metrics,
 }
 
 pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
@@ -55,12 +61,16 @@ pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
 }
 
 impl S3Bucket {
-    pub fn new(bucket: String, sdk_config: &SdkConfig) -> Self {
-        S3Bucket::from_client(bucket, Client::new(sdk_config))
+    pub fn new(bucket: String, sdk_config: &SdkConfig, metrics: Metrics) -> Self {
+        S3Bucket::from_client(bucket, Client::new(sdk_config), metrics)
     }
 
-    pub fn from_client(bucket: String, client: Client) -> Self {
-        S3Bucket { bucket, client }
+    pub fn from_client(bucket: String, client: Client, metrics: Metrics) -> Self {
+        S3Bucket {
+            bucket,
+            client,
+            metrics,
+        }
     }
 
     // Upload rlp-encoded bytes with retry
@@ -74,6 +84,7 @@ impl S3Bucket {
             let bucket = &self.bucket;
             let key = key.to_string();
             let body = ByteStream::from(data.clone());
+            let metrics = &self.metrics;
 
             async move {
                 client
@@ -83,13 +94,17 @@ impl S3Bucket {
                     .body(body)
                     .send()
                     .await
-                    .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key))
+                    .wrap_err_with(|| {
+                        metrics.inc_counter(AWS_S3_ERRORS);
+                        format!("Failed to upload {}. Retrying...", key)
+                    })
             }
         })
         .await
         .map(|_| ())
         .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key))?;
 
+        self.metrics.counter(AWS_S3_WRITES, 1);
         Ok(())
     }
 
@@ -101,14 +116,17 @@ impl S3Bucket {
             .key(key)
             .send()
             .await
-            .wrap_err_with(|| format!("Failed to read key from s3 {key}"))?;
+            .wrap_err_with(|| {
+                self.metrics.inc_counter(AWS_S3_ERRORS);
+                format!("Failed to read key from s3 {key}")
+            })?;
 
-        let data = resp
-            .body
-            .collect()
-            .await
-            .wrap_err("Unable to collect response data")?;
+        let data = resp.body.collect().await.wrap_err_with(|| {
+            self.metrics.inc_counter(AWS_S3_ERRORS);
+            "Unable to collect response data"
+        })?;
 
+        self.metrics.counter(AWS_S3_READS, 1);
         Ok(data.into_bytes())
     }
 }

@@ -37,7 +37,9 @@ pub enum Fault {
     },
     MissingBlock,
     CorruptedBlock,
-    MissingAllTxHash,
+    MissingAllTxHash{
+        num_txs: u64,
+    },
     MissingTxhash {
         txhash: String,
     },

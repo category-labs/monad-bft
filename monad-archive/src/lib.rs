@@ -5,3 +5,4 @@ pub mod dynamodb;
 pub mod fault;
 pub mod s3_archive;
 pub mod triedb;
+pub mod metrics;

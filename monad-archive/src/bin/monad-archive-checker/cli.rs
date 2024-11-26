@@ -24,4 +24,7 @@ pub struct Cli {
     /// Set max tolerated log for each bucket, should be much SMALLER than "max_blocks_per_iteration"
     #[arg(long, default_value_t = 25)]
     pub max_lag: u64,
+
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
 }

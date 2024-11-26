@@ -3,23 +3,24 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
-    error::SdkError,
-    operation::{
-        batch_get_item::{builders::BatchGetItemFluentBuilder, BatchGetItemOutput},
-        get_item::GetItemOutput,
-    },
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
     Client,
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned, TxHash};
+use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
 use tracing::error;
+
+use crate::metrics::Metrics;
+
+const AWS_DYNAMODB_ERRORS: &'static str = "aws_dynamodb_errors";
+const AWS_DYNAMODB_WRITES: &'static str = "aws_dynamodb_writes";
+const AWS_DYNAMODB_READS: &'static str = "aws_dynamodb_reads";
 
 pub trait TxIndexReader {
     async fn batch_get_data(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>>;
@@ -48,6 +49,7 @@ pub struct DynamoDBArchive {
     pub client: Client,
     pub table: String,
     pub semaphore: Arc<Semaphore>,
+    pub metrics: Metrics,
 }
 
 impl TxIndexReader for DynamoDBArchive {
@@ -150,12 +152,13 @@ impl DynamoDBArchive {
     const READ_BATCH_SIZE: usize = 100;
     const WRITE_BATCH_SIZE: usize = 25;
 
-    pub fn new(table: String, config: &SdkConfig, concurrency: usize) -> Self {
+    pub fn new(table: String, config: &SdkConfig, concurrency: usize, metrics: Metrics) -> Self {
         let client = Client::new(config);
         Self {
             client,
             table,
             semaphore: Arc::new(Semaphore::new(concurrency)),
+            metrics,
         }
     }
 
@@ -188,7 +191,10 @@ impl DynamoDBArchive {
                     .set_request_items(Some(request_items.clone()))
                     .send()
                     .await
-                    .wrap_err_with(|| format!("Request keys (0x stripped in req): {:?}", &batch))
+                    .wrap_err_with(|| {
+                        inc_err(&self.metrics);
+                        format!("Request keys (0x stripped in req): {:?}", &batch)
+                    })
             })
             .await?;
 
@@ -211,6 +217,10 @@ impl DynamoDBArchive {
                         .set_request_items(Some(unprocessed.clone()))
                         .send()
                         .await
+                        .wrap_err_with(|| {
+                            inc_err(&self.metrics);
+                            "Failed to get unprocessed keys"
+                        })
                 })
                 .await?;
 
@@ -222,6 +232,8 @@ impl DynamoDBArchive {
                 unprocessed_keys = response_retry.unprocessed_keys;
             }
         }
+
+        self.metrics.counter(AWS_DYNAMODB_READS, keys.len() as u64);
         Ok(results)
     }
 
@@ -229,6 +241,7 @@ impl DynamoDBArchive {
         if values.len() > 25 {
             panic!("Batch size larger than limit = 25")
         }
+        let num_writes = values.len();
 
         let retry_strategy = ExponentialBackoff::from_millis(10)
             .max_delay(Duration::from_secs(1))
@@ -241,6 +254,7 @@ impl DynamoDBArchive {
             let client = &self.client;
             let table = self.table.clone();
             let semeaphore = Arc::clone(&self.semaphore);
+            let metrics = &self.metrics;
 
             async move {
                 let _permit = semeaphore.acquire().await.expect("semaphore dropped");
@@ -253,6 +267,7 @@ impl DynamoDBArchive {
                     .send()
                     .await
                     .wrap_err_with(|| {
+                        inc_err(metrics);
                         format!("Failed to upload to table {}. Retrying...", table)
                     })?;
 
@@ -271,8 +286,10 @@ impl DynamoDBArchive {
             }
         })
         .await
-        .map(|_| ())
-        .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))
+        .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))?;
+
+        self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
+        Ok(())
     }
 }
 
@@ -316,4 +333,8 @@ pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Du
     ExponentialBackoff::from_millis(10)
         .max_delay(Duration::from_secs(1))
         .map(jitter)
+}
+
+fn inc_err(metrics: &Metrics) {
+    metrics.counter(AWS_DYNAMODB_ERRORS, 1);
 }

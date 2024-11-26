@@ -32,4 +32,7 @@ pub struct Cli {
     /// Block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
+
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
 }

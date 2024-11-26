@@ -9,6 +9,7 @@ use tracing::{error, info, Level};
 
 use monad_archive::{
     archive_interface::{ArchiveReader, LatestKind},
+    metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
 };
 
@@ -19,6 +20,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
+    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     let mut s3_archive_readers = Vec::new();
 
@@ -40,8 +42,12 @@ async fn main() -> Result<()> {
     // Configure all archive checkers
     for idx in 0..s3_buckets.len() {
         let config = get_aws_config(Some(args.regions[idx].clone())).await;
-        let s3_archive_reader =
-            S3Archive::new(S3Bucket::new(s3_buckets[idx].clone(), &config)).await?;
+        let s3_archive_reader = S3Archive::new(S3Bucket::new(
+            s3_buckets[idx].clone(),
+            &config,
+            metrics.clone(),
+        ))
+        .await?;
 
         s3_archive_readers.push(s3_archive_reader);
     }

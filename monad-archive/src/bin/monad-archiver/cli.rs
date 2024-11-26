@@ -25,4 +25,7 @@ pub struct Cli {
     /// Set max block processed per iter
     #[arg(long, default_value_t = 100)]
     pub max_blocks_per_iteration: u64,
+
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
 }

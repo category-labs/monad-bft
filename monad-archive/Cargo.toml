@@ -35,12 +35,23 @@ aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 chrono = { workspace = true }
+dashmap = { workspace = true }
 eyre = { workspace = true }
 hex = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["metrics"] }
+opentelemetry-semantic-conventions = { workspace = true }
 schemars = "0.8.21"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs", "sync"] }
+tokio = { workspace = true, features = [
+    "net",
+    "macros",
+    "rt-multi-thread",
+    "fs",
+    "sync",
+] }
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }

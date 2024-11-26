@@ -17,6 +17,7 @@ use dynamodb::{DynamoDBArchive, TxIndexReader, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
+use metrics::Metrics;
 use monad_archive::*;
 use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
@@ -35,14 +36,23 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
+    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let archive = S3Archive::new(S3Bucket::new(args.archive_bucket, &sdk_config))
-        .await?
-        .as_reader();
-    let dynamodb_archive =
-        DynamoDBArchive::new(args.db_table, &sdk_config, args.max_concurrent_connections);
+    let archive = S3Archive::new(S3Bucket::new(
+        args.archive_bucket,
+        &sdk_config,
+        metrics.clone(),
+    ))
+    .await?
+    .as_reader();
+    let dynamodb_archive = DynamoDBArchive::new(
+        args.db_table,
+        &sdk_config,
+        args.max_concurrent_connections,
+        metrics.clone(),
+    );
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
@@ -86,6 +96,7 @@ async fn main() -> Result<()> {
             end_block_num,
             args.max_concurrent_connections,
             &mut fault_writer,
+            &metrics,
         )
         .await
         {
@@ -107,13 +118,13 @@ async fn handle_blocks(
     end_block_num: u64,
     concurrency: usize,
     fault_writer: &mut FaultWriter,
+    metrics: &Metrics,
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
             let archive = archive.clone();
             let dynamodb = dynamodb.clone();
             let check_result = tokio::spawn(handle_block(archive, dynamodb, block_num)).await;
-            // let mut fault_writer = fault_writer.clone();
 
             let check = match check_result {
                 Ok(Ok(fault)) => fault,
@@ -146,6 +157,26 @@ async fn handle_blocks(
         .buffer_unordered(concurrency)
         .collect()
         .await;
+
+    for block_check in &faults {
+        if block_check.faults.len() > 0 {
+            metrics.counter("faults_blocks_with_faults", 1);
+        }
+        for fault in &block_check.faults {
+            match fault {
+                Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
+                Fault::MissingBlock => metrics.counter("faults_missing_blocks", 1),
+                Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
+                Fault::MissingAllTxHash { num_txs } => {
+                    metrics.counter("faults_blocks_missing_all_txhash", 1);
+                    metrics.counter("faults_missing_txhash", *num_txs);
+                }
+                Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
+                Fault::WrongBlockNumber { .. } => metrics.counter("faults_wrong_block_number", 1),
+            }
+        }
+    }
+
     fault_writer.write_faults(&faults).await
 }
 
@@ -191,7 +222,9 @@ async fn handle_block(
             .all(|f| matches!(f, Fault::MissingTxhash { .. }))
     {
         faults.clear();
-        faults.push(Fault::MissingAllTxHash);
+        faults.push(Fault::MissingAllTxHash {
+            num_txs: block.body.len() as u64,
+        });
     }
 
     Ok(BlockCheckResult::new(block_num, faults))

@@ -14,6 +14,7 @@ use tracing::{error, info, warn, Level};
 
 use monad_archive::{
     archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
+    metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
     triedb::{Triedb, TriedbEnv},
 };
@@ -25,6 +26,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
+    let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     let max_concurrent_blocks = args.max_concurrent_blocks;
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
@@ -34,7 +36,8 @@ async fn main() -> Result<()> {
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
-    let s3_archive_writer = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config)).await?;
+    let s3_archive_writer =
+        S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone())).await?;
 
     // Check for new blocks every 100 ms
     // Issue requests to triedb, poll data and push to relevant tables
@@ -45,9 +48,11 @@ async fn main() -> Result<()> {
             Ok(number) => number,
             Err(e) => return Err(e),
         };
+        metrics.gauge("triedb_block_number", trie_db_block_number);
 
         let latest_processed_block =
             (s3_archive_writer.get_latest(LatestKind::Uploaded).await).unwrap_or_default();
+        metrics.gauge("latest_uploaded", latest_processed_block);
 
         if trie_db_block_number <= latest_processed_block {
             info!(
@@ -65,6 +70,7 @@ async fn main() -> Result<()> {
 
         let end_block_number =
             trie_db_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
+        metrics.gauge("end_block_number", end_block_number);
 
         let start = Instant::now();
         info!(
@@ -94,26 +100,10 @@ async fn main() -> Result<()> {
                     current_join_block += 1;
                 }
                 Ok(Err(e)) => {
-                    if current_join_block != 0 {
-                        if let Err(e) = s3_archive_writer
-                            .update_latest(current_join_block - 1, LatestKind::Uploaded)
-                            .await
-                        {
-                            error!("Error setting latest after handle_block failure: {e}");
-                        }
-                    }
                     error!(current_join_block, "Failure writing block, {e}");
                     break;
                 }
                 Err(e) => {
-                    if current_join_block != 0 {
-                        if let Err(e) = s3_archive_writer
-                            .update_latest(current_join_block - 1, LatestKind::Uploaded)
-                            .await
-                        {
-                            error!("Error setting latest after handle_block failure: {e}");
-                        }
-                    }
                     error!(current_join_block, "Failure writing block, {e}");
                     break;
                 }
