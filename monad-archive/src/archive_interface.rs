@@ -1,7 +1,7 @@
 use eyre::Result;
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 
-use crate::triedb::BlockHeader;
+use monad_triedb_utils::triedb_env::BlockHeader;
 
 pub enum LatestKind {
     Uploaded,

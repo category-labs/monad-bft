@@ -3,7 +3,7 @@
 use std::{sync::Arc, time::Instant};
 
 use clap::Parser;
-use eyre::Result;
+use eyre::{eyre, Result};
 use futures::future::join_all;
 use tokio::{
     sync::Semaphore,
@@ -16,9 +16,8 @@ use monad_archive::{
     archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
     metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
-    triedb::{Triedb, TriedbEnv},
 };
-
+use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 mod cli;
 
 #[tokio::main]
@@ -36,7 +35,10 @@ async fn main() -> Result<()> {
     let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
 
     // This will spin off a polling thread
-    let triedb = TriedbEnv::new(&args.triedb_path);
+    let triedb = TriedbEnv::new(
+        &args.triedb_path,
+        args.triedb_max_concurrent_requests as usize,
+    );
 
     // Construct s3 and dynamodb connections
     let sdk_config = get_aws_config(args.region).await;
@@ -48,10 +50,7 @@ async fn main() -> Result<()> {
     loop {
         sleep(Duration::from_millis(100)).await;
 
-        let trie_db_block_number = match triedb.get_latest_block().await {
-            Ok(number) => number,
-            Err(e) => return Err(e),
-        };
+        let trie_db_block_number = triedb.get_latest_block().await.map_err(|e| eyre!("{e}"))?;
         metrics.gauge("triedb_block_number", trie_db_block_number);
 
         let latest_processed_block =
@@ -131,24 +130,37 @@ async fn handle_block(
     s3_archive: &S3Archive,
 ) -> Result<()> {
     /*  Store Blocks */
-    let block_header = match triedb.get_block_header(current_block).await? {
+    let block_header = match triedb
+        .get_block_header(current_block)
+        .await
+        .map_err(|e| eyre!("{e}"))?
+    {
         Some(header) => header,
         None => {
             warn!("Can't find block {} in triedb", current_block);
             return Ok(());
         }
     };
-    let transactions = triedb.get_transactions(current_block).await?;
+    let transactions = triedb
+        .get_transactions(current_block)
+        .await
+        .map_err(|e| eyre!("{e}"))?;
 
     let f_block = s3_archive.archive_block(block_header, transactions, current_block);
 
     /* Store Receipts */
-    let receipts = triedb.get_receipts(current_block).await?;
+    let receipts = triedb
+        .get_receipts(current_block)
+        .await
+        .map_err(|e| eyre!("{e}"))?;
 
     let f_receipt = s3_archive.archive_receipts(receipts, current_block);
 
     /* Store Traces */
-    let traces: Vec<Vec<u8>> = triedb.get_call_frames(current_block).await?;
+    let traces: Vec<Vec<u8>> = triedb
+        .get_call_frames(current_block)
+        .await
+        .map_err(|e| eyre!("{e}"))?;
 
     let f_trace = s3_archive.archive_traces(traces, current_block);
 

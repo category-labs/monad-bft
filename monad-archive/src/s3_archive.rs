@@ -22,8 +22,9 @@ use tracing::info;
 use crate::{
     archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
     metrics::Metrics,
-    triedb::BlockHeader,
 };
+
+use monad_triedb_utils::triedb_env::BlockHeader;
 
 const AWS_S3_ERRORS: &'static str = "aws_s3_errors";
 const AWS_S3_READS: &'static str = "aws_s3_reads";
