@@ -4,6 +4,7 @@ use alloy_primitives::{
     aliases::{U128, U256, U64},
     FixedBytes,
 };
+use monad_archive::{archive_interface::ArchiveReader, s3_archive::S3Archive};
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use reth_primitives::{
@@ -98,13 +99,13 @@ pub fn parse_tx_content(
 pub fn parse_tx_receipt(
     block_header: &Header,
     block_hash: FixedBytes<32>,
-    tx: TransactionSigned,
+    tx: &TransactionSigned,
     prev_receipt: Option<Receipt>,
     receipt: ReceiptWithBloom,
     block_num: u64,
     tx_index: usize,
 ) -> Result<TransactionReceipt, JsonRpcError> {
-    let Some(tx) = tx.into_ecrecovered_unchecked() else {
+    let Some(tx) = tx.clone().into_ecrecovered_unchecked() else {
         error!("transaction sender should exist");
         return Err(JsonRpcError::txn_decode_error());
     };
@@ -203,6 +204,7 @@ pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 /// Returns an array of all logs matching filter with given id.
 pub async fn monad_eth_getLogs<T: Triedb>(
     triedb_env: &T,
+    archive_reader: &Option<S3Archive>,
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
@@ -243,6 +245,7 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                 (from_block, to_block)
             }
             FilterBlockOption::AtBlockHash(block_hash) => {
+                // TODO: retry from archive reader if block hash not available in triedb
                 let block = triedb_env
                     .get_block_number_by_hash(block_hash.into())
                     .await
@@ -267,19 +270,42 @@ pub async fn monad_eth_getLogs<T: Triedb>(
         let filtered_params = FilteredParams::new(Some(filter.clone()));
 
         for block_num in from_block..=to_block {
-            let header = match triedb_env.get_block_header(block_num).await? {
-                Some(header) => header,
-                None => {
+            // TODO: check block's log_bloom against the filter
+            let receipts: Vec<TransactionReceipt> =
+                if let Some(header) = triedb_env.get_block_header(block_num).await? {
+                    // try fetching from triedb
+                    let transactions = triedb_env.get_transactions(block_num).await?;
+                    let bloom_receipts = triedb_env.get_receipts(block_num).await?;
+                    block_receipts(&transactions, bloom_receipts, &header.header, header.hash)
+                        .await?
+                } else if let Some(archive_reader) = archive_reader {
+                    // fallback to archive reader if header not available in triedb
+                    let block = archive_reader
+                        .get_block_by_number(block_num)
+                        .await
+                        .map_err(|_| {
+                            JsonRpcError::internal_error("error getting block header".into())
+                        })?;
+                    let bloom_receipts = archive_reader
+                        .get_block_receipts(block_num)
+                        .await
+                        .map_err(|_| {
+                            JsonRpcError::internal_error("error getting block receipts".into())
+                        })?;
+                    block_receipts(
+                        &block.body,
+                        bloom_receipts,
+                        &block.header,
+                        block.hash_slow(),
+                    )
+                    .await?
+                } else {
                     return Err(JsonRpcError::internal_error(
                         "error getting block header".into(),
-                    ))
-                }
-            };
+                    ));
+                };
 
-            // TODO: check block's log_bloom against the filter
-            let block_receipts = block_receipts(triedb_env, &header.header, header.hash).await?;
-
-            let mut receipt_logs: Vec<Log> = block_receipts
+            let mut receipt_logs: Vec<Log> = receipts
                 .into_iter()
                 .flat_map(|receipt| {
                     let logs: Vec<Log> = receipt
@@ -410,7 +436,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     let receipt = parse_tx_receipt(
         &header.header,
         header.hash,
-        tx,
+        &tx,
         prev_receipt,
         receipt,
         block_num,

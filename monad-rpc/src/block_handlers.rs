@@ -2,8 +2,9 @@ use alloy_primitives::{
     aliases::{U256, U64},
     FixedBytes,
 };
+use monad_archive::{archive_interface::ArchiveReader, s3_archive::S3Archive};
 use monad_rpc_docs::rpc;
-use reth_primitives::{Header as RlpHeader, TransactionSigned};
+use reth_primitives::{Header as RlpHeader, ReceiptWithBloom, TransactionSigned};
 use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
@@ -20,7 +21,7 @@ fn parse_block_content(
     rlp_header: RlpHeader,
     transactions: Vec<TransactionSigned>,
     return_full_txns: bool,
-) -> Result<Block, JsonRpcError> {
+) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     let size = rlp_header.size();
 
     // parse block header
@@ -80,7 +81,9 @@ fn parse_block_content(
         other: Default::default(),
     };
 
-    Ok(retval)
+    Ok(Some(MonadEthGetBlock {
+        block: MonadBlock(retval),
+    }))
 }
 
 #[rpc(method = "eth_blockNumber")]
@@ -119,34 +122,40 @@ pub struct MonadEthGetBlock {
 /// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash<T: Triedb>(
     triedb_env: &T,
+    archive_reader: &Option<S3Archive>,
     params: MonadEthGetBlockByHashParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByHash: {params:?}");
 
-    let Some(block_num) = triedb_env
+    if let Some(block_num) = triedb_env
         .get_block_number_by_hash(params.block_hash.0)
         .await?
-    else {
-        return Ok(None);
-    };
+    {
+        if let Some(header) = triedb_env.get_block_header(block_num).await? {
+            let transactions = triedb_env.get_transactions(block_num).await?;
+            return parse_block_content(
+                header.hash,
+                header.header,
+                transactions,
+                params.return_full_txns,
+            );
+        }
+    }
 
-    let header = match triedb_env.get_block_header(block_num).await? {
-        Some(header) => header,
-        None => return Ok(None),
-    };
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    // try archive if header not found and archive reader specified
+    if let Some(archive_reader) = archive_reader {
+        if let Ok(block) = archive_reader.get_block_by_hash(&params.block_hash.0).await {
+            return parse_block_content(
+                block.header.hash_slow(),
+                block.header,
+                block.body,
+                params.return_full_txns,
+            );
+        }
+    }
 
-    parse_block_content(
-        params.block_hash.0.into(),
-        header.header,
-        transactions,
-        params.return_full_txns,
-    )
-    .map(|block| {
-        Some(MonadEthGetBlock {
-            block: MonadBlock(block),
-        })
-    })
+    // return none if both triedb and archive fails
+    Ok(None)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -160,29 +169,37 @@ pub struct MonadEthGetBlockByNumberParams {
 /// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     triedb_env: &T,
+    archive_reader: &Option<S3Archive>,
     params: MonadEthGetBlockByNumberParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     trace!("monad_eth_getBlockByNumber: {params:?}");
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
 
-    let header = match triedb_env.get_block_header(block_num).await? {
-        Some(header) => header,
-        None => return Ok(None),
-    };
-    let transactions = triedb_env.get_transactions(block_num).await?;
+    if let Some(header) = triedb_env.get_block_header(block_num).await? {
+        let transactions = triedb_env.get_transactions(block_num).await?;
+        return parse_block_content(
+            header.hash,
+            header.header,
+            transactions,
+            params.return_full_txns,
+        );
+    }
 
-    parse_block_content(
-        header.hash,
-        header.header,
-        transactions,
-        params.return_full_txns,
-    )
-    .map(|block| {
-        Some(MonadEthGetBlock {
-            block: MonadBlock(block),
-        })
-    })
+    // try archive if header not found and archive reader specified
+    if let Some(archive_reader) = archive_reader {
+        if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
+            return parse_block_content(
+                block.header.hash_slow(),
+                block.header,
+                block.body,
+                params.return_full_txns,
+            );
+        }
+    }
+
+    // return none if both triedb and archive fails
+    Ok(None)
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -230,16 +247,14 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     Ok(Some(format!("0x{:x}", transactions.len())))
 }
 
-pub async fn map_block_receipts<T: Triedb, R>(
-    triedb_env: &T,
+pub async fn map_block_receipts<R>(
+    transactions: &Vec<TransactionSigned>,
+    receipts: Vec<ReceiptWithBloom>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
     f: impl Fn(TransactionReceipt) -> R,
 ) -> Result<Vec<R>, JsonRpcError> {
     let block_num: u64 = block_header.number;
-
-    let transactions = triedb_env.get_transactions(block_num).await?;
-    let receipts = triedb_env.get_receipts(block_num).await?;
 
     if transactions.len() != receipts.len() {
         Err(JsonRpcError::internal_error(
@@ -271,12 +286,20 @@ pub async fn map_block_receipts<T: Triedb, R>(
         .collect()
 }
 
-pub async fn block_receipts<T: Triedb>(
-    triedb_env: &T,
+pub async fn block_receipts(
+    transactions: &Vec<TransactionSigned>,
+    receipts: Vec<ReceiptWithBloom>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
-    map_block_receipts(triedb_env, block_header, block_hash, |receipt| receipt).await
+    map_block_receipts(
+        transactions,
+        receipts,
+        block_header,
+        block_hash,
+        |receipt| receipt,
+    )
+    .await
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -292,24 +315,43 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     triedb_env: &T,
+    archive_reader: &Option<S3Archive>,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
 
-    let header = match triedb_env.get_block_header(block_num).await? {
-        Some(header) => header,
-        None => return Ok(None),
-    };
+    if let Some(header) = triedb_env.get_block_header(block_num).await? {
+        let transactions = triedb_env.get_transactions(block_num).await?;
+        let receipts = triedb_env.get_receipts(block_num).await?;
+        let block_receipts = map_block_receipts(
+            &transactions,
+            receipts,
+            &header.header,
+            header.hash,
+            MonadTransactionReceipt,
+        )
+        .await?;
+        return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+    }
 
-    let block_receipts = map_block_receipts(
-        triedb_env,
-        &header.header,
-        header.hash,
-        MonadTransactionReceipt,
-    )
-    .await?;
+    // try archive if header not found and archive reader specified
+    if let Some(archive_reader) = archive_reader {
+        if let Ok(bloom_receipts) = archive_reader.get_block_receipts(block_num).await {
+            if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
+                let block_receipts = map_block_receipts(
+                    &block.body,
+                    bloom_receipts,
+                    &block.header,
+                    block.hash_slow(),
+                    MonadTransactionReceipt,
+                )
+                .await?;
+                return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+            }
+        }
+    }
 
-    Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)))
+    Ok(None)
 }

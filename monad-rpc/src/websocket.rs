@@ -112,6 +112,7 @@ mod tests {
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
+            archive_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
             chain_id: 41454,
             batch_request_limit: 1000,
