@@ -22,11 +22,6 @@ const AWS_DYNAMODB_ERRORS: &'static str = "aws_dynamodb_errors";
 const AWS_DYNAMODB_WRITES: &'static str = "aws_dynamodb_writes";
 const AWS_DYNAMODB_READS: &'static str = "aws_dynamodb_reads";
 
-pub trait TxIndexReader {
-    async fn batch_get_data(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>>;
-    async fn get_data(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>>;
-}
-
 pub trait TxIndexArchiver {
     async fn index_block(
         &self,
@@ -52,8 +47,8 @@ pub struct DynamoDBArchive {
     pub metrics: Metrics,
 }
 
-impl TxIndexReader for DynamoDBArchive {
-    async fn batch_get_data(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
+impl DynamoDBArchive {
+    pub async fn batch_get_txdata(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
         let output = self
             .batch_get(keys)
             .await?
@@ -70,8 +65,8 @@ impl TxIndexReader for DynamoDBArchive {
         Ok(output)
     }
 
-    async fn get_data(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        self.batch_get_data(&[key.into()])
+    pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
+        self.batch_get_txdata(&[key.into()])
             .await
             .map(|mut v| v.remove(0))
     }

@@ -5,9 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use archive_interface::{ArchiveReader, ArchiveWriter, LatestKind::*};
+use archive_reader::{ArchiveReader, LatestKind::*};
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, TxIndexArchiver, TxIndexReader};
+use dynamodb::{DynamoDBArchive, TxIndexArchiver};
 use eyre::Result;
 use futures::{executor::block_on, future::join_all};
 use metrics::Metrics;
@@ -35,8 +35,7 @@ async fn main() -> Result<()> {
         args.max_concurrent_connections,
         metrics.clone(),
     );
-    let archive =
-        S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone())).await?;
+    let archive = S3Archive::new(S3Bucket::new(args.s3_bucket, &sdk_config, metrics.clone()));
 
     // for testing
     if args.reset_index {
@@ -160,7 +159,7 @@ async fn handle_block(
     if let Some(tx) = first {
         let key = tx.hash.to_string();
         tokio::spawn(async move {
-            match dynamodb.get_data(&key).await {
+            match dynamodb.get_txdata(&key).await {
                 Ok(resp) => {
                     if resp.is_some() && resp.as_ref().unwrap().block_num == block_num {
                         info!(key, ?resp, "Check successful")

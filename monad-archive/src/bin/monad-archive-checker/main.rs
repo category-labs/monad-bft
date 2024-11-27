@@ -13,8 +13,8 @@ use tokio::{
 use tracing::{debug, error, info, warn, Level};
 
 use monad_archive::{
-    archive_interface::{ArchiveReader, LatestKind},
-    fault::{self, BlockCheckResult, Fault, FaultWriter},
+    archive_reader::LatestKind,
+    fault::{BlockCheckResult, Fault, FaultWriter},
     metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
 };
@@ -63,14 +63,13 @@ async fn main() -> Result<()> {
             s3_buckets[idx].clone(),
             &config,
             metrics.clone(),
-        ))
-        .await?;
+        ));
 
         s3_archive_readers.push(s3_archive_reader);
     }
 
     // Initialize fault writer
-    let mut fault_writer = FaultWriter::new(&args.checker_path).await?;
+    let fault_writer = FaultWriter::new(&args.checker_path).await?;
     info!("Writing S3 checking result at {:?}", &args.checker_path);
 
     let mut start_block_number = args.start_block_number;
