@@ -19,6 +19,7 @@ use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use metrics::Metrics;
 use monad_archive::*;
+use reth_primitives::{Block, ReceiptWithBloom};
 use s3_archive::{get_aws_config, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -26,6 +27,7 @@ use tokio::{
     join,
     sync::{Mutex, Semaphore},
     time::sleep,
+    try_join,
 };
 use tracing::{error, info, warn, Level};
 
@@ -158,10 +160,10 @@ async fn handle_blocks(
                 Fault::CorruptedBlock => metrics.counter("faults_corrupted_blocks", 1),
                 Fault::MissingAllTxHash { num_txs } => {
                     metrics.counter("faults_blocks_missing_all_txhash", 1);
-                    metrics.counter("faults_missing_txhash", *num_txs);
+                    metrics.counter("faults_missing_txhash", *num_txs as u64);
                 }
                 Fault::MissingTxhash { .. } => metrics.counter("faults_missing_txhash", 1),
-                Fault::WrongBlockNumber { .. } => metrics.counter("faults_wrong_block_number", 1),
+                Fault::IncorrectTxData { .. } => metrics.counter("faults_incorrect_tx_data", 1),
 
                 // Other faults are not DynamoDB faults
                 _ => (),
@@ -173,8 +175,12 @@ async fn handle_blocks(
 }
 
 async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockCheckResult> {
-    let block = reader.get_block_by_number(block_num).await?;
-    info!(num_txs = block.body.len(), block_num, "Handling block");
+    let (block, traces, receipts) = match get_block_data(&reader, block_num).await {
+        Ok(x) => x,
+        Err(check_result) => return Ok(check_result),
+    };
+    let num_txs = block.body.len();
+    info!(num_txs, block_num, "Handling block");
 
     if block.body.is_empty() {
         return Ok(BlockCheckResult::valid(block_num));
@@ -186,34 +192,85 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .map(|tx| tx.hash().to_string())
         .collect::<Vec<_>>();
 
+    let expected = block
+        .body
+        .into_iter()
+        .zip(traces.into_iter())
+        .zip(receipts.into_iter())
+        .map(|((tx, trace), receipt)| TxIndexedData {
+            block_num: block_num,
+            tx,
+            receipt,
+            trace,
+        });
+
     let mut faults = reader
         .batch_get_txdata(&hashes)
         .await?
         .into_iter()
-        .zip(hashes.into_iter())
-        .filter_map(|(resp, txhash)| match resp {
-            None => Some(Fault::MissingTxhash { txhash }),
-            Some(TxIndexedData {
-                block_num: bnum, ..
-            }) if bnum != block_num => Some(Fault::WrongBlockNumber {
-                txhash,
-                wrong_block_num: bnum,
+        .zip(expected)
+        .filter_map(|(resp, expected)| match resp {
+            None => Some(Fault::MissingTxhash {
+                txhash: expected.tx.hash().to_string(),
             }),
-            Some(_) => None,
+            Some(fetched) => {
+                if fetched != expected {
+                    Some(Fault::IncorrectTxData { expected, fetched })
+                } else {
+                    None
+                }
+            }
         })
         .collect::<Vec<_>>();
 
     // reduce all txhash case
-    if faults.len() == block.body.len()
+    if faults.len() == num_txs
         && faults
             .iter()
             .all(|f| matches!(f, Fault::MissingTxhash { .. }))
     {
         faults.clear();
-        faults.push(Fault::MissingAllTxHash {
-            num_txs: block.body.len() as u64,
-        });
+        faults.push(Fault::MissingAllTxHash { num_txs });
     }
 
     Ok(BlockCheckResult::new(block_num, faults))
+}
+
+async fn get_block_data(
+    reader: &ArchiveReader,
+    block_num: u64,
+) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptWithBloom>), BlockCheckResult> {
+    let (block, traces, receipts) = join!(
+        reader.get_block_by_number(block_num),
+        reader.get_block_traces(block_num),
+        reader.get_block_receipts(block_num)
+    );
+
+    match (block, traces, receipts) {
+        (Ok(b), Ok(traces), Ok(receipts)) => {
+            return Ok((b, traces, receipts));
+        }
+        (block, traces, receipts) => {
+            let mut check_result = BlockCheckResult::new(block_num, Vec::new());
+            if let Err(e) = block {
+                warn!("Error fetching block: {e:?}");
+                check_result.faults.push(Fault::S3MissingBlock {
+                    buckets: vec![reader.bucket().to_owned()],
+                });
+            }
+            if let Err(e) = traces {
+                warn!("Error fetching traces: {e:?}");
+                check_result.faults.push(Fault::S3MissingTraces {
+                    buckets: vec![reader.bucket().to_owned()],
+                });
+            }
+            if let Err(e) = receipts {
+                warn!("Error fetching receipts: {e:?}");
+                check_result.faults.push(Fault::S3MissingReceipts {
+                    buckets: vec![reader.bucket().to_owned()],
+                });
+            }
+            Err(check_result)
+        }
+    }
 }

@@ -5,6 +5,8 @@ use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
+use crate::dynamodb::TxIndexedData;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlockCheckResult {
     pub timestamp: String,
@@ -39,16 +41,15 @@ pub enum Fault {
     // DynamoDB errors
     CorruptedBlock,
     MissingAllTxHash {
-        num_txs: u64,
+        num_txs: usize,
     },
     MissingTxhash {
         txhash: String,
     },
-    WrongBlockNumber {
-        txhash: String,
-        wrong_block_num: u64,
+    IncorrectTxData {
+        fetched: TxIndexedData,
+        expected: TxIndexedData,
     },
-
     // S3 errors
     S3MissingBlock {
         buckets: Vec<String>,

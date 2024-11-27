@@ -9,6 +9,7 @@ use aws_sdk_dynamodb::{
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
 use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -31,7 +32,9 @@ pub trait TxIndexArchiver {
     ) -> Result<()>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
+)]
 pub struct TxIndexedData {
     pub block_num: u64,
     pub tx: TransactionSigned,

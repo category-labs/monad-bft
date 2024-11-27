@@ -153,6 +153,8 @@ async fn handle_block(
     info!(num_txs, block_num, "Block");
 
     let first = block.body.first().cloned();
+    let first_rx = receipts.first().cloned();
+    let first_trace = traces.first().cloned();
     dynamodb.index_block(block, traces, receipts).await?;
 
     // check 1 key
@@ -160,13 +162,17 @@ async fn handle_block(
         let key = tx.hash.to_string();
         tokio::spawn(async move {
             match dynamodb.get_txdata(&key).await {
-                Ok(resp) => {
-                    if resp.is_some() && resp.as_ref().unwrap().block_num == block_num {
-                        info!(key, ?resp, "Check successful")
-                    } else {
+                Ok(Some(resp)) => {
+                    if resp.block_num != block_num
+                        || Some(&resp.receipt) != first_rx.as_ref()
+                        || Some(&resp.trace) != first_trace.as_ref()
+                    {
                         warn!(key, ?resp, "Returned mapping not as expected");
+                    } else {
+                        info!(key, resp_block_num = resp.block_num, "Check successful");
                     }
                 }
+                Ok(None) => warn!(key, "No key found for key"),
                 Err(e) => warn!("Error while checking: {e}"),
             };
         });

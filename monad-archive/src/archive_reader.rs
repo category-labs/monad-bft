@@ -33,6 +33,10 @@ impl ArchiveReader {
         }
     }
 
+    pub fn bucket(&self) -> &str {
+        &self.s3.bucket.bucket
+    }
+
     pub async fn batch_get_txdata(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
         self.dynamodb.batch_get_txdata(keys).await
     }
