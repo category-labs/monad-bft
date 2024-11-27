@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 0)]
     pub start_block_number: u64,
 
-    /// TODO: Set the concurrent blocks
+    /// Set the concurrent blocks
     #[arg(long, default_value_t = 10)]
     pub max_concurrent_blocks: usize,
 
