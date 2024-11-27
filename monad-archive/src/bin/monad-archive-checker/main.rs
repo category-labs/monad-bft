@@ -1,15 +1,20 @@
 #![allow(async_fn_in_trait, clippy::async_trait)]
 
+use std::sync::Arc;
+
 use clap::Parser;
 use eyre::Result;
-use futures::join;
+use futures::{future::join_all, join};
 use reth_primitives::{Block, ReceiptWithBloom};
-use tokio::time::{sleep, Duration};
-use tracing::{debug, error, info, Level};
+use tokio::{
+    sync::Semaphore,
+    time::{sleep, Duration},
+};
+use tracing::{debug, error, info, warn, Level};
 
 use monad_archive::{
     archive_interface::{ArchiveReader, LatestKind},
-    fault::{BlockCheckResult, Fault, FaultWriter},
+    fault::{self, BlockCheckResult, Fault, FaultWriter},
     metrics::Metrics,
     s3_archive::{get_aws_config, S3Archive, S3Bucket},
 };
@@ -44,6 +49,13 @@ async fn main() -> Result<()> {
         );
     }
 
+    if args.max_blocks_per_iteration == 0 {
+        panic!("Max blocks per iteration can't be 0. Suggested value: 200");
+    }
+
+    let max_concurrent_blocks = args.max_concurrent_blocks;
+    let concurrent_block_semaphore = Arc::new(Semaphore::new(max_concurrent_blocks));
+
     // Configure all archive checkers
     for idx in 0..s3_buckets.len() {
         let config = get_aws_config(Some(args.regions[idx].clone())).await;
@@ -71,7 +83,7 @@ async fn main() -> Result<()> {
         let latest_block_number =
             latest_uploaded_block(&s3_archive_readers, &args.max_lag, &s3_buckets).await;
         let end_block_number =
-            latest_block_number.min(start_block_number + args.max_blocks_per_iteration);
+            latest_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
 
         info!(
             "Start block: {}, end block: {}, latest block: {}",
@@ -84,19 +96,43 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        for block_number in start_block_number..end_block_number {
-            let blocks_data = get_block_data(&s3_archive_readers, block_number).await;
-            let block_faults_cnt =
-                pairwise_check(&blocks_data, block_number, &mut fault_writer, &metrics).await;
+        let join_handles = (start_block_number..=end_block_number).map(|current_block: u64| {
+            let mut fault_writer = fault_writer.clone();
+            let s3_archive_readers = s3_archive_readers.clone();
+            let metrics = metrics.clone();
 
-            if block_faults_cnt == 0 {
-                info!("Block {} is consistant across buckets", block_number);
-            } else {
-                error!(
-                    "Block {} is inconsistant across buckets. Number of faults = {}",
-                    block_number, block_faults_cnt
-                );
+            let semaphore = concurrent_block_semaphore.clone();
+
+            tokio::spawn(async move {
+                let _permit = semaphore
+                    .acquire()
+                    .await
+                    .expect("Got permit to check a new block");
+                let blocks_data = get_block_data(&s3_archive_readers, current_block).await;
+                pairwise_check(&blocks_data, current_block, &mut fault_writer, &metrics).await
+            })
+        });
+
+        let block_check_results = join_all(join_handles).await;
+        let mut current_block = start_block_number;
+        for block_check_result in block_check_results {
+            match block_check_result {
+                Ok(block_faults_cnt) => {
+                    if block_faults_cnt == 0 {
+                        info!("Block {} is consistent across buckets", current_block);
+                    } else {
+                        error!(
+                            "Block {} is inconsistent across buckets. Number of faults: {}",
+                            current_block, block_faults_cnt
+                        );
+                    }
+                }
+                Err(e) => {
+                    // TODO: should be abort here??
+                    error!("Critical: Unable to join futures!, {e}");
+                }
             }
+            current_block = current_block + 1;
         }
 
         start_block_number = end_block_number;
@@ -112,29 +148,30 @@ async fn latest_uploaded_block(
     max_lag: &u64,
     s3_buckets: &[String],
 ) -> u64 {
-    let mut max_block_number: u64 = 0;
-    let mut buckets_latest_block = Vec::new();
+    let latest_futures = s3_archive_readers.iter().map(|reader| async {
+        match reader.get_latest(LatestKind::Uploaded).await {
+            Ok(block_number) => block_number,
+            Err(e) => {
+                // This is not necessarily an error. It might be that the latest is not there yet
+                warn!(
+                    "Failed to get latest block number for bucket '{}': {:?}",
+                    reader.bucket.bucket, e
+                );
+                0
+            }
+        }
+    });
 
-    for s3_archive_reader in s3_archive_readers {
-        let bucket_latest_block = s3_archive_reader
-            .get_latest(LatestKind::Uploaded)
-            .await
-            .unwrap_or_default();
-        buckets_latest_block.push(bucket_latest_block);
+    let results = join_all(latest_futures).await;
 
-        max_block_number = max_block_number.max(bucket_latest_block);
-    }
+    let max_block_number = results.iter().cloned().max().unwrap_or(0);
+    let mut min_block_number = max_block_number;
 
-    let mut min_block_number: u64 = max_block_number;
-
-    for i in 0..s3_buckets.len() {
-        let bucket = &s3_buckets[i];
-        let bucket_latest_block = buckets_latest_block[i];
-
+    for (i, &bucket_latest_block) in results.iter().enumerate() {
         if bucket_latest_block + max_lag <= max_block_number {
             error!(
                 "Bucket '{}' falling behind. Tip: {}, Current: {}",
-                bucket, &max_block_number, bucket_latest_block
+                &s3_buckets[i], max_block_number, bucket_latest_block
             );
         } else {
             // We only update min when it's not too behind
@@ -142,7 +179,7 @@ async fn latest_uploaded_block(
         }
     }
 
-    return min_block_number;
+    min_block_number
 }
 
 struct BlockData {
@@ -153,64 +190,46 @@ struct BlockData {
 }
 
 async fn get_block_data(s3_archive_readers: &[S3Archive], block_number: u64) -> Vec<BlockData> {
-    let mut blocks_data = Vec::new();
-
-    for reader in s3_archive_readers {
+    let block_futures = s3_archive_readers.iter().map(|reader| {
         let bucket = reader.bucket.bucket.clone();
+        async move {
+            let (block_result, receipts_result, traces_result) = join!(
+                reader.get_block_by_number(block_number),
+                reader.get_block_receipts(block_number),
+                reader.get_block_traces(block_number)
+            );
 
-        let mut block_data = BlockData {
-            bucket: bucket.clone(),
-            block: None,
-            receipts: None,
-            traces: None,
-        };
+            let block_data = BlockData {
+                bucket: bucket.clone(),
+                block: block_result.ok(),
+                receipts: receipts_result.ok(),
+                traces: traces_result.ok(),
+            };
 
-        let f_block = reader.get_block_by_number(block_number);
-        let f_receipts = reader.get_block_receipts(block_number);
-        let f_traces = reader.get_block_traces(block_number);
-
-        let (block_result, receipts_result, traces_result) = join!(f_block, f_receipts, f_traces);
-
-        match block_result {
-            Ok(block) => {
-                block_data.block = Some(block);
-            }
-            Err(e) => {
+            if block_data.block.is_none() {
                 error!(
-                    "Failed to get block {} for bucket '{}'. Error: {:?}",
-                    &block_number, bucket, e
+                    "Failed to get block {} for bucket '{}'",
+                    block_number, bucket
                 );
             }
-        }
-
-        match receipts_result {
-            Ok(receipts) => {
-                block_data.receipts = Some(receipts);
-            }
-            Err(e) => {
+            if block_data.receipts.is_none() {
                 error!(
-                    "Failed to get receipts {} for bucket '{}'. Error: {:?}",
-                    &block_number, bucket, e
+                    "Failed to get receipts {} for bucket '{}'",
+                    block_number, bucket
                 );
             }
-        }
-
-        match traces_result {
-            Ok(traces) => {
-                block_data.traces = Some(traces);
-            }
-            Err(e) => {
+            if block_data.traces.is_none() {
                 error!(
-                    "Failed to get traces {} for bucket '{}'. Error: {:?}",
-                    &block_number, bucket, e
+                    "Failed to get traces {} for bucket '{}'",
+                    block_number, bucket
                 );
             }
+
+            block_data
         }
+    });
 
-        blocks_data.push(block_data);
-    }
-
-    return blocks_data;
+    join_all(block_futures).await
 }
 
 async fn pairwise_check(
