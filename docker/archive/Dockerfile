@@ -78,8 +78,24 @@ RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-archive-checker && \
+    mv target/release/monad-archive-checker archive-checker && \
+    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
+
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
+    --mount=type=cache,target=${CARGO_ROOT}/git          \
+    --mount=type=cache,target=/usr/src/monad-bft/target \
+    ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-indexer && \
     mv target/release/monad-indexer indexer && \
+    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
+
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
+    --mount=type=cache,target=${CARGO_ROOT}/git          \
+    --mount=type=cache,target=/usr/src/monad-bft/target \
+    ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-index-checker && \
+    mv target/release/monad-index-checker index-checker && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
     
 
@@ -88,7 +104,15 @@ RUN strip \
     *.so 
 
 RUN strip \
+    archive-checker \
+    *.so 
+
+RUN strip \
     indexer \
+    *.so 
+
+RUN strip \
+    index-checker \
     *.so 
 
 # Runner
@@ -97,7 +121,9 @@ WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
+COPY --from=builder /usr/src/monad-bft/archive-checker /usr/local/bin/monad-archive-checker
 COPY --from=builder /usr/src/monad-bft/indexer /usr/local/bin/monad-indexer
+COPY --from=builder /usr/src/monad-bft/index-checker /usr/local/bin/monad-index-checker
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 
 ENV RUST_LOG=info
