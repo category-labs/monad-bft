@@ -7,13 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use archive_interface::{ArchiveReader, ArchiveWriter, LatestKind::*};
+use archive_reader::{ArchiveReader, LatestKind::*};
 use chrono::{
     format::{DelayedFormat, StrftimeItems},
     prelude::*,
 };
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, TxIndexReader, TxIndexedData};
+use dynamodb::{DynamoDBArchive, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
@@ -39,20 +39,14 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(args.otel_endpoint, "monad-indexer", Duration::from_secs(15))?;
 
     // Construct s3 and dynamodb connections
-    let sdk_config = get_aws_config(args.region).await;
-    let archive = S3Archive::new(S3Bucket::new(
+    let reader = ArchiveReader::new(
         args.archive_bucket,
-        &sdk_config,
-        metrics.clone(),
-    ))
-    .await?
-    .as_reader();
-    let dynamodb_archive = DynamoDBArchive::new(
         args.db_table,
-        &sdk_config,
+        args.region,
         args.max_concurrent_connections,
-        metrics.clone(),
-    );
+        &metrics,
+    )
+    .await;
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
@@ -63,7 +57,7 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // get latest indexed and indexed from s3
-        let latest_indexed = match archive.get_latest(Uploaded).await {
+        let latest_indexed = match reader.get_latest(Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
@@ -90,8 +84,7 @@ async fn main() -> Result<()> {
         );
 
         if let Err(e) = handle_blocks(
-            &archive,
-            &dynamodb_archive,
+            &reader,
             start_block_num,
             end_block_num,
             args.max_concurrent_connections,
@@ -112,8 +105,7 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_blocks(
-    archive: &(impl ArchiveReader + 'static),
-    dynamodb: &DynamoDBArchive,
+    reader: &ArchiveReader,
     start_block_num: u64,
     end_block_num: u64,
     concurrency: usize,
@@ -122,9 +114,7 @@ async fn handle_blocks(
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
-            let archive = archive.clone();
-            let dynamodb = dynamodb.clone();
-            let check_result = tokio::spawn(handle_block(archive, dynamodb, block_num)).await;
+            let check_result = tokio::spawn(handle_block(reader.clone(), block_num)).await;
 
             let check = match check_result {
                 Ok(Ok(fault)) => fault,
@@ -182,12 +172,8 @@ async fn handle_blocks(
     fault_writer.write_faults(&faults).await
 }
 
-async fn handle_block(
-    archive: impl ArchiveReader,
-    dynamodb: DynamoDBArchive,
-    block_num: u64,
-) -> Result<BlockCheckResult> {
-    let block = archive.get_block_by_number(block_num).await?;
+async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockCheckResult> {
+    let block = reader.get_block_by_number(block_num).await?;
     info!(num_txs = block.body.len(), block_num, "Handling block");
 
     if block.body.is_empty() {
@@ -200,8 +186,8 @@ async fn handle_block(
         .map(|tx| tx.hash().to_string())
         .collect::<Vec<_>>();
 
-    let mut faults = dynamodb
-        .batch_get_data(&hashes)
+    let mut faults = reader
+        .batch_get_txdata(&hashes)
         .await?
         .into_iter()
         .zip(hashes.into_iter())

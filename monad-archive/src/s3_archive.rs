@@ -20,7 +20,7 @@ use tokio_retry::{
 use tracing::info;
 
 use crate::{
-    archive_interface::{ArchiveReader, ArchiveWriter, LatestKind},
+    archive_reader::LatestKind,
     metrics::Metrics,
 };
 
@@ -153,8 +153,8 @@ pub struct S3Archive {
 }
 
 impl S3Archive {
-    pub async fn new(archive: S3Bucket) -> Result<Self> {
-        Ok(S3Archive {
+    pub fn new(archive: S3Bucket) -> Self {
+        S3Archive {
             bucket: Arc::new(archive),
             block_table_prefix: "block",
             block_hash_table_prefix: "block_hash",
@@ -162,11 +162,7 @@ impl S3Archive {
             traces_table_prefix: "traces",
             latest_uploaded_table_key: "latest",
             latest_indexed_table_key: "latest_indexed",
-        })
-    }
-
-    pub fn as_reader(self) -> impl ArchiveReader {
-        self
+        }
     }
 
     pub async fn read_block(&self, block_num: u64) -> Result<Block> {
@@ -202,10 +198,8 @@ impl S3Archive {
             width = BLOCK_PADDING_WIDTH
         )
     }
-}
 
-impl ArchiveWriter for S3Archive {
-    async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
+    pub async fn update_latest(&self, block_num: u64, latest_kind: LatestKind) -> Result<()> {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,
             LatestKind::Indexed => &self.latest_indexed_table_key,
@@ -216,7 +210,7 @@ impl ArchiveWriter for S3Archive {
             .await
     }
 
-    async fn archive_block(
+    pub async fn archive_block(
         &self,
         block_header: BlockHeader,
         transactions: Vec<TransactionSigned>,
@@ -244,7 +238,7 @@ impl ArchiveWriter for S3Archive {
         Ok(())
     }
 
-    async fn archive_receipts(
+    pub async fn archive_receipts(
         &self,
         receipts: Vec<ReceiptWithBloom>,
         block_num: u64,
@@ -262,7 +256,7 @@ impl ArchiveWriter for S3Archive {
         self.bucket.upload(&receipts_key, rlp_receipts).await
     }
 
-    async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()> {
+    pub async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()> {
         let traces_key = format!(
             "{}/{:0width$}",
             self.traces_table_prefix,
@@ -275,10 +269,8 @@ impl ArchiveWriter for S3Archive {
 
         self.bucket.upload(&traces_key, rlp_traces).await
     }
-}
 
-impl ArchiveReader for S3Archive {
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
+    pub async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
         let key = match latest_kind {
             LatestKind::Uploaded => &self.latest_uploaded_table_key,
             LatestKind::Indexed => &self.latest_indexed_table_key,
@@ -294,11 +286,11 @@ impl ArchiveReader for S3Archive {
         })
     }
 
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
+    pub async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
         self.read_block(block_num).await
     }
 
-    async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block> {
+    pub async fn get_block_by_hash(&self, block_hash: &[u8; 32]) -> Result<Block> {
         let block_hash_key_suffix = hex::encode(block_hash);
         let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
 
@@ -314,7 +306,7 @@ impl ArchiveReader for S3Archive {
         self.get_block_by_number(block_num).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
         let receipts_key = self.receipts_key(block_number);
 
         let rlp_receipts = self.bucket.read(&receipts_key).await?;
@@ -325,7 +317,7 @@ impl ArchiveReader for S3Archive {
         Ok(receipts)
     }
 
-    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
+    pub async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
         let traces_key = self.traces_key(block_number);
 
         let rlp_traces = self.bucket.read(&traces_key).await?;
