@@ -21,3 +21,7 @@ rtrb = { workspace = true }
 socket2 = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
+
+[dev-dependencies]
+ntest = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

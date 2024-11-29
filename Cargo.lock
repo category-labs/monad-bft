@@ -4192,10 +4192,12 @@ dependencies = [
  "futures",
  "futures-util",
  "libc",
+ "ntest",
  "rand",
  "rtrb",
  "socket2 0.5.7",
  "tracing",
+ "tracing-subscriber",
  "zerocopy 0.6.5",
 ]
 

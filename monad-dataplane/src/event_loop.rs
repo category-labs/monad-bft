@@ -214,7 +214,7 @@ impl Dataplane {
         let tcp_incoming_connection_timers: [TimerFd; TCP_INCOMING_MAX_CONNECTIONS] =
             core::array::from_fn(|_| TimerFd::new().unwrap());
 
-        let tcp_outgoing_connection_timers: [TimerFd; TCP_INCOMING_MAX_CONNECTIONS] =
+        let tcp_outgoing_connection_timers: [TimerFd; TCP_OUTGOING_MAX_CONNECTIONS] =
             core::array::from_fn(|_| TimerFd::new().unwrap());
 
         DataplaneEventLoop {
