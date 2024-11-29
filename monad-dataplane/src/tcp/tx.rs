@@ -1,8 +1,11 @@
 use std::{
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
     io::Error,
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
-    time::{Duration, Instant},
+    rc::Rc,
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -13,28 +16,83 @@ use zerocopy::AsBytes;
 
 use super::{TcpMsgHdr, TCP_MESSAGE_TIMEOUT};
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>) {
-    let mut conn_id: u64 = 0;
+#[derive(Clone)]
+struct TxState {
+    inner: Rc<RefCell<TxStateInner>>,
+}
 
-    while let Some((addr, bytes)) = tcp_egress_rx.recv().await {
-        spawn(send_message_with_timeout(conn_id, addr, bytes));
+impl TxState {
+    fn new() -> TxState {
+        let inner = Rc::new(RefCell::new(TxStateInner {
+            conn_id: 0,
+            messages: BTreeMap::new(),
+        }));
 
-        conn_id += 1;
+        TxState { inner }
     }
 }
 
-async fn send_message_with_timeout(conn_id: u64, addr: SocketAddr, message: Bytes) {
-    let message_len = message.len();
+struct TxStateInner {
+    conn_id: u64,
+    messages: BTreeMap<SocketAddr, VecDeque<Bytes>>,
+}
 
-    select! {
-        _ = send_message(conn_id, addr, message) => { },
-        _ = sleep(TCP_MESSAGE_TIMEOUT) => {
-            warn!(
-                conn_id,
-                ?addr,
-                message_len,
-                "timeout while writing message on TCP connection"
-            );
+pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>) {
+    let tx_state = TxState::new();
+
+    while let Some((addr, bytes)) = tcp_egress_rx.recv().await {
+        let peer_task_exists = {
+            let mut inner_ref = tx_state.inner.borrow_mut();
+
+            let peer_task_exists = inner_ref.messages.contains_key(&addr);
+
+            inner_ref.messages.entry(addr).or_default().push_back(bytes);
+
+            peer_task_exists
+        };
+
+        if !peer_task_exists {
+            trace!(?addr, "spawning TCP tx task for peer");
+
+            spawn(task_peer(tx_state.clone(), addr));
+        }
+    }
+}
+
+async fn task_peer(tx_state: TxState, addr: SocketAddr) {
+    trace!(?addr, "starting TCP tx task for peer");
+
+    loop {
+        let (conn_id, message) = {
+            let mut inner_ref = tx_state.inner.borrow_mut();
+
+            if let Some(message) = inner_ref.messages.get_mut(&addr).unwrap().pop_front() {
+                let conn_id = inner_ref.conn_id;
+                inner_ref.conn_id += 1;
+
+                (conn_id, message)
+            } else {
+                inner_ref.messages.remove(&addr);
+                trace!(?addr, "exiting TCP tx task for peer");
+                return;
+            }
+        };
+
+        let len = message.len();
+
+        // TODO: When we experience a transmission failure, we should consider zapping
+        // all outbound messages that are linked to this one (i.e. that are part of the
+        // same (large, multi-message) blocksync or statesync response).
+        select! {
+            _ = send_message(conn_id, addr, message) => { },
+            _ = sleep(TCP_MESSAGE_TIMEOUT) => {
+                warn!(
+                    conn_id,
+                    ?addr,
+                    len,
+                    "timeout while writing message on TCP connection"
+                );
+            }
         }
     }
 }
@@ -95,7 +153,7 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
 
             conn_cork(raw_fd, false);
 
-            wait_drain(raw_fd).await;
+            let num_unacked_bytes = num_unacked_bytes(raw_fd);
 
             if enabled!(Level::DEBUG) {
                 let duration = Instant::now() - connect_time;
@@ -103,11 +161,12 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
                 let duration_ms = duration.as_millis();
 
                 let bytes_per_second = {
-                    let bytes_sent = std::mem::size_of::<TcpMsgHdr>() + message_len;
+                    let bytes_acked =
+                        std::mem::size_of::<TcpMsgHdr>() + message_len - num_unacked_bytes;
                     let duration_f64 = duration.as_secs_f64();
 
                     if duration_f64 >= 0.01 {
-                        (bytes_sent as f64) / duration_f64
+                        (bytes_acked as f64) / duration_f64
                     } else {
                         f64::NAN
                     }
@@ -117,6 +176,7 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
                     conn_id,
                     ?addr,
                     ?header,
+                    num_unacked_bytes,
                     duration_ms,
                     bytes_per_second,
                     "successfully transmitted TCP message"
@@ -147,22 +207,15 @@ fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
     }
 }
 
-async fn wait_drain(raw_fd: RawFd) {
-    // This won't loop forever, as task_peer() runs a parallel TCP_MESSAGE_TIMEOUT timeout.
-    loop {
-        let mut outq: libc::c_int = 0;
+fn num_unacked_bytes(raw_fd: RawFd) -> usize {
+    let mut outq: libc::c_int = 0;
 
-        let r = unsafe { libc::ioctl(raw_fd, libc::TIOCOUTQ, &mut outq as *mut libc::c_int) };
+    let r = unsafe { libc::ioctl(raw_fd, libc::TIOCOUTQ, &mut outq as *mut libc::c_int) };
 
-        if r != 0 {
-            warn!("ioctl(TIOCOUTQ) failed with: {}", Error::last_os_error());
-            return;
-        }
-
-        if outq == 0 {
-            return;
-        }
-
-        sleep(Duration::from_millis(1)).await;
+    if r == 0 {
+        outq as _
+    } else {
+        warn!("ioctl(TIOCOUTQ) failed with: {}", Error::last_os_error());
+        0
     }
 }
