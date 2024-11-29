@@ -5,7 +5,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use itertools::Itertools;
 use lru::LruCache;
 use monad_crypto::hasher::{Hasher, HasherType};
-use monad_dataplane::network::DEFAULT_SEGMENT_SIZE;
+use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},

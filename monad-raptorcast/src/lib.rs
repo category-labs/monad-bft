@@ -15,10 +15,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::{
-    event_loop::{BroadcastMsg, Dataplane, UnicastMsg},
-    network::segment_size_for_mtu,
-};
+use monad_dataplane::{udp::segment_size_for_mtu, BroadcastMsg, Dataplane, UnicastMsg};
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -99,7 +96,7 @@ where
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
-        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps, config.mtu);
+        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -235,7 +232,10 @@ where
                             &self.known_addresses,
                         );
 
-                        UnicastMsg { msgs: messages }
+                        UnicastMsg {
+                            msgs: messages,
+                            stride: segment_size,
+                        }
                     };
 
                     // send message to self if applicable

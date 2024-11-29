@@ -18,7 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
-use monad_dataplane::network::DEFAULT_MTU;
+use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;

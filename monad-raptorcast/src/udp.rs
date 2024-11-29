@@ -14,7 +14,7 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::event_loop::RecvMsg;
+use monad_dataplane::RecvMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
@@ -1153,7 +1153,7 @@ mod tests {
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
     };
-    use monad_dataplane::{event_loop::RecvMsg, network::DEFAULT_SEGMENT_SIZE};
+    use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, RecvMsg};
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Stake};
 

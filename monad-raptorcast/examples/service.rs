@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
-use monad_dataplane::network::DEFAULT_MTU;
+use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};

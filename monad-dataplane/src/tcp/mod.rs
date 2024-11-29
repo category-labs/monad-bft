@@ -1,0 +1,47 @@
+use std::{net::SocketAddr, time::Duration};
+
+use bytes::Bytes;
+use monoio::spawn;
+use tokio::sync::mpsc;
+use zerocopy::{
+    byteorder::little_endian::{U32, U64},
+    AsBytes, FromBytes,
+};
+
+mod rx;
+mod tx;
+
+const TCP_MESSAGE_LENGTH_LIMIT: usize = 1024 * 1024 * 1024;
+
+const TCP_HEADER_TIMEOUT: Duration = Duration::from_secs(2);
+const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
+
+const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
+const HEADER_VERSION: u32 = 1;
+
+#[derive(AsBytes, Debug, FromBytes)]
+#[repr(C)]
+struct TcpMsgHdr {
+    magic: U32,
+    version: U32,
+    length: U64,
+}
+
+impl TcpMsgHdr {
+    fn new(length: u64) -> TcpMsgHdr {
+        TcpMsgHdr {
+            magic: U32::new(HEADER_MAGIC),
+            version: U32::new(HEADER_VERSION),
+            length: U64::new(length),
+        }
+    }
+}
+
+pub fn spawn_tasks(
+    local_addr: SocketAddr,
+    tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>,
+) {
+    spawn(rx::task(local_addr, tcp_ingress_tx));
+    spawn(tx::task(tcp_egress_rx));
+}

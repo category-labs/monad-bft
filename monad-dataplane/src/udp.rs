@@ -1,0 +1,181 @@
+use std::{
+    collections::VecDeque,
+    io::{Error, ErrorKind},
+    net::SocketAddr,
+    os::fd::{AsRawFd, FromRawFd},
+    time::{Duration, Instant},
+};
+
+use bytes::{Bytes, BytesMut};
+use monoio::{net::udp::UdpSocket, spawn, time};
+use tokio::sync::mpsc;
+use tracing::warn;
+
+use super::RecvMsg;
+
+// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
+// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
+pub const DEFAULT_MTU: u16 = 1480;
+
+const IPV4_HDR_SIZE: u16 = 20;
+const UDP_HDR_SIZE: u16 = 8;
+pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
+    mtu - IPV4_HDR_SIZE - UDP_HDR_SIZE
+}
+
+pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
+
+pub fn spawn_tasks(
+    local_addr: SocketAddr,
+    udp_ingress_tx: mpsc::Sender<RecvMsg>,
+    udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    up_bandwidth_mbps: u64,
+) {
+    // Bind the UDP socket and clone it for use in different tasks.
+    let udp_socket_rx = UdpSocket::bind(local_addr).unwrap();
+    let raw_fd = udp_socket_rx.as_raw_fd();
+    let udp_socket_tx =
+        UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(raw_fd) }).unwrap();
+
+    {
+        const MTU_DISCOVER: libc::c_int = libc::IP_PMTUDISC_OMIT;
+
+        if unsafe {
+            libc::setsockopt(
+                raw_fd,
+                libc::SOL_IP,
+                libc::IP_MTU_DISCOVER,
+                &MTU_DISCOVER as *const _ as _,
+                std::mem::size_of_val(&MTU_DISCOVER) as _,
+            )
+        } != 0
+        {
+            panic!(
+                "set IP_MTU_DISCOVER failed with: {}",
+                Error::last_os_error()
+            );
+        }
+    }
+
+    spawn(rx(udp_socket_rx, udp_ingress_tx));
+    spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
+}
+
+async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
+    loop {
+        let buf = BytesMut::with_capacity(DEFAULT_SEGMENT_SIZE.into());
+
+        match udp_socket_rx.recv_from(buf).await {
+            (Ok((len, src_addr)), buf) => {
+                let payload = buf.freeze();
+
+                let msg = RecvMsg {
+                    src_addr,
+                    payload,
+                    stride: len.max(1).try_into().unwrap(),
+                };
+
+                if let Err(err) = udp_ingress_tx.send(msg).await {
+                    warn!(?src_addr, ?err, "error queueing up received UDP message");
+                    break;
+                }
+            }
+            (Err(err), _buf) => {
+                warn!("udp_socket_rx.recv_from() error {}", err);
+            }
+        }
+    }
+}
+
+const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
+
+async fn tx(
+    socket_tx: UdpSocket,
+    mut udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
+    up_bandwidth_mbps: u64,
+) {
+    let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
+    set_udp_segment_size(&socket_tx, udp_segment_size);
+    let mut max_chunk: u16 = max_write_size_for_segment_size(udp_segment_size);
+
+    let mut next_transmit = Instant::now();
+
+    let mut messages_to_send: VecDeque<(SocketAddr, Bytes, u16)> = VecDeque::new();
+
+    loop {
+        while messages_to_send.is_empty() || !udp_egress_rx.is_empty() {
+            let Some((addr, payload, stride)) = udp_egress_rx.recv().await else {
+                return;
+            };
+
+            messages_to_send.push_back((addr, payload, stride));
+        }
+
+        let (addr, mut payload, stride) = messages_to_send.pop_front().unwrap();
+
+        if udp_segment_size != stride {
+            udp_segment_size = stride;
+            set_udp_segment_size(&socket_tx, udp_segment_size);
+            max_chunk = max_write_size_for_segment_size(udp_segment_size);
+        }
+
+        // Transmit the first max_chunk bytes of this (addr, payload) pair.
+        let chunk = payload.split_to(payload.len().min(max_chunk.into()));
+        let chunk_len = chunk.len();
+
+        let now = Instant::now();
+
+        if next_transmit > now {
+            time::sleep(next_transmit - now).await;
+        } else {
+            let late = now - next_transmit;
+
+            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
+                next_transmit = now;
+            }
+        }
+
+        let (ret, _chunk) = socket_tx.send_to(chunk, addr).await;
+
+        if let Err(err) = ret {
+            // TODO: EINVAL return is likely due to MTU/GSO issues -- should getsockopt
+            // IP_MTU and include the returned value in the log message.
+            if err.kind() == ErrorKind::InvalidInput {
+                warn!("send error {}", err);
+            } else {
+                panic!("send error {}", err);
+            }
+        }
+
+        next_transmit += Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
+
+        // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
+        if !payload.is_empty() {
+            messages_to_send.push_back((addr, payload, stride));
+        }
+    }
+}
+
+fn set_udp_segment_size(socket: &UdpSocket, udp_segment_size: u16) {
+    let udp_segment_size: libc::c_int = udp_segment_size as i32;
+
+    if unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_UDP,
+            libc::UDP_SEGMENT,
+            &udp_segment_size as *const _ as _,
+            std::mem::size_of_val(&udp_segment_size) as _,
+        )
+    } != 0
+    {
+        panic!("set UDP_SEGMENT failed with: {}", Error::last_os_error());
+    }
+}
+
+const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;
+const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+
+fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
+    (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
+}

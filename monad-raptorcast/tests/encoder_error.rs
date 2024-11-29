@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_crypto::hasher::{Hasher, HasherType};
-use monad_dataplane::network::DEFAULT_SEGMENT_SIZE;
+use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::build_messages,

@@ -1,35 +1,125 @@
-pub mod epoll;
-pub mod event_loop;
-pub mod network;
+use std::{net::SocketAddr, thread};
 
-// Helper logic to automatically restart system calls when EINTR is returned.
-// Inspired by cvt() / cvt_r() in sys::std::unix.
-pub(crate) trait IsMinusOne {
-    fn is_minus_one(&self) -> bool;
+use bytes::Bytes;
+use monoio::{IoUringDriver, RuntimeBuilder};
+use tokio::sync::{mpsc, mpsc::error::TrySendError};
+use tracing::warn;
+
+pub mod tcp;
+pub mod udp;
+
+pub struct Dataplane {
+    tcp_ingress_rx: mpsc::Receiver<(SocketAddr, Bytes)>,
+    tcp_egress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    udp_ingress_rx: mpsc::Receiver<RecvMsg>,
+    udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
 }
 
-macro_rules! impl_is_minus_one {
-    ($($t:ident)*) => ($(impl IsMinusOne for $t {
-        fn is_minus_one(&self) -> bool {
-            *self == -1
+#[derive(Clone)]
+pub struct BroadcastMsg {
+    pub targets: Vec<SocketAddr>,
+    pub payload: Bytes,
+    pub stride: u16,
+}
+
+#[derive(Clone)]
+pub struct UnicastMsg {
+    pub msgs: Vec<(SocketAddr, Bytes)>,
+    pub stride: u16,
+}
+
+#[derive(Clone)]
+pub struct RecvMsg {
+    pub src_addr: SocketAddr,
+    pub payload: Bytes,
+    pub stride: u16,
+}
+
+const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
+const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
+const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
+const UDP_EGRESS_CHANNEL_SIZE: usize = 2048;
+
+impl Dataplane {
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
+        let local_addr = *local_addr;
+
+        let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
+        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
+        let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
+        let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
+
+        thread::spawn(move || {
+            RuntimeBuilder::<IoUringDriver>::new()
+                .enable_timer()
+                .build()
+                .expect("Failed building the Runtime")
+                .block_on(async move {
+                    tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx);
+
+                    udp::spawn_tasks(local_addr, udp_ingress_tx, udp_egress_rx, up_bandwidth_mbps);
+
+                    futures::future::pending::<()>().await;
+                });
+        });
+
+        Dataplane {
+            tcp_ingress_rx,
+            tcp_egress_tx,
+            udp_ingress_rx,
+            udp_egress_tx,
         }
-    })*)
-}
+    }
 
-impl_is_minus_one! { i8 i16 i32 i64 isize }
+    pub async fn tcp_read(&mut self) -> (SocketAddr, Bytes) {
+        self.tcp_ingress_rx
+            .recv()
+            .await
+            .expect("tcp_ingress_rx channel should never be closed")
+    }
 
-pub(crate) fn retry_eintr<T, F>(mut f: F) -> T
-where
-    T: IsMinusOne,
-    F: FnMut() -> T,
-{
-    loop {
-        let ret = f();
+    pub fn tcp_write(&mut self, addr: SocketAddr, msg: Bytes) {
+        match self.tcp_egress_tx.try_send((addr, msg)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => warn!("tcp_egress_tx channel full"),
+            Err(TrySendError::Closed(_)) => panic!("tcp_egress_tx channel closed"),
+        }
+    }
 
-        if !ret.is_minus_one()
-            || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
-        {
-            return ret;
+    pub async fn udp_read(&mut self) -> RecvMsg {
+        self.udp_ingress_rx
+            .recv()
+            .await
+            .expect("udp_ingress_rx channel should never be closed")
+    }
+
+    pub fn udp_write_broadcast(&mut self, msg: BroadcastMsg) {
+        for target in msg.targets {
+            match self
+                .udp_egress_tx
+                .try_send((target, msg.payload.clone(), msg.stride))
+            {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    warn!("udp_egress_tx channel full");
+                    return;
+                }
+                Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+            }
+        }
+    }
+
+    pub fn udp_write_unicast(&mut self, msg: UnicastMsg) {
+        for (addr, payload) in msg.msgs {
+            match self.udp_egress_tx.try_send((addr, payload, msg.stride)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    warn!("udp_egress_tx channel full");
+                    return;
+                }
+                Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
+            }
         }
     }
 }
