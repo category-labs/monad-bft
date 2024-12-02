@@ -650,17 +650,18 @@ async fn main() -> std::io::Result<()> {
         ))
     });
 
-    let tx_pool = Arc::new(vpool::VirtualPool::new(
-        ipc_sender.clone(),
-        args.vpool_capacity,
-        vpool_metrics,
-    ));
-
     let triedb_env = args
         .triedb_path
         .clone()
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
+
+    let tx_pool = Arc::new(vpool::VirtualPool::new(
+        ipc_sender.clone(),
+        args.vpool_capacity,
+        vpool_metrics,
+        triedb_env.clone(),
+    ));
 
     // We need to spawn a task to handle changes to the base fee, and block updates
     let tx_pool2 = tx_pool.clone();
@@ -766,7 +767,12 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000, None)),
+            tx_pool: Arc::new(vpool::VirtualPool::new(
+                ipc_sender.clone(),
+                20_000,
+                None,
+                None,
+            )),
         }))
         .await;
         (app, m)
