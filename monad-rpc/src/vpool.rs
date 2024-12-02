@@ -1,11 +1,15 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use monad_rpc_docs::rpc;
+use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::{
     block_watcher::BlockWithReceipts,
@@ -220,18 +224,22 @@ struct ChainCache {
 struct ChainCacheInner {
     accounts: HashIndex<Address, u64>,
     base_fee: RwLock<u128>,
+    latest_block_height: AtomicU64,
     capacity: usize,
     evict: RwLock<VecDeque<(Address, u64)>>,
+    triedb: Option<TriedbEnv>,
 }
 
 impl ChainCache {
-    fn new(capacity: usize) -> Self {
+    fn new(triedb_env: Option<TriedbEnv>, capacity: usize) -> Self {
         Self {
             inner: ChainCacheInner {
                 accounts: HashIndex::new(),
                 base_fee: RwLock::new(1_000),
+                latest_block_height: AtomicU64::new(0),
                 capacity,
                 evict: RwLock::new(VecDeque::new()),
+                triedb: triedb_env,
             },
         }
     }
@@ -246,6 +254,10 @@ impl ChainCache {
         next_base_fee: u128,
     ) -> HashIndex<Address, u64> {
         *self.inner.base_fee.write().await = next_base_fee;
+        self.inner.latest_block_height.store(
+            block.block_header.header.number,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // Create a hashset of all senders and their nonces in the block.
         let senders = HashIndex::new();
 
@@ -287,7 +299,35 @@ impl ChainCache {
     }
 
     async fn nonce(&self, address: &Address) -> Option<u64> {
-        self.inner.accounts.peek(address, &Guard::new()).cloned()
+        let nonce = self.inner.accounts.peek(address, &Guard::new()).cloned();
+        let block_height = self
+            .inner
+            .latest_block_height
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if nonce.is_none() {
+            if let Some(triedb) = &self.inner.triedb {
+                match triedb.get_account(address.0.into(), block_height).await {
+                    Ok(account) => {
+                        self.inner.accounts.insert(*address, account.nonce);
+                        self.inner
+                            .evict
+                            .write()
+                            .await
+                            .push_front((*address, account.nonce));
+                        Some(account.nonce)
+                    }
+                    Err(e) => {
+                        error!("Error fetching nonce for account {}: {:?}", address, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            nonce
+        }
     }
 
     async fn len(&self) -> usize {
@@ -299,7 +339,8 @@ enum TxPoolType {
     Queue,
     Pending,
     Discard,
-    Replace,
+    ReplacePending,
+    ReplaceQueued,
 }
 
 pub enum TxPoolEvent {
@@ -317,11 +358,12 @@ impl VirtualPool {
         publisher: flume::Sender<TransactionSigned>,
         capacity: usize,
         metrics: Option<Arc<VirtualPoolMetrics>>,
+        triedb_env: Option<TriedbEnv>,
     ) -> Self {
         Self {
             pending_pool: SubPool::new(capacity),
             queued_pool: SubPool::new(capacity),
-            chain_cache: ChainCache::new(capacity),
+            chain_cache: ChainCache::new(triedb_env, capacity),
             publisher,
             metrics,
         }
@@ -336,17 +378,27 @@ impl VirtualPool {
             return TxPoolType::Discard;
         }
 
-        if self
-            .chain_cache
-            .nonce(&sender)
-            .await
+        // Fetch the current nonce of the sender
+        let cur_nonce = self.chain_cache.nonce(&sender).await;
+
+        if cur_nonce.map(|n| n == 0).unwrap_or(false) && nonce == 0 {
+            return TxPoolType::Pending;
+        }
+
+        if cur_nonce.map(|n| n + 1 == nonce).unwrap_or(false) {
+            return TxPoolType::Pending;
+        }
+
+        let pending_txs = self.pending_pool.by_addr(&sender);
+        let queued_txs = self.queued_pool.by_addr(&sender);
+
+        if cur_nonce
             .map(|cur_nonce| nonce.checked_sub(cur_nonce).map(|v| v > 1).unwrap_or(false))
             .unwrap_or(false)
         {
             // The chain cache is updated at each new block, and we can receive transactions before chain cache is updated.
             // Check recently forward transactions to see if the transaction has a nonce gap.
-            let pending = self.pending_pool.by_addr(&sender);
-            if let Some(entry) = pending.last() {
+            if let Some(entry) = pending_txs.last() {
                 if entry
                     .nonce()
                     .checked_add(1)
@@ -356,16 +408,26 @@ impl VirtualPool {
                     return TxPoolType::Pending;
                 }
             }
+
+            // The transaction is already queued, check if it is a replacement transaction with a higher fee.
+            if let Some(entry) = self.queued_pool.get(&txn.signer(), &txn.nonce()) {
+                let current_gas_price = entry.transaction.max_fee_per_gas();
+                let new_gas_price = txn.transaction.max_fee_per_gas();
+                if new_gas_price >= current_gas_price + (current_gas_price / 10) {
+                    return TxPoolType::ReplaceQueued;
+                } else {
+                    return TxPoolType::Discard;
+                }
+            };
+
             return TxPoolType::Queue;
         }
 
-        let queued = self.queued_pool.by_addr(&sender);
-        if let Some(true) = queued.first().map(|tx| tx.nonce() < nonce) {
+        if let Some(true) = queued_txs.first().map(|tx| tx.nonce() < nonce) {
             return TxPoolType::Queue;
         }
 
-        let pending = self.pending_pool.by_addr(&sender);
-        let Some(entry) = pending.last() else {
+        let Some(entry) = pending_txs.last() else {
             return TxPoolType::Pending;
         };
 
@@ -379,7 +441,7 @@ impl VirtualPool {
                 let current_gas_price = entry.transaction.max_fee_per_gas();
                 let new_gas_price = txn.transaction.max_fee_per_gas();
                 if new_gas_price >= current_gas_price + (current_gas_price / 10) {
-                    TxPoolType::Replace
+                    TxPoolType::ReplacePending
                 } else {
                     TxPoolType::Discard
                 }
@@ -395,11 +457,30 @@ impl VirtualPool {
         match event {
             TxPoolEvent::AddValidTransaction { txn } => match self.decide_pool(&txn).await {
                 TxPoolType::Queue => {
+                    self.queued_pool.add(txn, false).await;
+                    self.metrics
+                        .as_ref()
+                        .map(|metrics| metrics.queued_pool.add(1, &[]));
+                }
+                TxPoolType::Pending => {
+                    self.pending_pool.add(txn.clone(), false).await;
+                    self.metrics
+                        .as_ref()
+                        .map(|metrics| metrics.pending_pool.add(1, &[]));
+                    if self.publisher.send(txn.clone().into()).is_err() {
+                        warn!("issue broadcasting transaction from pending pool");
+                    }
+
+                    // Check for available promotions
                     let tree = HashIndex::new();
-                    tree.insert(txn.signer(), txn.nonce()).unwrap();
-                    let mut promoted = self.queued_pool.filter_by_nonce_gap(&tree);
+                    tree.insert(txn.signer(), txn.nonce()).unwrap_or_default();
+                    let promoted = self.queued_pool.filter_by_nonce_gap(&tree);
                     if promoted.len() > 0 {
-                        promoted.push(txn.clone());
+                        let queue_removed = i64::try_from(promoted.len()).unwrap_or_default();
+                        self.metrics
+                            .as_ref()
+                            .map(|metrics| metrics.queued_pool.add(queue_removed * -1, &[]));
+
                         for promoted in promoted.into_iter() {
                             self.pending_pool.add(promoted.clone(), false).await;
                             self.metrics
@@ -412,27 +493,16 @@ impl VirtualPool {
                                 );
                             }
                         }
-                    } else {
-                        self.queued_pool.add(txn, false).await;
-                        self.metrics
-                            .as_ref()
-                            .map(|metrics| metrics.queued_pool.add(1, &[]));
                     }
                 }
-                TxPoolType::Pending => {
-                    self.pending_pool.add(txn.clone(), false).await;
-                    self.metrics
-                        .as_ref()
-                        .map(|metrics| metrics.pending_pool.add(1, &[]));
-                    if self.publisher.send(txn.into()).is_err() {
-                        warn!("issue broadcasting transaction from pending pool");
-                    }
-                }
-                TxPoolType::Replace => {
+                TxPoolType::ReplacePending => {
                     self.pending_pool.add(txn.clone(), true).await;
                     if self.publisher.send(txn.into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
+                }
+                TxPoolType::ReplaceQueued => {
+                    self.queued_pool.add(txn.clone(), true).await;
                 }
                 TxPoolType::Discard => {}
             },
@@ -582,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn test_txpool() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
         let (sk, addr) = accounts()[0];
 
         let txs = vec![
@@ -620,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_nonce_gap() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
         let (sk, addr) = accounts()[0];
 
         let txs = vec![
@@ -673,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_fee_replace() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
 
         // Add pending transaction with base fee of 1000
         let base = transaction(accounts()[0].0, 0, Some(1000));
@@ -735,7 +805,7 @@ mod tests {
     #[tokio::test]
     async fn txpool_stress() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
         let (sk, addr) = accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
@@ -791,7 +861,7 @@ mod tests {
         }
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
 
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
@@ -863,7 +933,7 @@ mod tests {
     async fn txpool_eviction() {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None));
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
         tx_pool
             .add_transaction(transaction(accounts()[0].0, 0, None))
             .await;
@@ -876,5 +946,41 @@ mod tests {
 
         assert_eq!(tx_pool.pending_pool.evict.try_read().unwrap().len(), 2);
         assert_eq!(tx_pool.pending_pool.pool.len(), 2)
+    }
+
+    #[tokio::test]
+    async fn test_nonce_gap_resolution() {
+        let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
+        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
+        let tx = transaction(accounts()[0].0, 0, None);
+        tx_pool.add_transaction(tx.clone()).await;
+
+        tx_pool
+            .new_block(
+                BlockWithReceipts {
+                    block_header: BlockHeader {
+                        header: Header {
+                            number: 1,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    transactions: vec![tx].into_iter().map(|tx| tx.into_signed()).collect(),
+                    ..Default::default()
+                },
+                1_000,
+            )
+            .await;
+
+        tx_pool
+            .add_transaction(transaction(accounts()[0].0, 2, None))
+            .await;
+        assert_eq!(tx_pool.queued_pool.len(), 1);
+
+        tx_pool
+            .add_transaction(transaction(accounts()[0].0, 1, None))
+            .await;
+        assert_eq!(tx_pool.queued_pool.len(), 0);
+        assert_eq!(tx_pool.pending_pool.len(), 2);
     }
 }
