@@ -96,8 +96,8 @@ where
         }
         let (fetches_tx, fetches) = tokio::sync::mpsc::unbounded_channel();
         Self {
-            eth_block_path: eth_block_path.clone(),
-            bft_block_persist: FileBlockPersist::new(bft_block_path, payload_path, eth_block_path),
+            eth_block_path,
+            bft_block_persist: FileBlockPersist::new(bft_block_path, payload_path),
             header_param,
 
             metrics: Default::default(),

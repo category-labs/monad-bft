@@ -27,9 +27,7 @@ where
     fn write_bft_payload(&self, payload: &Payload) -> std::io::Result<()>;
 
     fn read_bft_block(&self, block_id: &BlockId) -> std::io::Result<Block<SCT>>;
-    fn read_bft_block_by_num(&self, block_num: u64) -> std::io::Result<Block<SCT>>;
     fn read_bft_payload(&self, payload_id: &PayloadId) -> std::io::Result<Payload>;
-    fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>>;
 }
 
 #[derive(Clone)]
@@ -40,7 +38,6 @@ where
 {
     block_dir_path: PathBuf,
     payload_dir_path: PathBuf,
-    eth_block_dir_path: PathBuf,
 
     _pd: PhantomData<(ST, SCT)>,
 }
@@ -56,15 +53,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(
-        block_dir_path: PathBuf,
-        payload_dir_path: PathBuf,
-        eth_block_dir_path: PathBuf,
-    ) -> Self {
+    pub fn new(block_dir_path: PathBuf, payload_dir_path: PathBuf) -> Self {
         Self {
             block_dir_path,
             payload_dir_path,
-            eth_block_dir_path,
 
             _pd: PhantomData,
         }
@@ -104,6 +96,7 @@ where
         let mut file_path = PathBuf::from(&self.block_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_HEADER_EXTENSION));
 
+        // FIXME if already exists, don't recreate + update timestamp meta
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
 
@@ -118,6 +111,7 @@ where
         let mut file_path = PathBuf::from(&self.payload_dir_path);
         file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
 
+        // FIXME if already exists, don't recreate + update timestamp meta
         let mut f = File::create(file_path).unwrap();
         f.write_all(&encoded).unwrap();
 
@@ -149,22 +143,5 @@ where
             .expect("proto_payload to payload should not be invalid");
 
         Ok(payload)
-    }
-
-    fn read_bft_block_by_num(&self, _block_num: u64) -> std::io::Result<Block<SCT>> {
-        unimplemented!()
-    }
-
-    fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
-        let filename = block_num.to_string();
-        let mut file_path = PathBuf::from(&self.eth_block_dir_path);
-        file_path.push(format!("{}", filename));
-        let mut file = File::open(file_path)?;
-
-        let size = file.metadata().unwrap().len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf).unwrap();
-
-        Ok(buf)
     }
 }
