@@ -124,6 +124,23 @@ impl<'a> NetworkSocket<'a> {
             panic!("set GRO failed with: {}", std::io::Error::last_os_error());
         }
 
+        let r = unsafe {
+            const MTU_DISCOVER: libc::c_int = libc::IP_PMTUDISC_OMIT;
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_IP,
+                libc::IP_MTU_DISCOVER,
+                &MTU_DISCOVER as *const _ as _,
+                std::mem::size_of_val(&MTU_DISCOVER) as _,
+            )
+        };
+        if r != 0 {
+            panic!(
+                "set MTU discover failed with: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
         let local_sock_addr = socket.local_addr().unwrap();
 
         unsafe {
