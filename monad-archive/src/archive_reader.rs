@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use eyre::Result;
 use reth_primitives::{Block, ReceiptWithBloom};
 
@@ -37,7 +39,10 @@ impl ArchiveReader {
         &self.s3.bucket.bucket
     }
 
-    pub async fn batch_get_txdata(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
+    pub async fn batch_get_txdata(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, TxIndexedData>> {
         self.dynamodb.batch_get_txdata(keys).await
     }
     pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {

@@ -13,7 +13,7 @@ use chrono::{
     prelude::*,
 };
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, TxIndexedData};
+use dynamodb::{DynamoDBArchive, HeaderSubset, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
@@ -192,36 +192,72 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .map(|tx| tx.hash().to_string())
         .collect::<Vec<_>>();
 
+    let gas_used_vec: Vec<_> = {
+        let mut last = 0;
+        receipts
+            .iter()
+            .map(|r| {
+                let gas_used = r.receipt.cumulative_gas_used - last;
+                last = r.receipt.cumulative_gas_used;
+                gas_used
+            })
+            .collect()
+    };
+
+    let block_hash = block.hash_slow();
+    let base_fee_per_gas = block.base_fee_per_gas.map(reth_primitives::U128::from);
     let expected = block
         .body
         .into_iter()
         .zip(traces.into_iter())
         .zip(receipts.into_iter())
-        .map(|((tx, trace), receipt)| TxIndexedData {
-            block_num: block_num,
+        .enumerate()
+        .map(|(idx, ((tx, trace), receipt))| TxIndexedData {
+            header_subset: HeaderSubset {
+                block_hash: block_hash,
+                block_number: block_num,
+                tx_index: idx as u64,
+                gas_used: reth_primitives::U256::from(gas_used_vec[idx]),
+                base_fee_per_gas,
+            },
             tx,
             receipt,
             trace,
         });
 
-    let mut faults = reader
-        .batch_get_txdata(&hashes)
-        .await?
-        .into_iter()
-        .zip(expected)
-        .filter_map(|(resp, expected)| match resp {
-            None => Some(Fault::MissingTxhash {
-                txhash: expected.tx.hash().to_string(),
-            }),
-            Some(fetched) => {
-                if fetched != expected {
-                    Some(Fault::IncorrectTxData { expected, fetched })
-                } else {
-                    None
-                }
-            }
-        })
-        .collect::<Vec<_>>();
+    let fetched = reader.batch_get_txdata(&hashes).await?;
+    let mut faults = Vec::new();
+
+    for expected in expected {
+        let key = expected.tx.hash().to_string();
+        let key = key.trim_start_matches("0x");
+        let fetched = fetched.get(key);
+        let Some(fetched) = fetched else {
+            faults.push(Fault::MissingTxhash {
+                txhash: key.to_owned(),
+            });
+            continue;
+        };
+        if fetched.header_subset.block_number != block_num {
+            warn!(
+                fetched_block_num = fetched.header_subset.block_number,
+                block_num, "Fetched block_num incorrect"
+            );
+            faults.push(Fault::IncorrectTxData {
+                fetched: fetched.clone(),
+                expected,
+            });
+            continue;
+        }
+        if fetched != &expected {
+            warn!(?fetched, ?expected, "Fetched does not equal expected");
+            faults.push(Fault::IncorrectTxData {
+                fetched: fetched.clone(),
+                expected,
+            });
+            continue;
+        }
+    }
 
     // reduce all txhash case
     if faults.len() == num_txs

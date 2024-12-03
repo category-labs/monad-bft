@@ -163,13 +163,17 @@ async fn handle_block(
         tokio::spawn(async move {
             match dynamodb.get_txdata(&key).await {
                 Ok(Some(resp)) => {
-                    if resp.block_num != block_num
+                    if resp.header_subset.block_number != block_num
                         || Some(&resp.receipt) != first_rx.as_ref()
                         || Some(&resp.trace) != first_trace.as_ref()
                     {
                         warn!(key, ?resp, "Returned mapping not as expected");
                     } else {
-                        info!(key, resp_block_num = resp.block_num, "Check successful");
+                        info!(
+                            key,
+                            resp_block_num = resp.header_subset.block_number,
+                            "Check successful"
+                        );
                     }
                 }
                 Ok(None) => warn!(key, "No key found for key"),
