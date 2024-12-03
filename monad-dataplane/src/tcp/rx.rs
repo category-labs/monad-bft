@@ -4,8 +4,8 @@ use bytes::{Bytes, BytesMut};
 use monoio::{
     io::AsyncReadRentExt,
     net::{TcpListener, TcpStream},
-    select, spawn,
-    time::sleep,
+    spawn,
+    time::timeout,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -76,31 +76,25 @@ async fn read_message(
 
     let header_bytes = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
 
-    let header = select! {
-        (ret, header_bytes) = tcp_stream.read_exact(header_bytes) => {
-            match ret {
-                Ok(_len) => TcpMsgHdr::read_from(&header_bytes[..]).unwrap(),
-                Err(err) => {
-                    if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
-                        debug!(
-                            conn_id,
-                            ?addr,
-                            message_id,
-                            ?err,
-                            "error reading message header on TCP connection"
-                        );
-                    } else {
-                        trace!(
-                            conn_id,
-                            ?addr,
-                            "closing incoming TCP connection on EOF",
-                        );
-                    }
-                    return None;
+    let header = match timeout(TCP_HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
+        Ok((ret, header_bytes)) => match ret {
+            Ok(_len) => TcpMsgHdr::read_from(&header_bytes[..]).unwrap(),
+            Err(err) => {
+                if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
+                    debug!(
+                        conn_id,
+                        ?addr,
+                        message_id,
+                        ?err,
+                        "error reading message header on TCP connection"
+                    );
+                } else {
+                    trace!(conn_id, ?addr, "closing incoming TCP connection on EOF",);
                 }
+                return None;
             }
-        }
-        _ = sleep(TCP_HEADER_TIMEOUT) => {
+        },
+        Err(_) => {
             warn!(
                 conn_id,
                 ?addr,
@@ -162,24 +156,22 @@ async fn read_message(
 
     let message = BytesMut::with_capacity(message_length);
 
-    let message = select! {
-        (ret, message) = tcp_stream.read_exact(message) => {
-            match ret {
-                Ok(_len) => message,
-                Err(err) => {
-                    debug!(
-                        conn_id,
-                        ?addr,
-                        message_id,
-                        ?header,
-                        ?err,
-                        "error reading message body on TCP connection"
-                    );
-                    return None;
-                }
+    let message = match timeout(TCP_MESSAGE_TIMEOUT, tcp_stream.read_exact(message)).await {
+        Ok((ret, message)) => match ret {
+            Ok(_len) => message,
+            Err(err) => {
+                debug!(
+                    conn_id,
+                    ?addr,
+                    message_id,
+                    ?header,
+                    ?err,
+                    "error reading message body on TCP connection"
+                );
+                return None;
             }
-        }
-        _ = sleep(TCP_MESSAGE_TIMEOUT) => {
+        },
+        Err(_) => {
             warn!(
                 conn_id,
                 ?addr,

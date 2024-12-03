@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monoio::{io::AsyncWriteRentExt, net::TcpStream, select, spawn, time::sleep};
+use monoio::{io::AsyncWriteRentExt, net::TcpStream, spawn, time::timeout};
 use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
@@ -83,16 +83,16 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
         // TODO: When we experience a transmission failure, we should consider zapping
         // all outbound messages that are linked to this one (i.e. that are part of the
         // same (large, multi-message) blocksync or statesync response).
-        select! {
-            _ = send_message(conn_id, addr, message) => { },
-            _ = sleep(TCP_MESSAGE_TIMEOUT) => {
-                warn!(
-                    conn_id,
-                    ?addr,
-                    len,
-                    "timeout while writing message on TCP connection"
-                );
-            }
+        if timeout(TCP_MESSAGE_TIMEOUT, send_message(conn_id, addr, message))
+            .await
+            .is_err()
+        {
+            warn!(
+                conn_id,
+                ?addr,
+                len,
+                "timeout while writing message on TCP connection"
+            );
         }
     }
 }
