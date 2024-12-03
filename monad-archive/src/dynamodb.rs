@@ -8,7 +8,7 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
+use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned, U128, U256};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
@@ -36,10 +36,22 @@ pub trait TxIndexArchiver {
     Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
 )]
 pub struct TxIndexedData {
-    pub block_num: u64,
     pub tx: TransactionSigned,
     pub trace: Vec<u8>,
     pub receipt: ReceiptWithBloom,
+    pub header_subset: HeaderSubset,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
+)]
+#[rlp(trailing)]
+pub struct HeaderSubset {
+    pub block_hash: BlockHash,
+    pub block_number: u64,
+    pub tx_index: u64,
+    pub gas_used: U256,
+    pub base_fee_per_gas: Option<U128>,
 }
 
 #[derive(Clone)]
@@ -51,27 +63,34 @@ pub struct DynamoDBArchive {
 }
 
 impl DynamoDBArchive {
-    pub async fn batch_get_txdata(&self, keys: &[String]) -> Result<Vec<Option<TxIndexedData>>> {
+    pub async fn batch_get_txdata(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, TxIndexedData>> {
         let output = self
             .batch_get(keys)
             .await?
             .into_iter()
-            .map(|map| {
-                Some(TxIndexedData {
-                    block_num: block_number_from_map(&map)?,
-                    tx: decode_from_map(&map, "tx")?,
-                    receipt: decode_from_map(&map, "receipt")?,
-                    trace: decode_from_map(&map, "trace")?,
-                })
+            .filter_map(|(k, map)| {
+                Some((
+                    k,
+                    TxIndexedData {
+                        tx: decode_from_map(&map, "tx")?,
+                        receipt: decode_from_map(&map, "receipt")?,
+                        trace: decode_from_map(&map, "trace")?,
+                        header_subset: decode_from_map(&map, "header_subset")?,
+                    },
+                ))
             })
-            .collect::<Vec<Option<TxIndexedData>>>();
+            .collect::<HashMap<String, TxIndexedData>>();
         Ok(output)
     }
 
     pub async fn get_txdata(&self, key: impl Into<String>) -> Result<Option<TxIndexedData>> {
-        self.batch_get_txdata(&[key.into()])
+        let key = key.into();
+        self.batch_get_txdata(&[key.clone()])
             .await
-            .map(|mut v| v.remove(0))
+            .map(|mut v| v.remove(&key))
     }
 }
 
@@ -83,22 +102,46 @@ impl TxIndexArchiver for DynamoDBArchive {
         receipts: Vec<ReceiptWithBloom>,
     ) -> Result<()> {
         let mut requests = Vec::new();
-        let block_num = block.number.to_string();
+        let block_number = block.number;
+        let block_hash = block.hash_slow();
+        let base_fee_per_gas = block.base_fee_per_gas.map(U128::from);
 
-        for ((tx, trace), receipt) in block
+        let gas_used_vec: Vec<_> = {
+            let mut last = 0;
+            receipts
+                .iter()
+                .map(|r| {
+                    let gas_used = r.receipt.cumulative_gas_used - last;
+                    last = r.receipt.cumulative_gas_used;
+                    gas_used
+                })
+                .collect()
+        };
+
+        for (idx, ((tx, trace), receipt)) in block
             .body
             .into_iter()
             .zip(traces.into_iter())
             .zip(receipts.into_iter())
+            .enumerate()
         {
             let hash = tx.hash();
             let mut attribute_map = HashMap::new();
             attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hex::encode(hash)));
 
-            // block_number
+            // header subset
+            let mut rlp_header_subset = Vec::with_capacity(512);
+            HeaderSubset {
+                block_hash,
+                block_number,
+                tx_index: idx as u64,
+                gas_used: U256::from(gas_used_vec[idx]),
+                base_fee_per_gas,
+            }
+            .encode(&mut rlp_header_subset);
             attribute_map.insert(
-                "block_number".to_owned(),
-                AttributeValue::S(block_num.clone()),
+                "header_subset".to_owned(),
+                AttributeValue::B(rlp_header_subset.into()),
             );
 
             // tx
@@ -160,8 +203,11 @@ impl DynamoDBArchive {
         }
     }
 
-    async fn batch_get(&self, keys: &[String]) -> Result<Vec<HashMap<String, AttributeValue>>> {
-        let mut results = Vec::new();
+    async fn batch_get(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, HashMap<String, AttributeValue>>> {
+        let mut results = HashMap::new();
         let batches = keys.chunks(Self::READ_BATCH_SIZE);
 
         for batch in batches {
@@ -199,7 +245,7 @@ impl DynamoDBArchive {
             // Collect retrieved items
             if let Some(mut responses) = response.responses {
                 if let Some(items) = responses.remove(&self.table) {
-                    results.extend(items.into_iter());
+                    results.extend(items.into_iter().filter_map(extract_txhash_from_map));
                 }
             }
 
@@ -223,8 +269,8 @@ impl DynamoDBArchive {
                 .await?;
 
                 if let Some(mut responses_retry) = response_retry.responses {
-                    if let Some(items_retry) = responses_retry.remove(&self.table) {
-                        results.extend(items_retry.into_iter());
+                    if let Some(items) = responses_retry.remove(&self.table) {
+                        results.extend(items.into_iter().filter_map(extract_txhash_from_map));
                     }
                 }
                 unprocessed_keys = response_retry.unprocessed_keys;
@@ -314,15 +360,17 @@ fn decode_from_map<T: Decodable>(
     None
 }
 
-fn block_number_from_map(item: &HashMap<String, AttributeValue>) -> Option<u64> {
-    if let Some(block_number_attr) = item.get("block_number") {
-        if let AttributeValue::S(block_number) = block_number_attr {
-            return block_number.parse().ok();
+fn extract_txhash_from_map(
+    mut item: HashMap<String, AttributeValue>,
+) -> Option<(String, HashMap<String, AttributeValue>)> {
+    if let Some(attr) = item.remove("tx_hash") {
+        if let AttributeValue::S(txhash) = attr {
+            return Some((txhash, item));
         } else {
-            dbg!("failed to get block_bumber from attr");
+            dbg!("failed to get txhash from attr");
         }
     } else {
-        dbg!("block number attr not found");
+        dbg!("txhash attr not found");
     }
     None
 }

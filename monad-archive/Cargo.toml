@@ -57,3 +57,4 @@ tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 futures = { workspace = true }
 reth-primitives = { workspace = true }
+reth-rpc-types = { workspace = true }
