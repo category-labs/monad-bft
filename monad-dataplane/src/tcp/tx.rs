@@ -1,14 +1,19 @@
 use std::{
     cell::RefCell,
     collections::{btree_map::Entry, BTreeMap, VecDeque},
-    io::Error,
+    io::{Error, ErrorKind},
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use monoio::{io::AsyncWriteRentExt, net::TcpStream, spawn, time::timeout};
+use monoio::{
+    io::AsyncWriteRentExt,
+    net::TcpStream,
+    spawn,
+    time::{sleep, timeout},
+};
 use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
@@ -19,6 +24,9 @@ use super::{message_timeout, TcpMsg, TcpMsgHdr};
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
 pub const QUEUED_MESSAGE_LIMIT: usize = 20;
 
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
+
 #[derive(Clone)]
 struct TxState {
     inner: Rc<RefCell<TxStateInner>>,
@@ -27,7 +35,6 @@ struct TxState {
 impl TxState {
     fn new() -> TxState {
         let inner = Rc::new(RefCell::new(TxStateInner {
-            conn_id: 0,
             messages: BTreeMap::new(),
         }));
 
@@ -64,7 +71,7 @@ impl TxState {
         peer_connection_task_exists
     }
 
-    fn pop(&self, addr: &SocketAddr) -> Option<(u64, TcpMsg)> {
+    fn pop(&self, addr: &SocketAddr) -> Option<TcpMsg> {
         let mut inner_ref = self.inner.borrow_mut();
 
         let queued_messages = inner_ref.messages.get_mut(addr).unwrap();
@@ -83,162 +90,124 @@ impl TxState {
                     );
                 }
 
-                let conn_id = inner_ref.conn_id;
-                inner_ref.conn_id += 1;
-
-                Some((conn_id, message))
+                Some(message)
             }
         }
+    }
+
+    // Throw away (and fail) all queued messages for the given peer address.
+    fn clear(&self, addr: &SocketAddr) {
+        self.inner
+            .borrow_mut()
+            .messages
+            .get_mut(addr)
+            .unwrap()
+            .clear();
+    }
+
+    // Remove this peer address from the messages map (and discard and fail all messages still
+    // queued for this peer) in case there was an I/O error communicating with this peer.
+    fn io_error_exit(&self, addr: &SocketAddr) {
+        self.inner.borrow_mut().messages.remove(addr);
     }
 }
 
 struct TxStateInner {
-    conn_id: u64,
     messages: BTreeMap<SocketAddr, VecDeque<TcpMsg>>,
 }
 
 pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     let tx_state = TxState::new();
 
+    let mut conn_id: u64 = 0;
+
     while let Some((addr, msg)) = tcp_egress_rx.recv().await {
         debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
 
         if !tx_state.push(&addr, msg) {
-            trace!(?addr, "spawning TCP tx task for peer");
-
-            spawn(task_peer(tx_state.clone(), addr));
-        }
-    }
-}
-
-async fn task_peer(tx_state: TxState, addr: SocketAddr) {
-    trace!(?addr, "starting TCP tx task for peer");
-
-    while let Some((conn_id, message)) = tx_state.pop(&addr) {
-        let len = message.msg.len();
-
-        // TODO: When we experience a transmission failure, we should consider zapping
-        // all outbound messages that are linked to this one (i.e. that are part of the
-        // same (large, multi-message) blocksync or statesync response).
-        if timeout(message_timeout(len), send_message(conn_id, addr, message))
-            .await
-            .is_err()
-        {
-            warn!(
+            trace!(
                 conn_id,
                 ?addr,
-                len,
-                "timeout while writing message on TCP connection"
+                "spawning TCP transmit connection task for peer"
             );
+
+            spawn(task_peer(tx_state.clone(), conn_id, addr));
+
+            conn_id += 1;
         }
     }
-
-    trace!(?addr, "exiting TCP tx task for peer");
 }
 
-async fn send_message(conn_id: u64, addr: SocketAddr, message: TcpMsg) {
+async fn task_peer(tx_state: TxState, conn_id: u64, addr: SocketAddr) {
     trace!(
         conn_id,
         ?addr,
-        len = message.msg.len(),
-        "start transmission of TCP message"
+        "starting TCP transmit connection task for peer"
     );
 
-    match TcpStream::connect(addr).await {
-        Err(err) => {
-            debug!(
-                conn_id,
-                ?addr,
-                ?err,
-                "error connecting to remote host while sending TCP message"
-            );
-        }
-        Ok(mut stream) => {
-            trace!(conn_id, ?addr, "outbound TCP connection established");
+    if let Err(err) = connect_and_send_messages(&tx_state, conn_id, &addr).await {
+        warn!(conn_id, ?addr, ?err, "error transmitting TCP messages");
 
-            let connect_time = if enabled!(Level::DEBUG) {
-                Some(Instant::now())
-            } else {
-                None
-            };
+        // Throw away (and fail) all queued messages.
+        tx_state.clear(&addr);
 
-            let raw_fd = stream.as_raw_fd();
-            conn_cork(raw_fd, true);
+        // Sleep to avoid reconnecting too soon.
+        sleep(TCP_FAILURE_LINGER_WAIT).await;
 
-            let message_len = message.msg.len();
-            let header = TcpMsgHdr::new(message_len as u64);
-
-            let (ret, _header) = stream.write_all(Box::<[u8]>::from(header.as_bytes())).await;
-
-            if let Err(err) = ret {
-                debug!(
-                    conn_id,
-                    ?addr,
-                    ?header,
-                    ?err,
-                    "error writing message header on TCP connection"
-                );
-                return;
-            }
-
-            let (ret, _message) = stream.write_all(message.msg).await;
-
-            if let Err(err) = ret {
-                debug!(
-                    conn_id,
-                    ?addr,
-                    ?header,
-                    ?err,
-                    "error writing message on TCP connection"
-                );
-                return;
-            }
-
-            conn_cork(raw_fd, false);
-
-            if message
-                .completion
-                .is_some_and(|completion| completion.send(()).is_err())
-            {
-                warn!(
-                    conn_id,
-                    ?addr,
-                    ?header,
-                    "error sending completion for transmitted TCP message"
-                );
-            }
-
-            if let Some(connect_time) = connect_time {
-                let num_unacked_bytes = num_unacked_bytes(raw_fd);
-
-                let duration = Instant::now() - connect_time;
-
-                let duration_ms = duration.as_millis();
-
-                let bytes_per_second = {
-                    let bytes_acked =
-                        std::mem::size_of::<TcpMsgHdr>() + message_len - num_unacked_bytes;
-                    let duration_f64 = duration.as_secs_f64();
-
-                    if duration_f64 >= 0.01 {
-                        (bytes_acked as f64) / duration_f64
-                    } else {
-                        f64::NAN
-                    }
-                };
-
-                debug!(
-                    conn_id,
-                    ?addr,
-                    ?header,
-                    num_unacked_bytes,
-                    duration_ms,
-                    bytes_per_second,
-                    "successfully transmitted TCP message"
-                );
-            }
-        }
+        tx_state.io_error_exit(&addr);
     }
+
+    trace!(
+        conn_id,
+        ?addr,
+        "exiting TCP transmit connection task for peer"
+    );
+}
+
+async fn connect_and_send_messages(
+    tx_state: &TxState,
+    conn_id: u64,
+    addr: &SocketAddr,
+) -> Result<(), Error> {
+    let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
+        .map_err(|err| {
+            Error::new(
+                ErrorKind::Other,
+                format!("error connecting to remote host: {}", err),
+            )
+        })?;
+
+    trace!(conn_id, ?addr, "outbound TCP connection established");
+
+    conn_cork(stream.as_raw_fd(), true);
+
+    let mut message_id: u64 = 0;
+
+    while let Some(message) = tx_state.pop(addr) {
+        let len = message.msg.len();
+
+        timeout(
+            message_timeout(len),
+            send_message(conn_id, addr, &mut stream, message_id, message),
+        )
+        .await
+        .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
+        .map_err(|err| {
+            Error::new(
+                ErrorKind::Other,
+                format!(
+                    "error writing message {} on TCP connection: {}",
+                    message_id, err
+                ),
+            )
+        })?;
+
+        message_id += 1;
+    }
+
+    Ok(())
 }
 
 fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
@@ -260,6 +229,84 @@ fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
             Error::last_os_error()
         );
     }
+}
+
+async fn send_message(
+    conn_id: u64,
+    addr: &SocketAddr,
+    stream: &mut TcpStream,
+    message_id: u64,
+    message: TcpMsg,
+) -> Result<(), Error> {
+    trace!(
+        conn_id,
+        ?addr,
+        message_id,
+        len = message.msg.len(),
+        "start transmission of TCP message"
+    );
+
+    let start = if enabled!(Level::DEBUG) {
+        Some((Instant::now(), num_unacked_bytes(stream.as_raw_fd())))
+    } else {
+        None
+    };
+
+    let message_len = message.msg.len();
+
+    let header = TcpMsgHdr::new(message_len as u64);
+
+    let (ret, _header) = stream.write_all(Box::<[u8]>::from(header.as_bytes())).await;
+    ret?;
+
+    let (ret, _message) = stream.write_all(message.msg).await;
+    ret?;
+
+    if let Some((start_time, start_unacked_bytes)) = start {
+        let end_unacked_bytes = num_unacked_bytes(stream.as_raw_fd());
+
+        let duration = Instant::now() - start_time;
+
+        let duration_ms = duration.as_millis();
+
+        let bytes_per_second = {
+            let bytes_acked = start_unacked_bytes + std::mem::size_of::<TcpMsgHdr>() + message_len
+                - end_unacked_bytes;
+            let duration_f64 = duration.as_secs_f64();
+
+            if duration_f64 >= 0.01 {
+                (bytes_acked as f64) / duration_f64
+            } else {
+                f64::NAN
+            }
+        };
+
+        debug!(
+            conn_id,
+            ?addr,
+            message_id,
+            ?header,
+            start_unacked_bytes,
+            end_unacked_bytes,
+            duration_ms,
+            bytes_per_second,
+            "successfully transmitted TCP message"
+        );
+    }
+
+    if message
+        .completion
+        .is_some_and(|completion| completion.send(()).is_err())
+    {
+        warn!(
+            conn_id,
+            ?addr,
+            ?header,
+            "error sending completion for transmitted TCP message"
+        );
+    }
+
+    Ok(())
 }
 
 fn num_unacked_bytes(raw_fd: RawFd) -> usize {
