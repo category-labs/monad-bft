@@ -4,8 +4,6 @@ pub struct RecipientTracker {
     pub client: ReqwestClient,
     pub rpc_sender_rx: mpsc::UnboundedReceiver<AddrsWithTime>,
 
-    pub erc20_balance_of: bool,
-    pub erc20: ERC20,
     pub delay: Duration,
 
     pub non_zero: Arc<DashSet<Address>>,
@@ -58,8 +56,6 @@ impl RecipientTracker {
     fn handle_batch(&self, addrs: HashSet<Address>, seen_non_zero: Arc<DashSet<Address>>) {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
-        let erc20 = self.erc20;
-        let erc20_balance_of = self.erc20_balance_of;
 
         tokio::spawn(async move {
             let now = Instant::now();
@@ -73,17 +69,6 @@ impl RecipientTracker {
                     warn!("Recipient tracker failed to refresh batch: {e}");
                 }
             };
-
-            if erc20_balance_of {
-                match client.batch_get_erc20_balance(addrs.iter(), erc20).await {
-                    Ok(erc20_bals) => {
-                        Self::process_bals_vec(erc20_bals, &seen_non_zero, &metrics);
-                    }
-                    Err(e) => {
-                        warn!("Recipient tracker failed to refresh batch: {e}");
-                    }
-                };
-            }
 
             trace!(
                 elapsed_ms = now.elapsed().as_millis(),

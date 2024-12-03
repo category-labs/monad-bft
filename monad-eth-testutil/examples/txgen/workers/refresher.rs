@@ -7,8 +7,6 @@ pub struct Refresher {
     pub gen_sender: mpsc::Sender<Accounts>,
 
     pub client: ReqwestClient,
-    pub erc20: ERC20,
-    pub erc20_check_bals: bool,
     pub metrics: Arc<Metrics>,
 
     pub delay: Duration,
@@ -39,17 +37,13 @@ impl Refresher {
 
     fn handle_batch(&self, mut accts: Accounts) {
         let client = self.client.clone();
-        let erc20 = self.erc20;
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
-        let erc20_check_bals = self.erc20_check_bals;
 
         tokio::spawn(async move {
             let mut times_sent = 0;
 
-            while let Err(e) =
-                refresh_batch(&client, &erc20, &mut accts, &metrics, erc20_check_bals).await
-            {
+            while let Err(e) = refresh_batch(&client, &mut accts, &metrics).await {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {
@@ -71,15 +65,9 @@ impl Refresher {
 
 pub async fn refresh_batch(
     client: &ReqwestClient,
-    _erc20: &ERC20,
     accts: &mut Accounts,
     metrics: &Metrics,
-    erc20_check_bals: bool, // todo: less jank
 ) -> Result<()> {
-    if erc20_check_bals {
-        return refresh_batch_w_erc20(client, _erc20, accts, metrics).await;
-    }
-
     trace!("Refreshing batch...");
 
     let iter = accts.iter().map(|a| &a.addr);
@@ -96,44 +84,6 @@ pub async fn refresh_batch(
         .fetch_add(accts.iter().len() * 2, SeqCst);
 
     for (i, acct) in accts.iter_mut().enumerate() {
-        if let Ok((_, b)) = &native_bals[i] {
-            acct.native_bal = *b;
-        }
-        if let Ok((_, n)) = &nonces[i] {
-            acct.nonce = *n;
-        }
-    }
-    trace!("Batch refreshed");
-
-    Ok(())
-}
-
-/// problematic version to show erc20 behaving badly
-pub async fn refresh_batch_w_erc20(
-    client: &ReqwestClient,
-    erc20: &ERC20,
-    accts: &mut Accounts,
-    metrics: &Metrics,
-) -> Result<()> {
-    trace!("Refreshing batch...");
-
-    let iter = accts.iter().map(|a| &a.addr);
-    let (erc20_res, native_bals, nonces) = tokio::join!(
-        client.batch_get_erc20_balance(iter.clone(), *erc20),
-        client.batch_get_balance(iter.clone()),
-        client.batch_get_transaction_count(iter),
-    );
-
-    let native_bals = native_bals?;
-    let nonces = nonces?;
-    let erc20_bals = erc20_res?;
-
-    metrics.total_rpc_calls.fetch_add(accts.len() * 3, SeqCst);
-
-    for (i, acct) in accts.iter_mut().enumerate() {
-        if let Ok((_, b)) = &erc20_bals[i] {
-            acct.erc20_bal = *b;
-        }
         if let Ok((_, b)) = &native_bals[i] {
             acct.native_bal = *b;
         }

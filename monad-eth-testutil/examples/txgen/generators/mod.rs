@@ -1,31 +1,42 @@
 use duplicates::DuplicateTxGenerator;
+use ecmul::ECMulGenerator;
+use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
+use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
+use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
 
-use crate::{prelude::*, shared::erc20::ERC20, GeneratorConfig, TxType};
+use crate::{prelude::*, shared::erc20::ERC20, DeployedContract, GeneratorConfig};
 
 mod duplicates;
+mod ecmul;
+mod few_to_many;
 mod high_call_data;
+mod many_to_many;
 mod non_deterministic_storage;
+mod self_destruct;
 mod storage_deletes;
 
-pub fn make_generator(config: &Config, erc20: ERC20) -> Box<dyn Generator + Send + Sync> {
+pub fn make_generator(
+    config: &Config,
+    deployed_contract: DeployedContract,
+) -> Result<Box<dyn Generator + Send + Sync>> {
     let recipient_keys = SeededKeyPool::new(config.recipients, config.recipient_seed);
     let tx_per_sender = config.tx_per_sender();
-    match config.generator_config {
+    Ok(match config.generator_config {
         GeneratorConfig::NullGen => Box::new(NullGen),
         GeneratorConfig::FewToMany { tx_type } => Box::new(CreateAccountsGenerator {
-            recipient_keys,
+            recipient_keys: SeededKeyPool::new(config.recipients, config.recipient_seed),
             tx_type,
-            erc20,
+            erc20: deployed_contract.erc20()?,
             tx_per_sender,
         }),
         GeneratorConfig::ManyToMany { tx_type } => Box::new(ManyToManyGenerator {
             recipient_keys,
             tx_type,
             tx_per_sender,
-            erc20,
+            erc20: deployed_contract.erc20()?,
         }),
         GeneratorConfig::Duplicates => Box::new(DuplicateTxGenerator {
             recipient_keys,
@@ -44,14 +55,22 @@ pub fn make_generator(config: &Config, erc20: ERC20) -> Box<dyn Generator + Send
         GeneratorConfig::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
             recipient_keys,
             tx_per_sender,
-            erc20,
+            erc20: deployed_contract.erc20()?,
         }),
         GeneratorConfig::StorageDeletes => Box::new(StorageDeletesTxGenerator {
             recipient_keys,
             tx_per_sender,
-            erc20,
+            erc20: deployed_contract.erc20()?,
         }),
-    }
+        GeneratorConfig::SelfDestructs => Box::new(SelfDestructTxGenerator {
+            tx_per_sender,
+            contracts: Vec::with_capacity(1000),
+        }),
+        GeneratorConfig::ECMul => Box::new(ECMulGenerator {
+            ecmul: deployed_contract.ecmul()?,
+            tx_per_sender,
+        }),
+    })
 }
 
 struct NullGen;
@@ -61,73 +80,6 @@ impl Generator for NullGen {
         _accts: &mut [SimpleAccount],
     ) -> Vec<(TransactionSigned, Address)> {
         vec![]
-    }
-}
-
-struct ManyToManyGenerator {
-    recipient_keys: SeededKeyPool,
-    tx_per_sender: usize,
-    tx_type: TxType,
-    pub erc20: ERC20,
-}
-
-impl Generator for ManyToManyGenerator {
-    fn handle_acct_group(
-        &mut self,
-        accts: &mut [SimpleAccount],
-    ) -> Vec<(TransactionSigned, Address)> {
-        let mut idxs: Vec<usize> = (0..accts.len()).collect();
-        let mut rng = SmallRng::from_entropy();
-        let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
-
-        for _ in 0..self.tx_per_sender {
-            idxs.shuffle(&mut rng);
-
-            for &idx in &idxs {
-                let sender = &mut accts[idx];
-                let to = self.recipient_keys.next_addr(); // change sampling strategy?
-
-                let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
-                    TxType::Native => native_transfer(sender, to, U256::from(10)),
-                };
-
-                txs.push((tx, to));
-            }
-        }
-
-        txs
-    }
-}
-
-struct CreateAccountsGenerator {
-    pub recipient_keys: SeededKeyPool,
-    pub tx_per_sender: usize,
-    pub tx_type: TxType,
-    pub erc20: ERC20,
-}
-
-impl Generator for CreateAccountsGenerator {
-    fn handle_acct_group(
-        &mut self,
-        accts: &mut [SimpleAccount],
-    ) -> Vec<(TransactionSigned, Address)> {
-        let mut txs = Vec::with_capacity(accts.len());
-
-        for sender in accts {
-            for _ in 0..self.tx_per_sender {
-                let to = self.recipient_keys.next_addr();
-
-                let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
-                    TxType::Native => native_transfer(sender, to, U256::from(10)),
-                };
-
-                txs.push((tx, to));
-            }
-        }
-
-        txs
     }
 }
 
@@ -146,7 +98,10 @@ pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> Tran
 
     // update from
     from.nonce += 1;
-    from.native_bal -= amt + U256::from(21_000 * 1_000);
+    from.native_bal = from
+        .native_bal
+        .checked_sub(amt + U256::from(21_000 * 1_000))
+        .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
     TransactionSigned::from_transaction_and_signature(tx, sig)
@@ -172,7 +127,10 @@ pub fn native_transfer_priority_fee(
 
     // update from
     from.nonce += 1;
-    from.native_bal -= amt + U256::from(21_000 * 1_000);
+    from.native_bal = from
+        .native_bal
+        .checked_sub(amt + U256::from(21_000 * 1_000))
+        .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
     TransactionSigned::from_transaction_and_signature(tx, sig)
@@ -188,9 +146,11 @@ pub fn erc20_transfer(
 
     // update from
     from.nonce += 1;
-    from.native_bal -= U256::from(400_000 * 1_000); // todo: wire gas correctly, but doesn't really matter given refresher and gen_harness will ensure enough balance
-    from.erc20_bal -= amt;
-
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * 1_000))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
+    from.erc20_bal = from.erc20_bal.checked_sub(amt).unwrap_or(U256::ZERO);
     tx
 }
 
@@ -199,7 +159,11 @@ pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20) -> TransactionSigned 
 
     // update from
     from.nonce += 1;
-    from.native_bal -= U256::from(400_000 * 1_000); // todo: wire gas correctly, see above comment
+
+    from.native_bal = from
+        .native_bal
+        .checked_sub(U256::from(400_000 * 1_000))
+        .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
     from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
     tx
 }

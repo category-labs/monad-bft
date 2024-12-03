@@ -6,10 +6,7 @@ use std::{
 use futures::{stream::FuturesUnordered, StreamExt};
 use reth_primitives::TransactionSigned;
 
-use crate::{
-    prelude::*,
-    shared::{erc20::ERC20, eth_json_rpc::EthJsonRpc},
-};
+use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 
 pub mod committed_tx_watcher;
 pub mod gen_harness;
