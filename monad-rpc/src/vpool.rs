@@ -5,6 +5,7 @@ use std::{
 
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
+use rayon::{iter::IntoParallelIterator, slice::ParallelSlice};
 use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,7 @@ pub struct VirtualPool {
 struct SubPool {
     // Mapping of sender to a transaction tree ordered by nonce
     pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
-    evict: RwLock<VecDeque<(Address, tokio::time::Instant)>>,
+    evict: RwLock<VecDeque<Address>>,
     capacity: usize,
 }
 
@@ -110,10 +111,7 @@ impl SubPool {
                 tree.insert(txn.nonce(), txn.clone());
                 entry.insert_entry(tree);
 
-                self.evict
-                    .write()
-                    .await
-                    .push_front((txn.signer(), tokio::time::Instant::now()));
+                self.evict.write().await.push_front(txn.signer());
             }
         };
     }
@@ -124,21 +122,10 @@ impl SubPool {
         };
         let mut removed_count = 0;
         while lock.len() > self.capacity {
-            if let Some((evicted, _)) = lock.pop_back() {
+            if let Some(evicted) = lock.pop_back() {
                 if let Some((_, tree)) = self.pool.remove(&evicted) {
                     removed_count += tree.len();
                 }
-            }
-        }
-
-        while let Some((entry_addr, added)) = lock.pop_back() {
-            if added.elapsed() >= tokio::time::Duration::from_secs(30) {
-                if let Some((_, tree)) = self.pool.remove(&entry_addr) {
-                    removed_count += tree.len();
-                }
-            } else {
-                lock.push_back((entry_addr, added));
-                break;
             }
         }
 
@@ -251,6 +238,7 @@ impl ChainCache {
     async fn update(
         &self,
         block: BlockWithReceipts,
+        recovered_senders: Vec<(Address, u64)>,
         next_base_fee: u128,
     ) -> HashIndex<Address, u64> {
         *self.inner.base_fee.write().await = next_base_fee;
@@ -261,9 +249,7 @@ impl ChainCache {
         // Create a hashset of all senders and their nonces in the block.
         let senders = HashIndex::new();
 
-        for txn in block.transactions.iter().rev() {
-            let sender = txn.recover_signer_unchecked().unwrap_or_default();
-            let nonce = txn.nonce();
+        for (sender, nonce) in recovered_senders {
             senders.insert(sender, nonce);
         }
 
@@ -512,24 +498,40 @@ impl VirtualPool {
             } => {
                 // Remove pending transactions that were included in the block.
                 // Check queued pool for any transactions ready to be pending.
-                let txs = block
-                    .transactions
-                    .iter()
-                    .filter_map(|txn| {
-                        txn.recover_signer_unchecked()
-                            .map(|sender| (sender, txn.nonce()))
-                    })
+                let txs = &block.transactions;
+                let Some(senders) = TransactionSigned::recover_signers_unchecked(
+                    txs.as_parallel_slice(),
+                    txs.len(),
+                ) else {
+                    return;
+                };
+
+                let recovered_senders = senders
+                    .into_iter()
+                    .zip(
+                        block
+                            .transactions
+                            .iter()
+                            .map(|tx| tx.nonce())
+                            .collect::<Vec<u64>>(),
+                    )
                     .collect::<Vec<_>>();
 
                 let pending_cleared =
-                    i64::try_from(self.pending_pool.clear_included(&txs)).unwrap_or_default();
+                    i64::try_from(self.pending_pool.clear_included(&recovered_senders))
+                        .unwrap_or_default();
                 let pending_evicted =
                     i64::try_from(self.pending_pool.evict().await).unwrap_or_default();
                 let queued_cleared =
-                    i64::try_from(self.queued_pool.clear_included(&txs)).unwrap_or_default();
+                    i64::try_from(self.queued_pool.clear_included(&recovered_senders))
+                        .unwrap_or_default();
                 let queued_evicted =
                     i64::try_from(self.queued_pool.evict().await).unwrap_or_default();
-                let senders = self.chain_cache.update(block.clone(), next_base_fee).await;
+
+                let senders = self
+                    .chain_cache
+                    .update(block.clone(), recovered_senders, next_base_fee)
+                    .await;
 
                 // Check for available promotions
                 let promote_queued = self.queued_pool.filter_by_nonce_gap(&senders);

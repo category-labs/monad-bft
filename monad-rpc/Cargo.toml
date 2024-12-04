@@ -30,6 +30,7 @@ env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+rayon = { workspace = true }
 reth-primitives = { workspace = true }
 reth-rpc-types = { workspace = true }
 serde = { workspace = true }
