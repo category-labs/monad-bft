@@ -205,34 +205,34 @@ impl SubPool {
 }
 
 struct ChainCache {
-    inner: ChainCacheInner,
+    inner: RwLock<ChainCacheInner>,
 }
 
 struct ChainCacheInner {
     accounts: HashIndex<Address, u64>,
-    base_fee: RwLock<u128>,
-    latest_block_height: AtomicU64,
+    base_fee: u128,
+    latest_block_height: u64,
     capacity: usize,
-    evict: RwLock<VecDeque<(Address, u64)>>,
+    evict: VecDeque<(Address, u64)>,
     triedb: Option<TriedbEnv>,
 }
 
 impl ChainCache {
     fn new(triedb_env: Option<TriedbEnv>, capacity: usize) -> Self {
         Self {
-            inner: ChainCacheInner {
+            inner: RwLock::new(ChainCacheInner {
                 accounts: HashIndex::new(),
-                base_fee: RwLock::new(1_000),
-                latest_block_height: AtomicU64::new(0),
+                base_fee: 1_000,
+                latest_block_height: 0,
                 capacity,
-                evict: RwLock::new(VecDeque::new()),
+                evict: VecDeque::new(),
                 triedb: triedb_env,
-            },
+            }),
         }
     }
 
     async fn get_base_fee(&self) -> u128 {
-        *self.inner.base_fee.read().await
+        self.inner.read().await.base_fee
     }
 
     async fn update(
@@ -241,11 +241,9 @@ impl ChainCache {
         recovered_senders: Vec<(Address, u64)>,
         next_base_fee: u128,
     ) -> HashIndex<Address, u64> {
-        *self.inner.base_fee.write().await = next_base_fee;
-        self.inner.latest_block_height.store(
-            block.block_header.header.number,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        let mut inner = self.inner.write().await;
+        inner.base_fee = next_base_fee;
+        inner.latest_block_height = block.block_header.header.number;
         // Create a hashset of all senders and their nonces in the block.
         let senders = HashIndex::new();
 
@@ -255,27 +253,27 @@ impl ChainCache {
 
         let mut add_to_eviction_list = Vec::<(Address, u64)>::new();
         for (sender, nonce) in senders.iter(&Guard::new()) {
-            match self.inner.accounts.get(sender) {
+            match inner.accounts.get(sender) {
                 Some(entry) => {
                     entry.update(*nonce);
                 }
                 None => {
-                    self.inner.accounts.insert(*sender, *nonce);
+                    inner.accounts.insert(*sender, *nonce);
                 }
             }
             add_to_eviction_list.push((*sender, *nonce));
         }
 
         for add in add_to_eviction_list {
-            self.inner.evict.write().await.push_front(add);
+            inner.evict.push_front(add);
         }
 
-        if self.inner.evict.read().await.len() > self.inner.capacity {
-            if let Some(key) = self.inner.evict.write().await.pop_back() {
-                if let Some(entry) = self.inner.accounts.get(&key.0) {
+        if inner.evict.len() > inner.capacity {
+            if let Some(key) = inner.evict.pop_back() {
+                if let Some(entry) = inner.accounts.get(&key.0) {
                     if &key.1 == entry.get() {
                         drop(entry);
-                        self.inner.accounts.remove(&key.0);
+                        inner.accounts.remove(&key.0);
                     }
                 }
             }
@@ -285,21 +283,19 @@ impl ChainCache {
     }
 
     async fn nonce(&self, address: &Address) -> Option<u64> {
-        let nonce = self.inner.accounts.peek(address, &Guard::new()).cloned();
-        let block_height = self
-            .inner
-            .latest_block_height
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let inner = self.inner.read().await;
+        let nonce = inner.accounts.peek(address, &Guard::new()).cloned();
+        let block_height = inner
+            .latest_block_height;
 
         if nonce.is_none() {
-            if let Some(triedb) = &self.inner.triedb {
+            if let Some(triedb) = &inner.triedb {
                 match triedb.get_account(address.0.into(), block_height).await {
                     Ok(account) => {
-                        self.inner.accounts.insert(*address, account.nonce);
-                        self.inner
+                        drop(inner);
+                        self.inner.write().await.accounts.insert(*address, account.nonce);
+                        self.inner.write().await
                             .evict
-                            .write()
-                            .await
                             .push_front((*address, account.nonce));
                         Some(account.nonce)
                     }
@@ -317,7 +313,7 @@ impl ChainCache {
     }
 
     async fn len(&self) -> usize {
-        self.inner.accounts.len()
+        self.inner.read().await.accounts.len()
     }
 }
 
