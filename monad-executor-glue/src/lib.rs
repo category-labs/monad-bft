@@ -627,7 +627,7 @@ where
                 format!("ConsensusEvent::Message from {sender}")
             }
             MonadEvent::ConsensusEvent(ConsensusEvent::Timeout) => {
-                format!("ConsensusEvent::Timeout Pacemaker local timeout")
+                "ConsensusEvent::Timeout Pacemaker local timeout".to_string()
             }
             MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
             MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
@@ -646,8 +646,7 @@ where
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
                 format!(
                     "AsyncStateVerifyEvent::LocalStateRoot -- seqnum:{} hash:{}",
-                    root.seq_num.0,
-                    root.state_root_hash.0.to_string()
+                    root.seq_num.0, root.state_root_hash.0
                 )
             }
             MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),

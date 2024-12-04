@@ -31,7 +31,7 @@ impl PerfController {
         self.control.write_all(b"enable\n").unwrap();
         let mut buf = [0; 5];
         self.control_ack.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, &['a' as u8, 'c' as u8, 'k' as u8, '\n' as u8, 0u8]);
+        assert_eq!(&buf, &[b'a', b'c', b'k', b'\n', 0u8]);
     }
 
     /// Disables sampling by writing to the control file descriptor and blocks waiting for ack.
@@ -39,6 +39,6 @@ impl PerfController {
         self.control.write_all(b"disable\n").unwrap();
         let mut buf = [0; 5];
         self.control_ack.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, &['a' as u8, 'c' as u8, 'k' as u8, '\n' as u8, 0u8]);
+        assert_eq!(&buf, &[b'a', b'c', b'k', b'\n', 0u8]);
     }
 }

@@ -353,7 +353,7 @@ fn nontrivial_example() {
     let tx3 = make_tx(S1, 3 * BASE_FEE, GAS_LIMIT, 2, 10);
     let tx4 = make_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
     let tx5 = make_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx6 = make_tx(S2, 1 * BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
     let tx7 = make_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
     let tx8 = make_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
     let tx9 = make_tx(S3, 10 * BASE_FEE, GAS_LIMIT, 2, 10);

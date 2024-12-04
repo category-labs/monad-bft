@@ -27,7 +27,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
-      - run: rustup toolchain install nightly-2024-07-21 --profile minimal --component rustfmt
+      - run: rustup toolchain install nightly-2024-12-10 --profile minimal --component rustfmt
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
       - name: Install cargo-shear
@@ -35,7 +35,7 @@ jobs:
       - name: Lint unused dependencies
         run: cargo shear
       - name: Format
-        run: cargo +nightly-2024-07-21 fmt --all --check
+        run: cargo +nightly-2024-12-10 fmt --all --check
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --

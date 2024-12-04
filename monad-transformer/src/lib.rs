@@ -376,20 +376,11 @@ impl<PT: PubKey, M> Transformer<M> for GenericTransformer<PT, M> {
 
 pub type GenericTransformerPipeline<PT, M> = Vec<GenericTransformer<PT, M>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct BwWindow {
     // sliding window of (msg.from_tick, msg.bit_len) sent in the last second
     window: VecDeque<(Duration, usize)>,
     total_bits: usize,
-}
-
-impl Default for BwWindow {
-    fn default() -> Self {
-        Self {
-            window: Default::default(),
-            total_bits: 0,
-        }
-    }
 }
 
 impl BwWindow {

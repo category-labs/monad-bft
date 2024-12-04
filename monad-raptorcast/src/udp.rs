@@ -903,7 +903,7 @@ where
 
     batch: Option<BroadcastBatch<PT>>,
 }
-impl<'a, F, PT> Drop for BroadcastBatcher<'a, F, PT>
+impl<F, PT> Drop for BroadcastBatcher<'_, F, PT>
 where
     F: FnMut(Vec<NodeId<PT>>, Bytes),
     PT: PubKey,
@@ -1023,7 +1023,7 @@ where
 
     batch: Option<ForwardBatch>,
 }
-impl<'a, F, PT> Drop for ForwardBatcher<'a, F, PT>
+impl<F, PT> Drop for ForwardBatcher<'_, F, PT>
 where
     F: FnMut(Bytes),
     PT: PubKey,

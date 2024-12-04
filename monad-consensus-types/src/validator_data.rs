@@ -71,7 +71,7 @@ where
         return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
     };
 
-    let bytes = hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?;
+    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
 
     SignatureCollectionPubKeyType::<SCT>::from_bytes(&bytes)
         .map_err(<D::Error as serde::de::Error>::custom)
@@ -211,7 +211,7 @@ where
         return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
     };
 
-    let bytes = hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?;
+    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
 
     Ok(NodeId::new(
         <SCT as SignatureCollection>::NodeIdPubKey::from_bytes(&bytes)

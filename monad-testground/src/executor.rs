@@ -190,7 +190,7 @@ where
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
         state_backend,
-        state_root_validator: NopStateRoot::default(),
+        state_root_validator: NopStateRoot,
         async_state_verify: PeerAsyncStateVerify::default(),
         key: config.key,
         certkey: config.cert_key,

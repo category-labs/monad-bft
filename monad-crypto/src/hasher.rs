@@ -60,7 +60,7 @@ where
         return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
     };
 
-    let bytes = hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?;
+    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
 
     bytes.try_into().map_err(|e: Vec<u8>| {
         <D::Error as serde::de::Error>::custom(format!(

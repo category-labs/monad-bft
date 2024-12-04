@@ -171,7 +171,7 @@ where
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF> BlockSyncWrapper<'a, ST, SCT, BPT, SBT, VTF>
+impl<ST, SCT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, BPT, SBT, VTF>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

@@ -105,7 +105,7 @@ impl CryptoModules {
     pub fn encrypt(
         &self,
         private_key: &[u8],
-        password: &String,
+        password: &str,
     ) -> Result<(Vec<u8>, Vec<u8>), KeystoreError> {
         let password_nfkd = password
             .nfkd()
@@ -130,7 +130,7 @@ impl CryptoModules {
     pub fn decrypt(
         &self,
         ciphertext: &[u8],
-        password: &String,
+        password: &str,
         checksum: &[u8],
     ) -> Result<Vec<u8>, KeystoreError> {
         let password_nfkd = password
@@ -159,7 +159,7 @@ impl Keystore {
         path: &Path,
     ) -> Result<(), KeystoreError> {
         let crypto_modules = CryptoModules::create_default(rand::random());
-        let (ciphertext, checksum) = crypto_modules.encrypt(private_key, &password.to_string())?;
+        let (ciphertext, checksum) = crypto_modules.encrypt(private_key, password)?;
 
         let keystore = Keystore {
             ciphertext,
@@ -180,11 +180,10 @@ impl Keystore {
         file.read_to_string(&mut contents)?;
 
         let keystore: Keystore = serde_json::from_str(&contents)?;
-        let private_key = keystore.crypto.decrypt(
-            &keystore.ciphertext,
-            &password.to_string(),
-            &keystore.checksum,
-        )?;
+        let private_key =
+            keystore
+                .crypto
+                .decrypt(&keystore.ciphertext, password, &keystore.checksum)?;
 
         Ok(private_key)
     }

@@ -816,9 +816,8 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("body to_bytes failed"));
         serde_json::from_slice(&b)
-            .map_err(|e| {
+            .inspect_err(|e| {
                 println!("failed to serialize {:?}", &b);
-                e
             })
             .unwrap()
     }

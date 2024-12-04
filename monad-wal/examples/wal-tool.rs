@@ -460,10 +460,7 @@ impl Widget for &EventListWidget {
                 s,
                 " ".repeat(9).into(),
                 //e.timestamp.to_string().into(),
-                Span::styled(
-                    format!("{}", e.timestamp.to_string()),
-                    Style::default().yellow(),
-                ),
+                Span::styled(format!("{}", e.timestamp), Style::default().yellow()),
             ]);
 
             let log = Line::from(e.event.to_string());

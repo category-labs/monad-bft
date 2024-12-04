@@ -16,6 +16,7 @@ macro_rules! include_proto {
 
 pub mod error;
 
+#[allow(clippy::all)]
 pub mod proto {
     include_proto!(basic);
     include_proto!(discovery);

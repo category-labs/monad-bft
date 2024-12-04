@@ -304,8 +304,8 @@ where
     }
 }
 
-impl<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
-    ConsensusStateWrapper<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
+    ConsensusStateWrapper<'_, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -2020,7 +2020,7 @@ mod test {
                 },
                 _ => None,
             })
-            .expect(&format!("couldn't extract proposal: {:?}", cmds))
+            .unwrap_or_else(|| panic!("couldn't extract proposal: {:?}", cmds))
     }
 
     fn extract_blocksync_requests<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<BlockRange>

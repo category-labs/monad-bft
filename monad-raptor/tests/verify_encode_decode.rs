@@ -150,7 +150,7 @@ fn test_single_decode(mut src: Vec<u8>) {
     // Pad `src` to an integer multiple >= SOURCE_SYMBOLS_MIN of SYMBOL_LEN bytes to
     // simplify the data consistency comparisons below.
     {
-        let symbols = ((src.len() + SYMBOL_LEN - 1) / SYMBOL_LEN).max(SOURCE_SYMBOLS_MIN);
+        let symbols = src.len().div_ceil(SYMBOL_LEN).max(SOURCE_SYMBOLS_MIN);
 
         let len = symbols * SYMBOL_LEN;
 

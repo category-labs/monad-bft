@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+versioned = "1.83.0"
+components = ["clippy"]
+profile = "minimal"

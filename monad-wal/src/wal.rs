@@ -10,7 +10,7 @@ type EventHeaderType = u32;
 const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
 
 /// Maximum file size. 1GB.
-const MAX_FILE_SIZE: usize = 1 * 1024 * 1024 * 1024;
+const MAX_FILE_SIZE: usize = 1024 * 1024 * 1024;
 
 /// Config for a write-ahead-log
 #[derive(Clone)]

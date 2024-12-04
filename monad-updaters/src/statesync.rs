@@ -107,7 +107,7 @@ where
                         if self.started_execution {
                             let state = self.state_backend.lock().unwrap();
                             if let Some(state) = state.block_state(&SeqNum(request.target)) {
-                                let serialized = serde_json::to_vec(&*state).unwrap();
+                                let serialized = serde_json::to_vec(state).unwrap();
                                 let response = StateSyncResponse {
                                     version: SELF_STATESYNC_VERSION,
                                     nonce: 0,

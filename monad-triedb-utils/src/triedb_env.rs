@@ -394,7 +394,7 @@ impl Triedb for TriedbEnv {
                 }
 
                 match result {
-                    Some(code) => Ok(hex::encode(&code)),
+                    Some(code) => Ok(hex::encode(code)),
                     None => Ok("0x".to_string()),
                 }
             }

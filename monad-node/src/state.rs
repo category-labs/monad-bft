@@ -115,9 +115,7 @@ impl NodeState {
             statesync_ipc_path: cli.statesync_ipc_path,
             otel_endpoint: cli.otel_endpoint,
             record_otel_traces: cli.record_otel_traces,
-            record_metrics_interval: cli
-                .record_metrics_interval_seconds
-                .and_then(|s| Some(Duration::from_secs(s))),
+            record_metrics_interval: cli.record_metrics_interval_seconds.map(Duration::from_secs),
             node_name,
             network_name,
         })

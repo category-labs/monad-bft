@@ -158,7 +158,7 @@ where
     fn read_encoded_eth_block(&self, block_num: u64) -> std::io::Result<Vec<u8>> {
         let filename = block_num.to_string();
         let mut file_path = PathBuf::from(&self.eth_block_dir_path);
-        file_path.push(format!("{}", filename));
+        file_path.push(&filename);
         let mut file = File::open(file_path)?;
 
         let size = file.metadata().unwrap().len();

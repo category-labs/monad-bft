@@ -8,7 +8,7 @@ pub struct NopDiscovery<PT: PubKey>(pub PhantomData<PT>);
 
 impl<PT: PubKey> Default for NopDiscovery<PT> {
     fn default() -> Self {
-        Self(PhantomData::default())
+        Self(PhantomData)
     }
 }
 

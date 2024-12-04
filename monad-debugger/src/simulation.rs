@@ -36,7 +36,7 @@ impl Simulation {
             event_log: Default::default(),
             event_cache_size: 100,
             config,
-            schema: Schema::new(GraphQLRoot::default(), EmptyMutation, EmptySubscription),
+            schema: Schema::new(GraphQLRoot, EmptyMutation, EmptySubscription),
         }
     }
 

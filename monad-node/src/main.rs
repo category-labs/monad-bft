@@ -524,7 +524,7 @@ fn resolve_domain(domain: &String) -> SocketAddr {
 
 /// Returns (otel_context, expiry)
 fn build_otel_context(provider: &TracerProvider, network_name_hash: u64) -> (Context, SystemTime) {
-    const ROUND_SECONDS: u64 = 60 * 1; // 1 minute
+    const ROUND_SECONDS: u64 = 60; // 1 minute
 
     let (start_time, start_seconds) = {
         let unix_ts = SystemTime::now()

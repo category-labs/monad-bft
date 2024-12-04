@@ -45,7 +45,7 @@ where
     view: &'a mut BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
     removed: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Validator)>,
 }
-impl<'a, ST> ValidatorsView<'a, ST>
+impl<ST> ValidatorsView<'_, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -54,7 +54,7 @@ where
     }
 }
 
-impl<'a, ST> Drop for ValidatorsView<'a, ST>
+impl<ST> Drop for ValidatorsView<'_, ST>
 where
     ST: CertificateSignatureRecoverable,
 {
@@ -91,7 +91,7 @@ impl<P: PubKey> FullNodes<P> {
 #[derive(Debug, Clone)]
 pub struct FullNodesView<'a, P: PubKey>(&'a Vec<NodeId<P>>);
 
-impl<'a, P: PubKey> FullNodesView<'a, P> {
+impl<P: PubKey> FullNodesView<'_, P> {
     pub fn view(&self) -> &Vec<NodeId<P>> {
         self.0
     }

@@ -14,7 +14,7 @@ pub struct WrappedTransaction<'a> {
     pub price_gas_limit_ratio: f64,
 }
 
-impl<'a> WrappedTransaction<'a> {
+impl WrappedTransaction<'_> {
     pub fn effective_tip_per_gas(&self) -> u128 {
         effective_tip_per_gas(self.inner)
     }
@@ -32,9 +32,9 @@ impl<'a> WrappedTransaction<'a> {
     }
 }
 
-impl<'a> Eq for WrappedTransaction<'a> {}
+impl Eq for WrappedTransaction<'_> {}
 
-impl<'a> Ord for WrappedTransaction<'a> {
+impl Ord for WrappedTransaction<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Unwrap safety: Okay to unwrap here so long as we guarantee price_gas_limit_ratio is not NaN
         // when inserting into the mempool. partial_cmp is guaranteed to return Some(_) if neither
@@ -45,7 +45,7 @@ impl<'a> Ord for WrappedTransaction<'a> {
     }
 }
 
-impl<'a> PartialOrd for WrappedTransaction<'a> {
+impl PartialOrd for WrappedTransaction<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }

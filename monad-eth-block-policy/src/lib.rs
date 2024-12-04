@@ -83,7 +83,6 @@ fn compute_intrinsic_gas(tx: &EthSignedTransaction) -> u64 {
 }
 
 #[allow(clippy::unnecessary_fallible_conversions)]
-
 pub fn compute_txn_max_value(txn: &EthSignedTransaction) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
