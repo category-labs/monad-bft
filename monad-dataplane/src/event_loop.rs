@@ -307,7 +307,7 @@ struct DataplaneEventLoop {
     egress_ucast_receiver: rtrb::Consumer<UnicastMsg>,
     egress_tcp_receiver: rtrb::Consumer<(SocketAddr, Bytes)>,
 
-    udp_socket: NetworkSocket<'static>,
+    udp_socket: NetworkSocket,
 
     tcp_listening_socket: TcpListener,
     tcp_incoming_connections: [Option<IncomingConnection>; TCP_INCOMING_MAX_CONNECTIONS],

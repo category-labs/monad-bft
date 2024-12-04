@@ -42,13 +42,13 @@ const _: () = assert!(NUM_TX_MSGHDR <= LINUX_SENDMMSG_VLEN_MAX);
 #[repr(align(8))]
 pub struct AlignedCmsg(pub MaybeUninit<[u8; CMSG_LEN]>);
 
-unsafe impl<'a> Send for NetworkSocket<'a> {}
+unsafe impl Send for NetworkSocket {}
 
-pub struct NetworkSocket<'a> {
+pub struct NetworkSocket {
     pub socket: std::net::UdpSocket,
     pub local_sock_addr: SocketAddr,
 
-    pub recv_ctrl: RecvCtrl<'a>,
+    pub recv_ctrl: RecvCtrl,
     pub send_ctrl: SendCtrl,
 
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
@@ -56,12 +56,12 @@ pub struct NetworkSocket<'a> {
     pub next_transmit: std::time::Instant,
 }
 
-pub struct RecvCtrl<'a> {
+pub struct RecvCtrl {
     pub msgs: [libc::mmsghdr; NUM_RX_MSGHDR],
     pub name: [MaybeUninit<libc::sockaddr_storage>; NUM_RX_MSGHDR],
     pub cmsg: [AlignedCmsg; NUM_RX_MSGHDR],
     pub timeout: libc::timespec,
-    pub buf_refs: Vec<IoSliceMut<'a>>,
+    pub buf_refs: Vec<IoSliceMut<'static>>,
 }
 
 pub struct SendCtrl {
@@ -92,7 +92,7 @@ pub struct RecvmmsgResult {
 
 static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
 
-impl<'a> NetworkSocket<'a> {
+impl NetworkSocket {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub fn new(sock_addr: &str, up_bandwidth_mbps: u64) -> Self {
         let socket = std::net::UdpSocket::bind(sock_addr).unwrap();
@@ -205,7 +205,7 @@ impl<'a> NetworkSocket<'a> {
 
     pub fn recvmmsg(&mut self) -> Option<Vec<RecvmmsgResult>> {
         for i in 0..NUM_RX_MSGHDR {
-            NetworkSocket::init_recv_msghdr(
+            Self::init_recv_msghdr(
                 &mut self.recv_ctrl.buf_refs[i],
                 &mut self.recv_ctrl.name[i],
                 &mut self.recv_ctrl.cmsg[i],
@@ -258,7 +258,7 @@ impl<'a> NetworkSocket<'a> {
 
             retval.push(RecvmmsgResult {
                 len: msglen,
-                src_addr: NetworkSocket::get_addr(self.recv_ctrl.name[i]),
+                src_addr: Self::get_addr(self.recv_ctrl.name[i]),
                 stride,
             });
         }

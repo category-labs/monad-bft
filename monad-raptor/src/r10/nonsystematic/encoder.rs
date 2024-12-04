@@ -40,7 +40,7 @@ pub struct Encoder<'a> {
 }
 
 impl<'a> Encoder<'a> {
-    pub fn new(src: &[u8], symbol_len: usize) -> Result<Encoder, Error> {
+    pub fn new(src: &'a [u8], symbol_len: usize) -> Result<Self, Error> {
         if symbol_len == 0 {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -198,7 +198,7 @@ impl<'a> Encoder<'a> {
             shadowed_source_symbols
         };
 
-        Ok(Encoder {
+        Ok(Self {
             src,
             symbol_len,
             params,
