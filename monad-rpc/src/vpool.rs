@@ -285,16 +285,21 @@ impl ChainCache {
     async fn nonce(&self, address: &Address) -> Option<u64> {
         let inner = self.inner.read().await;
         let nonce = inner.accounts.peek(address, &Guard::new()).cloned();
-        let block_height = inner
-            .latest_block_height;
+        let block_height = inner.latest_block_height;
 
         if nonce.is_none() {
             if let Some(triedb) = &inner.triedb {
                 match triedb.get_account(address.0.into(), block_height).await {
                     Ok(account) => {
                         drop(inner);
-                        self.inner.write().await.accounts.insert(*address, account.nonce);
-                        self.inner.write().await
+                        self.inner
+                            .write()
+                            .await
+                            .accounts
+                            .insert(*address, account.nonce);
+                        self.inner
+                            .write()
+                            .await
                             .evict
                             .push_front((*address, account.nonce));
                         Some(account.nonce)
@@ -546,6 +551,18 @@ impl VirtualPool {
                         (promoted_cleared + queued_cleared + queued_evicted) * -1,
                         &[],
                     )
+                });
+
+                self.metrics.as_ref().map(|metrics| {
+                    metrics
+                        .pending_evicted
+                        .add(u64::try_from(pending_evicted).unwrap_or_default(), &[]);
+                });
+
+                self.metrics.as_ref().map(|metrics| {
+                    metrics
+                        .queued_evicted
+                        .add(u64::try_from(queued_evicted).unwrap_or_default(), &[]);
                 });
 
                 // Add promoted transactions to the pending pool
