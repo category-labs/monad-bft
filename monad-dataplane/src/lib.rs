@@ -13,6 +13,9 @@ pub struct Dataplane {
     tcp_egress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     udp_ingress_rx: mpsc::Receiver<RecvMsg>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
+
+    tcp_msgs_dropped: usize,
+    udp_msgs_dropped: usize,
 }
 
 #[derive(Clone)]
@@ -69,6 +72,9 @@ impl Dataplane {
             tcp_egress_tx,
             udp_ingress_rx,
             udp_egress_tx,
+
+            tcp_msgs_dropped: 0,
+            udp_msgs_dropped: 0,
         }
     }
 
@@ -80,9 +86,21 @@ impl Dataplane {
     }
 
     pub fn tcp_write(&mut self, addr: SocketAddr, msg: Bytes) {
+        let msg_length = msg.len();
+
         match self.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => warn!("tcp_egress_tx channel full"),
+            Err(TrySendError::Full(_)) => {
+                self.tcp_msgs_dropped += 1;
+
+                warn!(
+                    num_msgs_dropped = 1,
+                    total_tcp_msgs_dropped = self.tcp_msgs_dropped,
+                    ?addr,
+                    msg_length,
+                    "tcp_egress_tx channel full, dropping message"
+                );
+            }
             Err(TrySendError::Closed(_)) => panic!("tcp_egress_tx channel closed"),
         }
     }
@@ -95,14 +113,26 @@ impl Dataplane {
     }
 
     pub fn udp_write_broadcast(&mut self, msg: BroadcastMsg) {
-        for target in msg.targets {
+        let num_targets = msg.targets.len();
+
+        for (i, target) in msg.targets.into_iter().enumerate() {
             match self
                 .udp_egress_tx
                 .try_send((target, msg.payload.clone(), msg.stride))
             {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
-                    warn!("udp_egress_tx channel full");
+                    let num_msgs_dropped = num_targets - i;
+
+                    self.udp_msgs_dropped += num_msgs_dropped;
+
+                    warn!(
+                        num_msgs_dropped,
+                        total_udp_msgs_dropped = self.udp_msgs_dropped,
+                        msg_length = msg.payload.len(),
+                        "udp_egress_tx channel full, dropping message"
+                    );
+
                     return;
                 }
                 Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
@@ -111,11 +141,22 @@ impl Dataplane {
     }
 
     pub fn udp_write_unicast(&mut self, msg: UnicastMsg) {
-        for (addr, payload) in msg.msgs {
+        let num_msgs = msg.msgs.len();
+
+        for (i, (addr, payload)) in msg.msgs.into_iter().enumerate() {
             match self.udp_egress_tx.try_send((addr, payload, msg.stride)) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
-                    warn!("udp_egress_tx channel full");
+                    let num_msgs_dropped = num_msgs - i;
+
+                    self.udp_msgs_dropped += num_msgs_dropped;
+
+                    warn!(
+                        num_msgs_dropped,
+                        total_udp_msgs_dropped = self.udp_msgs_dropped,
+                        "udp_egress_tx channel full, dropping message"
+                    );
+
                     return;
                 }
                 Err(TrySendError::Closed(_)) => panic!("udp_egress_tx channel closed"),
