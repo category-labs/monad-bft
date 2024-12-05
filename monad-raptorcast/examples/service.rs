@@ -116,6 +116,7 @@ fn service(
                     redundancy: 2,
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
+                    mtu: 1480,
                 };
 
                 let mut service = RaptorCast::<

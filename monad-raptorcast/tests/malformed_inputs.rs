@@ -287,6 +287,7 @@ pub fn set_up_test(
                 redundancy: 2,
                 local_addr: rx_addr,
                 up_bandwidth_mbps: 1_000,
+                mtu: 1480,
             };
 
             let mut service = RaptorCast::<

@@ -96,7 +96,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     pub fn handle_message(
         &mut self,
         epoch_validators: &mut BTreeMap<Epoch, EpochValidators<ST>>,
-        rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes),
+        rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, usize),
         forward: impl FnMut(Bytes),
         message: RecvMsg,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
@@ -159,6 +159,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         payload_end_idx,
                         &parsed_message.author,
                         || targets.view().keys().copied().collect(),
+                        message.stride,
                     )
                 }
 
@@ -896,10 +897,11 @@ struct BroadcastBatch<PT: PubKey> {
 
     start_idx: usize,
     end_idx: usize,
+    stride: usize,
 }
 pub(crate) struct BroadcastBatcher<'a, F, PT>
 where
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     self_id: NodeId<PT>,
@@ -910,7 +912,7 @@ where
 }
 impl<F, PT> Drop for BroadcastBatcher<'_, F, PT>
 where
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     fn drop(&mut self) {
@@ -919,7 +921,7 @@ where
 }
 impl<'a, F, PT> BroadcastBatcher<'a, F, PT>
 where
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     pub fn new(self_id: NodeId<PT>, rebroadcast: F, message: &'a Bytes) -> Self {
@@ -953,6 +955,7 @@ where
             (self.rebroadcast)(
                 batch.targets,
                 self.message.slice(batch.start_idx..batch.end_idx),
+                batch.stride,
             );
         }
     }
@@ -960,7 +963,7 @@ where
 pub(crate) struct BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     batcher: &'g mut BroadcastBatcher<'a, F, PT>,
@@ -969,7 +972,7 @@ where
 impl<'a, 'g, F, PT> BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     pub(crate) fn queue_broadcast(
@@ -978,6 +981,7 @@ where
         payload_end_idx: usize,
         author: &NodeId<PT>,
         targets: impl FnOnce() -> Vec<NodeId<PT>>,
+        stride: usize,
     ) {
         self.flush_batch = false;
         if self
@@ -989,6 +993,7 @@ where
             let batch = self.batcher.batch.as_mut().unwrap();
             assert_eq!(batch.end_idx, payload_start_idx);
             batch.end_idx = payload_end_idx;
+            batch.stride = stride;
         } else {
             self.batcher.flush();
             self.batcher.batch = Some(BroadcastBatch {
@@ -997,6 +1002,7 @@ where
 
                 start_idx: payload_start_idx,
                 end_idx: payload_end_idx,
+                stride,
             })
         }
     }
@@ -1004,7 +1010,7 @@ where
 impl<'a, 'g, F, PT> Drop for BatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Vec<NodeId<PT>>, Bytes),
+    F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
     fn drop(&mut self) {
@@ -1371,7 +1377,7 @@ mod tests {
 
         udp_state.handle_message(
             &mut epoch_validators,
-            |_targets, _payload| {},
+            |_targets, _payload, _stride| {},
             |_payload| {},
             recv_msg,
         );

@@ -16,6 +16,7 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
+lru = { workspace = true }
 rand = { workspace = true }
 rtrb = { workspace = true }
 socket2 = { workspace = true }

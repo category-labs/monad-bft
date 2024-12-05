@@ -507,6 +507,7 @@ where
             network_config.bind_address_port,
         )),
         up_bandwidth_mbps: network_config.max_mbps.into(),
+        mtu: network_config.mtu,
     })
 }
 

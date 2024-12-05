@@ -62,6 +62,7 @@ const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct BroadcastMsg {
     pub targets: Vec<SocketAddr>,
     pub payload: Bytes,
+    pub stride: usize,
 }
 
 /// Send a list of unicast payloads
@@ -199,7 +200,7 @@ fn make_producer_consumer<T>(size: usize) -> (WakeableProducer<T>, WakeableConsu
 
 impl Dataplane {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
+    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64, default_mtu: u16) -> Self {
         let (udp_ing_producer, udp_ing_consumer) = make_producer_consumer(12_800);
         let (tcp_ing_producer, tcp_ing_consumer) = make_producer_consumer(32);
 
@@ -217,6 +218,13 @@ impl Dataplane {
         let tcp_outgoing_connection_timers: [TimerFd; TCP_OUTGOING_MAX_CONNECTIONS] =
             core::array::from_fn(|_| TimerFd::new().unwrap());
 
+        // 64 is Linux kernel limit on max number of segments
+        assert!(
+            (crate::network::max_iovec_len(default_mtu as usize)
+                / crate::network::gso_size(default_mtu as usize))
+                <= 64
+        );
+
         DataplaneEventLoop {
             efd,
             epoll: EpollFd::<NUM_EPOLL_EVENTS>::new().unwrap(),
@@ -227,7 +235,7 @@ impl Dataplane {
             egress_bcast_receiver: egr_bcast_recv,
             egress_ucast_receiver: egr_ucast_recv,
             egress_tcp_receiver: egr_tcp_recv,
-            udp_socket: NetworkSocket::new(local_addr, up_bandwidth_mbps),
+            udp_socket: NetworkSocket::new(local_addr, up_bandwidth_mbps, default_mtu),
 
             tcp_listening_socket,
             tcp_incoming_connections: [const { None }; TCP_INCOMING_MAX_CONNECTIONS],
@@ -325,7 +333,10 @@ impl DataplaneEventLoop {
                 .expect("set nonblocking");
 
             self.epoll
-                .register(UDP_RX_EVENT, RawFd(self.udp_socket.socket.as_raw_fd()))
+                .register(
+                    UDP_RX_EVENT,
+                    RawFd(self.udp_socket.default_socket.as_raw_fd()),
+                )
                 .expect("epoll register of udp must succeed");
             self.epoll
                 .register(UDP_TX_EVENT, self.efd.get_fd())
@@ -489,14 +500,14 @@ impl DataplaneEventLoop {
 
     fn handle_broadcast(&mut self) {
         loop {
-            let (to, payload) = match self.egress_bcast_receiver.pop() {
+            let (to, payload, stride) = match self.egress_bcast_receiver.pop() {
                 Err(PopError::Empty) => {
                     break;
                 }
-                Ok(msg) => (msg.targets, msg.payload),
+                Ok(msg) => (msg.targets, msg.payload, msg.stride),
             };
 
-            self.udp_socket.broadcast_buffer(to, payload);
+            self.udp_socket.broadcast_buffer(to, payload, stride);
         }
     }
 

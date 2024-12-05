@@ -278,6 +278,7 @@ where
                             redundancy: 3,
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,
+                            mtu: 1480,
                         }),
                     },
                     ledger_config: match args.ledger {

@@ -68,6 +68,7 @@ fn main() {
             tx.network.udp_write_broadcast(BroadcastMsg {
                 targets: vec![tx.target],
                 payload: b.slice(i * pkt_size..(i + 1) * pkt_size),
+                stride: pkt_size,
             })
         }
 
@@ -91,7 +92,7 @@ struct Node {
 impl Node {
     pub fn new(addr: &SocketAddr, target_addr: &str) -> Self {
         Self {
-            network: Dataplane::new(addr, 1_000),
+            network: Dataplane::new(addr, 1_000, 1480),
             target: target_addr.parse().unwrap(),
         }
     }

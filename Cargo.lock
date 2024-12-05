@@ -4347,6 +4347,7 @@ dependencies = [
  "futures",
  "futures-util",
  "libc",
+ "lru",
  "ntest",
  "rand",
  "rtrb",

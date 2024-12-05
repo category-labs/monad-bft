@@ -12,10 +12,9 @@ pub const MAX_UDP_PKT: usize = 65535;
 const MAX_IPV4_HDR: usize = 20;
 const MAX_UDP_HDR: usize = 8;
 
-// TODO: When running in docker with vpnkit, we seem to occasionally get ICMP frag-neededs
-// for 20 bytes less than the expected MTU -- investigate what's causing this.
-const MONAD_MTU: usize = 1480;
-pub const MONAD_GSO_SIZE: usize = MONAD_MTU - MAX_IPV4_HDR - MAX_UDP_HDR;
+pub const fn gso_size(mtu: usize) -> usize {
+    mtu - MAX_IPV4_HDR - MAX_UDP_HDR
+}
 
 const BUF_SIZE: usize = MAX_UDP_PKT;
 const NUM_RX_MSGHDR: usize = 128;
@@ -25,14 +24,13 @@ const CMSG_LEN: usize = 88;
 // message length is limited by the max limit of the underlying protocol
 //FIXME: This is expected size MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR, but the actual measured
 //number where the packet isn't being fragmented is 65493. investigate
-const MAX_IOVEC_LEN: usize = 65493 / MONAD_GSO_SIZE * MONAD_GSO_SIZE;
+pub const fn max_iovec_len(mtu: usize) -> usize {
+    let gso = gso_size(mtu);
+    65493 / gso * gso
+}
 
 const LINUX_SENDMMSG_VLEN_MAX: usize = 1024;
 const NUM_IOVECS: usize = 1024;
-
-// 64 is linux kernel limit on max number of segments
-#[allow(clippy::assertions_on_constants)]
-const _: () = assert!((MAX_IOVEC_LEN / MONAD_GSO_SIZE) <= 64);
 
 // num msgs in sendmmsg is limited to 1024 in the kernel
 #[allow(clippy::assertions_on_constants)]
@@ -44,66 +42,37 @@ pub struct AlignedCmsg(pub MaybeUninit<[u8; CMSG_LEN]>);
 
 unsafe impl Send for NetworkSocket<'_> {}
 
-pub struct NetworkSocket<'a> {
-    pub socket: std::net::UdpSocket,
-    pub local_sock_addr: SocketAddr,
-
-    pub recv_ctrl: RecvCtrl<'a>,
-    pub send_ctrl: SendCtrl,
-
-    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub up_bandwidth_mbps: u64,
-    pub next_transmit: std::time::Instant,
+pub struct TxSockets {
+    sockets: lru::LruCache<i32, std::net::UdpSocket>,
+    local_sock_addr: SocketAddr,
 }
 
-pub struct RecvCtrl<'a> {
-    pub msgs: [libc::mmsghdr; NUM_RX_MSGHDR],
-    pub name: [MaybeUninit<libc::sockaddr_storage>; NUM_RX_MSGHDR],
-    pub cmsg: [AlignedCmsg; NUM_RX_MSGHDR],
-    pub timeout: libc::timespec,
-    pub buf_refs: Vec<IoSliceMut<'a>>,
-}
+impl TxSockets {
+    pub fn new(local_sock_addr: SocketAddr) -> Self {
+        Self {
+            sockets: lru::LruCache::new(std::num::NonZeroUsize::new(10).unwrap()),
+            local_sock_addr,
+        }
+    }
 
-pub struct SendCtrl {
-    pub msgs: [libc::mmsghdr; NUM_TX_MSGHDR],
-    pub name: [MaybeUninit<socket2::SockAddr>; NUM_TX_MSGHDR],
-    pub bufs: Box<[[u8; BUF_SIZE]; NUM_TX_MSGHDR]>,
+    fn get_tx_socket(&mut self, mtu: i32) -> &std::net::UdpSocket {
+        self.sockets.get_or_insert(mtu, || {
+            let mut addr = self.local_sock_addr;
+            addr.set_port(0);
+            let socket = std::net::UdpSocket::bind(addr).unwrap();
+            Self::set_tx_sock_opts(&socket, mtu);
+            socket
+        })
+    }
 
-    pub iovecs: [libc::iovec; NUM_IOVECS],
-}
-
-#[derive(Debug)]
-pub enum BatchSendResult {
-    BatchReady,
-    Remaining(usize),
-}
-
-#[derive(Debug)]
-pub struct RecvmmsgResult {
-    // Total buffer size received in this msghdr
-    pub len: usize,
-    // Sender of the message
-    pub src_addr: SocketAddr,
-    // GRO segment size of messages in the buffer.
-    // ie: if len=103 and stride=10, there are 10 messages of size 10 in the buffer and 1 of size 3
-    // at the end
-    pub stride: u16,
-}
-
-static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
-
-impl NetworkSocket<'_> {
-    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub fn new(sock_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
-        let socket = std::net::UdpSocket::bind(sock_addr).unwrap();
+    fn set_rx_sock_opts(socket: &std::net::UdpSocket, mtu: i32) {
         let r = unsafe {
-            const GSO_SIZE: libc::c_int = MONAD_GSO_SIZE as i32;
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::SOL_UDP,
                 libc::UDP_SEGMENT,
-                &GSO_SIZE as *const _ as _,
-                std::mem::size_of_val(&GSO_SIZE) as _,
+                &mtu as *const _ as _,
+                std::mem::size_of_val(&mtu) as _,
             )
         };
         if r != 0 {
@@ -140,8 +109,86 @@ impl NetworkSocket<'_> {
                 std::io::Error::last_os_error()
             );
         }
+    }
 
-        let local_sock_addr = socket.local_addr().unwrap();
+    fn set_tx_sock_opts(socket: &std::net::UdpSocket, mtu: i32) {
+        Self::set_rx_sock_opts(socket, mtu);
+        let r = unsafe {
+            const RCVBUF_SIZE: libc::c_int = 0;
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &RCVBUF_SIZE as *const _ as _,
+                std::mem::size_of_val(&RCVBUF_SIZE) as _,
+            )
+        };
+        if r != 0 {
+            warn!(
+                "set tx socket recv buffer size to 0 failed with: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+pub struct NetworkSocket<'a> {
+    pub default_socket: std::net::UdpSocket,
+    pub tx_sockets: TxSockets,
+
+    pub recv_ctrl: RecvCtrl<'a>,
+    pub send_ctrl: SendCtrl,
+
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub up_bandwidth_mbps: u64,
+    pub next_transmit: std::time::Instant,
+    pub local_mtu: u16,
+}
+
+pub struct RecvCtrl<'a> {
+    pub msgs: [libc::mmsghdr; NUM_RX_MSGHDR],
+    pub name: [MaybeUninit<libc::sockaddr_storage>; NUM_RX_MSGHDR],
+    pub cmsg: [AlignedCmsg; NUM_RX_MSGHDR],
+    pub timeout: libc::timespec,
+    pub buf_refs: Vec<IoSliceMut<'a>>,
+}
+
+pub struct SendCtrl {
+    pub msgs: [libc::mmsghdr; NUM_TX_MSGHDR],
+    pub name: [MaybeUninit<socket2::SockAddr>; NUM_TX_MSGHDR],
+    pub bufs: Box<[[u8; BUF_SIZE]; NUM_TX_MSGHDR]>,
+    pub stride: [u16; NUM_TX_MSGHDR],
+
+    pub iovecs: [libc::iovec; NUM_IOVECS],
+}
+
+#[derive(Debug)]
+pub enum BatchSendResult {
+    BatchReady,
+    Remaining(usize),
+}
+
+#[derive(Debug)]
+pub struct RecvmmsgResult {
+    // Total buffer size received in this msghdr
+    pub len: usize,
+    // Sender of the message
+    pub src_addr: SocketAddr,
+    // GRO segment size of messages in the buffer.
+    // ie: if len=103 and stride=10, there are 10 messages of size 10 in the buffer and 1 of size 3
+    // at the end
+    pub stride: u16,
+}
+
+static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
+
+impl NetworkSocket<'_> {
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    pub fn new(sock_addr: &SocketAddr, up_bandwidth_mbps: u64, mtu: u16) -> Self {
+        let default_socket = std::net::UdpSocket::bind(sock_addr).unwrap();
+        TxSockets::set_rx_sock_opts(&default_socket, gso_size(mtu as usize) as i32);
+
+        let local_sock_addr = default_socket.local_addr().unwrap();
 
         unsafe {
             BUF_PTR = Box::into_raw(Box::new([[0; BUF_SIZE]; NUM_RX_MSGHDR]));
@@ -165,11 +212,12 @@ impl NetworkSocket<'_> {
         let send_name: [MaybeUninit<socket2::SockAddr>; NUM_TX_MSGHDR] =
             unsafe { MaybeUninit::uninit().assume_init() };
         let send_bufs = Box::new([[0; BUF_SIZE]; NUM_TX_MSGHDR]);
+        let stride = [0; NUM_TX_MSGHDR];
         let iovecs = unsafe { std::mem::zeroed::<[libc::iovec; NUM_IOVECS]>() };
 
         Self {
-            socket,
-            local_sock_addr,
+            default_socket,
+            tx_sockets: TxSockets::new(local_sock_addr),
             recv_ctrl: RecvCtrl {
                 msgs: recv_msgs,
                 buf_refs,
@@ -181,15 +229,17 @@ impl NetworkSocket<'_> {
                 msgs: send_msgs,
                 name: send_name,
                 bufs: send_bufs,
+                stride,
                 iovecs,
             },
             up_bandwidth_mbps,
             next_transmit: std::time::Instant::now(),
+            local_mtu: mtu,
         }
     }
 
     pub fn recv(&mut self, buf: &mut [u8]) -> Option<(usize, SocketAddr)> {
-        let (len, from) = match self.socket.recv_from(buf) {
+        let (len, from) = match self.default_socket.recv_from(buf) {
             Ok(rx) => rx,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -216,7 +266,7 @@ impl NetworkSocket<'_> {
         let r = unsafe {
             super::retry_eintr(|| {
                 libc::recvmmsg(
-                    self.socket.as_raw_fd(),
+                    self.default_socket.as_raw_fd(),
                     &mut self.recv_ctrl.msgs[0],
                     NUM_RX_MSGHDR as _,
                     libc::MSG_DONTWAIT,
@@ -248,8 +298,6 @@ impl NetworkSocket<'_> {
                             &mut stride,
                             1,
                         );
-
-                        assert!(stride as usize <= MONAD_GSO_SIZE);
                     }
                 }
 
@@ -311,16 +359,21 @@ impl NetworkSocket<'_> {
     // send the same message in one continguous data buffer to multiple destinations
     //
     // TODO use more descriptive enum for return value rather than Option
-    pub fn broadcast_buffer(&mut self, to: Vec<SocketAddr>, data: Bytes) -> Option<()> {
+    pub fn broadcast_buffer(
+        &mut self,
+        to: Vec<SocketAddr>,
+        data: Bytes,
+        stride: usize,
+    ) -> Option<()> {
         if to.is_empty() {
             return None;
         }
 
-        let num_chunks = data.len().div_ceil(MAX_IOVEC_LEN);
+        let num_chunks = data.len().div_ceil(max_iovec_len(stride));
         assert!(num_chunks * to.len() <= NUM_TX_MSGHDR);
 
-        for (i, k) in (0..data.len()).step_by(MAX_IOVEC_LEN).enumerate() {
-            let mut n = k + MAX_IOVEC_LEN;
+        for (i, k) in (0..data.len()).step_by(max_iovec_len(stride)).enumerate() {
+            let mut n = k + max_iovec_len(stride);
             if n > data.len() {
                 n = data.len();
             }
@@ -346,7 +399,9 @@ impl NetworkSocket<'_> {
                 self.send_ctrl.msgs[k].msg_hdr.msg_name =
                     self.send_ctrl.name[k].as_ptr() as *const _ as *mut _;
                 self.send_ctrl.msgs[k].msg_hdr.msg_namelen =
-                    unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+                    unsafe { self.send_ctrl.name[k].assume_init_ref().len() };
+                self.send_ctrl.msgs[k].msg_len = self.send_ctrl.iovecs[j].iov_len as u32;
+                self.send_ctrl.stride[k] = stride as u16;
             }
         }
 
@@ -364,7 +419,8 @@ impl NetworkSocket<'_> {
         for (to, mut payload) in msg {
             while !payload.is_empty() {
                 assert!(i < NUM_TX_MSGHDR);
-                let chunk = payload.split_to(MAX_IOVEC_LEN.min(payload.len()));
+                let chunk =
+                    payload.split_to(max_iovec_len(self.local_mtu as usize).min(payload.len()));
 
                 self.send_ctrl.name[i].write(to.into());
 
@@ -380,6 +436,7 @@ impl NetworkSocket<'_> {
                     self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
                 self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
                     unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+                self.send_ctrl.stride[i] = gso_size(self.local_mtu as usize) as u16;
 
                 i += 1;
                 if i == NUM_TX_MSGHDR {
@@ -410,10 +467,13 @@ impl NetworkSocket<'_> {
                     }
                 }
 
+                let mtu = self.send_ctrl.stride[i] as i32;
+                let socket = self.tx_sockets.get_tx_socket(mtu);
+
                 // TODO instead of 1 sendmmsg per msg, we should create 1 sendmmsg per 65k of data
                 let r = super::retry_eintr(|| {
                     libc::sendmmsg(
-                        self.socket.as_raw_fd(),
+                        socket.as_raw_fd(),
                         (&mut self.send_ctrl.msgs[i]) as *mut _,
                         1,
                         0,
@@ -447,10 +507,10 @@ impl NetworkSocket<'_> {
     }
 
     pub fn send(&self, to: SocketAddr, buf: &[u8], len: usize) -> std::io::Result<usize> {
-        self.socket.send_to(&buf[..len], to)
+        self.default_socket.send_to(&buf[..len], to)
     }
 
     pub fn get_local_addr(&self) -> SocketAddr {
-        self.local_sock_addr
+        self.tx_sockets.local_sock_addr
     }
 }

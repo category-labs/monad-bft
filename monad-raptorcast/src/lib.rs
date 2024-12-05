@@ -15,7 +15,10 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
+use monad_dataplane::{
+    event_loop::{BroadcastMsg, Dataplane, UnicastMsg},
+    network::gso_size,
+};
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -47,6 +50,7 @@ where
 
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub up_bandwidth_mbps: u64,
+    pub mtu: u16,
 }
 
 pub struct RaptorCast<ST, M, OM, SE>
@@ -66,6 +70,7 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
+    mtu: u16,
 
     dataplane: Dataplane,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
@@ -95,7 +100,7 @@ where
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
-        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
+        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps, config.mtu);
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -107,6 +112,7 @@ where
             current_epoch: Epoch(0),
 
             udp_state: udp::UdpState::new(self_id),
+            mtu: config.mtu,
 
             dataplane,
             pending_events: Default::default(),
@@ -218,7 +224,7 @@ where
                             .expect("unix epoch doesn't fit in u64");
                         let messages = udp::build_messages::<ST>(
                             &self.key,
-                            monad_dataplane::network::MONAD_GSO_SIZE
+                            gso_size(self.mtu as usize)
                                 .try_into()
                                 .expect("GSO size too big"),
                             app_message,
@@ -406,11 +412,11 @@ where
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 let dataplane = RefCell::new(&mut this.dataplane);
+                let local_gso_size = gso_size(this.mtu as usize);
                 this.udp_state.handle_message(
                     &mut this.epoch_validators,
-                    |targets, payload| {
-                        // this is the callback used for rebroadcasting
-                        let target_addrs = targets
+                    |targets, payload, bcast_stride| {
+                        let target_addrs: Vec<SocketAddr> = targets
                             .into_iter()
                             .filter_map(|target| this.known_addresses.get(&target).copied())
                             .collect();
@@ -418,6 +424,7 @@ where
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
                             targets: target_addrs,
                             payload,
+                            stride: bcast_stride,
                         });
                     },
                     |payload| {
@@ -425,6 +432,7 @@ where
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
                             targets: full_node_addrs.clone(),
                             payload,
+                            stride: local_gso_size,
                         });
                     },
                     message,

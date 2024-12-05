@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_crypto::hasher::{Hasher, HasherType};
-use monad_dataplane::network::MONAD_GSO_SIZE;
+use monad_dataplane::network::gso_size;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::build_messages,
@@ -12,6 +12,9 @@ use monad_raptorcast::{
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
+
+const MONAD_MTU: usize = 1480;
+const GSO_SIZE: usize = gso_size(MONAD_MTU);
 
 // Try to encode a message that is too large to be encoded, to verify that the encoder
 // errors out instead of panic!()ing.
@@ -22,7 +25,7 @@ pub fn encoder_error() {
         .with_span_events(FmtSpan::CLOSE)
         .init();
 
-    let message_size = SOURCE_SYMBOLS_MAX * MONAD_GSO_SIZE + 1;
+    let message_size = SOURCE_SYMBOLS_MAX * GSO_SIZE + 1;
 
     let message: Bytes = vec![123_u8; message_size].into();
 
@@ -55,11 +58,9 @@ pub fn encoder_error() {
     let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
     let full_nodes = FullNodes::new(Vec::new());
 
-    const GSO_SIZE: u16 = 1500;
-
     let _ = build_messages::<SecpSignature>(
         &keys[0],
-        GSO_SIZE,
+        GSO_SIZE.try_into().unwrap(),
         message,
         1, // redundancy,
         0, // epoch_no
