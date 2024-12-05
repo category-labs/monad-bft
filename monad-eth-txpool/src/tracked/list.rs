@@ -1,10 +1,15 @@
-use std::collections::{btree_map, BTreeMap};
+use std::{
+    collections::{btree_map, BTreeMap},
+    time::{Duration, Instant},
+};
 
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_types::{EthAddress, Nonce};
 use tracing::error;
 
 use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
+
+const TX_EXPIRY_MS: u64 = 5_000;
 
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to
@@ -13,7 +18,7 @@ use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
 #[derive(Clone, Debug, Default)]
 pub struct TrackedTxList {
     account_nonce: Nonce,
-    txs: BTreeMap<Nonce, ValidEthTransaction>,
+    txs: BTreeMap<Nonce, (ValidEthTransaction, Instant)>,
 }
 
 impl TrackedTxList {
@@ -27,7 +32,15 @@ impl TrackedTxList {
             return None;
         }
 
-        Some(Self { account_nonce, txs })
+        let now = Instant::now();
+
+        Some(Self {
+            account_nonce,
+            txs: txs
+                .into_iter()
+                .map(|(nonce, tx)| (nonce, (tx, now)))
+                .collect(),
+        })
     }
 
     pub fn num_txs(&self) -> usize {
@@ -42,7 +55,7 @@ impl TrackedTxList {
 
         self.txs
             .range(account_nonce..)
-            .map_while(move |(tx_nonce, tx)| {
+            .map_while(move |(tx_nonce, (tx, _))| {
                 debug_assert_eq!(*tx_nonce, tx.nonce());
 
                 if *tx_nonce != account_nonce {
@@ -62,16 +75,20 @@ impl TrackedTxList {
             return Err(TxPoolInsertionError::NonceTooLow);
         }
 
+        let now = Instant::now();
+
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
-                v.insert(tx);
+                v.insert((tx, now));
             }
-            btree_map::Entry::Occupied(mut existing_tx) => {
-                if &tx < existing_tx.get() {
+            btree_map::Entry::Occupied(mut entry) => {
+                let (existing_tx, existing_tx_insert_time) = entry.get();
+
+                if !tx_expired(existing_tx_insert_time, &now) && &tx < existing_tx {
                     return Err(TxPoolInsertionError::ExistingHigherPriority);
                 }
 
-                existing_tx.insert(tx);
+                entry.insert((tx, now));
             }
         }
 
@@ -104,4 +121,28 @@ impl TrackedTxList {
 
         this.get_mut().txs = txs;
     }
+
+    pub fn evict_expired_txs(
+        mut this: indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>,
+    ) -> Option<indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>> {
+        let now = Instant::now();
+
+        this.get_mut()
+            .txs
+            .retain(|_, (_, tx_insert)| !tx_expired(tx_insert, &now));
+
+        if this.get().txs.is_empty() {
+            this.swap_remove();
+            return None;
+        }
+
+        Some(this)
+    }
+}
+
+fn tx_expired(tx_insert: &Instant, now: &Instant) -> bool {
+    &tx_insert
+        .checked_add(Duration::from_millis(TX_EXPIRY_MS))
+        .expect("time does not overflow")
+        < now
 }

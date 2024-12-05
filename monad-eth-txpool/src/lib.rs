@@ -12,6 +12,7 @@ use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::warn;
 
 use crate::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 
@@ -20,6 +21,12 @@ mod tracked;
 mod transaction;
 
 const MAX_PROPOSAL_SIZE: usize = 10_000;
+
+// These constants control how many txs will get promoted from the pending map to the tracked map
+// during other tx insertions. They were set based on intuition and should be changed once we have
+// more data on txpool performance.
+const INSERT_TXS_MIN_PROMOTE: usize = 32;
+const INSERT_TXS_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool<SCT, SBT> {
@@ -159,6 +166,21 @@ where
         block_policy: &EthBlockPolicy,
         state_backend: &SBT,
     ) -> Vec<Bytes> {
+        if let Err(state_backend_error) = self.promote_pending(
+            block_policy,
+            state_backend,
+            txns.len()
+                .min(INSERT_TXS_MIN_PROMOTE)
+                .max(INSERT_TXS_MAX_PROMOTE),
+        ) {
+            if self.pending.is_at_promote_txs_watermark() {
+                warn!(
+                    ?state_backend_error,
+                    "txpool failed to promote at pending promote txs watermark"
+                );
+            }
+        }
+
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
@@ -197,6 +219,8 @@ where
         extending_blocks: Vec<&EthValidatedBlock<SCT>>,
         state_backend: &SBT,
     ) -> Result<FullTransactionList, StateBackendError> {
+        self.tracked.evict_expired_txs();
+
         self.tracked.create_proposal(
             proposed_seq_num,
             tx_limit.min(MAX_PROPOSAL_SIZE),
@@ -211,11 +235,12 @@ where
     fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<SCT>) {
         self.tracked
             .update_committed_block(committed_block, &mut self.pending);
+
+        self.tracked.evict_expired_txs();
     }
 
     fn clear(&mut self) {
-        self.pending.clear();
-        self.tracked.clear()
+        self.tracked.evict_expired_txs();
     }
 
     fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {

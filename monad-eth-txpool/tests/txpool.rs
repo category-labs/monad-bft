@@ -606,7 +606,7 @@ fn test_nonce_exists_in_committed_block() {
         [
             TxPoolTestEvent::InsertTxs {
                 txs: vec![(&tx1, true), (&tx2, true)],
-                expected_pool_size_change: 2,
+                expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
                 tx_limit: 128,
@@ -643,7 +643,7 @@ fn test_nonce_exists_in_pending_block() {
         TxPoolTestEvent::Clear,
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx2, true), (&tx3, true)],
-            expected_pool_size_change: 2,
+            expected_pool_size_change: 1,
         },
         TxPoolTestEvent::CreateProposal {
             tx_limit: 128,

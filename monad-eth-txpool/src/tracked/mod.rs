@@ -384,8 +384,16 @@ where
         }
     }
 
-    pub fn clear(&mut self) {
-        self.txs.clear();
+    pub fn evict_expired_txs(&mut self) {
+        let mut idx = 0;
+
+        while let Some(entry) = self.txs.get_index_entry(idx) {
+            let Some(_) = TrackedTxList::evict_expired_txs(entry) else {
+                continue;
+            };
+
+            idx += 1;
+        }
     }
 
     pub fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {

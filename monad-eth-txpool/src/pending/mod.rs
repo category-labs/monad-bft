@@ -11,6 +11,7 @@ mod list;
 // numbers for the txpool.
 const MAX_ADDRESSES: usize = 16 * 1024;
 const MAX_TXS: usize = 64 * 1024;
+const PROMOTE_TXS_WATERMARK: usize = MAX_TXS * 3 / 4;
 
 /// Wrapper type to store byte-validated transactions and quickly query the total number of
 /// transactions in the txs map.
@@ -27,6 +28,10 @@ impl PendingTxMap {
 
     pub fn num_txs(&self) -> usize {
         self.num_txs
+    }
+
+    pub fn is_at_promote_txs_watermark(&self) -> bool {
+        self.num_txs >= PROMOTE_TXS_WATERMARK
     }
 
     pub fn try_add_tx(&mut self, tx: ValidEthTransaction) -> Result<(), TxPoolInsertionError> {
@@ -84,10 +89,5 @@ impl PendingTxMap {
             .expect("num txs does not underflow");
 
         split
-    }
-
-    pub fn clear(&mut self) {
-        self.txs.clear();
-        self.num_txs = 0;
     }
 }
