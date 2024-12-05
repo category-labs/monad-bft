@@ -461,7 +461,7 @@ async fn rpc_select(
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_sign" => Err(JsonRpcError::method_not_supported()),
         "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
-        "net_version" => serialize_result(format!("0x{:x}", app_state.chain_id)),
+        "net_version" => serialize_result(app_state.chain_id.to_string()),
         "trace_block" => {
             let params = serde_json::from_value(params).invalid_params()?;
             monad_trace_block(params).await.map(serialize_result)?
