@@ -1,5 +1,4 @@
 use std::{
-    ffi::CString,
     ops::DerefMut,
     pin::{pin, Pin},
     sync::{Arc, Mutex},
@@ -15,22 +14,7 @@ use monad_executor_glue::{
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
 
-use crate::{
-    bindings::{self},
-    outbound_requests::OutboundRequests,
-};
-
-type StateSyncContext = Box<dyn FnMut(bindings::monad_sync_request)>;
-
-// void (*statesync_send_request)(struct StateSync *, struct SyncRequest)
-#[no_mangle]
-pub extern "C" fn statesync_send_request(
-    statesync: *mut bindings::monad_statesync_client,
-    request: bindings::monad_sync_request,
-) {
-    let statesync = statesync as *mut StateSyncContext;
-    unsafe { (*statesync)(request) }
-}
+use crate::outbound_requests::OutboundRequests;
 
 pub(crate) struct StateSync<PT: PubKey> {
     state_sync_peers: Vec<NodeId<PT>>,
@@ -44,18 +28,9 @@ pub(crate) struct StateSync<PT: PubKey> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Target {
+pub struct Target {
     pub n: SeqNum,
     pub state_root: [u8; 32],
-}
-
-impl From<Target> for bindings::monad_sync_target {
-    fn from(target: Target) -> Self {
-        Self {
-            n: target.n.0,
-            state_root: target.state_root,
-        }
-    }
 }
 
 /// This name is confusing, but I can't think of a better name. This is basically an output event
@@ -147,37 +122,14 @@ impl Progress {
     }
 }
 
-fn to_monad_sync_type(upsert_type: StateSyncUpsertType) -> bindings::monad_sync_type {
-    match upsert_type {
-        StateSyncUpsertType::Code => bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE,
-        StateSyncUpsertType::Account => bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT,
-        StateSyncUpsertType::Storage => bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE,
-        StateSyncUpsertType::AccountDelete => {
-            bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
-        }
-        StateSyncUpsertType::StorageDelete => {
-            bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
-        }
-    }
-}
-
 impl<PT: PubKey> StateSync<PT> {
-    pub fn start(
-        db_paths: &[String],
-        genesis_path: &str,
-        state_sync_peers: &[NodeId<PT>],
+    pub fn start<B: SyncClientBackend>(
+        db_paths: Vec<String>,
+        genesis_path: String,
+        state_sync_peers: Vec<NodeId<PT>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
     ) -> Self {
-        let db_paths: Vec<CString> = db_paths
-            .iter()
-            .map(|path| {
-                CString::new(path.to_owned()).expect("invalid db_path - does it contain null byte?")
-            })
-            .collect();
-        let genesis_path =
-            CString::new(genesis_path).expect("invalid genesis_path - does it contain null byte?");
-
         let (request_tx, request_rx) =
             tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest>>();
         let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse>();
@@ -186,11 +138,7 @@ impl<PT: PubKey> StateSync<PT> {
         let progress_clone = Arc::clone(&progress);
 
         std::thread::spawn(move || {
-            let db_paths_ptrs: Vec<*const i8> = db_paths.iter().map(|s| s.as_ptr()).collect();
-            let db_paths_ptr = db_paths_ptrs.as_ptr();
-            let num_db_paths = db_paths_ptrs.len();
-
-            let mut sync_ctx = SyncCtx::create(db_paths_ptr, num_db_paths, genesis_path.as_ptr());
+            let mut sync_ctx = SyncCtx::<B>::create(db_paths, genesis_path);
             let mut current_target = None;
 
             while let Ok(response) = response_rx.recv() {
@@ -223,27 +171,17 @@ impl<PT: PubKey> StateSync<PT> {
                                     }))
                                     .expect("request_rx dropped mid UpdateTarget");
                             }
-                        } else if target.n == SeqNum(0) {
-                            unsafe { bindings::monad_statesync_client_read_genesis(sync_ctx.ctx) };
                         }
                     }
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
-                        unsafe {
-                            for (upsert_type, upsert_data) in &response.response {
-                                let upsert_result = bindings::monad_statesync_client_handle_upsert(
-                                    sync_ctx.ctx,
-                                    response.request.prefix,
-                                    to_monad_sync_type(*upsert_type),
-                                    upsert_data.as_ptr(),
-                                    upsert_data.len() as u64,
-                                );
-                                assert!(
-                                    upsert_result,
-                                    "failed upsert for response: {:?}",
-                                    &response
-                                );
-                            }
+                        for (upsert_type, upsert_data) in &response.response {
+                            let upsert_result = sync_ctx.ctx.handle_upsert(
+                                response.request.prefix,
+                                *upsert_type,
+                                &upsert_data,
+                            );
+                            assert!(upsert_result, "failed upsert for response: {:?}", &response);
                         }
                         if response.response_n != 0 {
                             sync_ctx.done[response.request.prefix as usize] = true;
@@ -269,7 +207,7 @@ impl<PT: PubKey> StateSync<PT> {
         });
 
         Self {
-            state_sync_peers: state_sync_peers.to_vec(),
+            state_sync_peers: state_sync_peers,
             outbound_requests: OutboundRequests::new(max_parallel_requests, request_timeout),
             current_target: None,
 
@@ -374,46 +312,41 @@ impl<PT: PubKey> Stream for StateSync<PT> {
     }
 }
 
+pub trait SyncClientBackend {
+    fn create(dbname_paths: &[String], genesis_file: &str) -> Self;
+    fn handle_upsert(
+        &mut self,
+        prefix: u64,
+        upsert_type: StateSyncUpsertType,
+        upsert_data: &[u8],
+    ) -> bool;
+    fn latest_block(&self) -> SeqNum;
+    fn commit(&mut self);
+    fn finalize(&mut self, target: Target) -> bool;
+}
+
 /// Thin unsafe wrapper around statesync_client_context that handles destruction and finalization
 /// checking
-struct SyncCtx {
-    dbname_paths: *const *const ::std::os::raw::c_char,
-    len: usize,
-    genesis_file: *const ::std::os::raw::c_char,
-    ctx: *mut bindings::monad_statesync_client_context,
+struct SyncCtx<B: SyncClientBackend> {
+    dbname_paths: Vec<String>,
+    genesis_file: String,
+    ctx: B,
     done: Vec<bool>,
     current: SeqNum,
 }
-impl SyncCtx {
+
+impl<B: SyncClientBackend> SyncCtx<B> {
     /// Initialize SyncCtx. There should only ever be *one* SyncCtx at any given time.
-    fn create(
-        dbname_paths: *const *const ::std::os::raw::c_char,
-        len: usize,
-        genesis_file: *const ::std::os::raw::c_char,
-    ) -> Self {
-        let num_prefixes = unsafe { bindings::monad_statesync_client_prefixes() };
-        let ctx = unsafe {
-            bindings::monad_statesync_client_context_create(dbname_paths, len, genesis_file)
-        };
-        let client_version = unsafe { bindings::monad_statesync_version() };
-        assert!(unsafe { bindings::monad_statesync_client_compatible(client_version) });
-        for prefix in 0..num_prefixes {
-            unsafe {
-                bindings::monad_statesync_client_handle_new_peer(
-                    ctx,
-                    prefix as u64,
-                    client_version,
-                );
-            }
-        }
+    fn create(dbname_paths: Vec<String>, genesis_file: String) -> Self {
+        let num_prefixes = NUM_PREFIXES as usize;
+        let ctx = B::create(&dbname_paths, &genesis_file);
+        let current = ctx.latest_block();
         Self {
             dbname_paths,
-            len,
             genesis_file,
-
             ctx,
             done: vec![false; num_prefixes],
-            current: SeqNum(unsafe { bindings::monad_statesync_client_get_latest_block_id(ctx) }),
+            current,
         }
     }
 
@@ -423,40 +356,14 @@ impl SyncCtx {
         tracing::info!("try_finalize: {:?} {:?} {}", self.current, target.n, done);
         if target.n == SeqNum(0) || self.current == target.n || done {
             if done {
-                unsafe {
-                    bindings::monad_statesync_client_commit(self.ctx);
-                }
+                self.ctx.commit();
             }
 
-            let root_matches =
-                unsafe { bindings::monad_statesync_client_finalize(self.ctx, target.into()) };
+            let root_matches = self.ctx.finalize(target);
             assert!(root_matches, "state root doesn't match, are peers trusted?");
-            unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
-            self.ctx = unsafe {
-                let ctx = bindings::monad_statesync_client_context_create(
-                    self.dbname_paths,
-                    self.len,
-                    self.genesis_file,
-                );
-                let client_version = bindings::monad_statesync_version();
-                assert!(bindings::monad_statesync_client_compatible(client_version));
-                let num_prefixes = bindings::monad_statesync_client_prefixes();
-                for prefix in 0..num_prefixes {
-                    bindings::monad_statesync_client_handle_new_peer(
-                        ctx,
-                        prefix as u64,
-                        client_version,
-                    );
-                }
-                ctx
-            };
+            self.ctx = B::create(&self.dbname_paths, &self.genesis_file);
             return true;
         }
         false
-    }
-}
-impl Drop for SyncCtx {
-    fn drop(&mut self) {
-        unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
     }
 }

@@ -17,6 +17,9 @@ use tokio::{
 
 use crate::bindings;
 
+pub type SyncRequest = bindings::monad_sync_request;
+pub type SyncDone = bindings::monad_sync_done;
+
 /// StateSyncIpc encapsulates a connection to a live execution client, used for servicing statesync
 /// requests
 pub(crate) struct StateSyncIpc<PT: PubKey> {
@@ -42,10 +45,9 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
 //            SyncDone                             SyncDone(id)
 //           <------------------                  <---------------
 pub enum ExecutionMessage {
-    SyncTarget(bindings::monad_sync_target),
-    SyncRequest(bindings::monad_sync_request),
+    SyncRequest(SyncRequest),
     SyncUpsert(StateSyncUpsertType, Vec<u8>),
-    SyncDone(bindings::monad_sync_done),
+    SyncDone(SyncDone),
 }
 
 const MAX_UPSERTS_PER_RESPONSE: usize = 1_000_000;
@@ -180,9 +182,6 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
         match message {
-            ExecutionMessage::SyncTarget(_target) => {
-                panic!("live-mode execution shouldn't send SyncTarget")
-            }
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
             }
@@ -336,14 +335,6 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         msg_type: u8,
     ) -> Result<ExecutionMessage, tokio::io::Error> {
         let execution_msg = match msg_type {
-            bindings::monad_sync_type_SYNC_TYPE_TARGET => {
-                let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_target>()];
-                self.stream.read_exact(&mut buf).await?;
-                ExecutionMessage::SyncTarget(unsafe {
-                    #[allow(clippy::missing_transmute_annotations)]
-                    std::mem::transmute(buf)
-                })
-            }
             bindings::monad_sync_type_SYNC_TYPE_REQUEST => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_request>()];
                 self.stream.read_exact(&mut buf).await?;
