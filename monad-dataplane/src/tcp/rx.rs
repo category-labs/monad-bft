@@ -1,4 +1,11 @@
-use std::{io::ErrorKind, net::SocketAddr, time::Instant};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    io::ErrorKind,
+    net::{IpAddr, SocketAddr},
+    rc::Rc,
+    time::Instant,
+};
 
 use bytes::{Bytes, BytesMut};
 use monoio::{
@@ -16,21 +23,81 @@ use super::{
     TCP_MESSAGE_TIMEOUT,
 };
 
+const PER_PEER_CONNECTION_LIMIT: usize = 100;
+
+#[derive(Clone)]
+struct RxState {
+    inner: Rc<RefCell<RxStateInner>>,
+}
+
+impl RxState {
+    fn new() -> RxState {
+        let inner = Rc::new(RefCell::new(RxStateInner {
+            num_connections: BTreeMap::new(),
+        }));
+
+        RxState { inner }
+    }
+
+    fn check_new_connection(&self, ip: IpAddr) -> Result<(), ()> {
+        let mut inner_ref = self.inner.borrow_mut();
+
+        let count_ref = inner_ref.num_connections.entry(ip).or_insert(0);
+
+        if *count_ref < PER_PEER_CONNECTION_LIMIT {
+            *count_ref += 1;
+
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
+    fn drop_connection(&self, ip: &IpAddr) {
+        let mut inner_ref = self.inner.borrow_mut();
+
+        let count_ref = inner_ref.num_connections.get_mut(ip).unwrap();
+
+        if *count_ref > 1 {
+            *count_ref -= 1;
+        } else {
+            inner_ref.num_connections.remove(ip);
+        }
+    }
+}
+
+struct RxStateInner {
+    num_connections: BTreeMap<IpAddr, usize>,
+}
+
 pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>) {
     let tcp_listener = TcpListener::bind(local_addr).unwrap();
+    let rx_state = RxState::new();
 
     let mut conn_id: u64 = 0;
 
     loop {
         match tcp_listener.accept().await {
-            Ok((tcp_stream, addr)) => {
-                spawn(task_connection(
-                    conn_id,
-                    addr,
-                    tcp_stream,
-                    tcp_ingress_tx.clone(),
-                ));
-            }
+            Ok((tcp_stream, addr)) => match rx_state.check_new_connection(addr.ip()) {
+                Ok(()) => {
+                    trace!(conn_id, ?addr, "accepting incoming TCP connection");
+
+                    spawn(task_connection(
+                        rx_state.clone(),
+                        conn_id,
+                        addr,
+                        tcp_stream,
+                        tcp_ingress_tx.clone(),
+                    ));
+                }
+                Err(()) => {
+                    debug!(
+                        conn_id,
+                        ?addr,
+                        "per-peer connection limit reached, rejecting TCP connection"
+                    );
+                }
+            },
             Err(err) => {
                 warn!(conn_id, ?err, "error accepting TCP connection");
             }
@@ -40,14 +107,13 @@ pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAd
     }
 }
 
-pub async fn task_connection(
+async fn task_connection(
+    rx_state: RxState,
     conn_id: u64,
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
 ) {
-    trace!(conn_id, ?addr, "accepted incoming TCP connection");
-
     let mut message_id: u64 = 0;
 
     while let Some(message) = read_message(conn_id, addr, message_id, &mut tcp_stream).await {
@@ -64,6 +130,8 @@ pub async fn task_connection(
 
         message_id += 1;
     }
+
+    rx_state.drop_connection(&addr.ip());
 }
 
 async fn read_message(
