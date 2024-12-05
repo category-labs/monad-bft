@@ -41,7 +41,7 @@ pub struct RecvMsg {
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
 const TCP_EGRESS_CHANNEL_SIZE: usize = 1024;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
-const UDP_EGRESS_CHANNEL_SIZE: usize = 2048;
+const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
