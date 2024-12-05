@@ -237,7 +237,8 @@ pub async fn monad_eth_maxPriorityFeePerGas<T: Triedb>(triedb_env: &T) -> JsonRp
 pub struct MonadEthHistoryParams {
     block_count: Quantity,
     newest_block: BlockTags,
-    reward_percentiles: Vec<f64>,
+    #[serde(default)]
+    reward_percentiles: Option<Vec<f64>>,
 }
 
 #[rpc(method = "eth_feeHistory")]
@@ -267,7 +268,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         Some(header) => header,
         None => {
             return Err(JsonRpcError::internal_error(
-                "Unable to retrieve latest block".into(),
+                "Unable to retrieve specified block".into(),
             ))
         }
     };
@@ -275,13 +276,32 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
     let gas_used_ratio = (header.header.gas_used as f64).div(header.header.gas_limit as f64);
 
-    let reward = if params.reward_percentiles.is_empty() {
-        None
-    } else {
-        Some(vec![
-            vec![U256::ZERO; params.reward_percentiles.len()];
-            block_count as usize
-        ])
+    let reward = match params.reward_percentiles {
+        Some(percentiles) => {
+            // Check percentiles are between 0-100
+            if percentiles.iter().any(|p| *p < 0.0 || *p > 100.0) {
+                return Err(JsonRpcError::internal_error(
+                    "reward percentiles must be between 0-100".into(),
+                ));
+            }
+
+            // Check percentiles are sorted
+            if !percentiles.windows(2).all(|w| w[0] <= w[1]) {
+                return Err(JsonRpcError::internal_error(
+                    "reward percentiles must be sorted".into(),
+                ));
+            }
+
+            if percentiles.is_empty() {
+                None
+            } else {
+                Some(vec![
+                    vec![U256::ZERO; percentiles.len()];
+                    block_count as usize
+                ])
+            }
+        }
+        None => None,
     };
 
     // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default

@@ -254,8 +254,16 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
     let block_num = params.block_number.0;
-    let mut resp = Vec::new();
+    let Some(_) = triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        debug!("block not found");
+        return Err(JsonRpcError::internal_error("block not found".to_string()));
+    };
 
+    let mut resp = Vec::new();
     let tx_ids = triedb_env
         .get_transactions(block_num)
         .await
@@ -299,10 +307,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
     else {
-        debug!("transaction not found");
-        return Err(JsonRpcError::internal_error(
-            "transaction not found".to_string(),
-        ));
+        return Ok(None);
     };
 
     let Some(rlp_call_frame) = triedb_env
@@ -385,10 +390,9 @@ async fn include_code_output<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?;
 
-        frame.output = hex::decode(&code)
-            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))
-            .unwrap()
-            .into();
+        let decoded_code = hex::decode(&code)
+            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
+        frame.output = decoded_code.into();
     }
 
     Ok(())

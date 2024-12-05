@@ -345,7 +345,7 @@ impl Triedb for TriedbEnv {
 
                 match result {
                     Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
-                        .map(|storage_slot| Ok(hex::encode(storage_slot)))
+                        .map(|storage_slot| Ok(format!("0x{}", hex::encode(storage_slot))))
                         .unwrap_or_else(|| {
                             error!("Decoding storage slot error");
                             Err(String::from("error reading from db"))
@@ -394,7 +394,7 @@ impl Triedb for TriedbEnv {
                 }
 
                 match result {
-                    Some(code) => Ok(hex::encode(code)),
+                    Some(code) => Ok(format!("0x{}", hex::encode(code))),
                     None => Ok("0x".to_string()),
                 }
             }

@@ -437,6 +437,26 @@ impl<'de> Deserialize<'de> for BlockTags {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum BlockReference {
+    BlockTags(BlockTags),
+    EthHash(EthHash),
+}
+
+impl<'de> Deserialize<'de> for BlockReference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        BlockTags::from_str(&buf)
+            .map(BlockReference::BlockTags)
+            .or_else(|_| EthHash::from_str(&buf).map(BlockReference::EthHash))
+            .map_err(|e| serde::de::Error::custom(format!("BlockReference parse failed: {e:?}")))
+    }
+}
+
 pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
     serde_json::to_value(value).map_err(|e| {
         debug!("blockdb serialize error {:?}", e);

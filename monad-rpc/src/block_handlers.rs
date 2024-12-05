@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    eth_json_types::{BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity},
+    eth_json_types::{
+        BlockReference, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
+    },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -263,6 +265,14 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
 
+    let Some(_) = triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        return Ok(None);
+    };
+
     let transactions = triedb_env
         .get_transactions(block_num)
         .await
@@ -327,7 +337,7 @@ pub async fn block_receipts<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsParams {
-    block_tag: BlockTags,
+    block_reference: BlockReference,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -342,7 +352,22 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
+    let block_num = match params.block_reference {
+        BlockReference::BlockTags(block_tag) => {
+            get_block_num_from_tag(triedb_env, block_tag).await?
+        }
+        BlockReference::EthHash(block_hash) => {
+            let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+            match triedb_env
+                .get_block_number_by_hash(block_hash.0, latest_block_num)
+                .await
+                .map_err(JsonRpcError::internal_error)?
+            {
+                Some(block_num) => block_num,
+                None => return Ok(None),
+            }
+        }
+    };
 
     let header = match triedb_env
         .get_block_header(block_num)

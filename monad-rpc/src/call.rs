@@ -81,18 +81,20 @@ impl CallRequest {
 
     pub fn fill_gas_prices(&mut self, base_fee: U256) -> Result<(), JsonRpcError> {
         match self.gas_price_details {
-            GasPriceDetails::Legacy { .. } => {}
+            GasPriceDetails::Legacy { mut gas_price } => {
+                if gas_price < base_fee {
+                    gas_price = base_fee;
+                    self.gas_price_details = GasPriceDetails::Legacy { gas_price };
+                }
+            }
             GasPriceDetails::Eip1559 {
                 max_fee_per_gas,
                 max_priority_fee_per_gas,
             } => {
                 let max_fee_per_gas = match max_fee_per_gas {
-                    Some(max_fee_per_gas) => {
+                    Some(mut max_fee_per_gas) => {
                         if max_fee_per_gas < base_fee {
-                            return Err(JsonRpcError::eth_call_error(
-                                "max fee less than base".to_string(),
-                                None,
-                            ));
+                            max_fee_per_gas = base_fee;
                         }
 
                         if max_priority_fee_per_gas.is_some()
@@ -269,6 +271,10 @@ pub async fn sender_gas_allowance<T: Triedb>(
     request: &CallRequest,
 ) -> Result<u64, JsonRpcError> {
     if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
+        if gas_price.is_zero() {
+            return Ok(block.gas_limit);
+        }
+
         let account = triedb_env
             .get_account(from.into(), block.number)
             .await
