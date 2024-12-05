@@ -486,7 +486,7 @@ pub struct StateSyncRequest {
     pub old_target: u64,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Copy)]
 pub enum StateSyncUpsertType {
     Code,
     Account,

@@ -17,16 +17,24 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
 use monad_types::NodeId;
 
-use crate::ffi::Target;
-
-#[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
-pub mod bindings {
-    include!(concat!(env!("OUT_DIR"), "/state_sync.rs"));
-}
+use crate::ffi::{SyncClientBackend, Target};
 
 mod ffi;
 mod ipc;
 mod outbound_requests;
+mod triedb_client;
+
+pub use triedb_client::TriedbSyncClient;
+
+#[allow(
+    dead_code,
+    non_camel_case_types,
+    non_upper_case_globals,
+    non_snake_case
+)]
+mod bindings {
+    include!(concat!(env!("OUT_DIR"), "/state_sync.rs"));
+}
 
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
 const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
@@ -49,7 +57,7 @@ impl<ST, SCT> StateSync<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new(
+    pub fn new<B: SyncClientBackend>(
         db_paths: Vec<String>,
         genesis_path: String,
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -62,10 +70,10 @@ where
             incoming_request_timeout,
             uds_path,
 
-            mode: StateSyncMode::Sync(ffi::StateSync::start(
-                &db_paths,
-                &genesis_path,
-                &state_sync_peers,
+            mode: StateSyncMode::Sync(ffi::StateSync::start::<B>(
+                db_paths,
+                genesis_path,
+                state_sync_peers,
                 max_parallel_requests,
                 request_timeout,
             )),
@@ -211,5 +219,137 @@ where
         };
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use lazy_static::lazy_static;
+    use monad_consensus_types::state_root_hash::{StateRootHash, StateRootHashInfo};
+    use monad_crypto::{NopPubKey, NopSignature};
+    use monad_executor::Executor;
+    use monad_executor_glue::StateSyncRequest;
+    use monad_multi_sig::MultiSig;
+    use monad_types::{Hash, NodeId, SeqNum};
+    use rand::{thread_rng, Rng};
+
+    use super::*;
+    use crate::ffi::NUM_PREFIXES;
+
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
+
+    struct TestSyncClientBackend {
+        s: String,
+        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+        done: [bool; NUM_PREFIXES as usize],
+        target: Target,
+    }
+
+    struct BackendState {
+        latest_block: SeqNum,
+    }
+
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    lazy_static! {
+        static ref BACKEND_STATE: Arc<Mutex<HashMap<String, BackendState>>> =
+            Arc::new(Mutex::new(Default::default()));
+    }
+
+    fn add_backend_state(s: String, latest_block: SeqNum) {
+        BACKEND_STATE
+            .lock()
+            .unwrap()
+            .insert(s, BackendState { latest_block });
+    }
+
+    fn delete_backend_state(s: String) {
+        BACKEND_STATE.lock().unwrap().remove(&s);
+    }
+
+    impl SyncClientBackend for TestSyncClientBackend {
+        fn create(
+            dbname_paths: &[String],
+            genesis_file: &str,
+            request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+            target: Target,
+        ) -> Self {
+            Self {
+                s: dbname_paths[0].clone(),
+                request_tx,
+                done: [false; NUM_PREFIXES as usize],
+                target,
+            }
+        }
+
+        fn handle_upsert(
+            &mut self,
+            prefix: u64,
+            upsert_type: monad_executor_glue::StateSyncUpsertType,
+            upsert_data: &[u8],
+        ) -> bool {
+            true
+        }
+
+        fn handle_done(&mut self, prefix: u64, n: SeqNum) {
+            self.done[prefix as usize] = true;
+        }
+
+        fn try_finalize(&mut self) -> bool {
+            if self.target.n == SeqNum(0) {
+                return true;
+            }
+            self.done.iter().all(|&x| x)
+        }
+    }
+
+    #[test]
+    fn test_genesis_sync() {
+        let db_name = thread_rng().gen::<u64>().to_string();
+        add_backend_state(db_name.clone(), SeqNum(u64::MAX));
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                1,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                "uds_path".to_string(),
+            );
+
+        let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
+            seq_num: SeqNum(0),
+            state_root_hash: StateRootHash(Hash([0; 32])),
+        })];
+
+        state_sync.exec(commands);
+
+        let start = std::time::Instant::now();
+        loop {
+            match futures::executor::block_on(state_sync.next()) {
+                Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_))) => {
+                    break;
+                }
+                Some(e) => {
+                    assert!(
+                        false,
+                        "sync to zero block should succeed immediately, got event {:?}",
+                        e
+                    );
+                }
+                None => {
+                    if start.elapsed() > Duration::from_secs(5) {
+                        assert!(false);
+                    }
+                }
+            }
+        }
+
+        delete_backend_state(db_name);
     }
 }

@@ -23,6 +23,9 @@ tracing = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
 tempfile = { workspace = true }
+lazy_static = { workspace = true }
+rand = { workspace = true }
+monad-multi-sig = { path = "../monad-multi-sig" }
 
 [build-dependencies]
 bindgen = { workspace = true }

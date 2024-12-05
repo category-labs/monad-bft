@@ -28,7 +28,7 @@ use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
-use monad_statesync::StateSync;
+use monad_statesync::{StateSync, TriedbSyncClient};
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
@@ -229,7 +229,7 @@ async fn run(
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
+        state_sync: StateSync::<SignatureType, SignatureCollectionType>::new::<TriedbSyncClient>(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
             checkpoint_validators_first
