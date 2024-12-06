@@ -6,7 +6,7 @@ use actix_web::{
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use opentelemetry::{
-    metrics::{Counter, Histogram, Meter, UpDownCounter},
+    metrics::{Counter, Gauge, Histogram, Meter, UpDownCounter},
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
@@ -121,8 +121,8 @@ impl RpcMetrics {
 }
 
 pub struct VirtualPoolMetrics {
-    pub pending_pool: UpDownCounter<i64>,
-    pub queued_pool: UpDownCounter<i64>,
+    pub pending_pool: Gauge<u64>,
+    pub queued_pool: Gauge<u64>,
     pub pending_evicted: Counter<u64>,
     pub queued_evicted: Counter<u64>,
 }
@@ -130,12 +130,12 @@ pub struct VirtualPoolMetrics {
 impl VirtualPoolMetrics {
     pub fn new(meter: Meter) -> Self {
         let pending_pool = meter
-            .i64_up_down_counter("monad.vpool.pending_pool")
+            .u64_gauge("monad.vpool.pending_pool")
             .with_description("Number of transactions in the pending pool")
             .init();
 
         let queued_pool = meter
-            .i64_up_down_counter("monad.vpool.queued_pool")
+            .u64_gauge("monad.vpool.queued_pool")
             .with_description("Number of transactions in the queued pool")
             .init();
 

@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicI64, Arc},
+};
 
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
@@ -165,18 +168,19 @@ impl SubPool {
     // Returns a tuple of lists of transaction entries that are ready to be promoted and evicted because a nonce gap was resolved.
     fn filter_by_nonce_gap(
         &self,
-        state: &HashIndex<Address, u64>,
+        state: &HashMap<Address, u64>,
     ) -> (
         Vec<TransactionSignedEcRecovered>,
         Vec<TransactionSignedEcRecovered>,
     ) {
         let mut to_promote = Vec::new();
         let mut to_evict = Vec::new();
-        for (sender, nonce) in state.iter(&Guard::new()) {
+        let guard = Guard::new();
+        state.scan(|sender, nonce| {
             if let Some(mut entry) = self.pool.get(sender) {
                 let mut removed = 0;
                 let mut nonce = *nonce;
-                for (min_nonce, tx) in entry.iter(&Guard::new()) {
+                for (min_nonce, tx) in entry.iter(&guard) {
                     match min_nonce.checked_sub(nonce) {
                         // Nonce gap is resolved, promote the transaction.
                         Some(1) => {
@@ -203,7 +207,7 @@ impl SubPool {
                     entry.get_mut().remove_range(0..(removed as u64 + 1));
                 }
             }
-        }
+        });
         (to_promote, to_evict)
     }
 
@@ -250,19 +254,19 @@ impl ChainCache {
         block: BlockWithReceipts,
         recovered_senders: Vec<(Address, u64)>,
         next_base_fee: u128,
-    ) -> HashIndex<Address, u64> {
+    ) -> HashMap<Address, u64> {
         let mut inner = self.inner.write().await;
         inner.base_fee = next_base_fee;
         inner.latest_block_height = block.block_header.header.number;
         // Create a hashset of all senders and their nonces in the block.
-        let senders = HashIndex::new();
+        let senders = HashMap::new();
 
         for (sender, nonce) in recovered_senders {
-            senders.insert(sender, nonce);
+            senders.upsert(sender, nonce);
         }
 
         let mut add_to_eviction_list = Vec::<(Address, u64)>::new();
-        for (sender, nonce) in senders.iter(&Guard::new()) {
+        senders.scan(|sender, nonce| {
             match inner.accounts.get(sender) {
                 Some(entry) => {
                     entry.update(*nonce);
@@ -272,7 +276,7 @@ impl ChainCache {
                 }
             }
             add_to_eviction_list.push((*sender, *nonce));
-        }
+        });
 
         for add in add_to_eviction_list {
             inner.evict.push_front(add);
@@ -378,10 +382,12 @@ impl VirtualPool {
         // Fetch the current nonce of the sender
         let cur_nonce = self.chain_cache.nonce(&sender).await;
 
+        // If the our nonce is zero and the sender's is zero, mark as pending.
         if cur_nonce.map(|n| n == 0).unwrap_or(false) && nonce == 0 {
             return TxPoolType::Pending;
         }
 
+        // If our nonce is less than 1 of sender nonce, mark as pending.
         if cur_nonce.map(|n| n + 1 == nonce).unwrap_or(false) {
             return TxPoolType::Pending;
         }
@@ -420,6 +426,7 @@ impl VirtualPool {
             return TxPoolType::Queue;
         }
 
+        // If we have a queued transaction with a nonce less than the new sender nonce, add the transaction to the queue.
         if let Some(true) = queued_txs.first().map(|tx| tx.nonce() < nonce) {
             return TxPoolType::Queue;
         }
@@ -455,40 +462,20 @@ impl VirtualPool {
             TxPoolEvent::AddValidTransaction { txn } => match self.decide_pool(&txn).await {
                 TxPoolType::Queue => {
                     self.queued_pool.add(txn, false).await;
-                    self.metrics
-                        .as_ref()
-                        .map(|metrics| metrics.queued_pool.add(1, &[]));
                 }
                 TxPoolType::Pending => {
                     self.pending_pool.add(txn.clone(), false).await;
-                    self.metrics
-                        .as_ref()
-                        .map(|metrics| metrics.pending_pool.add(1, &[]));
                     if self.publisher.send(txn.clone().into()).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
 
                     // Check for available promotions
-                    let tree = HashIndex::new();
+                    let tree = HashMap::new();
                     tree.insert(txn.signer(), txn.nonce()).unwrap_or_default();
-                    let (promoted, evicted) = self.queued_pool.filter_by_nonce_gap(&tree);
-                    if evicted.len() > 0 {
-                        let queue_evicted = i64::try_from(evicted.len()).unwrap_or_default();
-                        self.metrics
-                            .as_ref()
-                            .map(|metrics| metrics.queued_pool.add(queue_evicted * -1, &[]));
-                    }
+                    let (promoted, _) = self.queued_pool.filter_by_nonce_gap(&tree);
                     if promoted.len() > 0 {
-                        let queue_removed = i64::try_from(promoted.len()).unwrap_or_default();
-                        self.metrics
-                            .as_ref()
-                            .map(|metrics| metrics.queued_pool.add(queue_removed * -1, &[]));
-
                         for promoted in promoted.into_iter() {
                             self.pending_pool.add(promoted.clone(), false).await;
-                            self.metrics
-                                .as_ref()
-                                .map(|metrics| metrics.pending_pool.add(1, &[]));
                             if let Err(error) = self.publisher.send(promoted.into()) {
                                 warn!(
                                     "issue broadcasting transaction from pending pool: {:?}",
@@ -534,14 +521,12 @@ impl VirtualPool {
                     )
                     .collect::<Vec<_>>();
 
-                let pending_cleared =
-                    i64::try_from(self.pending_pool.clear_included(&recovered_senders))
-                        .unwrap_or_default();
+                self.pending_pool.clear_included(&recovered_senders);
+                self.queued_pool.clear_included(&recovered_senders);
+
                 let pending_evicted =
                     i64::try_from(self.pending_pool.evict().await).unwrap_or_default();
-                let queued_cleared =
-                    i64::try_from(self.queued_pool.clear_included(&recovered_senders))
-                        .unwrap_or_default();
+
                 let queued_evicted =
                     i64::try_from(self.queued_pool.evict().await).unwrap_or_default();
 
@@ -551,26 +536,18 @@ impl VirtualPool {
                     .await;
 
                 // Check for available promotions
-                let (promote_queued, nonce_gap_evicted) =
-                    self.queued_pool.filter_by_nonce_gap(&senders);
+                let (promote_queued, _) = self.queued_pool.filter_by_nonce_gap(&senders);
 
-                let promoted_cleared = i64::try_from(promote_queued.len()).unwrap_or_default();
-                let nonce_gap_evicted = i64::try_from(nonce_gap_evicted.len()).unwrap_or_default();
-
-                self.metrics.as_ref().map(|metrics| {
-                    metrics.pending_pool.add(
-                        (pending_cleared * -1) + (pending_evicted * -1) + promoted_cleared,
-                        &[],
-                    )
-                });
-
-                self.metrics.as_ref().map(|metrics| {
-                    metrics.queued_pool.add(
-                        (promoted_cleared + queued_cleared + queued_evicted + nonce_gap_evicted)
-                            * -1,
-                        &[],
-                    )
-                });
+                // Add promoted transactions to the pending pool
+                for promoted in promote_queued.into_iter() {
+                    self.pending_pool.add(promoted.clone(), false).await;
+                    if let Err(error) = self.publisher.send(promoted.into()) {
+                        warn!(
+                            "issue broadcasting transaction from pending pool: {:?}",
+                            error
+                        );
+                    }
+                }
 
                 self.metrics.as_ref().map(|metrics| {
                     metrics
@@ -584,18 +561,21 @@ impl VirtualPool {
                         .add(u64::try_from(queued_evicted).unwrap_or_default(), &[]);
                 });
 
-                // Add promoted transactions to the pending pool
-                for promoted in promote_queued.into_iter() {
-                    self.pending_pool.add(promoted.clone(), false).await;
-                    if let Err(error) = self.publisher.send(promoted.into()) {
-                        warn!(
-                            "issue broadcasting transaction from pending pool: {:?}",
-                            error
-                        );
-                    }
-                }
+                self.record_subpool_metrics();
             }
         }
+    }
+
+    fn record_subpool_metrics(&self) {
+        let pending_size = u64::try_from(self.pending_pool.len()).unwrap_or_default();
+        self.metrics
+            .as_ref()
+            .map(|metrics| metrics.pending_pool.record(pending_size, &[]));
+
+        let queued_size = u64::try_from(self.queued_pool.len()).unwrap_or_default();
+        self.metrics
+            .as_ref()
+            .map(|metrics| metrics.queued_pool.record(queued_size, &[]));
     }
 
     // Adds a transaction to the txpool and decides which sub-pool to add it to
@@ -1071,20 +1051,20 @@ mod tests {
         assert_eq!(queued_pool.len(), 20);
 
         // Try to promote nonce 1, should return 0 since that does not resolve a nonce gap.
-        let state: HashIndex<Address, u64> = HashIndex::new();
+        let state: HashMap<Address, u64> = HashMap::new();
         state.insert(accounts()[0].1, 1).unwrap();
         let (promoted, evicted) = queued_pool.filter_by_nonce_gap(&state);
         assert_eq!(promoted.len(), 0);
         assert_eq!(evicted.len(), 0);
 
-        let state: HashIndex<Address, u64> = HashIndex::new();
+        let state: HashMap<Address, u64> = HashMap::new();
         state.insert(accounts()[0].1, 0).unwrap();
         let (promoted, evicted) = queued_pool.filter_by_nonce_gap(&state);
         assert_eq!(promoted.len(), 10);
         assert_eq!(queued_pool.len(), 10);
         assert_eq!(evicted.len(), 0);
 
-        let state: HashIndex<Address, u64> = HashIndex::new();
+        let state: HashMap<Address, u64> = HashMap::new();
         state.insert(accounts()[0].1, 11).unwrap();
         let (promoted, evicted) = queued_pool.filter_by_nonce_gap(&state);
         assert_eq!(promoted.len(), 10);
@@ -1105,7 +1085,7 @@ mod tests {
         }
 
         // Assume block has nonce 11, the first 10 should be evicted and the remaining 10 should be promoted.
-        let state: HashIndex<Address, u64> = HashIndex::new();
+        let state: HashMap<Address, u64> = HashMap::new();
         state.insert(accounts()[0].1, 11).unwrap();
         let (promoted, evicted) = queued_pool.filter_by_nonce_gap(&state);
         assert_eq!(promoted.len(), 10);
