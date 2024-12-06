@@ -1,23 +1,24 @@
 use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
-use heapless::BinaryHeap;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
     block::BlockType, payload::FullTransactionList, signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
 };
-use monad_eth_block_policy::{AccountNonceRetrievable, EthBlockPolicy, EthValidatedBlock};
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction};
 use monad_eth_types::EthAddress;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
+use tx_heap::TrackedTxHeapDrainAction;
 
-use self::list::TrackedTxList;
+use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
 use crate::{pending::PendingTxMap, transaction::ValidEthTransaction};
 
 mod list;
+mod tx_heap;
 
 // To produce 10k tx blocks, we need the tracked tx map to hold at least 20k addresses so that if
 // the block in the pending blocktree has 10k txs with 10k unique addresses that are also in the
@@ -120,25 +121,29 @@ where
             MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
         )?;
 
-        if self.txs.is_empty() {
+        if self.txs.is_empty() || tx_limit == 0 {
             return Ok(FullTransactionList::empty());
         }
+
+        let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
 
         let account_balances = block_policy.compute_account_base_balances(
             proposed_seq_num,
             state_backend,
             Some(&extending_blocks),
-            self.txs.keys(),
+            tx_heap.addresses(),
         )?;
 
-        let pending_account_nonces = extending_blocks.get_account_nonces();
+        info!(
+            addresses = self.txs.len(),
+            num_txs = self.num_txs(),
+            tx_heap_len = tx_heap.len(),
+            account_balances = account_balances.len(),
+            "txpool sequencing transactions"
+        );
 
-        let (proposal_total_gas, proposal_tx_list) = self.create_proposal_tx_list(
-            tx_limit,
-            proposal_gas_limit,
-            account_balances,
-            pending_account_nonces,
-        )?;
+        let (proposal_total_gas, proposal_tx_list) =
+            self.create_proposal_tx_list(tx_limit, proposal_gas_limit, tx_heap, account_balances)?;
 
         let proposal_num_tx = proposal_tx_list.len();
         let proposal_rlp_tx_list = EthFullTransactionList(proposal_tx_list).rlp_encode();
@@ -226,111 +231,48 @@ where
         &self,
         tx_limit: usize,
         proposal_gas_limit: u64,
+        tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&EthAddress, u128>,
-        pending_account_nonces: BTreeMap<EthAddress, u64>,
     ) -> Result<(u64, Vec<EthTransaction>), StateBackendError> {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-        struct VirtualValidEthTransaction<'a> {
-            tx: &'a ValidEthTransaction,
-            virtual_time: u64,
-        }
-
-        let mut tx_heap = BinaryHeap::<
-            VirtualValidEthTransaction,
-            heapless::binary_heap::Max,
-            MAX_ADDRESSES,
-        >::new();
-
-        let mut virtual_time = 0u64;
-
-        let mut tx_iters = self
-            .txs
-            .iter()
-            .flat_map(|(address, tx_list)| {
-                let mut queued = tx_list
-                    .get_queued(pending_account_nonces.get(address).cloned())
-                    .peekable();
-
-                let tx = queued.next()?;
-
-                if tx_heap
-                    .push(VirtualValidEthTransaction { tx, virtual_time })
-                    .is_err()
-                {
-                    // TODO(andr-dev): Warn as self.txs length should never exceed [MAX_ADDRESSES]
-                }
-                virtual_time += 1;
-
-                if queued.peek().is_some() {
-                    Some((address, queued))
-                } else {
-                    None
-                }
-            })
-            .collect::<IndexMap<_, _>>();
+        assert!(tx_limit > 0);
 
         let mut txs = Vec::new();
         let mut total_gas = 0u64;
 
-        // loop invariant: `tx_heap` contains one transaction per account (lowest nonce).
-        // the root of the heap will be the best priced eligible transaction
-        while txs.len() < tx_limit {
-            let Some(VirtualValidEthTransaction {
-                tx: best_tx,
-                virtual_time: _,
-            }) = tx_heap.pop()
-            else {
-                break;
-            };
-
-            let sender = best_tx.sender();
-
-            // If this transaction will take us out of the block limit, we cannot include it.
-            // This will create a nonce gap, so we want to continue considering other accounts
-            // without adding the address back to the `tx_heap`.
+        tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
-                .checked_add(best_tx.gas_limit())
-                .expect("total gas does not overflow")
-                > proposal_gas_limit
+                .checked_add(tx.gas_limit())
+                .map(|total_gas| total_gas > proposal_gas_limit)
+                .unwrap_or(true)
             {
-                continue;
+                return TrackedTxHeapDrainAction::Skip;
             }
 
-            let Some(account_balance) = account_balances.get_mut(&sender) else {
+            let Some(account_balance) = account_balances.get_mut(sender) else {
                 error!(
                     ?sender,
                     "txpool create_proposal account_balances lookup failed"
                 );
-                continue;
+                return TrackedTxHeapDrainAction::Skip;
             };
 
-            match best_tx.apply_txn_fee(account_balance) {
+            match tx.apply_txn_fee(account_balance) {
                 Ok(new_account_balance) => {
                     *account_balance = new_account_balance;
 
-                    total_gas += best_tx.gas_limit();
-                    trace!(txn_hash = ?best_tx.hash(), "txn included in proposal");
-                    txs.push(best_tx.raw().to_owned());
+                    total_gas += tx.gas_limit();
+                    trace!(txn_hash = ?tx.hash(), "txn included in proposal");
+                    txs.push(tx.raw().to_owned());
+
+                    if txs.len() < tx_limit {
+                        TrackedTxHeapDrainAction::Continue
+                    } else {
+                        TrackedTxHeapDrainAction::Stop
+                    }
                 }
-                Err(_) => {
-                    continue;
-                }
+                Err(_) => TrackedTxHeapDrainAction::Skip,
             }
-
-            // Add a transaction back to `tx_heap` to maintain the loop invariant
-            let Some(tx_iter) = tx_iters.get_mut(&sender) else {
-                continue;
-            };
-
-            let Some(tx) = tx_iter.next() else {
-                continue;
-            };
-
-            tx_heap
-                .push(VirtualValidEthTransaction { tx, virtual_time })
-                .expect("heap size never exceeds fixed capacity");
-            virtual_time += 1;
-        }
+        });
 
         Ok((total_gas, txs))
     }

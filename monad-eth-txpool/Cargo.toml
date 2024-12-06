@@ -18,7 +18,6 @@ monad-types = { path = "../monad-types" }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
-heapless = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true }
