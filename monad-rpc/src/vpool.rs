@@ -6,7 +6,10 @@ use std::{
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
 use rayon::slice::ParallelSlice;
-use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
+use reth_primitives::{
+    revm_primitives::bitvec::store::BitStore, Address, TransactionSigned,
+    TransactionSignedEcRecovered,
+};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -134,17 +137,35 @@ impl SubPool {
 
     fn clear_included(&self, txs: &[(Address, u64)]) -> usize {
         let mut removed = 0;
-        for (sender, nonce) in txs {
-            if let Some(mut entry) = self.pool.get(sender) {
-                if entry.get_mut().remove(nonce) {
-                    removed += 1;
+
+        // Create a map of senders, and use their highest nonce to clear included transactions.
+        let senders: HashMap<Address, u64> = HashMap::new();
+
+        for (sender, nonce) in txs.to_owned().into_iter() {
+            match senders.get(&sender) {
+                Some(mut prev) if *prev.get() < nonce => {
+                    prev.store_value(nonce);
                 }
+                None => {
+                    senders.insert(sender, nonce);
+                }
+                _ => {}
+            };
+        }
+
+        let guard = Guard::new();
+        senders.scan(|sender, nonce| {
+            if let Some(mut entry) = self.pool.get(sender) {
+                removed += entry.range(0..=*nonce, &guard).count();
+                entry.remove_range(0..=*nonce);
+
                 if entry.len() == 0 {
                     let _ = entry.remove();
                     self.pool.remove(sender);
                 }
             }
-        }
+        });
+
         removed
     }
 
@@ -507,6 +528,10 @@ impl VirtualPool {
                     txs.as_parallel_slice(),
                     txs.len(),
                 ) else {
+                    error!(
+                        "sender in block {} has invalid signature",
+                        block.block_header.header.number
+                    );
                     return;
                 };
 
@@ -1026,6 +1051,17 @@ mod tests {
         let cleared = pending_pool.clear_included(&commited);
         assert_eq!(cleared, 8);
         assert_eq!(pending_pool.len(), 0);
+
+        // Add 10 transactions, expect to clear 9 entires in pool if the transaction with nonce 9 is commited.
+        for nonce in 1..=10 {
+            pending_pool
+                .add(transaction(accounts()[0].0, nonce, None), false)
+                .await;
+        }
+        assert_eq!(pending_pool.len(), 10);
+        let cleared = pending_pool.clear_included(&[commited[8]]);
+        assert_eq!(cleared, 9);
+        assert_eq!(pending_pool.len(), 1);
     }
 
     #[tokio::test]
