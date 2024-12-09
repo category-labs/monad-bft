@@ -24,6 +24,7 @@ actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-sol-types = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }

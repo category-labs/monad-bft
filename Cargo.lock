@@ -4712,6 +4712,7 @@ dependencies = [
  "alloy-primitives 0.6.0",
  "alloy-rlp",
  "alloy-rpc-client",
+ "alloy-sol-types 0.6.0",
  "bytes",
  "clap 4.4.10",
  "env_logger 0.10.1",

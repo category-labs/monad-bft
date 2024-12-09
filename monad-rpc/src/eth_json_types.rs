@@ -17,7 +17,7 @@ use crate::{
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MonadU256(pub U256);
 
 impl Serialize for MonadU256 {
@@ -218,7 +218,7 @@ impl schemars::JsonSchema for EthHash {
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#unformatted-data-encoding
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnformattedData(pub Vec<u8>);
 
 impl UnformattedData {
@@ -338,7 +338,7 @@ impl<'de> Deserialize<'de> for Quantity {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FixedData<const N: usize>(pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {
