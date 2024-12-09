@@ -1,0 +1,15 @@
+[package]
+name = "monad-exec-event"
+description = "Rust client for reading monad execution events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+bit_field = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+libc = { workspace = true }
+
+[build-dependencies]
+cmake = { workspace = true }

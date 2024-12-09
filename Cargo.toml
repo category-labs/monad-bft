@@ -25,6 +25,7 @@ members = [
     "monad-eth-txpool",
     "monad-eth-types",
     "monad-eth-types",
+    "monad-exec-event",
     "monad-executor-glue",
     "monad-executor",
     "monad-ipc",
@@ -96,6 +97,7 @@ aws-sdk-dynamodb = "1.54.0"
 aws-sdk-s3 = "1.58.0"
 bincode = "1.3"
 bindgen = "0.69"
+bit_field = "0.10.2"
 bitvec = "1.0"
 blake3 = "1.5"
 blst = "0.3"
