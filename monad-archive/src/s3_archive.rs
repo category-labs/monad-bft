@@ -19,10 +19,7 @@ use tokio_retry::{
 };
 use tracing::info;
 
-use crate::{
-    archive_reader::LatestKind,
-    metrics::Metrics,
-};
+use crate::{archive_reader::LatestKind, metrics::Metrics};
 
 use monad_triedb_utils::triedb_env::BlockHeader;
 

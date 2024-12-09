@@ -1,6 +1,7 @@
 use eyre::Result;
 use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
@@ -9,6 +10,8 @@ use dashmap::DashMap;
 pub struct Metrics {
     pub gauges: Arc<DashMap<&'static str, Gauge<u64>>>,
     pub counters: Arc<DashMap<&'static str, Counter<u64>>>,
+    // provider will get dropped if not stored in struct
+    pub provider: SdkMeterProvider,
     pub meter: Meter,
 }
 
@@ -24,6 +27,7 @@ impl Metrics {
         Ok(Metrics {
             counters: Arc::new(DashMap::with_capacity(100)),
             gauges: Arc::new(DashMap::with_capacity(100)),
+            provider,
             meter,
         })
     }
