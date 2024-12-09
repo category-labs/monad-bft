@@ -48,12 +48,10 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
-    trace::{
-        monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
-        monad_trace_transaction,
-    },
+    trace::{monad_trace_call, monad_trace_callMany, monad_trace_get, monad_trace_transaction},
     trace_handlers::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
+        monad_trace_block,
     },
     vpool::{
         monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
@@ -463,8 +461,11 @@ async fn rpc_select(
         "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
         "net_version" => serialize_result(app_state.chain_id.to_string()),
         "trace_block" => {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_block(params).await.map(serialize_result)?
+            monad_trace_block(triedb_env, params)
+                .await
+                .map(serialize_result)?
         }
         "trace_call" => {
             let params = serde_json::from_value(params).invalid_params()?;

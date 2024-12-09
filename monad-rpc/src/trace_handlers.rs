@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, str::FromStr};
 
 use alloy_primitives::{
     aliases::{U256, U64, U8},
@@ -15,7 +15,6 @@ use crate::{
     eth_json_types::{
         BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
     },
-    hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -112,7 +111,7 @@ pub struct MonadDebugTraceTransactionParams {
     tracer: TracerObject,
 }
 
-#[derive(Serialize, Debug, schemars::JsonSchema)]
+#[derive(Clone, Serialize, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonadCallFrame {
     #[serde(rename = "type")]
@@ -174,6 +173,189 @@ enum CallKind {
     StaticCall,
 }
 
+#[derive(Debug, Clone, schemars::JsonSchema)]
+pub struct ParityCallKind(CallKind);
+
+impl Serialize for ParityCallKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = serde_json::to_string(&self.0).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&s.trim_matches('"').to_lowercase())
+    }
+}
+
+async fn call_traces_from_block_num<T: Triedb>(
+    triedb_env: &T,
+    block_num: u64,
+    tracer: &TracerObject,
+) -> Result<Vec<MonadDebugTraceBlockResult>, JsonRpcError> {
+    let mut resp = Vec::new();
+
+    let tx_ids = triedb_env
+        .get_transactions(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+        .iter()
+        .map(|tx| tx.hash())
+        .collect::<Vec<_>>();
+    let call_frames = triedb_env
+        .get_call_frames(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+
+    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+        let rlp_call_frame = &mut call_frame.as_slice();
+        let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_num, tracer).await?
+        else {
+            return Err(JsonRpcError::internal_error("traces not found".to_string()));
+        };
+        resp.push(MonadDebugTraceBlockResult {
+            tx_hash: FixedData::<32>::from(tx_id),
+            result: traces,
+        });
+    }
+
+    Ok(resp)
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadTraceBlockParams {
+    block_tag: BlockTags,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum MonadTraceAction {
+    #[serde(rename_all = "camelCase")]
+    Call {
+        call_type: ParityCallKind,
+        from: EthAddress,
+        to: Option<EthAddress>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<MonadU256>,
+        gas: Quantity,
+        input: UnformattedData,
+    },
+    #[serde(rename_all = "camelCase")]
+    Create {
+        from: EthAddress,
+        gas: Quantity,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<MonadU256>,
+        init: UnformattedData,
+    },
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum MonadTraceResult {
+    #[serde(rename_all = "camelCase")]
+    Create {
+        address: EthAddress,
+        code: UnformattedData,
+        gas_used: Quantity,
+    },
+    #[serde(rename_all = "camelCase")]
+    Call {
+        gas_used: Quantity,
+        output: UnformattedData,
+    },
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonadTraceBlockResult {
+    action: MonadTraceAction,
+    result: MonadTraceResult,
+    subtraces: usize,
+    block_hash: FixedData<32>,
+    block_number: u64,
+    trace_address: Vec<Quantity>,
+    transaction_hash: FixedData<32>,
+    transaction_position: usize,
+    #[serde(rename = "type")]
+    typ: ParityCallKind,
+}
+
+#[rpc(method = "trace_block")]
+#[allow(non_snake_case)]
+pub async fn monad_trace_block<T: Triedb>(
+    triedb_env: &T,
+    params: MonadTraceBlockParams,
+) -> JsonRpcResult<Vec<MonadTraceBlockResult>> {
+    trace!("monad_trace_block: {params:?}");
+
+    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
+
+    let header = match triedb_env
+        .get_block_header(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        Some(header) => header,
+        None => return Err(JsonRpcError::internal_error("block not found".to_string())),
+    };
+
+    let traces =
+        call_traces_from_block_num(triedb_env, block_num, &TracerObject::default()).await?;
+
+    let mut res = Vec::new();
+    for (pos, top_level_frame) in traces.into_iter().enumerate() {
+        let sub_traces = count_sub_call_frames(&top_level_frame.result);
+
+        let action = match top_level_frame.result.typ {
+            CallKind::Create | CallKind::Create2 => MonadTraceAction::Create {
+                from: top_level_frame.result.from,
+                value: top_level_frame.result.value,
+                gas: top_level_frame.result.gas,
+                init: top_level_frame.result.input,
+            },
+            _ => MonadTraceAction::Call {
+                call_type: ParityCallKind(top_level_frame.result.typ.clone()),
+                from: top_level_frame.result.from,
+                to: top_level_frame.result.to.clone(),
+                value: top_level_frame.result.value,
+                gas: top_level_frame.result.gas,
+                input: top_level_frame.result.input,
+            },
+        };
+
+        let result = match top_level_frame.result.typ {
+            CallKind::Create | CallKind::Create2 => MonadTraceResult::Create {
+                address: top_level_frame
+                    .result
+                    .to
+                    .unwrap_or(Err(JsonRpcError::internal_error(format!(
+                        "contract address not found for {}",
+                        top_level_frame.tx_hash
+                    )))?),
+                code: top_level_frame.result.output,
+                gas_used: top_level_frame.result.gas_used,
+            },
+            _ => MonadTraceResult::Call {
+                gas_used: top_level_frame.result.gas_used,
+                output: top_level_frame.result.output,
+            },
+        };
+
+        res.push(MonadTraceBlockResult {
+            action,
+            result,
+            subtraces: sub_traces,
+            block_number: header.header.number,
+            block_hash: header.hash.into(),
+            typ: ParityCallKind(top_level_frame.result.typ),
+            trace_address: Vec::new(), // TODO: implement trace address
+            transaction_position: pos,
+            transaction_hash: top_level_frame.tx_hash,
+        });
+    }
+
+    Ok(res)
+}
+
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByHashParams {
     block_hash: EthHash,
@@ -200,34 +382,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         return Err(JsonRpcError::internal_error("block not found".to_string()));
     };
 
-    let mut resp = Vec::new();
-
-    let tx_ids = triedb_env
-        .get_transactions(block_num)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-        .iter()
-        .map(|tx| tx.hash())
-        .collect::<Vec<_>>();
-    let call_frames = triedb_env
-        .get_call_frames(block_num)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
-
-    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
-        let rlp_call_frame = &mut call_frame.as_slice();
-        let Some(traces) =
-            decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
-        else {
-            return Err(JsonRpcError::internal_error("traces not found".to_string()));
-        };
-        resp.push(MonadDebugTraceBlockResult {
-            tx_hash: FixedData::<32>::from(tx_id),
-            result: traces,
-        });
-    }
-
-    Ok(resp)
+    call_traces_from_block_num(triedb_env, block_num, &params.tracer).await
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -254,34 +409,8 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
     let block_num = params.block_number.0;
-    let mut resp = Vec::new();
 
-    let tx_ids = triedb_env
-        .get_transactions(block_num)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-        .iter()
-        .map(|tx| tx.hash())
-        .collect::<Vec<_>>();
-    let call_frames = triedb_env
-        .get_call_frames(block_num)
-        .await
-        .map_err(JsonRpcError::internal_error)?;
-
-    for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
-        let rlp_call_frame = &mut call_frame.as_slice();
-        let Some(traces) =
-            decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
-        else {
-            return Err(JsonRpcError::internal_error("traces not found".to_string()));
-        };
-        resp.push(MonadDebugTraceBlockResult {
-            tx_hash: FixedData::<32>::from(tx_id),
-            result: traces,
-        });
-    }
-
-    Ok(resp)
+    call_traces_from_block_num(triedb_env, block_num, &params.tracer).await
 }
 
 #[rpc(method = "debug_traceTransaction")]
@@ -385,10 +514,8 @@ async fn include_code_output<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?;
 
-        frame.output = hex::decode(&code)
-            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))
-            .unwrap()
-            .into();
+        frame.output = Bytes::from_str(&code)
+            .map_err(|_| JsonRpcError::internal_error("could not decode code".to_string()))?;
     }
 
     Ok(())
@@ -421,6 +548,26 @@ async fn build_call_tree(
     Ok(Some(root))
 }
 
+fn count_sub_call_frames(root: &MonadCallFrame) -> usize {
+    let mut count = 0;
+    let mut stack = vec![];
+
+    for child in &root.calls {
+        stack.push(Rc::clone(child))
+    }
+
+    while let Some(current) = stack.pop() {
+        count += 1;
+
+        let current_borrow = current.borrow();
+        for child in &current_borrow.calls {
+            stack.push(Rc::clone(child));
+        }
+    }
+
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,14 +582,17 @@ mod tests {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let result = build_call_tree(frames).await.unwrap();
+        let result = build_call_tree(frames)
+            .await
+            .unwrap()
+            .and_then(|rc| Rc::try_unwrap(rc).ok().map(|refcell| refcell.into_inner()));
 
         assert!(result.is_some());
-        let result: Rc<RefCell<MonadCallFrame>> = result.unwrap();
-        assert_eq!(result.borrow().calls.len(), 1);
+        let result: MonadCallFrame = result.unwrap();
+        assert_eq!(result.calls.len(), 1);
+        assert_eq!(count_sub_call_frames(&result), 4);
 
         result
-            .borrow()
             .calls
             .iter()
             .enumerate()
