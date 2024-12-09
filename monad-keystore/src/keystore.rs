@@ -105,7 +105,7 @@ impl CryptoModules {
     pub fn encrypt(
         &self,
         private_key: &[u8],
-        password: &String,
+        password: &str,
     ) -> Result<(Vec<u8>, Vec<u8>), KeystoreError> {
         let password_nfkd = password
             .nfkd()
@@ -130,7 +130,7 @@ impl CryptoModules {
     pub fn decrypt(
         &self,
         ciphertext: &[u8],
-        password: &String,
+        password: &str,
         checksum: &[u8],
     ) -> Result<Vec<u8>, KeystoreError> {
         let password_nfkd = password
