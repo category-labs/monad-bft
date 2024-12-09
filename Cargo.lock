@@ -3980,7 +3980,6 @@ dependencies = [
  "eyre",
  "futures",
  "hex",
- "monad-triedb",
  "monad-triedb-utils",
  "opentelemetry",
  "opentelemetry-otlp",

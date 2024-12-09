@@ -24,7 +24,6 @@ bench = false
 bench = false
 
 [dependencies]
-monad-triedb = { path = "../monad-triedb" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 
 alloy-primitives = { workspace = true }
