@@ -105,7 +105,7 @@ fn main() -> Result<()> {
     let forkpoint_str = toml::to_string_pretty(&forkpoint_base)
         .map_err(|e| Error::CustomError(format!("{}", e)))?;
 
-    std::fs::write(forkpoint_path, &forkpoint_str).map_err(Error::IOError)?;
+    std::fs::write(forkpoint_path, forkpoint_str).map_err(Error::IOError)?;
 
     println!(
         "Forkpoint reset to seq_num={} round={} block_id={}",

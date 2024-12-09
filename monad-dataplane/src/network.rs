@@ -42,7 +42,7 @@ const _: () = assert!(NUM_TX_MSGHDR <= LINUX_SENDMMSG_VLEN_MAX);
 #[repr(align(8))]
 pub struct AlignedCmsg(pub MaybeUninit<[u8; CMSG_LEN]>);
 
-unsafe impl<'a> Send for NetworkSocket<'a> {}
+unsafe impl Send for NetworkSocket<'_> {}
 
 pub struct NetworkSocket<'a> {
     pub socket: std::net::UdpSocket,
@@ -92,7 +92,7 @@ pub struct RecvmmsgResult {
 
 static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
 
-impl<'a> NetworkSocket<'a> {
+impl NetworkSocket<'_> {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub fn new(sock_addr: &str, up_bandwidth_mbps: u64) -> Self {
         let socket = std::net::UdpSocket::bind(sock_addr).unwrap();

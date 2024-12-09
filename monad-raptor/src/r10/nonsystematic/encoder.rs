@@ -39,7 +39,7 @@ pub struct Encoder<'a> {
     derived_symbols: Vec<Box<[u8]>>,
 }
 
-impl<'a> Encoder<'a> {
+impl Encoder<'_> {
     pub fn new(src: &[u8], symbol_len: usize) -> Result<Encoder, Error> {
         if symbol_len == 0 {
             return Err(Error::new(
