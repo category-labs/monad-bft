@@ -312,7 +312,7 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/monad-crypto/monad-archiver
+            peach10.devcore4.com/monad-crypto/monad-archive
           tags: |
             type=ref,event=branch
             type=sha,prefix=
