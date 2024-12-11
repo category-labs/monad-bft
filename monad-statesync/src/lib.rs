@@ -57,7 +57,7 @@ impl<ST, SCT> StateSync<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub fn new<B: SyncClientBackend>(
+    pub fn new<B: SyncClientBackend<CertificateSignaturePubKey<ST>>>(
         db_paths: Vec<String>,
         genesis_path: String,
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -132,6 +132,22 @@ where
                     };
                     statesync.handle_response(from, response);
                 }
+                StateSyncCommand::Message((from, StateSyncNetworkMessage::Completion)) => {
+                    let execution_ipc = match &mut self.mode {
+                        StateSyncMode::Sync(_) => {
+                            tracing::trace!(?from, "dropping statesync request, still syncing");
+                            continue;
+                        }
+                        StateSyncMode::Live(live) => live,
+                    };
+                    if execution_ipc
+                        .request_tx
+                        .try_send((from, StateSyncNetworkMessage::Completion))
+                        .is_err()
+                    {
+                        tracing::warn!("dropping inbound completion, execution backlogged?")
+                    }
+                }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {
@@ -140,7 +156,11 @@ where
                         }
                         StateSyncMode::Live(live) => live,
                     };
-                    if execution_ipc.request_tx.try_send((from, request)).is_err() {
+                    if execution_ipc
+                        .request_tx
+                        .try_send((from, StateSyncNetworkMessage::Request(request)))
+                        .is_err()
+                    {
                         tracing::warn!("dropping inbound statesync request, execution backlogged?")
                     }
                 }
@@ -198,6 +218,9 @@ where
                             )
                         }
                         SyncRequest::DoneSync(target) => StateSyncEvent::DoneSync(target.n),
+                        SyncRequest::Completion(servicer) => {
+                            StateSyncEvent::Outbound(servicer, StateSyncNetworkMessage::Completion)
+                        }
                     };
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(event)));
                 }
@@ -228,10 +251,11 @@ mod test {
     use monad_consensus_types::state_root_hash::{StateRootHash, StateRootHashInfo};
     use monad_crypto::{NopPubKey, NopSignature};
     use monad_executor::Executor;
-    use monad_executor_glue::StateSyncRequest;
+    use monad_executor_glue::{StateSyncRequest, StateSyncResponse, SELF_STATESYNC_VERSION};
     use monad_multi_sig::MultiSig;
     use monad_types::{Hash, NodeId, SeqNum};
     use rand::{thread_rng, Rng};
+    use tokio::time::timeout;
 
     use super::*;
     use crate::ffi::NUM_PREFIXES;
@@ -239,9 +263,9 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
-    struct TestSyncClientBackend {
+    struct TestSyncClientBackend<PT: PubKey> {
         s: String,
-        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
         done: [bool; NUM_PREFIXES as usize],
         target: Target,
     }
@@ -271,31 +295,58 @@ mod test {
         BACKEND_STATE.lock().unwrap().remove(&s);
     }
 
-    impl SyncClientBackend for TestSyncClientBackend {
+    impl<PT: PubKey> SyncClientBackend<PT> for TestSyncClientBackend<PT> {
         fn create(
             dbname_paths: &[String],
-            genesis_file: &str,
-            request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+            _genesis_file: &str,
+            request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
             target: Target,
         ) -> Self {
-            Self {
+            let ctx = Self {
                 s: dbname_paths[0].clone(),
                 request_tx,
                 done: [false; NUM_PREFIXES as usize],
                 target,
+            };
+
+            let latest_block = BACKEND_STATE
+                .lock()
+                .unwrap()
+                .get(&ctx.s)
+                .unwrap()
+                .latest_block;
+            if target.n != SeqNum(0) {
+                for i in 0..NUM_PREFIXES {
+                    let from = if latest_block == SeqNum(u64::MAX) {
+                        SeqNum(0)
+                    } else {
+                        latest_block
+                    };
+                    let req = StateSyncRequest {
+                        version: SELF_STATESYNC_VERSION,
+                        prefix: i,
+                        prefix_bytes: 1,
+                        from: from.0,
+                        until: target.n.0,
+                        old_target: from.0,
+                        target: target.n.0,
+                    };
+                    ctx.request_tx.send(SyncRequest::Request(req)).unwrap();
+                }
             }
+            ctx
         }
 
         fn handle_upsert(
             &mut self,
-            prefix: u64,
-            upsert_type: monad_executor_glue::StateSyncUpsertType,
-            upsert_data: &[u8],
+            _prefix: u64,
+            _upsert_type: monad_executor_glue::StateSyncUpsertType,
+            _upsert_data: &[u8],
         ) -> bool {
             true
         }
 
-        fn handle_done(&mut self, prefix: u64, n: SeqNum) {
+        fn handle_done(&mut self, prefix: u64, _n: SeqNum) {
             self.done[prefix as usize] = true;
         }
 
@@ -307,20 +358,21 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_genesis_sync() {
+    #[tokio::test]
+    async fn test_genesis_sync() {
         let db_name = thread_rng().gen::<u64>().to_string();
         add_backend_state(db_name.clone(), SeqNum(u64::MAX));
-        let mut state_sync =
-            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
-                vec![db_name.clone()],
-                "genesis_path".to_string(),
-                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-                1,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-                "uds_path".to_string(),
-            );
+        let mut state_sync = StateSync::<SignatureType, SignatureCollectionType>::new::<
+            TestSyncClientBackend<NopPubKey>,
+        >(
+            vec![db_name.clone()],
+            "genesis_path".to_string(),
+            vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            "uds_path".to_string(),
+        );
 
         let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
             seq_num: SeqNum(0),
@@ -329,26 +381,133 @@ mod test {
 
         state_sync.exec(commands);
 
-        let start = std::time::Instant::now();
         loop {
-            match futures::executor::block_on(state_sync.next()) {
-                Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_))) => {
+            match timeout(Duration::from_secs(5), state_sync.next()).await {
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_)))) => {
                     break;
                 }
-                Some(e) => {
+                Ok(Some(e)) => {
                     assert!(
                         false,
                         "sync to zero block should succeed immediately, got event {:?}",
                         e
                     );
                 }
-                None => {
-                    if start.elapsed() > Duration::from_secs(5) {
-                        assert!(false);
-                    }
+                Ok(None) => {
+                    panic!("unexpected stream end");
+                }
+                Err(_) => {
+                    panic!("timeout");
                 }
             }
         }
+
+        delete_backend_state(db_name);
+    }
+
+    use tracing_subscriber;
+
+    #[tokio::test]
+    async fn test_client_completion() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let db_name = thread_rng().gen::<u64>().to_string();
+        add_backend_state(db_name.clone(), SeqNum(u64::MAX));
+
+        let max_in_flight = 2;
+        let mut state_sync = StateSync::<SignatureType, SignatureCollectionType>::new::<
+            TestSyncClientBackend<NopPubKey>,
+        >(
+            vec![db_name.clone()],
+            "genesis_path".to_string(),
+            vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+            max_in_flight,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            "uds_path".to_string(),
+        );
+
+        let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
+            seq_num: SeqNum(1),
+            state_root_hash: StateRootHash(Hash([0; 32])),
+        })];
+
+        state_sync.exec(commands);
+
+        let mut messages = Vec::new();
+        loop {
+            match timeout(Duration::from_secs(1), state_sync.next()).await {
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_)))) => {
+                    assert!(false, "sync should send messages");
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(n, m)))) => {
+                    println!("got message from {:?}: {:?}", n, m);
+                    messages.push((n, m));
+                    if messages.len() == max_in_flight {
+                        break;
+                    }
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(e))) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(Some(e)) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(None) => {
+                    assert!(false, "unexpected stream end");
+                }
+                Err(_) => {
+                    assert!(false, "timeout");
+                }
+            }
+        }
+
+        let request = if let StateSyncNetworkMessage::Request(req) = &messages[0].1 {
+            req.clone()
+        } else {
+            panic!("Expected StateSyncNetworkMessage::Request");
+        };
+        let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
+            version: SELF_STATESYNC_VERSION,
+            nonce: 1,
+            response: vec![],
+            request,
+            response_index: 0,
+            response_n: 1,
+        });
+        let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
+        state_sync.exec(commands);
+
+        let mut got_completion = false;
+        let mut got_request = false;
+        for _ in 0..2 {
+            let event = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout")
+                .expect("unexpected stream end");
+            println!("event: {:?}", event);
+            match event {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    to,
+                    StateSyncNetworkMessage::Completion,
+                )) => {
+                    assert!(
+                        to == messages[0].0,
+                        "client should send completion to same peer"
+                    );
+                    got_completion = true;
+                }
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(_, _)) => {
+                    got_request = true;
+                }
+                e => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+            }
+        }
+
+        assert!(got_completion, "client should send completion");
+        assert!(got_request, "client should send next request");
 
         delete_backend_state(db_name);
     }

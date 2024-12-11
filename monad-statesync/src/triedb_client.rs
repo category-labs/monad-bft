@@ -1,5 +1,6 @@
 use std::ffi::CString;
 
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{StateSyncRequest, StateSyncUpsertType, SELF_STATESYNC_VERSION};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -42,10 +43,10 @@ fn to_monad_sync_type(upsert_type: StateSyncUpsertType) -> bindings::monad_sync_
 }
 
 impl TriedbSyncClient {
-    pub fn new(
+    pub fn new<PT: PubKey>(
         dbname_paths: &[String],
         genesis_path: &str,
-        request_tx: UnboundedSender<SyncRequest<StateSyncRequest>>,
+        request_tx: UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
         target: Target,
     ) -> Self {
         let dbname_paths: Vec<CString> = dbname_paths
@@ -120,11 +121,11 @@ impl Drop for TriedbSyncClient {
     }
 }
 
-impl SyncClientBackend for TriedbSyncClient {
+impl<PT: PubKey> SyncClientBackend<PT> for TriedbSyncClient {
     fn create(
         dbname_paths: &[String],
         genesis_file: &str,
-        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
         target: Target,
     ) -> Self {
         Self::new(dbname_paths, genesis_file, request_tx, target)

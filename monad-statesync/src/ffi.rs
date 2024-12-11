@@ -33,8 +33,8 @@ pub(crate) struct StateSync<PT: PubKey> {
     outbound_requests: OutboundRequests<PT>,
     current_target: Option<Target>,
 
-    request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest>>,
-    response_tx: std::sync::mpsc::Sender<SyncResponse>,
+    request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest, PT>>,
+    response_tx: std::sync::mpsc::Sender<SyncResponse<PT>>,
 
     progress: Arc<Mutex<Progress>>,
 }
@@ -48,20 +48,23 @@ pub struct Target {
 /// This name is confusing, but I can't think of a better name. This is basically an output event
 /// from the perspective of this module. OutputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an input event.
-pub enum SyncRequest<R> {
+pub enum SyncRequest<R, PT: PubKey> {
     Request(R),
     DoneSync(Target),
+    Completion(NodeId<PT>),
 }
 
 /// This name is confusing, but I can't think of a better name. This is basically an input event
 /// from the perspective of this module. InputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an output event.
-pub(crate) enum SyncResponse {
-    Response(StateSyncResponse),
+pub(crate) enum SyncResponse<P: PubKey> {
+    Response((NodeId<P>, StateSyncResponse)),
     UpdateTarget(Target),
 }
 
 pub(crate) const NUM_PREFIXES: u64 = 256;
+
+const INVALID_SEQ_NUM: SeqNum = SeqNum(u64::MAX);
 
 #[derive(Clone, Copy, Default)]
 struct Progress {
@@ -133,16 +136,15 @@ impl Progress {
 }
 
 impl<PT: PubKey> StateSync<PT> {
-    pub fn start<B: SyncClientBackend>(
+    pub fn start<B: SyncClientBackend<PT>>(
         db_paths: Vec<String>,
         genesis_path: String,
         state_sync_peers: Vec<NodeId<PT>>,
         max_parallel_requests: usize,
         request_timeout: Duration,
     ) -> Self {
-        let (request_tx, request_rx) =
-            tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest>>();
-        let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse>();
+        let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse<PT>>();
 
         let progress = Arc::new(Mutex::new(Progress::default()));
         let progress_clone = Arc::clone(&progress);
@@ -171,7 +173,7 @@ impl<PT: PubKey> StateSync<PT> {
                         ));
                         progress.lock().unwrap().update_target(target)
                     }
-                    SyncResponse::Response(response) => {
+                    SyncResponse::Response((from, response)) => {
                         let sync_ctx = sync_ctx.as_mut().expect("sync_ctx must be set");
                         for (upsert_type, upsert_data) in &response.response {
                             let upsert_result = sync_ctx.handle_upsert(
@@ -185,6 +187,9 @@ impl<PT: PubKey> StateSync<PT> {
                             sync_ctx
                                 .handle_done(response.request.prefix, SeqNum(response.response_n));
                         }
+                        request_tx
+                            .send(SyncRequest::Completion(from))
+                            .expect("request_rx dropped");
                         progress
                             .lock()
                             .unwrap()
@@ -253,7 +258,7 @@ impl<PT: PubKey> StateSync<PT> {
 
         if let Some(full_response) = self.outbound_requests.handle_response(from, response) {
             self.response_tx
-                .send(SyncResponse::Response(full_response))
+                .send(SyncResponse::Response((from, full_response)))
                 .expect("response_rx dropped");
         }
     }
@@ -265,7 +270,7 @@ impl<PT: PubKey> StateSync<PT> {
 }
 
 impl<PT: PubKey> Stream for StateSync<PT> {
-    type Item = SyncRequest<(NodeId<PT>, StateSyncRequest)>;
+    type Item = SyncRequest<(NodeId<PT>, StateSyncRequest), PT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -297,6 +302,9 @@ impl<PT: PubKey> Stream for StateSync<PT> {
 
                     return Poll::Ready(Some(SyncRequest::DoneSync(target)));
                 }
+                SyncRequest::Completion(from) => {
+                    return Poll::Ready(Some(SyncRequest::Completion(from)));
+                }
             }
         }
 
@@ -314,11 +322,11 @@ impl<PT: PubKey> Stream for StateSync<PT> {
     }
 }
 
-pub trait SyncClientBackend {
+pub trait SyncClientBackend<PT: PubKey> {
     fn create(
         dbname_paths: &[String],
         genesis_file: &str,
-        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest>>,
+        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
         target: Target,
     ) -> Self;
     fn handle_upsert(

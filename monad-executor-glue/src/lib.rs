@@ -522,8 +522,9 @@ impl Debug for StateSyncResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateSyncNetworkMessage {
-    Request(StateSyncRequest),
-    Response(StateSyncResponse),
+    Request(StateSyncRequest),   // Request for state sync from client to server
+    Response(StateSyncResponse), // Partial response from server to client
+    Completion,                  // Response processing completion message from client to server
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -96,10 +96,14 @@ message ProtoStateSyncResponse {
   uint64 n = 3;
 }
 
+message ProtoStateSyncCompletion {
+}
+
 message ProtoStateSyncNetworkMessage {
   oneof OneofMessage {
     ProtoStateSyncRequest request = 1;
     ProtoStateSyncResponse response = 2;
+    ProtoStateSyncCompletion completion = 3;
   }
 }
 

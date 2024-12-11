@@ -7,7 +7,8 @@ use std::{
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    SELF_STATESYNC_VERSION,
 };
 use monad_types::NodeId;
 use tokio::{
@@ -24,7 +25,7 @@ pub type SyncDone = bindings::monad_sync_done;
 /// requests
 pub(crate) struct StateSyncIpc<PT: PubKey> {
     /// request_tx accepts (from, request) pairs
-    pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncRequest)>,
+    pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncNetworkMessage)>,
     /// response_rx yields (to, response) pairs
     pub response_rx: tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncResponse)>,
 }
@@ -73,7 +74,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                         // this future exists to make sure that the request channel is drained
                         // while waiting for execution to connect
                         loop {
-                            let _request: (NodeId<PT>, StateSyncRequest) =
+                            let _request =
                                 request_tx_reader.recv().await.expect("request_tx dropped");
                         }
                     };
@@ -108,7 +109,7 @@ struct StreamState<'a, PT: PubKey> {
     /// drop pending requests older than this
     request_timeout: Duration,
     stream: BufReader<UnixStream>,
-    request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
+    request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
 
     pending_requests: VecDeque<PendingRequest<PT>>,
@@ -134,7 +135,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
         request_timeout: Duration,
         stream: UnixStream,
-        request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
+        request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(
+            NodeId<PT>,
+            StateSyncNetworkMessage,
+        )>,
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
     ) -> Self {
         Self {
@@ -156,14 +160,28 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         enum Event<PT: PubKey> {
             Execution(Result<u8, tokio::io::Error>),
             Request((NodeId<PT>, StateSyncRequest)),
+            Completion(NodeId<PT>),
+            Response((NodeId<PT>, StateSyncResponse)),
         }
         let fut1 = async {
             let event = self.stream.read_u8().await;
             Event::Execution(event)
         };
         let fut2 = async {
-            let maybe_request = self.request_tx_reader.recv().await;
-            Event::Request(maybe_request.expect("request_tx_writer dropped"))
+            match self
+                .request_tx_reader
+                .recv()
+                .await
+                .expect("msg_tx_writer dropped")
+            {
+                (from, StateSyncNetworkMessage::Request(request)) => {
+                    Event::Request((from, request))
+                }
+                (from, StateSyncNetworkMessage::Completion) => Event::Completion(from),
+                (from, StateSyncNetworkMessage::Response(response)) => {
+                    Event::Response((from, response))
+                }
+            }
         };
         let (event, _, _) = futures::future::select_all(vec![fut1.boxed(), fut2.boxed()]).await;
 
@@ -174,6 +192,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.handle_execution_message(execution_message).await
             }
             Event::Request((from, request)) => self.handle_request(from, request).await,
+            Event::Completion(from) => self.handle_completion(from),
+            Event::Response((from, _)) => {
+                tracing::warn!("unexpected response from {:?}, dropping", from);
+                Ok(())
+            }
         }
     }
 
@@ -327,6 +350,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         })
         .await?;
 
+        Ok(())
+    }
+
+    fn handle_completion(&mut self, from: NodeId<PT>) -> Result<(), tokio::io::Error> {
         Ok(())
     }
 

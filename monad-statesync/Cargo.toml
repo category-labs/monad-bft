@@ -17,7 +17,7 @@ monad-types = { path = "../monad-types" }
 
 futures = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -26,6 +26,7 @@ tempfile = { workspace = true }
 lazy_static = { workspace = true }
 rand = { workspace = true }
 monad-multi-sig = { path = "../monad-multi-sig" }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
