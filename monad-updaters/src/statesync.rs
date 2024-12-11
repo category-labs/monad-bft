@@ -142,6 +142,7 @@ where
                             ));
                         }
                     }
+                    StateSyncNetworkMessage::Completion => {}
                 },
             }
         }

@@ -7,7 +7,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{
     error::ProtoError,
-    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
+    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*, message::ProtoStateSyncCompletion},
 };
 
 use crate::{
@@ -773,6 +773,9 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
             StateSyncNetworkMessage::Response(response) => Self {
                 oneof_message: Some(OneofMessage::Response(response.into())),
             },
+            StateSyncNetworkMessage::Completion => Self {
+                oneof_message: Some(OneofMessage::Completion(ProtoStateSyncCompletion {})),
+            },
         }
     }
 }
@@ -911,6 +914,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                     response_n: response.n,
                 }))
             }
+            OneofMessage::Completion(_) => Ok(StateSyncNetworkMessage::Completion),
         }
     }
 }
