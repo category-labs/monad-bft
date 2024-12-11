@@ -270,7 +270,7 @@ impl Triedb for TriedbEnv {
                 let signed_transactions = rlp_transactions
                     .iter()
                     .filter_map(|rlp_transaction| {
-                        match TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice()) {
+                        match TransactionSigned::decode(&mut rlp_transaction.as_slice()) {
                             Ok(r) => Some(r),
                             Err(e) => {
                                 error!("Failed to decode RLP Transaction: {e}");

@@ -2,10 +2,10 @@ use alloy_primitives::{
     aliases::{U256, U64},
     FixedBytes,
 };
+use alloy_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use reth_primitives::{Header as RlpHeader, TransactionSigned};
-use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use alloy_consensus::transaction::Transaction as TxTrait;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
@@ -749,7 +750,7 @@ mod test {
     fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> EthSignedTransaction {
         let hash = tx.signature_hash();
         let signature = sign_message(secret_key, hash).expect("signature should always succeed");
-        EthSignedTransaction::from_transaction_and_signature(tx, signature)
+        EthSignedTransaction::new_unhashed(tx, signature)
     }
 
     #[test]

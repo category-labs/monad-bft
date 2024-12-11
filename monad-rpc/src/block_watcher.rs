@@ -4,11 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
+use alloy_rpc_types::TransactionReceipt;
 use futures::{FutureExt, Stream};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};
 use pin_project::pin_project;
 use reth_primitives::{Block, TransactionSigned};
-use reth_rpc_types::TransactionReceipt;
 use tracing::error;
 
 use crate::{block_handlers::block_receipts, jsonrpc::JsonRpcError};

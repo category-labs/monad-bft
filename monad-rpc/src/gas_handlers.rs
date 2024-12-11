@@ -4,11 +4,11 @@ use std::{
 };
 
 use alloy_primitives::{U256, U64};
+use alloy_rpc_types::FeeHistory;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use reth_primitives::{Transaction, TransactionKind};
-use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use tracing::trace;
 

@@ -3,7 +3,7 @@
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
 use alloy_primitives::{
-    bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
+    bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, Signature, B256, U256, U64,
 };
 use autocxx::{block, moveit::moveit, WithinBox};
 use futures::pin_mut;
@@ -69,7 +69,7 @@ pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 pub fn eth_call(
     transaction: reth_primitives::Transaction,
     block_header: reth_primitives::Header,
-    sender: reth_primitives::Address,
+    sender: Address,
     block_number: u64,
     triedb_path: &Path,
     blockdb_path: &Path,
@@ -86,7 +86,7 @@ pub fn eth_call(
     // TODO: move the buffer copying into C++ for the reserve/push idiom
     let rlp_encoded_tx: Bytes = {
         let mut buf = BytesMut::new();
-        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
+        transaction.encode_with_signature(&Signature::default(), &mut buf, false);
         buf.freeze().into()
     };
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();

@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use alloy_rpc_types::TransactionReceipt;
 use reth_primitives::{Block, TransactionSigned};
-use reth_rpc_types::TransactionReceipt;
 use tracing::warn;
 
 /// Number of transactions to sample in a block

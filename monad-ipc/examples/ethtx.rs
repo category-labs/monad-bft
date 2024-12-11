@@ -4,14 +4,12 @@ use std::{
     task::Poll,
 };
 
+use alloy_primitives::{Address, TransactionKind, TxLegacy};
 use clap::{Parser, Subcommand};
 use futures::{Sink, SinkExt};
 use itertools::Itertools;
 use rand::RngCore;
-use reth_primitives::{
-    revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
-    TransactionSigned, TxLegacy,
-};
+use reth_primitives::{revm_primitives::FixedBytes, sign_message, Transaction, TransactionSigned};
 use serde_json::json;
 use tokio::{net::UnixStream, time};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
@@ -243,5 +241,5 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let sender_secret_key = FixedBytes::random();
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
-    TransactionSigned::from_transaction_and_signature(transaction, signature)
+    TransactionSigned::new_unhashed(transaction, signature)
 }

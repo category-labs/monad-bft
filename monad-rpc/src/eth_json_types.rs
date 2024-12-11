@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
 use alloy_primitives::FixedBytes;
-use reth_primitives::{Address, Bloom, Bytes, U256};
-use reth_rpc_types::{
+use alloy_rpc_types::{
     Block, BlockTransactions, FeeHistory, Header, Log, Transaction, TransactionReceipt,
 };
+use reth_primitives::{Address, Bloom, Bytes, U256};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;

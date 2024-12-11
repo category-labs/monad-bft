@@ -6,9 +6,9 @@ use std::{
 };
 
 use alloy_json_rpc::RpcError;
+use alloy_rpc_types::Block;
 use alloy_transport::TransportErrorKind;
 use futures::{stream::FusedStream, FutureExt, Stream};
-use reth_rpc_types::Block;
 use thiserror::Error;
 
 use crate::prelude::*;

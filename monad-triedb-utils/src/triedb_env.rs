@@ -7,11 +7,11 @@ use std::{
     thread,
 };
 
-use alloy_primitives::FixedBytes;
+use alloy_primitives::{utils::keccak256, FixedBytes};
 use alloy_rlp::Decodable;
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
-use reth_primitives::{keccak256, Header, ReceiptWithBloom, TransactionSigned};
+use reth_primitives::{Header, ReceiptWithBloom, TransactionSigned};
 use tracing::{error, warn};
 
 use crate::{
@@ -540,7 +540,7 @@ impl Triedb for TriedbEnv {
 
                 match result {
                     Some(rlp_transaction) => {
-                        match TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice()) {
+                        match TransactionSigned::decode(&mut rlp_transaction.as_slice()) {
                             Ok(transaction) => Ok(Some(transaction)),
                             Err(e) => {
                                 warn!("Failed to decode RLP transaction: {e}");
@@ -585,7 +585,7 @@ impl Triedb for TriedbEnv {
                     let signed_transactions = rlp_transactions
                         .iter()
                         .filter_map(|rlp_transaction| {
-                            TransactionSigned::decode_enveloped(&mut rlp_transaction.as_slice())
+                            TransactionSigned::decode(&mut rlp_transaction.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP transaction: {e}");
                                     String::from("error decoding transaction")
