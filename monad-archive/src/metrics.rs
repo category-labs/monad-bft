@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use eyre::Result;
 use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 #[derive(Clone)]
 pub struct Metrics(Option<MetricsInner>);
@@ -12,6 +13,7 @@ pub struct Metrics(Option<MetricsInner>);
 pub struct MetricsInner {
     pub gauges: Arc<DashMap<&'static str, Gauge<u64>>>,
     pub counters: Arc<DashMap<&'static str, Counter<u64>>>,
+    pub provider: SdkMeterProvider,
     pub meter: Meter,
 }
 
@@ -27,6 +29,7 @@ impl Metrics {
         Ok(Metrics(Some(MetricsInner {
             counters: Arc::new(DashMap::with_capacity(100)),
             gauges: Arc::new(DashMap::with_capacity(100)),
+            provider,
             meter,
         })))
     }
