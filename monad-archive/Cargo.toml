@@ -31,10 +31,11 @@ aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 eyre = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
@@ -52,5 +53,4 @@ tokio = { workspace = true, features = [
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-futures = { workspace = true }
 reth-primitives = { workspace = true }
