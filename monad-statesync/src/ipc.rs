@@ -353,7 +353,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         Ok(())
     }
 
-    fn handle_completion(&mut self, from: NodeId<PT>) -> Result<(), tokio::io::Error> {
+    fn handle_completion(&mut self, _from: NodeId<PT>) -> Result<(), tokio::io::Error> {
         Ok(())
     }
 
