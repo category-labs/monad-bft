@@ -247,15 +247,22 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::ipc::SyncRequest;
+    use monad_executor_glue::StateSyncRequest;
+    use std::{fs, path::Path};
+
+    use ffi::SyncRequest as ClientSyncRequest;
+    use futures::task::noop_waker;
     use lazy_static::lazy_static;
     use monad_consensus_types::state_root_hash::{StateRootHash, StateRootHashInfo};
     use monad_crypto::{NopPubKey, NopSignature};
     use monad_executor::Executor;
-    use monad_executor_glue::{StateSyncRequest, StateSyncResponse, SELF_STATESYNC_VERSION};
+    use monad_executor_glue::{StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION};
     use monad_multi_sig::MultiSig;
     use monad_types::{Hash, NodeId, SeqNum};
     use rand::{thread_rng, Rng};
-    use tokio::time::timeout;
+    use scopeguard::defer;
+    use tokio::{io::Interest, time::timeout};
 
     use super::*;
     use crate::ffi::NUM_PREFIXES;
@@ -263,15 +270,173 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
-    struct TestSyncClientBackend<PT: PubKey> {
+    struct TestSyncClientBackend {
         s: String,
-        request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
+        request_tx:
+            tokio::sync::mpsc::UnboundedSender<ClientSyncRequest<StateSyncRequest, NopPubKey>>,
         done: [bool; NUM_PREFIXES as usize],
         target: Target,
     }
 
     struct BackendState {
         latest_block: SeqNum,
+        uds_path: String,
+        shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
+        handle: Option<tokio::task::JoinHandle<()>>,
+        upserts: Vec<Vec<Vec<u8>>>,
+        upserts_bufs: Vec<Vec<u8>>,
+    }
+
+    impl BackendState {
+        fn new(latest_block: SeqNum, uds_path: String) -> Self {
+            Self {
+                latest_block,
+                uds_path,
+                shutdown_tx: None,
+                upserts: vec![Vec::new(); NUM_PREFIXES as usize],
+                upserts_bufs: vec![Vec::new(); NUM_PREFIXES as usize],
+                handle: None,
+            }
+        }
+
+        fn run_server(&mut self) {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let uds_path = self.uds_path.clone();
+            let upserts_bufs = self.upserts_bufs.clone();
+            let server = async move {
+                let stream = loop {
+                    tokio::select! {
+                        _ = rx.recv() => {
+                            return;
+                        }
+                        result = tokio::net::UnixStream::connect(&uds_path) => {
+                            match result {
+                                Ok(server) => {
+                                    break server;
+                                }
+                                Err(_) => {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            }
+                        }
+                    }
+                };
+                let mut request: Option<SyncRequest> = None;
+                let mut offset = 0;
+                let mut request_buf =
+                    [0_u8; std::mem::size_of::<bindings::monad_sync_request>() + 1];
+                let mut read_offset = 0;
+                loop {
+                    let interest = if request.is_none() {
+                        Interest::READABLE
+                    } else {
+                        Interest::WRITABLE
+                    };
+                    tokio::select! {
+                        _ = rx.recv() => {
+                            return;
+                        }
+                        result = stream.ready(interest) => {
+                            match result {
+                                Ok(result) => {
+                                    if result.is_readable() {
+                                        while read_offset < request_buf.len() {
+                                            match stream.try_read(&mut request_buf[read_offset..]) {
+                                                Ok(n) => {
+                                                    read_offset += n;
+                                                }
+                                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                                    break;
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("read failed: {:?}", e);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        if read_offset == request_buf.len() {
+                                            let typ = request_buf[0];
+                                            let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_request>()];
+                                            buf.copy_from_slice(&request_buf[1..]);
+                                            match typ {
+                                                bindings::monad_sync_type_SYNC_TYPE_REQUEST => {
+                                                    request = Some(unsafe {
+                                                        std::mem::transmute::<_, bindings::monad_sync_request>(buf)
+                                                    });
+                                                    println!("got request {:?}", request);
+                                                }
+                                                _ => {
+                                                    eprintln!("unexpected type: {}", typ);
+                                                    return;
+                                                }
+                                            }
+                                            read_offset = 0;
+                                        }
+                                    }
+                                    if result.is_writable() {
+                                        let mut buf = upserts_bufs[request.unwrap().prefix as usize].clone();
+                                        buf.push(bindings::monad_sync_type_SYNC_TYPE_DONE);
+                                        let done = bindings::monad_sync_done {
+                                            prefix: request.unwrap().prefix,
+                                            n: request.unwrap().target,
+                                            success: true,
+                                        };
+                                        let done_buf = unsafe {
+                                            std::mem::transmute::<_, [u8; std::mem::size_of::<bindings::monad_sync_done>()]>(done)
+                                        };
+                                        buf.extend_from_slice(&done_buf);
+                                        while offset < buf.len() {
+                                            match stream.try_write(&buf[offset..]) {
+                                                Ok(n) => {
+                                                    offset += n;
+                                                }
+                                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                                    break;
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("write failed: {:?}", e);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        if offset == buf.len() {
+                                            offset = 0;
+                                            request = None;
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            self.handle = Some(tokio::spawn(server));
+            self.shutdown_tx = Some(tx);
+        }
+
+        fn handle_upsert(
+            &mut self,
+            prefix: u64,
+            upsert_type: StateSyncUpsertType,
+            upsert_data: &[u8],
+        ) {
+            self.upserts[prefix as usize].push(upsert_data.to_vec());
+            self.upserts_bufs[prefix as usize].push(to_binding_type(upsert_type));
+            self.upserts_bufs[prefix as usize].extend_from_slice(&upsert_data.len().to_le_bytes());
+            self.upserts_bufs[prefix as usize].extend_from_slice(upsert_data);
+        }
+
+        async fn shutdown(&mut self) {
+            if let Some(tx) = self.shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.await;
+            }
+        }
     }
 
     use std::{
@@ -280,26 +445,51 @@ mod test {
     };
 
     lazy_static! {
-        static ref BACKEND_STATE: Arc<Mutex<HashMap<String, BackendState>>> =
+        static ref BACKEND_STATE: Arc<Mutex<HashMap<String, Arc<Mutex<BackendState>>>>> =
             Arc::new(Mutex::new(Default::default()));
     }
 
-    fn add_backend_state(s: String, latest_block: SeqNum) {
-        BACKEND_STATE
-            .lock()
-            .unwrap()
-            .insert(s, BackendState { latest_block });
+    fn add_backend_state(s: String, latest_block: SeqNum, uds_path: String) {
+        BACKEND_STATE.lock().unwrap().insert(
+            s,
+            Arc::new(Mutex::new(BackendState::new(latest_block, uds_path))),
+        );
     }
 
     fn delete_backend_state(s: String) {
         BACKEND_STATE.lock().unwrap().remove(&s);
     }
 
-    impl<PT: PubKey> SyncClientBackend<PT> for TestSyncClientBackend<PT> {
+    fn get_backend_state(s: &str) -> Arc<Mutex<BackendState>> {
+        BACKEND_STATE
+            .lock()
+            .unwrap()
+            .get(s)
+            .expect("state not found")
+            .clone()
+    }
+
+    fn to_binding_type(t: StateSyncUpsertType) -> u8 {
+        match t {
+            StateSyncUpsertType::Account => bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT,
+            StateSyncUpsertType::Code => bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE,
+            StateSyncUpsertType::Storage => bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE,
+            StateSyncUpsertType::AccountDelete => {
+                bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE
+            }
+            StateSyncUpsertType::StorageDelete => {
+                bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE
+            }
+        }
+    }
+
+    impl SyncClientBackend<NopPubKey> for TestSyncClientBackend {
         fn create(
             dbname_paths: &[String],
             _genesis_file: &str,
-            request_tx: tokio::sync::mpsc::UnboundedSender<SyncRequest<StateSyncRequest, PT>>,
+            request_tx: tokio::sync::mpsc::UnboundedSender<
+                ClientSyncRequest<StateSyncRequest, NopPubKey>,
+            >,
             target: Target,
         ) -> Self {
             let ctx = Self {
@@ -309,10 +499,8 @@ mod test {
                 target,
             };
 
-            let latest_block = BACKEND_STATE
+            let latest_block = get_backend_state(ctx.s.as_str())
                 .lock()
-                .unwrap()
-                .get(&ctx.s)
                 .unwrap()
                 .latest_block;
             if target.n != SeqNum(0) {
@@ -331,7 +519,9 @@ mod test {
                         old_target: from.0,
                         target: target.n.0,
                     };
-                    ctx.request_tx.send(SyncRequest::Request(req)).unwrap();
+                    ctx.request_tx
+                        .send(ClientSyncRequest::Request(req))
+                        .unwrap();
                 }
             }
             ctx
@@ -339,10 +529,13 @@ mod test {
 
         fn handle_upsert(
             &mut self,
-            _prefix: u64,
-            _upsert_type: monad_executor_glue::StateSyncUpsertType,
-            _upsert_data: &[u8],
+            prefix: u64,
+            upsert_type: monad_executor_glue::StateSyncUpsertType,
+            upsert_data: &[u8],
         ) -> bool {
+            let s = get_backend_state(self.s.as_str());
+            let mut s = s.lock().unwrap();
+            s.handle_upsert(prefix, upsert_type, upsert_data);
             true
         }
 
@@ -361,18 +554,22 @@ mod test {
     #[tokio::test]
     async fn test_genesis_sync() {
         let db_name = thread_rng().gen::<u64>().to_string();
-        add_backend_state(db_name.clone(), SeqNum(u64::MAX));
-        let mut state_sync = StateSync::<SignatureType, SignatureCollectionType>::new::<
-            TestSyncClientBackend<NopPubKey>,
-        >(
-            vec![db_name.clone()],
-            "genesis_path".to_string(),
-            vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-            1,
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            "uds_path".to_string(),
-        );
+        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
+        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
+        defer! {
+            delete_backend_state(db_name.clone());
+            let _ = fs::remove_file(Path::new(&uds_path));
+        }
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                1,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                uds_path.clone(),
+            );
 
         let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
             seq_num: SeqNum(0),
@@ -401,8 +598,6 @@ mod test {
                 }
             }
         }
-
-        delete_backend_state(db_name);
     }
 
     use tracing_subscriber;
@@ -411,21 +606,25 @@ mod test {
     async fn test_client_completion() {
         let _ = tracing_subscriber::fmt::try_init();
 
+        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
         let db_name = thread_rng().gen::<u64>().to_string();
-        add_backend_state(db_name.clone(), SeqNum(u64::MAX));
+        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
+        defer! {
+            let _ = fs::remove_file(Path::new(&uds_path));
+            delete_backend_state(db_name.clone());
+        }
 
         let max_in_flight = 2;
-        let mut state_sync = StateSync::<SignatureType, SignatureCollectionType>::new::<
-            TestSyncClientBackend<NopPubKey>,
-        >(
-            vec![db_name.clone()],
-            "genesis_path".to_string(),
-            vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-            max_in_flight,
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            "uds_path".to_string(),
-        );
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                max_in_flight,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                uds_path.clone(),
+            );
 
         let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
             seq_num: SeqNum(1),
@@ -508,7 +707,101 @@ mod test {
 
         assert!(got_completion, "client should send completion");
         assert!(got_request, "client should send next request");
+    }
 
-        delete_backend_state(db_name);
+    #[tokio::test]
+    async fn test_server() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
+        let db_name = thread_rng().gen::<u64>().to_string();
+        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
+
+        defer! {
+            let _ = fs::remove_file(Path::new(&uds_path));
+            delete_backend_state(db_name.clone());
+        }
+
+        let node = NodeId::new(NopPubKey::from_bytes(&[1; 32]).unwrap());
+
+        let max_in_flight = 2;
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                max_in_flight,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                uds_path.clone(),
+            );
+
+        let commands = vec![StateSyncCommand::StartExecution];
+        state_sync.exec(commands);
+
+        assert!(matches!(state_sync.mode, StateSyncMode::Live(_)));
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut state_sync_pin = Pin::new(&mut state_sync);
+
+        match state_sync_pin.as_mut().poll_next(&mut cx) {
+            Poll::Pending => {}
+            Poll::Ready(Some(_)) => {
+                panic!("Shouldn't have any pending events after transition to live")
+            }
+            Poll::Ready(None) => panic!("unexpected stream end"),
+        }
+
+        {
+            let backend = get_backend_state(&db_name);
+            let mut backend = backend.lock().unwrap();
+            backend.handle_upsert(0, StateSyncUpsertType::Account, &[1; 20]);
+            backend.handle_upsert(0, StateSyncUpsertType::Account, &[2; 20]);
+
+            backend.run_server();
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 0,
+                prefix_bytes: 1,
+            }),
+        ))];
+
+        state_sync.exec(cmds);
+
+        let e = timeout(Duration::from_secs(1), state_sync.next())
+            .await
+            .expect("timeout")
+            .expect("stream closed unexpectedly");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                n,
+                StateSyncNetworkMessage::Response(r),
+            )) => {
+                assert_eq!(n, node);
+                assert_eq!(r.response_index, 0);
+                assert_eq!(r.response_n, 1);
+                assert_eq!(r.response.len(), 2);
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should produce response message",
+                    e
+                );
+            }
+        }
+
+        get_backend_state(&db_name).lock().unwrap().shutdown().await;
     }
 }
