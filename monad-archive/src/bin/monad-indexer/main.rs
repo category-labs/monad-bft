@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        latest_indexed = current_join_block - 1;
+        latest_indexed = current_join_block.saturating_sub(1);
         archive.update_latest(latest_indexed, Indexed).await?;
         metrics.gauge("latest_indexed", latest_indexed);
         metrics.counter("txs_indexed", num_txs_indexed as u64);
@@ -159,7 +159,7 @@ async fn handle_block(
 
     // check 1 key
     if let Some(tx) = first {
-        let key = tx.hash.to_string();
+        let key = format!("{:x}", tx.hash);
         tokio::spawn(async move {
             match dynamodb.get_txdata(&key).await {
                 Ok(Some(resp)) => {
@@ -176,7 +176,7 @@ async fn handle_block(
                         );
                     }
                 }
-                Ok(None) => warn!(key, "No key found for key"),
+                Ok(None) => warn!(key, block_num, "No key found for key"),
                 Err(e) => warn!("Error while checking: {e}"),
             };
         });
