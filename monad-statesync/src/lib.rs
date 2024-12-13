@@ -39,11 +39,20 @@ mod bindings {
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
 const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
 
+#[derive(Debug, Copy, Clone)]
+pub struct StateSyncConfig {
+    pub max_parallel_requests: usize, // max number of client requests to send in parallel
+    pub request_timeout: Duration,    // client request timeout
+    pub incoming_request_timeout: Duration, // server request timeout
+    pub max_outstanding_responses: usize, // max server outstanding responses
+    pub max_response_size: usize,     // max server response message size
+}
+
 pub struct StateSync<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
 {
-    incoming_request_timeout: Duration,
+    config: StateSyncConfig,
     uds_path: String,
 
     mode: StateSyncMode<CertificateSignaturePubKey<ST>>,
@@ -61,21 +70,19 @@ where
         db_paths: Vec<String>,
         genesis_path: String,
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-        max_parallel_requests: usize,
-        request_timeout: Duration,
-        incoming_request_timeout: Duration,
+        config: StateSyncConfig,
         uds_path: String,
     ) -> Self {
         Self {
-            incoming_request_timeout,
+            config,
             uds_path,
 
             mode: StateSyncMode::Sync(ffi::StateSync::start::<B>(
                 db_paths,
                 genesis_path,
                 state_sync_peers,
-                max_parallel_requests,
-                request_timeout,
+                config.max_parallel_requests,
+                config.request_timeout,
             )),
 
             waker: None,
@@ -170,10 +177,7 @@ where
                         StateSyncMode::Live(_) => false,
                     };
                     assert!(valid_transition);
-                    self.mode = StateSyncMode::Live(StateSyncIpc::new(
-                        &self.uds_path,
-                        self.incoming_request_timeout,
-                    ));
+                    self.mode = StateSyncMode::Live(StateSyncIpc::new(&self.uds_path, self.config));
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
                     }
@@ -247,30 +251,34 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::ipc::SyncRequest;
-    use monad_executor_glue::StateSyncRequest;
-    use std::{fs, path::Path};
+    use std::{
+        collections::HashMap,
+        fs,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
 
     use futures::task::noop_waker;
     use lazy_static::lazy_static;
     use monad_consensus_types::state_root_hash::{StateRootHash, StateRootHashInfo};
     use monad_crypto::{NopPubKey, NopSignature};
     use monad_executor::Executor;
-    use monad_executor_glue::{StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION};
+    use monad_executor_glue::{
+        StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    };
     use monad_multi_sig::MultiSig;
     use monad_types::{Hash, NodeId, SeqNum};
     use rand::{thread_rng, Rng};
-    use scopeguard::defer;
     use tokio::{io::Interest, time::timeout};
 
     use super::*;
-    use crate::ffi::NUM_PREFIXES;
+    use crate::{ffi::NUM_PREFIXES, ipc::SyncRequest};
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
     struct TestSyncClientBackend {
-        s: String,
+        backend: Arc<Mutex<BackendState>>,
     }
 
     struct BackendState {
@@ -434,11 +442,6 @@ mod test {
         }
     }
 
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
-
     lazy_static! {
         static ref BACKEND_STATE: Arc<Mutex<HashMap<String, Arc<Mutex<BackendState>>>>> =
             Arc::new(Mutex::new(Default::default()));
@@ -451,8 +454,8 @@ mod test {
         );
     }
 
-    fn delete_backend_state(s: String) {
-        BACKEND_STATE.lock().unwrap().remove(&s);
+    fn delete_backend_state(s: &str) {
+        BACKEND_STATE.lock().unwrap().remove(s);
     }
 
     fn get_backend_state(s: &str) -> Arc<Mutex<BackendState>> {
@@ -481,7 +484,7 @@ mod test {
     impl SyncClientBackend for TestSyncClientBackend {
         fn create(dbname_paths: &[String], _genesis_file: &str) -> Self {
             Self {
-                s: dbname_paths[0].clone(),
+                backend: get_backend_state(&dbname_paths[0]),
             }
         }
 
@@ -493,9 +496,10 @@ mod test {
             upsert_type: monad_executor_glue::StateSyncUpsertType,
             upsert_data: &[u8],
         ) -> bool {
-            let s = get_backend_state(self.s.as_str());
-            let mut s = s.lock().unwrap();
-            s.handle_upsert(prefix, upsert_type, upsert_data);
+            self.backend
+                .lock()
+                .unwrap()
+                .handle_upsert(prefix, upsert_type, upsert_data);
             true
         }
 
@@ -504,31 +508,56 @@ mod test {
         }
 
         fn latest_block(&self) -> SeqNum {
-            get_backend_state(self.s.as_str())
-                .lock()
-                .unwrap()
-                .latest_block
+            self.backend.lock().unwrap().latest_block
+        }
+    }
+
+    struct BackendHandle {
+        db_name: String,
+        backend: Arc<Mutex<BackendState>>,
+    }
+
+    impl BackendHandle {
+        fn new(latest_block: SeqNum) -> Self {
+            let db_name = thread_rng().gen::<u64>().to_string();
+            let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
+            add_backend_state(db_name.clone(), latest_block, uds_path);
+            let backend = get_backend_state(&db_name);
+            Self { db_name, backend }
+        }
+
+        fn uds_path(&self) -> String {
+            self.backend.lock().unwrap().uds_path.clone()
+        }
+    }
+
+    impl Drop for BackendHandle {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(Path::new(&self.uds_path()));
+            delete_backend_state(&self.db_name);
+        }
+    }
+
+    fn make_config() -> StateSyncConfig {
+        StateSyncConfig {
+            max_parallel_requests: 2,
+            request_timeout: Duration::from_secs(1),
+            incoming_request_timeout: Duration::from_secs(1),
+            max_outstanding_responses: 2,
+            max_response_size: 4 * 1024,
         }
     }
 
     #[tokio::test]
     async fn test_genesis_sync() {
-        let db_name = thread_rng().gen::<u64>().to_string();
-        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
-        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
-        defer! {
-            delete_backend_state(db_name.clone());
-            let _ = fs::remove_file(Path::new(&uds_path));
-        }
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
         let mut state_sync =
             StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
-                vec![db_name.clone()],
+                vec![bh.db_name.clone()],
                 "genesis_path".to_string(),
                 vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-                1,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-                uds_path.clone(),
+                make_config(),
+                bh.uds_path(),
             );
 
         let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
@@ -566,24 +595,16 @@ mod test {
     async fn test_client_completion() {
         let _ = tracing_subscriber::fmt::try_init();
 
-        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
-        let db_name = thread_rng().gen::<u64>().to_string();
-        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
-        defer! {
-            let _ = fs::remove_file(Path::new(&uds_path));
-            delete_backend_state(db_name.clone());
-        }
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
 
-        let max_in_flight = 2;
+        let config = make_config();
         let mut state_sync =
             StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
-                vec![db_name.clone()],
+                vec![bh.db_name.clone()],
                 "genesis_path".to_string(),
                 vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-                max_in_flight,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-                uds_path.clone(),
+                config.clone(),
+                bh.uds_path(),
             );
 
         let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
@@ -602,7 +623,7 @@ mod test {
                 Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(n, m)))) => {
                     println!("got message from {:?}: {:?}", n, m);
                     messages.push((n, m));
-                    if messages.len() == max_in_flight {
+                    if messages.len() == config.max_parallel_requests {
                         break;
                     }
                 }
@@ -669,31 +690,38 @@ mod test {
         assert!(got_request, "client should send next request");
     }
 
+    fn stream_idle(s: &mut StateSync<SignatureType, SignatureCollectionType>) -> bool {
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut s_pin = Pin::new(s);
+        match s_pin.as_mut().poll_next(&mut cx) {
+            Poll::Pending => true,
+            Poll::Ready(Some(e)) => {
+                eprintln!("unexpected event {:?}", e);
+                false
+            }
+            Poll::Ready(None) => {
+                eprintln!("unexpected stream end");
+                false
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_server() {
         let _ = tracing_subscriber::fmt::try_init();
 
-        let uds_path = format!("/tmp/{}", thread_rng().gen::<u64>().to_string());
-        let db_name = thread_rng().gen::<u64>().to_string();
-        add_backend_state(db_name.clone(), SeqNum(u64::MAX), uds_path.clone());
-
-        defer! {
-            let _ = fs::remove_file(Path::new(&uds_path));
-            delete_backend_state(db_name.clone());
-        }
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
 
         let node = NodeId::new(NopPubKey::from_bytes(&[1; 32]).unwrap());
 
-        let max_in_flight = 2;
         let mut state_sync =
             StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
-                vec![db_name.clone()],
+                vec![bh.db_name.clone()],
                 "genesis_path".to_string(),
                 vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
-                max_in_flight,
-                Duration::from_secs(1),
-                Duration::from_secs(1),
-                uds_path.clone(),
+                make_config(),
+                bh.uds_path(),
             );
 
         let commands = vec![StateSyncCommand::StartExecution];
@@ -701,21 +729,10 @@ mod test {
 
         assert!(matches!(state_sync.mode, StateSyncMode::Live(_)));
 
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        let mut state_sync_pin = Pin::new(&mut state_sync);
-
-        match state_sync_pin.as_mut().poll_next(&mut cx) {
-            Poll::Pending => {}
-            Poll::Ready(Some(_)) => {
-                panic!("Shouldn't have any pending events after transition to live")
-            }
-            Poll::Ready(None) => panic!("unexpected stream end"),
-        }
+        assert!(stream_idle(&mut state_sync));
 
         {
-            let backend = get_backend_state(&db_name);
-            let mut backend = backend.lock().unwrap();
+            let mut backend = bh.backend.lock().unwrap();
             backend.handle_upsert(0, StateSyncUpsertType::Account, &[1; 20]);
             backend.handle_upsert(0, StateSyncUpsertType::Account, &[2; 20]);
 
@@ -762,6 +779,178 @@ mod test {
             }
         }
 
-        get_backend_state(&db_name).lock().unwrap().shutdown().await;
+        bh.backend.lock().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_server_flow_control() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let node = NodeId::new(NopPubKey::from_bytes(&[1; 32]).unwrap());
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::StartExecution];
+        state_sync.exec(commands);
+
+        assert!(matches!(state_sync.mode, StateSyncMode::Live(_)));
+
+        const DATA_SIZE: usize = 1000;
+        {
+            let mut backend = bh.backend.lock().unwrap();
+
+            for i in 0..100 {
+                let mut data = [i as u8; DATA_SIZE];
+                let n = thread_rng().gen::<u64>();
+                data[0..8].copy_from_slice(n.to_le_bytes().as_ref());
+                backend.handle_upsert(0, StateSyncUpsertType::Account, &data);
+            }
+
+            backend.run_server();
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 0,
+                prefix_bytes: 1,
+            }),
+        ))];
+
+        state_sync.exec(cmds);
+
+        let mut responses_sent: usize = 0;
+        loop {
+            let e = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout")
+                .expect("stream closed unexpectedly");
+            match e {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    n,
+                    StateSyncNetworkMessage::Response(r),
+                )) => {
+                    assert_eq!(n, node);
+                    assert_eq!(r.response_index, responses_sent as u32);
+                    assert_eq!(
+                        r.response.len(),
+                        config.max_response_size.div_ceil(DATA_SIZE)
+                    );
+                    assert_eq!(r.response_n, 0);
+                }
+                _ => {
+                    assert!(
+                        false,
+                        "unexpected event {:?}, should produce response message",
+                        e
+                    );
+                }
+            }
+            responses_sent += 1;
+            if responses_sent == config.max_outstanding_responses {
+                break;
+            }
+        }
+
+        assert!(
+            stream_idle(&mut state_sync),
+            "shouldn't send more messages without completions"
+        );
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Completion,
+        ))];
+
+        state_sync.exec(cmds);
+
+        let e = timeout(Duration::from_secs(1), state_sync.next())
+            .await
+            .expect("timeout, should send next message after completion")
+            .expect("stream closed unexpectedly");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                n,
+                StateSyncNetworkMessage::Response(r),
+            )) => {
+                assert_eq!(n, node);
+                assert_eq!(r.response_index, responses_sent as u32);
+                assert_eq!(
+                    r.response.len(),
+                    config.max_response_size.div_ceil(DATA_SIZE)
+                );
+                assert_eq!(r.response_n, 0);
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should produce response message",
+                    e
+                );
+            }
+        }
+
+        responses_sent += 1;
+
+        assert!(
+            stream_idle(&mut state_sync),
+            "shouldn't send more messages without completions"
+        );
+
+        loop {
+            let cmds = vec![StateSyncCommand::Message((
+                node,
+                StateSyncNetworkMessage::Completion,
+            ))];
+            state_sync.exec(cmds);
+
+            let e = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout, should send next message after completion")
+                .expect("stream closed unexpectedly");
+            match e {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    n,
+                    StateSyncNetworkMessage::Response(r),
+                )) => {
+                    assert_eq!(n, node);
+                    assert_eq!(r.response_index, responses_sent as u32);
+                    if r.response_n == 0 {
+                        assert_eq!(
+                            r.response.len(),
+                            config.max_response_size.div_ceil(DATA_SIZE)
+                        );
+                    } else {
+                        break;
+                    }
+                }
+                _ => {
+                    assert!(
+                        false,
+                        "unexpected event {:?}, should produce response message",
+                        e
+                    );
+                }
+            }
+            responses_sent += 1;
+        }
+
+        bh.backend.lock().unwrap().shutdown().await;
     }
 }
