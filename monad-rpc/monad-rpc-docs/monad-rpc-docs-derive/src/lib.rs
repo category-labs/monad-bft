@@ -186,7 +186,6 @@ fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2
 
                         let name = type_ident.to_string();
 
-                        // Check if inner_ty is Option<T>
                         if let Type::Path(inner_path) = inner_ty {
                             if let Some(last_segment) = inner_path.path.segments.last() {
                                 if last_segment.ident == "Option" || last_segment.ident == "Vec" {
@@ -196,6 +195,37 @@ fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2
                                         if let Some(GenericArgument::Type(inner_ty)) =
                                             inner_args.args.first()
                                         {
+                                            // Check if the inner type is itself an Option or Vec
+                                            if let Type::Path(nested_inner_path) = inner_ty {
+                                                if let Some(nested_last_segment) =
+                                                    nested_inner_path.path.segments.last()
+                                                {
+                                                    if nested_last_segment.ident == "Vec" {
+                                                        // Handle Option<Vec<T>>
+                                                        if let PathArguments::AngleBracketed(
+                                                            nested_inner_args,
+                                                        ) = &nested_last_segment.arguments
+                                                        {
+                                                            if let Some(GenericArgument::Type(
+                                                                nested_inner_ty,
+                                                            )) = nested_inner_args.args.first()
+                                                            {
+                                                                let schema_expr =
+                                                                    generate_schema_expr(
+                                                                        nested_inner_ty,
+                                                                    );
+                                                                return Some((
+                                                                    name,
+                                                                    (*nested_inner_ty).clone(),
+                                                                    schema_expr,
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Handle single-level Vec<T> or Option<T>
                                             let schema_expr = generate_schema_expr(inner_ty);
                                             return Some((name, (*inner_ty).clone(), schema_expr));
                                         }

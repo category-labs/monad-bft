@@ -61,10 +61,3 @@ pub struct TraceGetParams {
 pub async fn monad_trace_get(params: TraceGetParams) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }
-
-#[rpc(method = "trace_transaction")]
-#[allow(non_snake_case)]
-/// Returns all traces of given transaction.
-pub async fn monad_trace_transaction(params: EthHash) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}

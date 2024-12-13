@@ -250,7 +250,7 @@ pub enum MonadTraceAction {
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
-pub enum MonadTraceResult {
+pub enum MonadTraceInnerResult {
     #[serde(rename_all = "camelCase")]
     Create {
         address: EthAddress,
@@ -266,9 +266,9 @@ pub enum MonadTraceResult {
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct MonadTraceBlockResult {
+pub struct MonadTraceResult {
     action: MonadTraceAction,
-    result: MonadTraceResult,
+    result: MonadTraceInnerResult,
     subtraces: usize,
     block_hash: FixedData<32>,
     block_number: u64,
@@ -284,7 +284,7 @@ pub struct MonadTraceBlockResult {
 pub async fn monad_trace_block<T: Triedb>(
     triedb_env: &T,
     params: MonadTraceBlockParams,
-) -> JsonRpcResult<Vec<MonadTraceBlockResult>> {
+) -> JsonRpcResult<Vec<MonadTraceResult>> {
     trace!("monad_trace_block: {params:?}");
 
     let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
@@ -323,7 +323,7 @@ pub async fn monad_trace_block<T: Triedb>(
         };
 
         let result = match top_level_frame.result.typ {
-            CallKind::Create | CallKind::Create2 => MonadTraceResult::Create {
+            CallKind::Create | CallKind::Create2 => MonadTraceInnerResult::Create {
                 address: top_level_frame
                     .result
                     .to
@@ -334,13 +334,13 @@ pub async fn monad_trace_block<T: Triedb>(
                 code: top_level_frame.result.output,
                 gas_used: top_level_frame.result.gas_used,
             },
-            _ => MonadTraceResult::Call {
+            _ => MonadTraceInnerResult::Call {
                 gas_used: top_level_frame.result.gas_used,
                 output: top_level_frame.result.output,
             },
         };
 
-        res.push(MonadTraceBlockResult {
+        res.push(MonadTraceResult {
             action,
             result,
             subtraces: sub_traces,
@@ -354,6 +354,108 @@ pub async fn monad_trace_block<T: Triedb>(
     }
 
     Ok(res)
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadTraceTransactionParams {
+    tx_hash: EthHash,
+}
+
+#[rpc(method = "trace_transaction")]
+#[allow(non_snake_case)]
+/// Returns all traces of given transaction.
+pub async fn monad_trace_transaction<T: Triedb>(
+    triedb_env: &T,
+    params: MonadTraceTransactionParams,
+) -> JsonRpcResult<Option<Vec<MonadTraceResult>>> {
+    trace!("monad_trace_transaction: {params:?}");
+
+    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let Some(tx_loc) = triedb_env
+        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        return Ok(None);
+    };
+
+    let header = match triedb_env
+        .get_block_header(tx_loc.block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        Some(header) => header,
+        None => return Err(JsonRpcError::internal_error("block not found".to_string())),
+    };
+
+    let Some(rlp_call_frame) = triedb_env
+        .get_call_frame(tx_loc.tx_index, tx_loc.block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    else {
+        return Ok(None);
+    };
+
+    let rlp_call_frame = &mut rlp_call_frame.as_slice();
+
+    let top_level_frame = decode_call_frame(
+        triedb_env,
+        rlp_call_frame,
+        tx_loc.block_num,
+        &TracerObject::default(),
+    )
+    .await?
+    .ok_or(JsonRpcError::internal_error(
+        "decoding call frame failed".to_string(),
+    ))?;
+
+    let sub_traces = count_sub_call_frames(&top_level_frame);
+
+    let action = match top_level_frame.typ {
+        CallKind::Create | CallKind::Create2 => MonadTraceAction::Create {
+            from: top_level_frame.from,
+            value: top_level_frame.value,
+            gas: top_level_frame.gas,
+            init: top_level_frame.input,
+        },
+        _ => MonadTraceAction::Call {
+            call_type: ParityCallKind(top_level_frame.typ.clone()),
+            from: top_level_frame.from,
+            to: top_level_frame.to.clone(),
+            value: top_level_frame.value,
+            gas: top_level_frame.gas,
+            input: top_level_frame.input,
+        },
+    };
+
+    let result = match top_level_frame.typ {
+        CallKind::Create | CallKind::Create2 => MonadTraceInnerResult::Create {
+            address: top_level_frame
+                .to
+                .unwrap_or(Err(JsonRpcError::internal_error(format!(
+                    "contract address not found for {}",
+                    params.tx_hash
+                )))?),
+            code: top_level_frame.output,
+            gas_used: top_level_frame.gas_used,
+        },
+        _ => MonadTraceInnerResult::Call {
+            gas_used: top_level_frame.gas_used,
+            output: top_level_frame.output,
+        },
+    };
+
+    Ok(Some(vec![MonadTraceResult {
+        action,
+        result,
+        subtraces: sub_traces,
+        block_number: header.header.number,
+        block_hash: header.hash.into(),
+        typ: ParityCallKind(top_level_frame.typ),
+        trace_address: Vec::new(), // TODO: implement trace address
+        transaction_position: tx_loc.tx_index as usize,
+        transaction_hash: params.tx_hash,
+    }]))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
