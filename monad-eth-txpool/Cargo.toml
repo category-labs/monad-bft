@@ -14,6 +14,8 @@ monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-types = { path = "../monad-types" }
+monad-eth-testutil = { path = "../monad-eth-testutil" }
+monad-testutil = { path = "../monad-testutil" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
@@ -31,9 +33,7 @@ rand_chacha = { workspace = true }
 tracing-test = { workspace = true }
 
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-testutil = { path = "../monad-eth-testutil" }
 monad-perf-util = { path = "../monad-perf-util" }
-monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 
 [[bench]]

@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    sync::{atomic::AtomicI64, Arc},
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
@@ -159,7 +156,7 @@ impl SubPool {
                 removed += entry.range(0..=*nonce, &guard).count();
                 entry.remove_range(0..=*nonce);
 
-                if entry.len() == 0 {
+                if entry.is_empty() {
                     let _ = entry.remove();
                     self.pool.remove(sender);
                 }
@@ -225,7 +222,7 @@ impl SubPool {
                     let _ = entry.remove();
                     self.pool.remove(sender);
                 } else if removed > 0 {
-                    entry.get_mut().remove_range(0..(removed as u64 + 1));
+                    entry.get_mut().remove_range(0..=nonce);
                 }
             }
         });
@@ -290,10 +287,12 @@ impl ChainCache {
         senders.scan(|sender, nonce| {
             match inner.accounts.get(sender) {
                 Some(entry) => {
-                    entry.update(*nonce);
+                    entry.update(*nonce + 1);
                 }
                 None => {
-                    inner.accounts.insert(*sender, *nonce);
+                    if let Err(_) = inner.accounts.insert(*sender, *nonce + 1) {
+                        error!("attempted to insert an account that already exists in chain cache")
+                    }
                 }
             }
             add_to_eviction_list.push((*sender, *nonce));
@@ -400,24 +399,36 @@ impl VirtualPool {
             return TxPoolType::Discard;
         }
 
+        if let Some(entry) = self.pending_pool.get(&txn.signer(), &txn.nonce()) {
+            // Replace a pending transaction if the fee is at least 10% higher than the current fee
+            let current_gas_price = entry.transaction.max_fee_per_gas();
+            let new_gas_price = txn.transaction.max_fee_per_gas();
+            if new_gas_price >= current_gas_price + (current_gas_price / 10) {
+                return TxPoolType::ReplacePending;
+            } else {
+                return TxPoolType::Discard;
+            }
+        }
+
         // Fetch the current nonce of the sender
         let cur_nonce = self.chain_cache.nonce(&sender).await;
 
-        // If the our nonce is zero and the sender's is zero, mark as pending.
-        if cur_nonce.map(|n| n == 0).unwrap_or(false) && nonce == 0 {
-            return TxPoolType::Pending;
-        }
-
-        // If our nonce is less than 1 of sender nonce, mark as pending.
-        if cur_nonce.map(|n| n + 1 == nonce).unwrap_or(false) {
+        // If our nonce matches sender nonce, send to pending pool.
+        if cur_nonce.map(|n| n == nonce).unwrap_or(false) {
+            dbg!("SEND TO PENDING");
             return TxPoolType::Pending;
         }
 
         let pending_txs = self.pending_pool.by_addr(&sender);
-        let queued_txs = self.queued_pool.by_addr(&sender);
 
+        // If the nonce is greater than the current nonce, check if there is a gap.
         if cur_nonce
-            .map(|cur_nonce| nonce.checked_sub(cur_nonce).map(|v| v > 1).unwrap_or(false))
+            .map(|cur_nonce| {
+                nonce
+                    .checked_sub(cur_nonce)
+                    .map(|v| v >= 1)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
         {
             // The chain cache is updated at each new block, and we can receive transactions before chain cache is updated.
@@ -447,35 +458,7 @@ impl VirtualPool {
             return TxPoolType::Queue;
         }
 
-        // If we have a queued transaction with a nonce less than the new sender nonce, add the transaction to the queue.
-        if let Some(true) = queued_txs.first().map(|tx| tx.nonce() < nonce) {
-            return TxPoolType::Queue;
-        }
-
-        let Some(entry) = pending_txs.last() else {
-            return TxPoolType::Pending;
-        };
-
-        let last_pending_nonce = entry.nonce();
-
-        if last_pending_nonce + 1 == nonce {
-            TxPoolType::Pending
-        } else if last_pending_nonce == nonce {
-            if let Some(entry) = self.pending_pool.get(&txn.signer(), &txn.nonce()) {
-                // Replace a pending transaction if the fee is at least 10% higher than the current fee
-                let current_gas_price = entry.transaction.max_fee_per_gas();
-                let new_gas_price = txn.transaction.max_fee_per_gas();
-                if new_gas_price >= current_gas_price + (current_gas_price / 10) {
-                    TxPoolType::ReplacePending
-                } else {
-                    TxPoolType::Discard
-                }
-            } else {
-                TxPoolType::Discard
-            }
-        } else {
-            TxPoolType::Pending
-        }
+        TxPoolType::Queue
     }
 
     async fn process_event(&self, event: TxPoolEvent) {
@@ -633,15 +616,22 @@ impl VirtualPool {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        hash::{DefaultHasher, Hash, Hasher},
-        str::FromStr,
-        sync::Arc,
-    };
+    use std::{collections::BTreeMap, str::FromStr, sync::Arc, u64};
 
     use alloy_primitives::FixedBytes;
+    use alloy_rlp::Decodable;
+    use bytes::Bytes;
+    use itertools::Itertools;
+    use monad_eth_block_policy::EthBlockPolicy;
+    use monad_eth_testutil::{generate_block_with_txs, make_tx};
+    use monad_eth_txpool::{test_utils::Pool, EthTxPool};
+    use monad_eth_types::EthAddress;
+    use monad_state_backend::{InMemoryBlockState, InMemoryStateInner};
+    use monad_testutil::signing::MockSignatures;
     use monad_triedb_utils::triedb_env::BlockHeader;
-    use reth_primitives::{hex::FromHex, sign_message, Header, TxEip1559, B256, U256};
+    use monad_types::{Round, SeqNum};
+    use rand::{prelude::SliceRandom, rngs::StdRng, SeedableRng};
+    use reth_primitives::{hex::FromHex, Header, B256};
 
     use super::*;
 
@@ -665,55 +655,34 @@ mod tests {
         ]
     }
 
-    fn transaction(sk: B256, nonce: u64, fee: Option<u128>) -> TransactionSignedEcRecovered {
-        let transaction = reth_primitives::Transaction::Eip1559(TxEip1559 {
-            nonce,
-            max_fee_per_gas: fee.unwrap_or(1_000),
-            ..Default::default()
-        });
-        let signature = sign_message(sk, transaction.signature_hash()).unwrap();
-
-        let mut hasher = DefaultHasher::new();
-        transaction.hash(&mut hasher);
-        let hash = U256::from(hasher.finish()).into();
-
-        let signed_tx = TransactionSigned {
-            transaction,
-            signature,
-            hash,
-        };
-
-        let signer = signed_tx.recover_signer().unwrap();
-
-        TransactionSignedEcRecovered::from_signed_transaction(signed_tx, signer)
-    }
-
+    //
     #[tokio::test]
-    async fn test_txpool() {
+    async fn test_vpool() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
         let (sk, addr) = accounts()[0];
 
+        initialize_chain_cache_nonces(v_pool.clone()).await;
+
         let txs = vec![
-            transaction(sk, 1, None),
-            transaction(sk, 2, None),
-            transaction(sk, 3, None),
-            transaction(sk, 4, None),
+            make_tx(sk, 1_000, 21_000, 0, 0),
+            make_tx(sk, 1_000, 21_000, 1, 0),
+            make_tx(sk, 1_000, 21_000, 2, 0),
+            make_tx(sk, 1_000, 21_000, 3, 0),
         ];
 
         for tx in txs.clone() {
-            tx_pool.add_transaction(tx).await;
+            v_pool.add_transaction(tx.into_ecrecovered().unwrap()).await;
         }
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
-        assert_eq!(tx_pool.pending_pool.len(), 4);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 4);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.chain_cache.len().await, 0);
+        assert_eq!(v_pool.pending_pool.pool.len(), 1);
+        assert_eq!(v_pool.pending_pool.len(), 4);
+        assert_eq!(v_pool.pending_pool.pool.get(&addr).unwrap().len(), 4);
+        assert_eq!(v_pool.queued_pool.pool.len(), 0);
 
-        tx_pool
+        v_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: txs.into_iter().collect(),
                     ..Default::default()
                 },
                 1000,
@@ -721,33 +690,35 @@ mod tests {
             .await;
 
         // After block inclusion
-        assert_eq!(tx_pool.chain_cache.len().await, 1);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.len(), 0);
+        assert_eq!(v_pool.queued_pool.pool.len(), 0);
+        assert_eq!(v_pool.pending_pool.pool.len(), 0);
     }
 
     #[tokio::test]
-    async fn txpool_nonce_gap() {
+    async fn vpool_nonce_gap() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
         let (sk, addr) = accounts()[0];
 
+        initialize_chain_cache_nonces(v_pool.clone()).await;
+
         let txs = vec![
-            transaction(sk, 1, None), // included
+            make_tx(sk, 1_000, 21_000, 0, 0), // included
         ];
 
-        tx_pool.new_block(BlockWithReceipts::default(), 1_000).await;
+        v_pool.new_block(BlockWithReceipts::default(), 1_000).await;
         for tx in txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            v_pool
+                .add_transaction(tx.try_into_ecrecovered().unwrap())
+                .await;
         }
 
         // Expect to discard txs[0] and put remaining in queued pool
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 1);
-        assert_eq!(tx_pool.chain_cache.len().await, 0);
+        assert_eq!(v_pool.pending_pool.pool.len(), 1);
+        assert_eq!(v_pool.queued_pool.pool.len(), 0);
+        assert_eq!(v_pool.pending_pool.pool.get(&addr).unwrap().len(), 1);
 
-        tx_pool
+        v_pool
             .new_block(
                 BlockWithReceipts {
                     block_header: BlockHeader {
@@ -757,24 +728,27 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    transactions: vec![transaction(sk, 1, Some(2000)).into_signed()],
+                    transactions: vec![make_tx(sk, 2_000, 21_000, 1, 0)],
                     ..Default::default()
                 },
                 1_000,
             )
             .await;
 
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.len(), 0);
+        assert_eq!(v_pool.queued_pool.pool.len(), 0);
+        assert_eq!(v_pool.pending_pool.pool.len(), 0);
 
-        let txs = vec![transaction(sk, 3, None), transaction(sk, 4, None)];
+        let txs = vec![
+            make_tx(sk, 1_000, 21_000, 3, 0),
+            make_tx(sk, 1_000, 21_000, 4, 0),
+        ];
 
         for tx in txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            v_pool.add_transaction(tx.into_ecrecovered().unwrap()).await;
         }
-        assert_eq!(tx_pool.pending_pool.pool.len(), 0);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 1);
-        assert_eq!(tx_pool.queued_pool.pool.get(&addr).unwrap().len(), 2);
+        assert_eq!(v_pool.pending_pool.pool.len(), 0);
+        assert_eq!(v_pool.queued_pool.pool.len(), 1);
+        assert_eq!(v_pool.queued_pool.pool.get(&addr).unwrap().len(), 2);
     }
 
     // Test behavior with fee replacement.
@@ -784,9 +758,13 @@ mod tests {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
 
+        initialize_chain_cache_nonces(tx_pool.clone()).await;
+
         // Add pending transaction with base fee of 1000
-        let base = transaction(accounts()[0].0, 0, Some(1000));
-        tx_pool.add_transaction(base.clone()).await;
+        let base = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0);
+        tx_pool
+            .add_transaction(base.clone().into_ecrecovered().unwrap())
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -798,8 +776,10 @@ mod tests {
             1000
         );
 
-        let replace = transaction(accounts()[0].0, 0, Some(2000));
-        tx_pool.add_transaction(replace.clone()).await;
+        let replace = make_tx(accounts()[0].0, 2_000, 21_000, 0, 0);
+        tx_pool
+            .add_transaction(replace.clone().try_into_ecrecovered().unwrap())
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -811,8 +791,10 @@ mod tests {
             2000
         );
 
-        let underpriced = transaction(accounts()[0].0, 0, Some(1000));
-        tx_pool.add_transaction(underpriced.clone()).await;
+        let underpriced = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0);
+        tx_pool
+            .add_transaction(underpriced.clone().try_into_ecrecovered().unwrap())
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -828,10 +810,10 @@ mod tests {
             let res = ipc_receiver.recv_async().await.unwrap();
             match i {
                 0 => {
-                    assert_eq!(res, base.clone().into_signed());
+                    assert_eq!(res, base.clone());
                 }
                 1 => {
-                    assert_eq!(res, replace.clone().into_signed());
+                    assert_eq!(res, replace.clone());
                 }
                 _ => {
                     panic!("unexpected txn");
@@ -845,15 +827,18 @@ mod tests {
     async fn txpool_stress() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        initialize_chain_cache_nonces(tx_pool.clone()).await;
         let (sk, addr) = accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
-            txs.push(transaction(sk, i, None));
+            txs.push(make_tx(sk, 1_000, 21_000, i, 0));
         }
 
         assert_eq!(txs.len(), 10_000);
         for tx in txs.clone() {
-            tx_pool.add_transaction(tx.clone()).await;
+            tx_pool
+                .add_transaction(tx.into_ecrecovered().unwrap())
+                .await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.queued_pool.pool.len(), 0);
@@ -863,7 +848,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: txs,
                     ..Default::default()
                 },
                 1_000,
@@ -895,16 +880,38 @@ mod tests {
 
         for sk in senders.clone() {
             for i in 0..100 {
-                pending_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), i, None));
+                pending_txs.push(make_tx(
+                    FixedBytes::<32>::from_slice(&sk),
+                    1_000,
+                    21_000,
+                    i,
+                    0,
+                ));
             }
         }
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
 
+        for sender in pending_txs
+            .clone()
+            .iter()
+            .map(|tx| tx.recover_signer().unwrap())
+        {
+            tx_pool
+                .chain_cache
+                .inner
+                .write()
+                .await
+                .accounts
+                .insert(sender, 0);
+        }
+
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
-            tx_pool.add_transaction(tx.clone()).await;
+            tx_pool
+                .add_transaction(tx.into_ecrecovered().unwrap())
+                .await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K transactions took {:?}", elapsed);
@@ -915,7 +922,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: pending_txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: pending_txs,
                     ..Default::default()
                 },
                 1_000,
@@ -926,7 +933,11 @@ mod tests {
         let mut queued_txs = Vec::new();
         for sk in senders.clone() {
             for i in 101..200 {
-                queued_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), i, None));
+                queued_txs.push(
+                    make_tx(FixedBytes::<32>::from_slice(&sk), 1_000, 21_000, i, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                );
             }
         }
 
@@ -942,7 +953,11 @@ mod tests {
 
         let mut fix_nonce_gap_txs = Vec::new();
         for sk in senders.clone() {
-            fix_nonce_gap_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), 100, None));
+            fix_nonce_gap_txs.push(
+                make_tx(FixedBytes::<32>::from_slice(&sk), 1_000, 21_000, 100, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            );
         }
 
         tx_pool
@@ -973,14 +988,29 @@ mod tests {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
         let vpool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
+
+        initialize_chain_cache_nonces(vpool.clone()).await;
+
         vpool
-            .add_transaction(transaction(accounts()[0].0, 0, None))
+            .add_transaction(
+                make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
             .await;
         vpool
-            .add_transaction(transaction(accounts()[1].0, 0, None))
+            .add_transaction(
+                make_tx(accounts()[1].0, 1_000, 21_000, 0, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
             .await;
         vpool
-            .add_transaction(transaction(accounts()[2].0, 0, None))
+            .add_transaction(
+                make_tx(accounts()[2].0, 1_000, 21_000, 0, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
             .await;
 
         assert_eq!(vpool.pending_pool.evict.try_read().unwrap().len(), 3);
@@ -994,7 +1024,9 @@ mod tests {
     async fn test_nonce_gap_resolution() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
-        let tx = transaction(accounts()[0].0, 0, None);
+        let tx = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
+            .into_ecrecovered()
+            .unwrap();
         tx_pool.add_transaction(tx.clone()).await;
 
         tx_pool
@@ -1015,12 +1047,20 @@ mod tests {
             .await;
 
         tx_pool
-            .add_transaction(transaction(accounts()[0].0, 2, None))
+            .add_transaction(
+                make_tx(accounts()[0].0, 1_000, 21_000, 2, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
             .await;
         assert_eq!(tx_pool.queued_pool.len(), 1);
 
         tx_pool
-            .add_transaction(transaction(accounts()[0].0, 1, None))
+            .add_transaction(
+                make_tx(accounts()[0].0, 1_000, 21_000, 1, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
             .await;
         assert_eq!(tx_pool.queued_pool.len(), 0);
         assert_eq!(tx_pool.pending_pool.len(), 2);
@@ -1036,7 +1076,12 @@ mod tests {
         let mut commited = Vec::new();
         for nonce in 1..=10 {
             pending_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
             commited.push((accounts()[0].1, nonce));
         }
@@ -1055,7 +1100,12 @@ mod tests {
         // Add 10 transactions, expect to clear 9 entires in pool if the transaction with nonce 9 is commited.
         for nonce in 1..=10 {
             pending_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
         }
         assert_eq!(pending_pool.len(), 10);
@@ -1074,13 +1124,23 @@ mod tests {
 
         for nonce in 1..=10 {
             queued_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
         }
 
         for nonce in 12..=21 {
             queued_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
         }
 
@@ -1110,13 +1170,23 @@ mod tests {
         // Add 20 transactions again, and test that lower nonces are evicted when a noncegap is resolved.
         for nonce in 1..=10 {
             queued_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
         }
 
         for nonce in 12..=21 {
             queued_pool
-                .add(transaction(accounts()[0].0, nonce, None), false)
+                .add(
+                    make_tx(accounts()[0].0, 1_000, 21_000, nonce, 0)
+                        .into_ecrecovered()
+                        .unwrap(),
+                    false,
+                )
                 .await;
         }
 
@@ -1130,6 +1200,376 @@ mod tests {
 
         for (evicted_nonce, expected_nonce) in evicted.iter().map(|tx| tx.nonce()).zip(1..=10) {
             assert_eq!(expected_nonce, evicted_nonce);
+        }
+    }
+
+    async fn initialize_chain_cache_nonces(v_pool: Arc<VirtualPool>) {
+        for account in accounts() {
+            v_pool
+                .chain_cache
+                .inner
+                .write()
+                .await
+                .accounts
+                .insert(account.1, 0)
+                .expect("insert accounts into chain cache");
+        }
+    }
+
+    fn make_txpool_state_backend(nonce: u64) -> Arc<std::sync::Mutex<InMemoryStateInner>> {
+        let mut nonces: BTreeMap<EthAddress, u64> = BTreeMap::new();
+
+        for account in accounts() {
+            nonces.insert(EthAddress(account.1), nonce);
+        }
+
+        InMemoryStateInner::new(
+            u128::MAX,
+            SeqNum(u64::MAX),
+            InMemoryBlockState::genesis(nonces),
+        )
+    }
+
+    /*
+    Integration test that sends transactions with nonce gaps to the virtual pool and commits them using txpool.
+    Creates a list of transactions, shuffle, and take a list of transactions out of the list to make a nonce gap.
+    Send the first list of transactions to the virtual pool, then send the rest of the transactions.
+    Check queued pool and pending pool meets expectations after transactions are committed.
+    */
+    #[tokio::test]
+    async fn vpool_txpool_with_gaps() {
+        let mut eth_block_policy = EthBlockPolicy::new(SeqNum(0), 100, 1337);
+
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
+        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+
+        let mut tx_pool = EthTxPool::default();
+        let mut current_round = 1u64;
+        let mut current_seq_num = 1u64;
+        let pending_blocks = VecDeque::default();
+        let mut nonce = 0;
+
+        initialize_chain_cache_nonces(v_pool.clone()).await;
+
+        for _ in 0..10 {
+            // Create transactions, add them to vpool.
+            let mut txs = Vec::new();
+            assert_eq!(
+                nonce,
+                v_pool.chain_cache.nonce(&accounts()[0].1).await.unwrap()
+            );
+
+            // 1000 transactions per account
+            for (sk, _) in accounts() {
+                for i in nonce..nonce + 1000 {
+                    let tx: TransactionSigned = make_tx(sk, 1_000, 21_000, i, 0);
+                    txs.push(tx);
+                }
+            }
+
+            let state_backend = make_txpool_state_backend(nonce);
+
+            nonce += 1000;
+
+            let mut rng = StdRng::from_entropy();
+            txs.shuffle(&mut rng);
+
+            // Do not send all transactions to virtual pool at once. Instead, take a few transactions and send them later.
+            // First, send the first 1500 transactions to the virtual pool. Then, send the rest of the transactions.
+            let rest_txs = txs.split_off(1_500);
+
+            for (test_idx, txs) in [txs, rest_txs].iter().enumerate() {
+                for tx in txs.clone() {
+                    v_pool.add_transaction(tx.into_ecrecovered().unwrap()).await;
+                }
+
+                let incoming_txs: Vec<_> = ipc_receiver.try_iter().collect();
+                assert_eq!(v_pool.pending_pool.len(), incoming_txs.len());
+
+                // After we send the rest, the queued pool should be empty.
+                if test_idx == 1 {
+                    assert_eq!(v_pool.queued_pool.len(), 0);
+                }
+
+                let pending_senders = incoming_txs
+                    .iter()
+                    .map(|tx| (tx.recover_signer_unchecked().unwrap(), tx.nonce()))
+                    .collect_vec();
+                let incoming_txs: Vec<_> = incoming_txs
+                    .iter()
+                    .map(|tx| Bytes::from(tx.envelope_encoded()))
+                    .collect();
+                let incoming_txs_len = incoming_txs.len();
+
+                // Add transactions to txpool
+                let inserted_txs = Pool::insert_tx(
+                    &mut tx_pool,
+                    incoming_txs.clone(),
+                    &eth_block_policy,
+                    &state_backend,
+                );
+                assert_eq!(inserted_txs.len(), incoming_txs_len);
+
+                // Create a block proposal
+                let encoded_txns = Pool::create_proposal(
+                    &mut tx_pool,
+                    SeqNum(0),
+                    100_000,
+                    u64::MAX,
+                    &eth_block_policy,
+                    pending_blocks.iter().collect_vec(),
+                    &state_backend,
+                )
+                .expect("create proposal succeeds");
+
+                let decoded_txns =
+                    Vec::<reth_primitives::TransactionSigned>::decode(&mut encoded_txns.as_ref())
+                        .unwrap();
+                assert_eq!(decoded_txns.len(), incoming_txs_len);
+
+                // Create Block
+                let block = generate_block_with_txs(
+                    Round(current_round),
+                    SeqNum(current_seq_num),
+                    decoded_txns,
+                );
+                assert_eq!(block.validated_txns.len(), incoming_txs_len);
+
+                current_seq_num += 1;
+                current_round += 1;
+
+                monad_consensus_types::block::BlockPolicy::<
+                    MockSignatures<monad_eth_txpool::test_utils::SignatureType>,
+                    monad_eth_txpool::test_utils::StateBackendType,
+                >::update_committed_block(&mut eth_block_policy, &block);
+
+                monad_consensus_types::txpool::TxPool::<
+                    MockSignatures<monad_eth_txpool::test_utils::SignatureType>,
+                    EthBlockPolicy,
+                    monad_eth_txpool::test_utils::StateBackendType,
+                >::update_committed_block(&mut tx_pool, &block);
+
+                let block_with_receipts = BlockWithReceipts {
+                    block_header: BlockHeader {
+                        header: Header {
+                            number: current_seq_num,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    transactions: block
+                        .validated_txns
+                        .iter()
+                        .map(|tx| tx.clone().into())
+                        .collect(),
+                    ..Default::default()
+                };
+
+                let commited_senders = block_with_receipts
+                    .transactions
+                    .iter()
+                    .map(|tx| (tx.recover_signer_unchecked().unwrap(), tx.nonce()))
+                    .collect_vec();
+
+                // Compare differences between pending_senders and commited_senders
+                assert_eq!(pending_senders.len(), commited_senders.len());
+                assert!(pending_senders
+                    .iter()
+                    .filter(|(sender, nonce)| !commited_senders.contains(&(*sender, *nonce)))
+                    .collect::<Vec<_>>()
+                    .is_empty());
+
+                // There should be no pending (sender, nonces) in the queued pool.
+                let mut queued_txs = Vec::new();
+                v_pool.queued_pool.pool.scan(|_, v| {
+                    queued_txs.push(
+                        v.iter(&Guard::new())
+                            .map(|(nonce, tx)| (nonce.clone(), tx.signer()))
+                            .collect::<Vec<_>>(),
+                    );
+                });
+
+                let queued_senders = queued_txs
+                    .iter()
+                    .flatten()
+                    .map(|(nonce, sender)| (*sender, *nonce))
+                    .collect_vec();
+                assert_eq!(v_pool.pending_pool.len(), incoming_txs.len());
+                assert!(pending_senders
+                    .iter()
+                    .filter(|(sender, nonce)| queued_senders.contains(&(*sender, *nonce)))
+                    .collect::<Vec<_>>()
+                    .is_empty());
+
+                // The pending pool should be equal to the commit senders.
+                assert_eq!(v_pool.pending_pool.len(), commited_senders.len());
+                assert_eq!(v_pool.pending_pool.len(), block.validated_txns.len());
+                let queued_pool_len = v_pool.queued_pool.len();
+                v_pool.new_block(block_with_receipts, 1_000).await;
+
+                // Pending pool must be zero after committed transactions.
+                assert_eq!(v_pool.pending_pool.len(), 0);
+
+                // Committed transactions should not change the queued pool.
+                assert_eq!(v_pool.queued_pool.len(), queued_pool_len);
+
+                // Add the remaining transactions to the pool and expect them to be confirmed.
+                if test_idx == 1 {
+                    assert_eq!(v_pool.pending_pool.len(), 0);
+                    assert_eq!(v_pool.queued_pool.len(), 0);
+                }
+            }
+        }
+    }
+
+    /*
+    Integration test that sends transactions to the virtual pool and commits them using txpool.
+    Creates a list of transactions, shuffles and sends to the virtual pool.
+    Then, creates a block proposal and block, and commits the transactions.
+    */
+    #[tokio::test]
+    async fn vpool_txpool_ordered_txs() {
+        let mut eth_block_policy = EthBlockPolicy::new(SeqNum(0), 100, 1337);
+
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
+        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+
+        let mut tx_pool = EthTxPool::default();
+        let mut current_round = 1u64;
+        let mut current_seq_num = 1u64;
+        let pending_blocks = VecDeque::default();
+        let mut nonce = 0;
+
+        initialize_chain_cache_nonces(v_pool.clone()).await;
+
+        for _ in 0..10 {
+            // Create transactions, add them to vpool.
+            let mut txs = Vec::new();
+            assert_eq!(
+                nonce,
+                v_pool.chain_cache.nonce(&accounts()[0].1).await.unwrap()
+            );
+            for (sk, _) in accounts() {
+                for i in nonce..nonce + 1000 {
+                    let tx: TransactionSigned = make_tx(sk, 1_000, 21_000, i, 0);
+                    txs.push(tx);
+                }
+            }
+
+            let mut rng = StdRng::from_entropy();
+            txs.shuffle(&mut rng);
+
+            for tx in txs.clone() {
+                v_pool.add_transaction(tx.into_ecrecovered().unwrap()).await;
+            }
+
+            let state_backend = make_txpool_state_backend(nonce);
+
+            nonce += 1000;
+
+            // Every tranasction should be in the pending pool because there is no nonce gap.
+            assert_eq!(v_pool.pending_pool.len(), txs.len());
+            assert_eq!(v_pool.queued_pool.len(), 0);
+
+            let incoming_txs: Vec<_> = ipc_receiver.try_iter().collect();
+
+            let pending_senders = incoming_txs
+                .iter()
+                .map(|tx| (tx.recover_signer_unchecked().unwrap(), tx.nonce()))
+                .collect_vec();
+            let incoming_txs: Vec<_> = incoming_txs
+                .iter()
+                .map(|tx| Bytes::from(tx.envelope_encoded()))
+                .collect();
+            let incoming_txs_len = incoming_txs.len();
+
+            // Add transactions to txpool
+            let inserted_txs = Pool::insert_tx(
+                &mut tx_pool,
+                incoming_txs,
+                &eth_block_policy,
+                &state_backend,
+            );
+            assert_eq!(inserted_txs.len(), incoming_txs_len);
+
+            // Create a block proposal
+            let encoded_txns = Pool::create_proposal(
+                &mut tx_pool,
+                SeqNum(0),
+                100_000,
+                u64::MAX,
+                &eth_block_policy,
+                pending_blocks.iter().collect_vec(),
+                &state_backend,
+            )
+            .expect("create proposal succeeds");
+
+            let decoded_txns =
+                Vec::<reth_primitives::TransactionSigned>::decode(&mut encoded_txns.as_ref())
+                    .unwrap();
+            assert_eq!(decoded_txns.len(), incoming_txs_len);
+
+            // Create Block
+            let block = generate_block_with_txs(
+                Round(current_round),
+                SeqNum(current_seq_num),
+                decoded_txns,
+            );
+            assert_eq!(block.validated_txns.len(), incoming_txs_len);
+
+            current_seq_num += 1;
+            current_round += 1;
+
+            monad_consensus_types::block::BlockPolicy::<
+                MockSignatures<monad_eth_txpool::test_utils::SignatureType>,
+                monad_eth_txpool::test_utils::StateBackendType,
+            >::update_committed_block(&mut eth_block_policy, &block);
+
+            monad_consensus_types::txpool::TxPool::<
+                MockSignatures<monad_eth_txpool::test_utils::SignatureType>,
+                EthBlockPolicy,
+                monad_eth_txpool::test_utils::StateBackendType,
+            >::update_committed_block(&mut tx_pool, &block);
+
+            let block_with_receipts = BlockWithReceipts {
+                block_header: BlockHeader {
+                    header: Header {
+                        number: current_seq_num,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                transactions: block
+                    .validated_txns
+                    .iter()
+                    .map(|tx| tx.clone().into())
+                    .collect(),
+                ..Default::default()
+            };
+
+            let commited_senders = block_with_receipts
+                .transactions
+                .iter()
+                .map(|tx| (tx.recover_signer_unchecked().unwrap(), tx.nonce()))
+                .collect_vec();
+
+            // Compare differences between pending_senders and commited_senders
+            assert_eq!(pending_senders.len(), commited_senders.len());
+            assert!(pending_senders
+                .iter()
+                .filter(|(sender, nonce)| !commited_senders.contains(&(*sender, *nonce)))
+                .collect::<Vec<_>>()
+                .is_empty());
+
+            // The pending pool should be equal to the commit senders.
+            assert_eq!(v_pool.pending_pool.len(), commited_senders.len());
+            assert!(!commited_senders.is_empty());
+            assert_eq!(v_pool.pending_pool.len(), block.validated_txns.len());
+            v_pool.new_block(block_with_receipts, 1_000).await;
+
+            // Both pools must be cleared.
+            assert_eq!(v_pool.pending_pool.len(), 0);
+            assert_eq!(v_pool.queued_pool.len(), 0);
         }
     }
 }

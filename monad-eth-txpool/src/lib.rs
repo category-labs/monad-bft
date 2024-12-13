@@ -25,6 +25,7 @@ use crate::{
 };
 
 mod pool;
+pub mod test_utils;
 mod transaction;
 mod utils;
 
