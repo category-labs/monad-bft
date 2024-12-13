@@ -34,7 +34,6 @@ pub struct MonadEthEstimateGasParams {
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
@@ -98,7 +97,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         sender,
         block_number,
         &triedb_env.path(),
-        execution_ledger_path,
         state_override_set,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
@@ -122,7 +120,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
                 sender,
                 block_number,
                 &triedb_env.path(),
-                execution_ledger_path,
                 state_override_set,
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
@@ -155,7 +152,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
             sender,
             block_number,
             &triedb_env.path(),
-            execution_ledger_path,
             state_override_set,
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {

@@ -59,7 +59,7 @@ monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_encoded_transaction,
     std::vector<uint8_t> const &rlp_encoded_block_header,
     std::vector<uint8_t> const &rlp_encoded_sender, uint64_t const block_number,
-    std::string const &triedb_path, std::string const &block_db_path,
+    std::string const &triedb_path,
     monad_state_override_set const &state_overides)
 {
     static constexpr auto N = 32;

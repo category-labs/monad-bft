@@ -224,25 +224,15 @@ async fn rpc_select(
         "eth_call" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_call concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_call(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
@@ -405,25 +395,15 @@ async fn rpc_select(
                 return Err(JsonRpcError::method_not_supported());
             };
 
-            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
-                debug!("execution ledger path was not set");
-                return Err(JsonRpcError::method_not_supported());
-            };
-
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
                 JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(
-                triedb_env,
-                execution_ledger_path.as_path(),
-                app_state.chain_id,
-                params,
-            )
-            .await
-            .map(serialize_result)?
+            monad_eth_estimateGas(triedb_env, app_state.chain_id, params)
+                .await
+                .map(serialize_result)?
         }
         "eth_gasPrice" => {
             if let Some(triedb_env) = &app_state.triedb_reader {

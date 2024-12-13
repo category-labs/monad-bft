@@ -308,7 +308,6 @@ pub struct MonadEthCallParams {
 #[rpc(method = "eth_call", ignore = "chain_id")]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
-    execution_ledger_path: &Path,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -383,7 +382,6 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         sender,
         block_number,
         &triedb_env.path(),
-        execution_ledger_path,
         state_overrides,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {

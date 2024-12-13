@@ -73,7 +73,6 @@ pub fn eth_call(
     sender: Address,
     block_number: u64,
     triedb_path: &Path,
-    blockdb_path: &Path,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
@@ -111,7 +110,6 @@ pub fn eth_call(
     }
 
     cxx::let_cxx_string!(triedb_path = triedb_path.to_str().unwrap().to_string());
-    cxx::let_cxx_string!(blockdb_path = blockdb_path.to_str().unwrap().to_string());
 
     moveit! {
         let mut cxx_state_override_set = ffi::monad_state_override_set::new();
@@ -209,7 +207,6 @@ pub fn eth_call(
         &cxx_rlp_encoded_sender,
         block_number,
         &triedb_path,
-        &blockdb_path,
         &cxx_state_override_set);
     }
 
@@ -321,7 +318,6 @@ mod tests {
             hex!("0000000000000000000000000000000000000000").into(),
             0,
             path.as_path(),
-            Path::new(""),
             &StateOverrideSet::new(),
         );
         unsafe {
@@ -371,7 +367,6 @@ mod tests {
         let sender: Address = hex!("0000000000000000000001000000000000000000").into();
         let block_number = 0;
         let triedb_path: &Path = path.as_path();
-        let blockdb_path = Path::new("");
 
         // without override, passing
         {
@@ -382,7 +377,6 @@ mod tests {
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides,
             );
 
@@ -418,7 +412,6 @@ mod tests {
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides_object.state_override_set,
             );
 
@@ -470,7 +463,6 @@ mod tests {
         let sender: Address = hex!("0000000000000000000000000000000000000000").into();
         let block_number = 0;
         let triedb_path: &Path = path.as_path();
-        let blockdb_path = Path::new("");
 
         {
             let result = eth_call(
@@ -479,7 +471,6 @@ mod tests {
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &StateOverrideSet::new(),
             );
             match result {
@@ -518,7 +509,6 @@ mod tests {
                 sender,
                 block_number,
                 triedb_path,
-                blockdb_path,
                 &state_overrides_object.state_override_set,
             );
             match result {
@@ -539,7 +529,6 @@ mod tests {
     #[ignore]
     #[test]
     fn test_sha256_precompile() {
-        let temp_blockdb_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
         let result = eth_call(
             reth_primitives::transaction::Transaction::Legacy(TxLegacy {
                 chain_id: Some(1337),
@@ -554,7 +543,6 @@ mod tests {
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
             0,
             Path::new("/home/rgarc/test.db"),
-            temp_blockdb_file.path(),
             &StateOverrideSet::new(), // state overrides
         );
 
