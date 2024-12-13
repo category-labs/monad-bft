@@ -28,7 +28,7 @@ use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 #[cfg(feature = "full-node")]
 use monad_router_filter::FullNodeRouterFilter;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
-use monad_statesync::{StateSync, TriedbSyncClient};
+use monad_statesync::{StateSync, StateSyncConfig, TriedbSyncClient};
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
@@ -239,12 +239,20 @@ async fn run(
                 .map(|validator| validator.node_id)
                 .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
                 .collect(),
-            node_state
-                .node_config
-                .statesync_max_concurrent_requests
-                .into(),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
+            StateSyncConfig {
+                max_parallel_requests: node_state
+                    .node_config
+                    .statesync_max_concurrent_requests
+                    .into(),
+                request_timeout: Duration::from_millis(
+                    node_state.node_config.statesync_request_timeout_ms.into(),
+                ),
+                incoming_request_timeout: Duration::from_millis(
+                    node_state.node_config.statesync_request_timeout_ms.into(),
+                ),
+                max_outstanding_responses: 30,
+                max_response_size: 32 * 1024,
+            },
             node_state
                 .statesync_ipc_path
                 .to_str()

@@ -4,7 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
@@ -16,7 +15,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
-use crate::bindings;
+use crate::{bindings, StateSyncConfig};
 
 pub type SyncRequest = bindings::monad_sync_request;
 pub type SyncDone = bindings::monad_sync_done;
@@ -51,10 +50,8 @@ pub enum ExecutionMessage {
     SyncDone(SyncDone),
 }
 
-const MAX_UPSERTS_PER_RESPONSE: usize = 1_000_000;
-
 impl<PT: PubKey> StateSyncIpc<PT> {
-    pub fn new(uds_path: &str, request_timeout: Duration) -> Self {
+    pub fn new(uds_path: &str, config: StateSyncConfig) -> Self {
         let listener = UnixListener::bind(uds_path)
             .unwrap_or_else(|e| panic!("invalid UDS path={:?}, err={:?}", uds_path, e));
 
@@ -87,7 +84,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                 };
 
                 let mut stream_state = StreamState::new(
-                    request_timeout,
+                    config,
                     execution_stream,
                     &mut request_tx_reader,
                     &mut response_rx_writer,
@@ -108,6 +105,9 @@ impl<PT: PubKey> StateSyncIpc<PT> {
 struct StreamState<'a, PT: PubKey> {
     /// drop pending requests older than this
     request_timeout: Duration,
+    max_response_size: usize,
+    max_outstanding_responses: usize,
+    outstanding_responses: usize,
     stream: BufReader<UnixStream>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
@@ -128,12 +128,34 @@ struct WipResponse<PT: PubKey> {
     from: NodeId<PT>,
     rx_time: Instant,
     service_start_time: Instant,
+    response_size: usize, // accumulated response size in bytes
     response: StateSyncResponse,
+}
+
+impl<PT: PubKey> WipResponse<PT> {
+    fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
+        let response = StateSyncResponse {
+            version: SELF_STATESYNC_VERSION,
+            nonce: rand::random(),
+            response_index: 0,
+
+            request,
+            response: Vec::new(),
+            response_n: 0,
+        };
+        Self {
+            from,
+            rx_time,
+            service_start_time: Instant::now(),
+            response_size: 0,
+            response,
+        }
+    }
 }
 
 impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
-        request_timeout: Duration,
+        config: StateSyncConfig,
         stream: UnixStream,
         request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(
             NodeId<PT>,
@@ -142,7 +164,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
     ) -> Self {
         Self {
-            request_timeout,
+            request_timeout: config.incoming_request_timeout,
+            max_response_size: config.max_response_size,
+            max_outstanding_responses: config.max_outstanding_responses,
+            outstanding_responses: 0,
             stream: BufReader::with_capacity(
                 1024 * 1024, // 1 MB
                 stream,
@@ -157,45 +182,27 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
     /// Top-level function that's used to step StreamState forward
     async fn poll(&mut self) -> Result<(), tokio::io::Error> {
-        enum Event<PT: PubKey> {
-            Execution(Result<u8, tokio::io::Error>),
-            Request((NodeId<PT>, StateSyncRequest)),
-            Completion(NodeId<PT>),
-            Response((NodeId<PT>, StateSyncResponse)),
-        }
-        let fut1 = async {
-            let event = self.stream.read_u8().await;
-            Event::Execution(event)
-        };
-        let fut2 = async {
-            match self
-                .request_tx_reader
-                .recv()
-                .await
-                .expect("msg_tx_writer dropped")
-            {
-                (from, StateSyncNetworkMessage::Request(request)) => {
-                    Event::Request((from, request))
-                }
-                (from, StateSyncNetworkMessage::Completion) => Event::Completion(from),
-                (from, StateSyncNetworkMessage::Response(response)) => {
-                    Event::Response((from, response))
-                }
-            }
-        };
-        let (event, _, _) = futures::future::select_all(vec![fut1.boxed(), fut2.boxed()]).await;
-
-        match event {
-            Event::Execution(maybe_msg_type) => {
-                let msg_type = maybe_msg_type?;
+        tokio::select! {
+            stream_result = self.stream.read_u8(),
+                    if self.outstanding_responses < self.max_outstanding_responses => {
+                // Only read the executor stream if we have capacity to send more responses
+                let msg_type = stream_result?;
                 let execution_message = self.read_execution_message(msg_type).await?;
                 self.handle_execution_message(execution_message).await
             }
-            Event::Request((from, request)) => self.handle_request(from, request).await,
-            Event::Completion(from) => self.handle_completion(from),
-            Event::Response((from, _)) => {
-                tracing::warn!("unexpected response from {:?}, dropping", from);
-                Ok(())
+            network_message = self.request_tx_reader.recv() => {
+                match network_message.expect("msg_tx_writer dropped") {
+                    (from, StateSyncNetworkMessage::Request(request)) => {
+                        self.handle_request(from, request).await
+                    }
+                    (from, StateSyncNetworkMessage::Completion) => {
+                        self.handle_completion(from)
+                    },
+                    (from, StateSyncNetworkMessage::Response(_)) => {
+                        tracing::warn!("unexpected response from {:?}, dropping", from);
+                        Ok(())
+                    }
+                }
             }
         }
     }
@@ -213,8 +220,9 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .wip_response
                     .as_mut()
                     .expect("SyncUpsert with no pending_response");
+                wip_response.response_size += data.len();
                 wip_response.response.response.push((upsert_type, data));
-                if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
+                if wip_response.response_size > self.max_response_size {
                     // send batch
                     let response = StateSyncResponse {
                         version: wip_response.response.version,
@@ -228,8 +236,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     wip_response.response.response_index += 1;
                     // unnecessary but keeping for clarity
                     wip_response.response.response.clear();
+                    wip_response.response_size = 0;
                     let from = wip_response.from;
                     self.write_response(from, response);
+                    self.outstanding_responses += 1;
                 }
             }
             ExecutionMessage::SyncDone(done) => {
@@ -323,22 +333,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             break request;
         };
 
-        self.wip_response = Some(WipResponse {
-            from: request.from,
-            rx_time: request.rx_time,
-            service_start_time: Instant::now(),
-            response: StateSyncResponse {
-                version: SELF_STATESYNC_VERSION,
-                nonce: rand::random(),
-                response_index: 0,
-
-                request: request.request,
-                response: Vec::new(),
-
-                // this gets set in handle_execution_message(ExecutionMessage::SyncDone(_))
-                response_n: 0,
-            },
-        });
+        self.wip_response = Some(WipResponse::new(
+            request.from,
+            request.rx_time,
+            request.request,
+        ));
 
         self.write_execution_request(bindings::monad_sync_request {
             prefix: request.request.prefix,
@@ -354,6 +353,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     }
 
     fn handle_completion(&mut self, _from: NodeId<PT>) -> Result<(), tokio::io::Error> {
+        self.outstanding_responses -= 1;
         Ok(())
     }
 
@@ -428,7 +428,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         Ok(())
     }
 
-    fn write_response(&mut self, to: NodeId<PT>, response: StateSyncResponse) {
+    fn write_response(&self, to: NodeId<PT>, response: StateSyncResponse) {
         if self.response_rx_writer.try_send((to, response)).is_err() {
             tracing::warn!("dropping outbound statesync response, consensus state backlogged?")
         }

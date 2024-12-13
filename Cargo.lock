@@ -4834,7 +4834,6 @@ dependencies = [
  "monad-multi-sig",
  "monad-types",
  "rand",
- "scopeguard",
  "tempfile",
  "tokio",
  "tracing",
