@@ -1089,4 +1089,79 @@ mod test {
         assert!(got_completion, "client should send completion");
         assert!(got_request, "client should send next request");
     }
+
+    #[tokio::test]
+    async fn test_client_side_timeout() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
+            seq_num: SeqNum(1),
+            state_root_hash: StateRootHash(Hash([0; 32])),
+        })];
+
+        state_sync.exec(commands);
+
+        let mut messages = Vec::new();
+        loop {
+            match timeout(Duration::from_secs(1), state_sync.next()).await {
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_)))) => {
+                    assert!(false, "sync should send messages");
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(n, m)))) => {
+                    println!("got message from {:?}: {:?}", n, m);
+                    messages.push((n, m));
+                    if messages.len() == config.max_parallel_requests {
+                        break;
+                    }
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(e))) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(Some(e)) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(None) => {
+                    assert!(false, "unexpected stream end");
+                }
+                Err(_) => {
+                    assert!(false, "timeout");
+                }
+            }
+        }
+
+        let e = timeout(config.request_timeout * 2, state_sync.next())
+            .await
+            .expect("no event timeout, should timeout request and send next")
+            .expect("unexpected stream end");
+        assert!(matches!(
+            e,
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                _,
+                StateSyncNetworkMessage::Request(_)
+            ))
+        ));
+        let e = timeout(config.request_timeout / 2, state_sync.next())
+            .await
+            .expect("no event timeout, should timeout request and send next")
+            .expect("unexpected stream end");
+        assert!(matches!(
+            e,
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                _,
+                StateSyncNetworkMessage::Request(_)
+            ))
+        ));
+    }
 }
