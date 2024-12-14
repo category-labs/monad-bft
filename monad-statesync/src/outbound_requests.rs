@@ -21,8 +21,11 @@ pub(crate) struct OutboundRequests<PT: PubKey> {
 
 struct InFlightRequest<PT: PubKey> {
     last_active: Instant,
-    // response indexed by response_idx
+    // out-of-order responses indexed by response_idx
     responses: BTreeMap<u32, StateSyncResponse>,
+
+    // next expected response index
+    response_index: u32,
 
     // map from nonce -> num responses received
     // TODO bound size of this
@@ -36,6 +39,7 @@ impl<PT: PubKey> Default for InFlightRequest<PT> {
         Self {
             last_active: std::time::Instant::now(),
             responses: BTreeMap::default(),
+            response_index: 0,
 
             seen_nonces: Default::default(),
 
@@ -54,7 +58,7 @@ impl<PT: PubKey> InFlightRequest<PT> {
         &mut self,
         from: &NodeId<PT>,
         response: StateSyncResponse,
-    ) -> Option<StateSyncResponse> {
+    ) -> Vec<StateSyncResponse> {
         let num_nonce_seen = self.seen_nonces.entry(response.nonce).or_default();
         *num_nonce_seen += 1;
         if self
@@ -81,51 +85,48 @@ impl<PT: PubKey> InFlightRequest<PT> {
                     ?existing_response_nonce,
                     "dropping statesync response, already fixed to different response nonce"
                 );
-                return None;
+                return Vec::new();
             }
         }
-        tracing::debug!(?from, ?response, "applying statesync response");
+
         self.last_active = std::time::Instant::now();
-        let replaced = self.responses.insert(response.response_index, response);
-        assert!(replaced.is_none(), "server sent duplicate response_index");
 
-        let (first_response_idx, _) = self
-            .responses
-            .first_key_value()
-            .expect("responses nonempty");
-
-        let (_, last_response) = self.responses.last_key_value().expect("responses nonempty");
-
-        if first_response_idx == &0
-            && last_response.response_n != 0
-            && self
-                .responses
-                .keys()
-                .zip(self.responses.keys().skip(1))
-                // consecutive check
-                .all(|(&a, &b)| a + 1 == b)
-        {
-            // response is done
-            let full_response = StateSyncResponse {
-                version: last_response.version,
-                nonce: last_response.nonce,
-                response_index: 0,
-
-                request: last_response.request,
-                // TODO these could be coalesced progressively instead of in batch at the end
-                response: self
-                    .responses
-                    .values()
-                    .flat_map(|response| response.response.iter())
-                    .cloned()
-                    .collect(),
-                response_n: last_response.response_n,
-            };
-
-            tracing::debug!(?from, ?full_response, "coalescing statesync response");
-            return Some(full_response);
+        if response.response_index < self.response_index {
+            tracing::debug!(
+                ?from,
+                ?response,
+                ?self.response_index,
+                "dropping statesync response, out-of-order"
+            );
+            return Vec::new();
         }
-        None
+
+        if response.response_index == self.response_index {
+            let curr_index = self.response_index;
+            self.response_index += 1;
+            let mut responses = vec![response];
+
+            // Remove consequitive responses from out-of-order queue
+            for index in self.responses.keys() {
+                if *index == self.response_index {
+                    self.response_index += 1;
+                } else {
+                    break;
+                }
+            }
+            for index in curr_index + 1..self.response_index {
+                let response = self.responses.remove(&index).expect("missing response");
+                responses.push(response);
+            }
+            return responses;
+        }
+
+        tracing::debug!(?from, ?response, "queue out-of-order statesync response");
+        let replaced = self.responses.insert(response.response_index, response);
+        if !replaced.is_none() {
+            tracing::warn!(?from, "server sent duplicate response_index");
+        }
+        Vec::new()
     }
 }
 
@@ -159,7 +160,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
     }
 
     pub fn queue_request(&mut self, request: StateSyncRequest) {
-        tracing::debug!(?request, "queueing request");
+        //tracing::debug!(?request, "queueing request");
         if let Some(current_target) = self
             .pending_requests
             .first()
@@ -176,7 +177,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
         &mut self,
         from: NodeId<PT>,
         response: StateSyncResponse,
-    ) -> Option<StateSyncResponse> {
+    ) -> Vec<StateSyncResponse> {
         let maybe_prefix_peer = self.prefix_peers.get(&response.request.prefix);
         if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
             tracing::debug!(
@@ -184,7 +185,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 ?response,
                 "dropping statesync response, already fixed to different prefix_peer"
             );
-            return None;
+            return Vec::new();
         }
         // valid request
         self.prefix_peers.insert(response.request.prefix, from);
@@ -197,13 +198,14 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 ?response,
                 "dropping response, request is no longer queued"
             );
-            return None;
+            return Vec::new();
         };
-        if let Some(full_response) = in_flight_request.get_mut().apply_response(&from, response) {
+        let responses = in_flight_request.get_mut().apply_response(&from, response);
+        if responses.last().is_some_and(|r| r.response_n != 0) {
+            // Received last response, request is complete
             in_flight_request.remove();
-            return Some(full_response);
         }
-        None
+        responses
     }
 
     #[must_use]

@@ -271,6 +271,7 @@ mod test {
     use monad_types::{Hash, NodeId, SeqNum};
     use rand::{thread_rng, Rng};
     use tokio::{io::Interest, time::timeout};
+    use tracing_subscriber;
 
     use super::*;
     use crate::{ffi::NUM_PREFIXES, ipc::SyncRequest};
@@ -628,8 +629,6 @@ mod test {
             }
         }
     }
-
-    use tracing_subscriber;
 
     #[tokio::test]
     async fn test_client_completion() {
@@ -992,5 +991,142 @@ mod test {
         }
 
         bh.backend.lock().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_client_incremental() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
+            seq_num: SeqNum(1),
+            state_root_hash: StateRootHash(Hash([0; 32])),
+        })];
+
+        state_sync.exec(commands);
+
+        let mut messages = Vec::new();
+        loop {
+            match timeout(Duration::from_secs(1), state_sync.next()).await {
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_)))) => {
+                    assert!(false, "sync should send messages");
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(n, m)))) => {
+                    println!("got message from {:?}: {:?}", n, m);
+                    messages.push((n, m));
+                    if messages.len() == config.max_parallel_requests {
+                        break;
+                    }
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(e))) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(Some(e)) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(None) => {
+                    assert!(false, "unexpected stream end");
+                }
+                Err(_) => {
+                    assert!(false, "timeout");
+                }
+            }
+        }
+
+        let request = if let StateSyncNetworkMessage::Request(req) = &messages[0].1 {
+            req.clone()
+        } else {
+            panic!("Expected StateSyncNetworkMessage::Request");
+        };
+        for response_index in 0..10 {
+            let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
+                version: SELF_STATESYNC_VERSION,
+                nonce: 1,
+                response: vec![(StateSyncUpsertType::Account, vec![response_index as u8; 20])],
+                request,
+                response_index,
+                response_n: 0,
+            });
+            let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
+            state_sync.exec(commands);
+
+            let event = timeout(Duration::from_millis(500), state_sync.next())
+                .await
+                .expect("timeout, should send completions after each response")
+                .expect("unexpected stream end");
+            println!("event: {:?}", event);
+            match event {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    to,
+                    StateSyncNetworkMessage::Completion,
+                )) => {
+                    assert!(
+                        to == messages[0].0,
+                        "client should send completion to same peer"
+                    );
+                }
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(_, _)) => {
+                    assert!(false, "shouldn't send more requests until finished one");
+                }
+                e => {
+                    assert!(
+                        false,
+                        "unexpected event {:?}, should send competions after each response",
+                        e
+                    );
+                }
+            }
+        }
+        let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
+            version: SELF_STATESYNC_VERSION,
+            nonce: 1,
+            response: vec![(StateSyncUpsertType::Account, vec![10 as u8; 20])],
+            request,
+            response_index: 10,
+            response_n: 1,
+        });
+        let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
+        state_sync.exec(commands);
+        let mut got_completion = false;
+        let mut got_request = false;
+        for _ in 0..2 {
+            let event = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout")
+                .expect("unexpected stream end");
+            println!("event: {:?}", event);
+            match event {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    to,
+                    StateSyncNetworkMessage::Completion,
+                )) => {
+                    assert!(
+                        to == messages[0].0,
+                        "client should send completion to same peer"
+                    );
+                    got_completion = true;
+                }
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(_, _)) => {
+                    got_request = true;
+                }
+                e => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+            }
+        }
+
+        assert!(got_completion, "client should send completion");
+        assert!(got_request, "client should send next request");
     }
 }
