@@ -252,9 +252,9 @@ impl<PT: PubKey> StateSync<PT> {
             return;
         }
 
-        if let Some(full_response) = self.outbound_requests.handle_response(from, response) {
+        for ready_response in self.outbound_requests.handle_response(from, response) {
             self.response_tx
-                .send(SyncResponse::Response((from, full_response)))
+                .send(SyncResponse::Response((from, ready_response)))
                 .expect("response_rx dropped");
         }
     }
@@ -320,14 +320,18 @@ impl<PT: PubKey> Stream for StateSync<PT> {
 
 pub trait SyncClientBackend {
     fn create(dbname_paths: &[String], genesis_file: &str) -> Self;
+
     fn handle_upsert(
         &mut self,
         prefix: u64,
         upsert_type: StateSyncUpsertType,
         upsert_data: &[u8],
     ) -> bool;
+
     fn latest_block(&self) -> SeqNum;
+
     fn commit(&mut self);
+
     fn finalize(&mut self, target: Target) -> bool;
 }
 
