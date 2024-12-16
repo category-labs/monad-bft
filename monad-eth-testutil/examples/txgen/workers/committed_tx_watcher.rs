@@ -108,8 +108,8 @@ impl CommittedTxWatcher {
         let block_num = block.header.number;
 
         let params = json! {{
-            "toBlock": block_num,
-            "fromBlock": block_num,
+            "toBlock": format!("0x{:x}", block_num),
+            "fromBlock": format!("0x{:x}", block_num),
         }};
 
         metrics.logs_rpc_calls.fetch_add(1, SeqCst);

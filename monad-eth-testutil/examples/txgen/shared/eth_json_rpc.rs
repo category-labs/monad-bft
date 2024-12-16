@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use alloy_consensus::TxEnvelope;
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, U256, U64};
 use alloy_rpc_client::ReqwestClient;
 use eyre::Result;
@@ -41,7 +42,9 @@ impl EthJsonRpc for ReqwestClient {
     }
 
     async fn send_raw_transaction_params(&self, tx: TxEnvelope) -> (&'static str, Bytes) {
-        ("eth_sendRawTransaction", alloy_rlp::encode(tx).into())
+        let mut rlp_encoded_tx = Vec::new();
+        tx.encode_2718(&mut rlp_encoded_tx);
+        ("eth_sendRawTransaction", rlp_encoded_tx.into())
     }
 
     async fn get_code(&self, addr: &Address) -> Result<String> {

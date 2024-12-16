@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_primitives::{hex::FromHex, keccak256, Address, Bytes, TxKind, U256};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::{
+    hex::{self, FromHex},
+    keccak256, Address, Bytes, TxKind, U256,
+};
 use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
@@ -58,10 +62,15 @@ impl ERC20 {
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
         let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
+        let mut rlp_encoded_tx = Vec::new();
+        tx.encode_2718(&mut rlp_encoded_tx);
 
         // make compiler happy, actually parse string : (
         let _: String = client
-            .request("eth_sendRawTransaction", [alloy_rlp::encode(tx)])
+            .request(
+                "eth_sendRawTransaction",
+                [format!("0x{}", hex::encode(rlp_encoded_tx))],
+            )
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
@@ -157,7 +166,7 @@ fn make_tx(
     let tx = TxEip1559 {
         chain_id: 41454,
         nonce,
-        gas_limit: 200_000, // probably closer to 80k
+        gas_limit: 100_000, // actual gas used around 51k
         max_fee_per_gas,
         max_priority_fee_per_gas: 0,
         to: TxKind::Call(contract_or_to),

@@ -38,7 +38,7 @@ impl Generator for SelfDestructTxGenerator {
                     );
 
                     txs.push((
-                        contract.self_destruct_tx(sender, ctx.base_fee * 2),
+                        contract.self_destruct_tx(sender, ctx.base_fee),
                         contract.addr,
                     ))
                 } else {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     generators::make_generator,
     prelude::*,
-    shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc},
+    shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
     DeployedContract,
 };
 
@@ -52,20 +52,20 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         refresh_rx,
         rpc_sender,
         &client,
-        U256::from(1e14),
-        U256::from(1e15),
+        U256::from(1e17),
+        U256::from(1e18),
         &metrics,
         config.base_fee(),
     );
 
-    let deployed_erc20 = deployed_contract.erc20()?;
     let refresher = Refresher {
         rpc_rx,
         gen_sender,
         client: client.clone(),
         delay: Duration::from_secs_f64(config.refresh_delay_secs),
         metrics: Arc::clone(&metrics),
-        deployed_erc20,
+        deployed_contract,
+        refresh_erc20_balance: config.erc20_balance_of,
     };
 
     let rpc_sender = RpcSender {
@@ -153,6 +153,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
 struct DeployedContractFile {
     erc20: Option<Address>,
     ecmul: Option<Address>,
+    uniswap: Option<Address>,
 }
 
 async fn load_or_deploy_contracts(
@@ -199,6 +200,7 @@ async fn load_or_deploy_contracts(
             let deployed = DeployedContractFile {
                 erc20: Some(erc20.addr),
                 ecmul: None,
+                uniswap: None,
             };
 
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
@@ -237,10 +239,51 @@ async fn load_or_deploy_contracts(
             let deployed = DeployedContractFile {
                 erc20: None,
                 ecmul: Some(ecmul.addr),
+                uniswap: None,
             };
 
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
             Ok(DeployedContract::ECMUL(ecmul))
+        }
+        crate::RequiredContract::Uniswap => {
+            // try from commmand line arg
+            if let Some(uniswap) = &config.uniswap_contract {
+                let uniswap = Address::from_str(uniswap)
+                    .wrap_err("Failed to parse uniswap contract string arg")?;
+                if verify_contract_code(client, uniswap).await? {
+                    info!("Contract from cmdline args validated");
+                    return Ok(DeployedContract::Uniswap(Uniswap { addr: uniswap }));
+                }
+            };
+
+            match open_deployed_contracts_file(path) {
+                Ok(DeployedContractFile {
+                    uniswap: Some(uniswap),
+                    ..
+                }) => {
+                    if verify_contract_code(client, uniswap).await? {
+                        info!("Contract loaded from file validated");
+                        return Ok(DeployedContract::Uniswap(Uniswap { addr: uniswap }));
+                    }
+                    warn!(
+                        "Contract loaded from file not found on chain, deploying new contract..."
+                    );
+                }
+                Err(e) => info!("Failed to load deployed contracts file, {e}"),
+                _ => info!("Contract not in deployed contracts file"),
+            }
+
+            // if not found, deploy new contract
+            let uniswap = Uniswap::deploy(&deployer, client, max_fee_per_gas).await?;
+
+            let deployed = DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: Some(uniswap.addr),
+            };
+
+            write_and_verify_deployed_contracts(client, path, &deployed).await?;
+            Ok(DeployedContract::Uniswap(uniswap))
         }
     }
 }

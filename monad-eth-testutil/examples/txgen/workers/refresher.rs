@@ -1,8 +1,7 @@
 use tokio::time::MissedTickBehavior;
 
-use crate::shared::erc20::ERC20;
-
 use super::*;
+use crate::{shared::erc20::ERC20, DeployedContract};
 
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
@@ -13,7 +12,8 @@ pub struct Refresher {
 
     pub delay: Duration,
 
-    pub deployed_erc20: ERC20,
+    pub deployed_contract: DeployedContract,
+    pub refresh_erc20_balance: bool,
 }
 
 impl Refresher {
@@ -43,7 +43,19 @@ impl Refresher {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
-        let deployed_erc20 = self.deployed_erc20;
+        let deployed_erc20 = if self.refresh_erc20_balance {
+            match self.deployed_contract {
+                DeployedContract::ERC20(erc20) => erc20,
+                _ => ERC20 {
+                    addr: Address::ZERO,
+                },
+            }
+        } else {
+            // making eth_call to a non-contract address is safe
+            ERC20 {
+                addr: Address::ZERO,
+            }
+        };
 
         tokio::spawn(async move {
             let mut times_sent = 0;

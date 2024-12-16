@@ -4472,6 +4472,7 @@ name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-json-rpc",
  "alloy-primitives",
  "alloy-rlp",

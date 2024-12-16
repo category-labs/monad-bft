@@ -33,7 +33,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             IERC20::transferToFriendsCall {
                                 amount: U256::from(10),
                             },
-                            ctx.base_fee * 2,
+                            ctx.base_fee,
                         ),
                         from.addr,
                     ));
@@ -43,7 +43,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
                         self.erc20.construct_tx(
                             from,
                             IERC20::addFriendCall { friend: to },
-                            ctx.base_fee * 2,
+                            ctx.base_fee,
                         ),
                         to,
                     ));

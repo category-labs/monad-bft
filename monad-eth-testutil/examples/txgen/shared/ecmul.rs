@@ -1,5 +1,9 @@
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_primitives::{hex::FromHex, keccak256, Address, Bytes, TxKind, U256};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::{
+    hex::{self, FromHex},
+    keccak256, Address, Bytes, TxKind, U256,
+};
 use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
@@ -26,9 +30,14 @@ impl ECMul {
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
         let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
+        let mut rlp_encoded_tx = Vec::new();
+        tx.encode_2718(&mut rlp_encoded_tx);
 
         let _: String = client
-            .request("eth_sendRawTransaction", [alloy_rlp::encode(tx)])
+            .request(
+                "eth_sendRawTransaction",
+                [format!("0x{}", hex::encode(rlp_encoded_tx))],
+            )
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);

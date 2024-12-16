@@ -1,3 +1,5 @@
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
@@ -104,8 +106,13 @@ pub async fn send_batch(
 
     let mut futs = txs
         .filter_map(|tx| {
+            let mut rlp_encoded_tx = Vec::new();
+            tx.encode_2718(&mut rlp_encoded_tx);
             batch_req
-                .add_call::<_, TxHash>("eth_sendRawTransaction", &[alloy_rlp::encode(tx)])
+                .add_call::<_, TxHash>(
+                    "eth_sendRawTransaction",
+                    &[format!("0x{}", hex::encode(rlp_encoded_tx))],
+                )
                 .ok() // todo: handle better
         })
         .collect::<FuturesUnordered<_>>();

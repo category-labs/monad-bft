@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use eyre::bail;
 use prelude::*;
 use serde::Deserialize;
-use shared::{ecmul::ECMul, erc20::ERC20};
+use shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap};
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 
@@ -74,6 +74,9 @@ pub struct Config {
     #[clap(long, global = true)]
     ecmul_contract: Option<String>,
 
+    #[clap(long, global = true)]
+    uniswap_contract: Option<String>,
+
     #[clap(long, global = true, default_value = "false")]
     verbose: bool,
 
@@ -107,6 +110,7 @@ impl Config {
             | StorageDeletes
             | ECMul => 10,
             NullGen => 0,
+            Uniswap => 10,
         }
     }
 
@@ -123,6 +127,7 @@ impl Config {
             | NonDeterministicStorage
             | StorageDeletes => 100,
             NullGen | SelfDestructs | HighCallData | ECMul => 10,
+            Uniswap => 20,
         }
     }
 
@@ -140,6 +145,7 @@ impl Config {
             | StorageDeletes => 2500,
             NullGen => 100,
             SelfDestructs | HighCallData | ECMul => 100,
+            Uniswap => 200,
         }
     }
 
@@ -162,6 +168,7 @@ impl Config {
             GeneratorConfig::StorageDeletes => ERC20,
             GeneratorConfig::NullGen => None,
             GeneratorConfig::ECMul => ECMUL,
+            GeneratorConfig::Uniswap => Uniswap,
         }
     }
 
@@ -176,6 +183,7 @@ pub enum RequiredContract {
     None,
     ERC20,
     ECMUL,
+    Uniswap,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +191,7 @@ pub enum DeployedContract {
     None,
     ERC20(ERC20),
     ECMUL(ECMul),
+    Uniswap(Uniswap),
 }
 
 impl DeployedContract {
@@ -197,6 +206,13 @@ impl DeployedContract {
         match self {
             Self::ECMUL(x) => Ok(x),
             _ => bail!("Expected ecmul, found {:?}", &self),
+        }
+    }
+
+    pub fn uniswap(self) -> Result<Uniswap> {
+        match self {
+            Self::Uniswap(uniswap) => Ok(uniswap),
+            _ => bail!("Expected uniswap, found {:?}", &self),
         }
     }
 }
@@ -219,6 +235,7 @@ pub enum GeneratorConfig {
     StorageDeletes,
     NullGen,
     ECMul,
+    Uniswap,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, ValueEnum)]

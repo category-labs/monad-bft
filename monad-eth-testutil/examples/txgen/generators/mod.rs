@@ -8,6 +8,7 @@ use many_to_many::ManyToManyGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
+use uniswap::UniswapGenerator;
 
 use crate::{prelude::*, shared::erc20::ERC20, DeployedContract, GeneratorConfig};
 
@@ -19,6 +20,7 @@ mod many_to_many;
 mod non_deterministic_storage;
 mod self_destruct;
 mod storage_deletes;
+mod uniswap;
 
 pub fn make_generator(
     config: &Config,
@@ -70,6 +72,10 @@ pub fn make_generator(
         }),
         GeneratorConfig::ECMul => Box::new(ECMulGenerator {
             ecmul: deployed_contract.ecmul()?,
+            tx_per_sender,
+        }),
+        GeneratorConfig::Uniswap => Box::new(UniswapGenerator {
+            uniswap: deployed_contract.uniswap()?,
             tx_per_sender,
         }),
     })
@@ -133,27 +139,29 @@ pub fn erc20_transfer(
     erc20: &ERC20,
     ctx: &GenCtx,
 ) -> TxEnvelope {
-    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt, ctx.base_fee * 2);
+    let max_fee_per_gas = ctx.base_fee;
+    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt, max_fee_per_gas);
 
     // update from
     from.nonce += 1;
     from.native_bal = from
         .native_bal
-        .checked_sub(U256::from(400_000 * 1_000))
+        .checked_sub(U256::from(400_000 * max_fee_per_gas))
         .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
     from.erc20_bal = from.erc20_bal.checked_sub(amt).unwrap_or(U256::ZERO);
     tx
 }
 
 pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
-    let tx = erc20.construct_mint(&from.key, from.nonce, ctx.base_fee * 2);
+    let max_fee_per_gas = ctx.base_fee;
+    let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas);
 
     // update from
     from.nonce += 1;
 
     from.native_bal = from
         .native_bal
-        .checked_sub(U256::from(400_000 * 1_000))
+        .checked_sub(U256::from(400_000 * max_fee_per_gas))
         .unwrap_or(U256::ZERO); // todo: wire gas correctly, see above comment
     from.erc20_bal += U256::from(10_u128.pow(30)); // todo: current erc20 impl just mints a constant
     tx
