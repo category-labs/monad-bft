@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 monad-cxx = { path = "../monad-cxx" }
+monad-exec-event = { path = "../monad-exec-event" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
@@ -30,6 +31,7 @@ env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+libc = { workspace = true }
 reth-primitives = { workspace = true }
 reth-rpc-types = { workspace = true }
 serde = { workspace = true }
@@ -51,3 +53,6 @@ alloy-rpc-client = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }
+
+[build-dependencies]
+cmake = { workspace = true }

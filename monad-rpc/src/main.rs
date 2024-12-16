@@ -68,6 +68,7 @@ mod call;
 mod cli;
 mod debug;
 pub mod docs;
+mod exec_update_builder;
 mod eth_json_types;
 mod eth_txn_handlers;
 mod gas_handlers;
