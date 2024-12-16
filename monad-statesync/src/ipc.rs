@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    pin::pin,
     time::{Duration, Instant},
 };
 
@@ -52,40 +51,14 @@ pub enum ExecutionMessage {
 
 impl<PT: PubKey> StateSyncIpc<PT> {
     pub fn new(uds_path: &str, config: StateSyncConfig) -> Self {
-        let listener = UnixListener::bind(uds_path)
-            .unwrap_or_else(|e| panic!("invalid UDS path={:?}, err={:?}", uds_path, e));
-
         let (request_tx_writer, mut request_tx_reader) = tokio::sync::mpsc::channel(10);
         let (mut response_rx_writer, response_rx_reader) = tokio::sync::mpsc::channel(100);
+        let uds_path = uds_path.to_owned();
         tokio::spawn(async move {
             loop {
-                let execution_stream = {
-                    let conn_fut = async {
-                        let (stream, _addr) = listener
-                            .accept()
-                            .await
-                            .expect("failed to accept statesync UDS connection");
-                        stream
-                    };
-                    let drain_fut = async {
-                        // this future exists to make sure that the request channel is drained
-                        // while waiting for execution to connect
-                        loop {
-                            let _request =
-                                request_tx_reader.recv().await.expect("request_tx dropped");
-                        }
-                    };
-                    match futures::future::select(pin!(conn_fut), pin!(drain_fut)).await {
-                        futures::future::Either::Left((stream, _)) => stream,
-                        futures::future::Either::Right(_) => {
-                            unreachable!("drain_fut yields forever")
-                        }
-                    }
-                };
-
                 let mut stream_state = StreamState::new(
                     config,
-                    execution_stream,
+                    &uds_path,
                     &mut request_tx_reader,
                     &mut response_rx_writer,
                 );
@@ -108,7 +81,8 @@ struct StreamState<'a, PT: PubKey> {
     max_response_size: usize,
     max_outstanding_responses: usize,
     outstanding_responses: usize,
-    stream: BufReader<UnixStream>,
+    listener: UnixListener,
+    stream: Option<BufReader<UnixStream>>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
 
@@ -156,22 +130,22 @@ impl<PT: PubKey> WipResponse<PT> {
 impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
         config: StateSyncConfig,
-        stream: UnixStream,
+        uds_path: &str,
         request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(
             NodeId<PT>,
             StateSyncNetworkMessage,
         )>,
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
     ) -> Self {
+        let listener = UnixListener::bind(uds_path)
+            .unwrap_or_else(|e| panic!("invalid UDS path={:?}, err={:?}", uds_path, e));
         Self {
             request_timeout: config.incoming_request_timeout,
             max_response_size: config.max_response_size,
             max_outstanding_responses: config.max_outstanding_responses,
             outstanding_responses: 0,
-            stream: BufReader::with_capacity(
-                1024 * 1024, // 1 MB
-                stream,
-            ),
+            listener,
+            stream: None,
             request_tx_reader,
             response_rx_writer,
 
@@ -183,8 +157,28 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     /// Top-level function that's used to step StreamState forward
     async fn poll(&mut self) -> Result<(), tokio::io::Error> {
         tokio::select! {
-            stream_result = self.stream.read_u8(),
-                    if self.outstanding_responses < self.max_outstanding_responses => {
+            stream = self.listener.accept(), if self.stream.is_none() => {
+                let (stream, _addr) = stream?;
+                self.stream = Some(BufReader::with_capacity(1024 * 1024, stream));
+                if let Some(wip_response) = self.wip_response.as_ref() {
+                    self.write_execution_request(bindings::monad_sync_request {
+                        prefix: wip_response.response.request.prefix,
+                        prefix_bytes: wip_response.response.request.prefix_bytes,
+                        target: wip_response.response.request.target,
+                        from: wip_response.response.request.from,
+                        until: wip_response.response.request.until,
+                        old_target: wip_response.response.request.old_target,
+                    }).await?;
+                }
+                Ok(())
+            }
+            stream_result = async {
+                if let Some(stream) = self.stream.as_mut() {
+                    stream.read_u8().await
+                } else {
+                    futures::future::pending().await
+                }
+            }, if self.stream.is_some() && self.outstanding_responses < self.max_outstanding_responses => {
                 // Only read the executor stream if we have capacity to send more responses
                 let msg_type = stream_result?;
                 let execution_message = self.read_execution_message(msg_type).await?;
@@ -339,15 +333,9 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             request.request,
         ));
 
-        self.write_execution_request(bindings::monad_sync_request {
-            prefix: request.request.prefix,
-            prefix_bytes: request.request.prefix_bytes,
-            target: request.request.target,
-            from: request.request.from,
-            until: request.request.until,
-            old_target: request.request.old_target,
-        })
-        .await?;
+        if self.stream.is_some() {
+            self.write_execution_request(request.request.into()).await?;
+        }
 
         Ok(())
     }
@@ -361,48 +349,49 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         &mut self,
         msg_type: u8,
     ) -> Result<ExecutionMessage, tokio::io::Error> {
+        let stream = self.stream.as_mut().unwrap();
         let execution_msg = match msg_type {
             bindings::monad_sync_type_SYNC_TYPE_REQUEST => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_request>()];
-                self.stream.read_exact(&mut buf).await?;
+                stream.read_exact(&mut buf).await?;
                 ExecutionMessage::SyncRequest(unsafe {
                     #[allow(clippy::missing_transmute_annotations)]
                     std::mem::transmute(buf)
                 })
             }
             bindings::monad_sync_type_SYNC_TYPE_UPSERT_CODE => {
-                let data_len = self.stream.read_u64_le().await?;
+                let data_len = stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
+                stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Code, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT => {
-                let data_len = self.stream.read_u64_le().await?;
+                let data_len = stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
+                stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Account, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE => {
-                let data_len = self.stream.read_u64_le().await?;
+                let data_len = stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
+                stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::Storage, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_UPSERT_ACCOUNT_DELETE => {
-                let data_len = self.stream.read_u64_le().await?;
+                let data_len = stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
+                stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::AccountDelete, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_DELETE => {
-                let data_len = self.stream.read_u64_le().await?;
+                let data_len = stream.read_u64_le().await?;
                 let mut data = vec![0_u8; data_len as usize];
-                self.stream.read_exact(&mut data).await?;
+                stream.read_exact(&mut data).await?;
                 ExecutionMessage::SyncUpsert(StateSyncUpsertType::StorageDelete, data)
             }
             bindings::monad_sync_type_SYNC_TYPE_DONE => {
                 let mut buf = [0_u8; std::mem::size_of::<bindings::monad_sync_done>()];
-                self.stream.read_exact(&mut buf).await?;
+                stream.read_exact(&mut buf).await?;
                 ExecutionMessage::SyncDone(unsafe {
                     #[allow(clippy::missing_transmute_annotations)]
                     std::mem::transmute(buf)
@@ -417,14 +406,15 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         &mut self,
         request: bindings::monad_sync_request,
     ) -> Result<(), tokio::io::Error> {
-        self.stream
+        let stream = self.stream.as_mut().unwrap();
+        stream
             .write_u8(bindings::monad_sync_type_SYNC_TYPE_REQUEST)
             .await?;
         let request: [u8; std::mem::size_of::<bindings::monad_sync_request>()] = unsafe {
             #[allow(clippy::missing_transmute_annotations)]
             std::mem::transmute(request)
         };
-        self.stream.write_all(&request).await?;
+        stream.write_all(&request).await?;
         Ok(())
     }
 

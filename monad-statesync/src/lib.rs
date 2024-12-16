@@ -14,7 +14,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
+use monad_executor_glue::{
+    MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+};
 use monad_types::NodeId;
 
 use crate::ffi::{SyncClientBackend, Target};
@@ -34,6 +36,19 @@ pub use triedb_client::TriedbSyncClient;
 )]
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/state_sync.rs"));
+}
+
+impl From<StateSyncRequest> for bindings::monad_sync_request {
+    fn from(req: StateSyncRequest) -> Self {
+        Self {
+            from: req.from,
+            until: req.until,
+            old_target: req.old_target,
+            target: req.target,
+            prefix: req.prefix,
+            prefix_bytes: req.prefix_bytes,
+        }
+    }
 }
 
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
@@ -738,8 +753,6 @@ mod test {
             backend.run_server();
         }
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
         let cmds = vec![StateSyncCommand::Message((
             node,
             StateSyncNetworkMessage::Request(StateSyncRequest {
@@ -816,8 +829,6 @@ mod test {
 
             backend.run_server();
         }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
 
         let cmds = vec![StateSyncCommand::Message((
             node,
