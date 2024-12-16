@@ -46,7 +46,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
     };
 
     // primary workers
-    let generator = make_generator(&config, deployed_contract)?;
+    let generator = make_generator(&config, deployed_contract.clone())?;
     let gen = GeneratorHarness::new(
         generator,
         refresh_rx,
@@ -58,12 +58,14 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         config.base_fee(),
     );
 
+    let deployed_erc20 = deployed_contract.erc20()?;
     let refresher = Refresher {
         rpc_rx,
         gen_sender,
         client: client.clone(),
         delay: Duration::from_secs_f64(config.refresh_delay_secs),
         metrics: Arc::clone(&metrics),
+        deployed_erc20,
     };
 
     let rpc_sender = RpcSender {

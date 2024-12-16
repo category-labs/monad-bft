@@ -1,5 +1,7 @@
 use tokio::time::MissedTickBehavior;
 
+use crate::shared::erc20::ERC20;
+
 use super::*;
 
 pub struct Refresher {
@@ -10,6 +12,8 @@ pub struct Refresher {
     pub metrics: Arc<Metrics>,
 
     pub delay: Duration,
+
+    pub deployed_erc20: ERC20,
 }
 
 impl Refresher {
@@ -39,11 +43,12 @@ impl Refresher {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
+        let deployed_erc20 = self.deployed_erc20;
 
         tokio::spawn(async move {
             let mut times_sent = 0;
 
-            while let Err(e) = refresh_batch(&client, &mut accts, &metrics).await {
+            while let Err(e) = refresh_batch(&client, &mut accts, &metrics, deployed_erc20).await {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
                 } else {
@@ -67,17 +72,20 @@ pub async fn refresh_batch(
     client: &ReqwestClient,
     accts: &mut Accounts,
     metrics: &Metrics,
+    deployed_erc20: ERC20,
 ) -> Result<()> {
     trace!("Refreshing batch...");
 
     let iter = accts.iter().map(|a| &a.addr);
-    let (native_bals, nonces) = tokio::join!(
+    let (native_bals, nonces, erc20_bals) = tokio::join!(
         client.batch_get_balance(iter.clone()),
-        client.batch_get_transaction_count(iter),
+        client.batch_get_transaction_count(iter.clone()),
+        client.batch_get_erc20_balance(iter.clone(), deployed_erc20),
     );
 
     let native_bals = native_bals?;
     let nonces = nonces?;
+    let erc20_bals = erc20_bals?;
 
     metrics
         .total_rpc_calls
@@ -89,6 +97,9 @@ pub async fn refresh_batch(
         }
         if let Ok((_, n)) = &nonces[i] {
             acct.nonce = *n;
+        }
+        if let Ok((_, b)) = &erc20_bals[i] {
+            acct.erc20_bal = *b;
         }
     }
     trace!("Batch refreshed");

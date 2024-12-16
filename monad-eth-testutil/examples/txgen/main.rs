@@ -178,7 +178,7 @@ pub enum RequiredContract {
     ECMUL,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DeployedContract {
     None,
     ERC20(ERC20),

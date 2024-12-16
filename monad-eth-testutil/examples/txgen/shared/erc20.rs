@@ -8,6 +8,7 @@ use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
 use eyre::Result;
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::time::sleep;
 use tracing::info;
 
@@ -135,14 +136,14 @@ impl ERC20 {
         make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
     }
 
-    // pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
-    //     let input = IERC20::balanceOfCall { account };
-    //     let call = json!({
-    //         "to": self.addr,
-    //         "data": input.abi_encode()
-    //     });
-    //     ("eth_call", [call])
-    // }
+    pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
+        let input = IERC20::balanceOfCall { account };
+        let call = json!({
+            "to": self.addr,
+            "data": input.abi_encode()
+        });
+        ("eth_call", [call])
+    }
 }
 
 fn make_tx(
