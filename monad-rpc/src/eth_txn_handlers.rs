@@ -321,7 +321,7 @@ pub struct MonadEthSendRawTransactionParams {
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
-    tx_pool: &vpool::VirtualPool,
+    tx_pool: std::sync::Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -354,7 +354,7 @@ pub async fn monad_eth_sendRawTransaction(
             let txn = txn.try_into_ecrecovered().map_err(|_| {
                 JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
             })?;
-            tx_pool.add_transaction(txn).await;
+            tx_pool.lock().await.add_transaction(txn).await;
             Ok(hash.to_string())
         }
         Err(e) => {

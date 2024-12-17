@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Weak},
+};
 
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
@@ -9,7 +12,7 @@ use reth_primitives::{
 };
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, warn};
 
 use crate::{
@@ -30,10 +33,10 @@ pub struct TxPoolContentFromParams {
     pub address: EthAddress,
 }
 
-#[rpc(method = "txpool_contentFrom")]
+#[rpc(method = "txpool_contentFrom", ignore = "v_pool")]
 #[allow(non_snake_case)]
 pub async fn monad_txpool_contentFrom(
-    tx_pool: &VirtualPool,
+    v_pool: Arc<Mutex<VirtualPool>>,
     params: TxPoolContentFromParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
@@ -51,12 +54,12 @@ pub struct TxPoolStatus {
     pub queued: usize,
 }
 
-#[rpc(method = "txpool_status")]
+#[rpc(method = "txpool_status", ignore = "v_pool")]
 #[allow(non_snake_case)]
-pub async fn monad_txpool_status(tx_pool: &VirtualPool) -> JsonRpcResult<TxPoolStatus> {
+pub async fn monad_txpool_status(v_pool: Arc<Mutex<VirtualPool>>) -> JsonRpcResult<TxPoolStatus> {
     Ok(TxPoolStatus {
-        pending: tx_pool.pending_pool.len(),
-        queued: tx_pool.queued_pool.len(),
+        pending: v_pool.lock().await.pending_pool.len(),
+        queued: v_pool.lock().await.queued_pool.len(),
     })
 }
 
@@ -77,7 +80,7 @@ pub struct VirtualPool {
 struct SubPool {
     // Mapping of sender to a transaction tree ordered by nonce
     pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
-    evict: RwLock<VecDeque<Address>>,
+    evict: EvictionPolicy,
     capacity: usize,
 }
 
@@ -85,13 +88,15 @@ impl SubPool {
     fn new(capacity: usize) -> Self {
         Self {
             pool: HashMap::new(),
-            evict: RwLock::new(VecDeque::new()),
+            evict: EvictionPolicy {
+                lru: LruList::new(),
+            },
             capacity,
         }
     }
 
     /// Adds a transaction to the SubPool, and returns the number of transactions evicted.
-    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) {
+    async fn add(&mut self, txn: TransactionSignedEcRecovered, overwrite: bool) {
         match self.pool.entry(txn.signer()) {
             scc::hash_map::Entry::Occupied(mut entry) => {
                 let tree = entry.get();
@@ -110,26 +115,22 @@ impl SubPool {
                 let tree = TreeIndex::new();
                 tree.insert(txn.nonce(), txn.clone());
                 entry.insert_entry(tree);
-
-                self.evict.write().await.push_front(txn.signer());
             }
         };
+
+        self.evict.mark_used(txn.signer()).await;
     }
 
-    async fn evict(&self) -> usize {
-        let Ok(mut lock) = self.evict.try_write() else {
-            return 0;
-        };
-        let mut removed_count = 0;
-        while lock.len() > self.capacity {
-            if let Some(evicted) = lock.pop_back() {
-                if let Some((_, tree)) = self.pool.remove(&evicted) {
-                    removed_count += tree.len();
-                }
+    async fn evict(&mut self) -> usize {
+        let pool_len: usize = self.pool.len();
+        let mut evicted: usize = 0;
+        while (pool_len - evicted) > self.capacity {
+            if self.evict.evict_lru(&mut self.pool).await {
+                evicted += 1;
             }
         }
 
-        removed_count
+        evicted
     }
 
     fn clear_included(&self, txs: &[(Address, u64)]) -> usize {
@@ -233,6 +234,124 @@ impl SubPool {
         let mut len = 0;
         self.pool.scan(|_, v| len += v.len());
         len
+    }
+}
+
+struct Node {
+    addr: Address,
+    prev: Weak<Mutex<Node>>,
+    next: Option<Arc<Mutex<Node>>>,
+}
+
+struct LruList {
+    head: Option<Arc<Mutex<Node>>>,
+    tail: Option<Arc<Mutex<Node>>>,
+    map: std::collections::HashMap<Address, Arc<Mutex<Node>>>,
+}
+
+impl LruList {
+    fn new() -> Self {
+        Self {
+            head: None,
+            tail: None,
+            map: std::collections::HashMap::new(),
+        }
+    }
+
+    async fn touch(&mut self, addr: Address) {
+        if let Some(node_arc) = self.map.get(&addr).cloned() {
+            self.remove_node(&node_arc).await;
+            self.push_back_node(node_arc).await;
+        } else {
+            let node = Arc::new(Mutex::new(Node {
+                addr,
+                prev: Weak::new(),
+                next: None,
+            }));
+            self.map.insert(addr, node.clone());
+            self.push_back_node(node).await;
+        }
+    }
+
+    async fn evict_front(&mut self) -> Option<Address> {
+        let front_arc = self.head.take()?;
+        let addr = front_arc.lock().await.addr;
+        {
+            let mut front = front_arc.lock().await;
+            let next = front.next.take();
+            if let Some(next_arc) = next {
+                next_arc.lock().await.prev = Weak::new();
+                self.head = Some(next_arc);
+            } else {
+                self.tail = None;
+            }
+        }
+        self.map.remove(&addr);
+        Some(addr)
+    }
+
+    async fn remove_node(&mut self, node_arc: &Arc<Mutex<Node>>) {
+        let mut node = node_arc.lock().await;
+        let prev = node.prev.upgrade();
+        let next = node.next.take();
+
+        match &prev {
+            Some(prev_arc) => {
+                prev_arc.lock().await.next = next.clone();
+            }
+            None => {
+                self.head = next.clone();
+            }
+        }
+
+        if let Some(next_arc) = next {
+            next_arc.lock().await.prev = prev.map_or(Weak::new(), |p| Arc::downgrade(&p));
+        } else {
+            self.tail = prev;
+        }
+    }
+
+    async fn push_back_node(&mut self, node_arc: Arc<Mutex<Node>>) {
+        if let Some(tail_arc) = self.tail.take() {
+            tail_arc.lock().await.next = Some(node_arc.clone());
+            node_arc.lock().await.prev = Arc::downgrade(&tail_arc);
+            self.tail = Some(node_arc);
+            if self.head.is_none() {
+                self.head = Some(tail_arc);
+            }
+        } else {
+            self.head = Some(node_arc.clone());
+            self.tail = Some(node_arc);
+        }
+    }
+}
+
+struct EvictionPolicy {
+    lru: LruList,
+}
+
+impl EvictionPolicy {
+    async fn mark_used(&mut self, addr: Address) {
+        self.lru.touch(addr).await;
+    }
+
+    async fn evict_lru(
+        &mut self,
+        pool: &mut HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
+    ) -> bool {
+        if let Some(addr) = self.lru.evict_front().await {
+            if let Some(tree) = pool.get(&addr) {
+                let guard = Guard::new();
+                let max_nonce = tree
+                    .iter(&guard)
+                    .last()
+                    .map(|(k, _)| *k)
+                    .unwrap_or_default();
+                tree.remove_range(max_nonce..=max_nonce);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -415,7 +534,6 @@ impl VirtualPool {
 
         // If our nonce matches sender nonce, send to pending pool.
         if cur_nonce.map(|n| n == nonce).unwrap_or(false) {
-            dbg!("SEND TO PENDING");
             return TxPoolType::Pending;
         }
 
@@ -461,7 +579,7 @@ impl VirtualPool {
         TxPoolType::Queue
     }
 
-    async fn process_event(&self, event: TxPoolEvent) {
+    async fn process_event(&mut self, event: TxPoolEvent) {
         match event {
             TxPoolEvent::AddValidTransaction { txn } => match self.decide_pool(&txn).await {
                 TxPoolType::Queue => {
@@ -587,12 +705,12 @@ impl VirtualPool {
     }
 
     // Adds a transaction to the txpool and decides which sub-pool to add it to
-    pub async fn add_transaction(&self, txn: TransactionSignedEcRecovered) {
+    pub async fn add_transaction(&mut self, txn: TransactionSignedEcRecovered) {
         self.process_event(TxPoolEvent::AddValidTransaction { txn })
             .await
     }
 
-    pub async fn new_block(&self, block: BlockWithReceipts, next_base_fee: u128) {
+    pub async fn new_block(&mut self, block: BlockWithReceipts, next_base_fee: u128) {
         self.process_event(TxPoolEvent::BlockUpdate {
             block,
             next_base_fee,
@@ -655,14 +773,13 @@ mod tests {
         ]
     }
 
-    //
     #[tokio::test]
     async fn test_vpool() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let mut v_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
         let (sk, addr) = accounts()[0];
 
-        initialize_chain_cache_nonces(v_pool.clone()).await;
+        initialize_chain_cache_nonces(&mut v_pool).await;
 
         let txs = vec![
             make_tx(sk, 1_000, 21_000, 0, 0),
@@ -697,10 +814,10 @@ mod tests {
     #[tokio::test]
     async fn vpool_nonce_gap() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let mut v_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
         let (sk, addr) = accounts()[0];
 
-        initialize_chain_cache_nonces(v_pool.clone()).await;
+        initialize_chain_cache_nonces(&mut v_pool).await;
 
         let txs = vec![
             make_tx(sk, 1_000, 21_000, 0, 0), // included
@@ -756,9 +873,9 @@ mod tests {
     #[tokio::test]
     async fn txpool_fee_replace() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
+        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
 
-        initialize_chain_cache_nonces(tx_pool.clone()).await;
+        initialize_chain_cache_nonces(&mut tx_pool).await;
 
         // Add pending transaction with base fee of 1000
         let base = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0);
@@ -826,8 +943,8 @@ mod tests {
     #[tokio::test]
     async fn txpool_stress() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
-        initialize_chain_cache_nonces(tx_pool.clone()).await;
+        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
+        initialize_chain_cache_nonces(&mut tx_pool).await;
         let (sk, addr) = accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
@@ -891,7 +1008,7 @@ mod tests {
         }
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100, None, None));
+        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
 
         for sender in pending_txs
             .clone()
@@ -987,9 +1104,9 @@ mod tests {
     async fn vpool_eviction() {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let vpool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
+        let mut vpool = VirtualPool::new(ipc_sender.clone(), 2, None, None);
 
-        initialize_chain_cache_nonces(vpool.clone()).await;
+        initialize_chain_cache_nonces(&mut vpool).await;
 
         vpool
             .add_transaction(
@@ -1013,17 +1130,46 @@ mod tests {
             )
             .await;
 
-        assert_eq!(vpool.pending_pool.evict.try_read().unwrap().len(), 3);
         assert_eq!(vpool.pending_pool.pool.len(), 3);
         let evicted = vpool.pending_pool.evict().await;
         assert_eq!(evicted, 1);
         assert_eq!(vpool.pending_pool.len(), 2);
+
+        // Add transaction from same sender, expect max nonce to be removed first.
+        vpool
+            .add_transaction(
+                make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(vpool.pending_pool.pool.len(), 3);
+        let evicted = vpool.pending_pool.evict().await;
+        assert_eq!(evicted, 1);
+        assert_eq!(vpool.pending_pool.len(), 2);
+        assert_eq!(
+            vpool.pending_pool.pool.get(&accounts()[0].1).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            vpool
+                .pending_pool
+                .pool
+                .get(&accounts()[0].1)
+                .unwrap()
+                .get()
+                .iter(&Guard::new())
+                .last()
+                .unwrap()
+                .0,
+            &0
+        );
     }
 
     #[tokio::test]
     async fn test_nonce_gap_resolution() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2, None, None));
+        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 2, None, None);
         let tx = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
             .into_ecrecovered()
             .unwrap();
@@ -1072,7 +1218,7 @@ mod tests {
         Tests behavior of clearing a pool which happens when a block commits transactions.
         */
 
-        let pending_pool = SubPool::new(100);
+        let mut pending_pool = SubPool::new(100);
         let mut commited = Vec::new();
         for nonce in 1..=10 {
             pending_pool
@@ -1120,7 +1266,7 @@ mod tests {
         Tests behavior of nonce gap filtering.
         Create 20 transactions with a gap at 0 and 11, then assert that pool can filter correctly when both nonce gaps are resolved.
         */
-        let queued_pool = SubPool::new(100);
+        let mut queued_pool = SubPool::new(100);
 
         for nonce in 1..=10 {
             queued_pool
@@ -1203,7 +1349,7 @@ mod tests {
         }
     }
 
-    async fn initialize_chain_cache_nonces(v_pool: Arc<VirtualPool>) {
+    async fn initialize_chain_cache_nonces(v_pool: &mut VirtualPool) {
         for account in accounts() {
             v_pool
                 .chain_cache
@@ -1241,7 +1387,7 @@ mod tests {
         let mut eth_block_policy = EthBlockPolicy::new(SeqNum(0), 100, 1337);
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let mut v_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
 
         let mut tx_pool = EthTxPool::default();
         let mut current_round = 1u64;
@@ -1249,7 +1395,7 @@ mod tests {
         let pending_blocks = VecDeque::default();
         let mut nonce = 0;
 
-        initialize_chain_cache_nonces(v_pool.clone()).await;
+        initialize_chain_cache_nonces(&mut v_pool).await;
 
         for _ in 0..10 {
             // Create transactions, add them to vpool.
@@ -1432,7 +1578,7 @@ mod tests {
         let mut eth_block_policy = EthBlockPolicy::new(SeqNum(0), 100, 1337);
 
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let v_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000, None, None));
+        let mut v_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
 
         let mut tx_pool = EthTxPool::default();
         let mut current_round = 1u64;
@@ -1440,7 +1586,7 @@ mod tests {
         let pending_blocks = VecDeque::default();
         let mut nonce = 0;
 
-        initialize_chain_cache_nonces(v_pool.clone()).await;
+        initialize_chain_cache_nonces(&mut v_pool).await;
 
         for _ in 0..10 {
             // Create transactions, add them to vpool.

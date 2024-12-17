@@ -245,7 +245,7 @@ async fn rpc_select(
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
             monad_eth_sendRawTransaction(
-                &app_state.tx_pool,
+                app_state.tx_pool.clone(),
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -484,12 +484,12 @@ async fn rpc_select(
         "txpool_content" => monad_txpool_content().await.map(serialize_result)?,
         "txpool_contentFrom" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_contentFrom(&app_state.tx_pool, params)
+            monad_txpool_contentFrom(app_state.tx_pool.clone(), params)
                 .await
                 .map(serialize_result)?
         }
         "txpool_inspect" => monad_txpool_inspect().await.map(serialize_result)?,
-        "txpool_status" => monad_txpool_status(&app_state.tx_pool)
+        "txpool_status" => monad_txpool_status(app_state.tx_pool.clone())
             .await
             .map(serialize_result)?,
         "web3_clientVersion" => serialize_result("monad"),
@@ -510,7 +510,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
-    tx_pool: Arc<vpool::VirtualPool>,
+    tx_pool: Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -531,7 +531,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
-        tx_pool: Arc<vpool::VirtualPool>,
+        tx_pool: Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -656,12 +656,12 @@ async fn main() -> std::io::Result<()> {
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
-    let tx_pool = Arc::new(vpool::VirtualPool::new(
+    let tx_pool = Arc::new(tokio::sync::Mutex::new(vpool::VirtualPool::new(
         ipc_sender.clone(),
         args.vpool_capacity,
         vpool_metrics,
         triedb_env.clone(),
-    ));
+    )));
 
     // We need to spawn a task to handle changes to the base fee, and block updates
     let tx_pool2 = tx_pool.clone();
@@ -670,7 +670,7 @@ async fn main() -> std::io::Result<()> {
         let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
         let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
         while let Some(block) = watcher.next().await {
-            tx_pool2.new_block(block, 1_000).await;
+            tx_pool2.lock().await.new_block(block, 1_000).await;
         }
     });
 
@@ -767,12 +767,12 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(
+            tx_pool: Arc::new(tokio::sync::Mutex::new(vpool::VirtualPool::new(
                 ipc_sender.clone(),
                 20_000,
                 None,
                 None,
-            )),
+            ))),
         }))
         .await;
         (app, m)

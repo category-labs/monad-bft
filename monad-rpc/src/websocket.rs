@@ -118,7 +118,9 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender, 20_000, None, None)),
+            tx_pool: Arc::new(tokio::sync::Mutex::new(vpool::VirtualPool::new(
+                ipc_sender, 20_000, None, None,
+            ))),
         };
         (
             MonadRpcResourcesState { ipc_receiver },

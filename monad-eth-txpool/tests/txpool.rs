@@ -73,7 +73,6 @@ fn test_create_proposal_with_insufficient_tx_limit() {
     ]);
 }
 
-// useful tests here
 #[test]
 #[traced_test]
 fn test_create_proposal_with_insufficient_gas_limit() {
