@@ -267,10 +267,10 @@ pub struct BlsKeyPair {
 }
 
 impl BlsSecretKey {
-    fn key_gen(ikm: &[u8], key_info: &[u8]) -> Result<Self, BlsError> {
-        blst_core::SecretKey::key_gen(ikm, key_info)
-            .map(Self)
-            .map_err(BlsError)
+    fn key_gen(ikm: &mut [u8], key_info: &[u8]) -> Result<Self, BlsError> {
+        let blst_key = blst_core::SecretKey::key_gen(ikm, key_info);
+        ikm.zeroize();
+        blst_key.map(Self).map_err(BlsError)
     }
 
     fn sk_to_pk(&self) -> BlsPubKey {
@@ -282,9 +282,8 @@ impl BlsKeyPair {
     /// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature#section-2.3
     /// secret MUST be at least 32 bytes
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
-        let secret = secret.as_mut();
-        let sk = BlsSecretKey::key_gen(secret, &[])?;
-        secret.zeroize();
+        let secret_mut = secret.as_mut();
+        let sk = BlsSecretKey::key_gen(secret_mut, &[])?;
         let keypair = Self {
             pubkey: sk.sk_to_pk(),
             secretkey: sk,
@@ -556,7 +555,7 @@ mod test {
 
     use super::{
         blst_core, BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey,
-        BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
+        BlsSecretKey, BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
     };
 
     fn keygen(secret: u8) -> BlsKeyPair {
@@ -632,6 +631,22 @@ mod test {
             .serialize();
         let pubkey = BlsPubKey::deserialize(infinity_pubkey_uncompressed.as_slice());
         assert_eq!(pubkey, Err(BlsError(blst::BLST_ERROR::BLST_PK_IS_INFINITY)));
+    }
+
+    #[test]
+    fn test_keygen_zeroize() {
+        let mut secret = [127; 64];
+        let _ = BlsSecretKey::key_gen(secret.as_mut_slice(), &[]).unwrap();
+        // secret is zeroized
+        assert_eq!(secret, [0_u8; 64])
+    }
+
+    #[test]
+    fn test_keypair_from_bytes_zeroize() {
+        let mut secret = [127; 64];
+        let _ = BlsKeyPair::from_bytes(&mut secret).unwrap();
+        // secret is zeroized
+        assert_eq!(secret, [0_u8; 64])
     }
 
     #[test]
