@@ -80,6 +80,10 @@ impl CertificateSignature for BlsSignature {
         self.verify(msg, pubkey)
     }
 
+    fn validate(&self) -> Result<(), Self::Error> {
+        self.validate(true)
+    }
+
     fn serialize(&self) -> Vec<u8> {
         self.serialize()
     }

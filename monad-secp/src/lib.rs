@@ -85,6 +85,10 @@ impl CertificateSignature for SecpSignature {
         pubkey.verify(msg, self)
     }
 
+    fn validate(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn serialize(&self) -> Vec<u8> {
         self.serialize().to_vec()
     }

@@ -51,6 +51,7 @@ pub trait CertificateSignature:
         msg: &[u8],
         pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error>;
+    fn validate(&self) -> Result<(), Self::Error>;
 
     fn serialize(&self) -> Vec<u8>;
     fn deserialize(signature: &[u8]) -> Result<Self, Self::Error>;
@@ -127,6 +128,10 @@ impl CertificateSignature for NopSignature {
         } else {
             Err("unexpected pubkey")
         }
+    }
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     fn serialize(&self) -> Vec<u8> {

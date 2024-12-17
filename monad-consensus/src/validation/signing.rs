@@ -12,7 +12,8 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
@@ -464,6 +465,10 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
     /// BLS signature is expensive. Verifying every signature on VoteMessage is
     /// infeasible with the block time constraint.
     pub fn validate(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        if self.sig.validate().is_err() {
+            return Err(Error::InvalidSignature);
+        }
+
         self.verify_epoch(epoch_manager)?;
 
         Ok(())
@@ -497,6 +502,11 @@ where
         LT: LeaderElection<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         let timeout = &self.0;
+
+        if timeout.timeout_signature.validate().is_err() {
+            return Err(Error::InvalidSignature);
+        }
+
         if let Some(tc) = &timeout.last_round_tc {
             verify_tc(
                 &|epoch, round| {
@@ -1013,6 +1023,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 
 #[cfg(test)]
 mod test {
+    use monad_bls::{BlsSignature, BlsSignatureCollection};
     use monad_consensus_types::{
         block::{
             ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader,
@@ -1028,7 +1039,8 @@ mod test {
     };
     use monad_crypto::{
         certificate_signature::{
-            CertificateKeyPair, CertificateSignature, CertificateSignatureRecoverable,
+            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+            CertificateSignatureRecoverable,
         },
         hasher::{Hash, Hasher, HasherType},
         NopSignature,
@@ -1577,6 +1589,44 @@ mod test {
     }
 
     #[test]
+    fn vote_invalid_signature() {
+        type SignatureCollectionType =
+            BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+
+        let not_in_subgroup_bytes: [u8; 96] = [
+            0xac, 0xb0, 0x12, 0x4c, 0x75, 0x74, 0xf2, 0x81, 0xa2, 0x93, 0xf4, 0x18, 0x5c, 0xad,
+            0x3c, 0xb2, 0x26, 0x81, 0xd5, 0x20, 0x91, 0x7c, 0xe4, 0x66, 0x65, 0x24, 0x3e, 0xac,
+            0xb0, 0x51, 0x00, 0x0d, 0x8b, 0xac, 0xf7, 0x5e, 0x14, 0x51, 0x87, 0x0c, 0xa6, 0xb3,
+            0xb9, 0xe6, 0xc9, 0xd4, 0x1a, 0x7b, 0x02, 0xea, 0xd2, 0x68, 0x5a, 0x84, 0x18, 0x8a,
+            0x4f, 0xaf, 0xd3, 0x82, 0x5d, 0xaf, 0x6a, 0x98, 0x96, 0x25, 0xd7, 0x19, 0xcc, 0xd2,
+            0xd8, 0x3a, 0x40, 0x10, 0x1f, 0x4a, 0x45, 0x3f, 0xca, 0x62, 0x87, 0x8c, 0x89, 0x0e,
+            0xca, 0x62, 0x23, 0x63, 0xf9, 0xdd, 0xb8, 0xf3, 0x67, 0xa9, 0x1e, 0x84,
+        ];
+
+        let (_keys, cert_keys, _valset, _valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+
+        let author_cert_key = &cert_keys[0];
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+
+        let vote = Vote {
+            id: BlockId(Hash([0x0a_u8; 32])),
+            epoch: Epoch(1),
+            round: Round(10),
+        };
+
+        let mut vote_msg = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
+        vote_msg.sig = BlsSignature::uncompress(&not_in_subgroup_bytes).unwrap();
+
+        let maybe_validated = vote_msg.validate(&epoch_manager);
+        assert_eq!(maybe_validated, Err(Error::InvalidSignature));
+    }
+
+    #[test]
     fn timeout_invalid_epoch() {
         let (_keys, cert_keys, valset, valmap) = create_keys_w_validators::<
             SignatureType,
@@ -1613,6 +1663,59 @@ mod test {
         let maybe_validated =
             unvalidated_timeout_message.validate(&epoch_manager, &val_epoch_map, &election);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
+    }
+
+    #[test]
+    fn timeout_invalid_signature() {
+        type SignatureCollectionType =
+            BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+
+        let not_in_subgroup_bytes: [u8; 96] = [
+            0xac, 0xb0, 0x12, 0x4c, 0x75, 0x74, 0xf2, 0x81, 0xa2, 0x93, 0xf4, 0x18, 0x5c, 0xad,
+            0x3c, 0xb2, 0x26, 0x81, 0xd5, 0x20, 0x91, 0x7c, 0xe4, 0x66, 0x65, 0x24, 0x3e, 0xac,
+            0xb0, 0x51, 0x00, 0x0d, 0x8b, 0xac, 0xf7, 0x5e, 0x14, 0x51, 0x87, 0x0c, 0xa6, 0xb3,
+            0xb9, 0xe6, 0xc9, 0xd4, 0x1a, 0x7b, 0x02, 0xea, 0xd2, 0x68, 0x5a, 0x84, 0x18, 0x8a,
+            0x4f, 0xaf, 0xd3, 0x82, 0x5d, 0xaf, 0x6a, 0x98, 0x96, 0x25, 0xd7, 0x19, 0xcc, 0xd2,
+            0xd8, 0x3a, 0x40, 0x10, 0x1f, 0x4a, 0x45, 0x3f, 0xca, 0x62, 0x87, 0x8c, 0x89, 0x0e,
+            0xca, 0x62, 0x23, 0x63, 0xf9, 0xdd, 0xb8, 0xf3, 0x67, 0xa9, 0x1e, 0x84,
+        ];
+
+        let (_keys, cert_keys, valset, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let validator_stakes = Vec::from_iter(valset.get_members().clone());
+        let election = WeightedRoundRobin::default();
+
+        let author_cert_key = &cert_keys[0];
+
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(Epoch(1), validator_stakes, valmap);
+
+        let timeout = TimeoutInfo {
+            epoch: Epoch(1),
+            round: Round(1),
+            high_qc_round: GENESIS_ROUND,
+            high_tip_round: GENESIS_ROUND,
+        };
+
+        let mut tmo_msg: TimeoutMessage<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        > = TimeoutMessage::new(
+            author_cert_key,
+            timeout,
+            HighExtend::Qc(QuorumCertificate::genesis_qc()),
+            None,
+        );
+
+        tmo_msg.0.timeout_signature = BlsSignature::uncompress(&not_in_subgroup_bytes).unwrap();
+
+        let maybe_validated = tmo_msg.validate(&epoch_manager, &val_epoch_map, &election);
+        assert_eq!(maybe_validated, Err(Error::InvalidSignature));
     }
 
     #[test]

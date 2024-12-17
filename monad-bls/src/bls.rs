@@ -358,7 +358,7 @@ impl BlsSignature {
 
     /// Validate the signature and verify
     pub fn verify(&self, msg: &[u8], pubkey: &BlsPubKey) -> Result<(), BlsError> {
-        let err = self.0.verify(true, msg, DST, &[], &pubkey.0, false);
+        let err = self.0.verify(true, msg, DST, &[], &pubkey.0, true);
         map_err_to_result(err)
     }
 
@@ -469,7 +469,7 @@ impl BlsAggregateSignature {
     pub fn fast_verify(&self, msg: &[u8], pubkey: &BlsAggregatePubKey) -> Result<(), BlsError> {
         let err = self
             .as_signature()
-            .fast_aggregate_verify_pre_aggregated(false, msg, DST, pubkey);
+            .fast_aggregate_verify_pre_aggregated(true, msg, DST, pubkey);
         map_err_to_result(err)
     }
 
@@ -483,7 +483,7 @@ impl BlsAggregateSignature {
 
         let err = self
             .as_signature()
-            .aggregate_verify(false, msgs, DST, pks.as_ref(), false);
+            .aggregate_verify(true, msgs, DST, pks.as_ref(), false);
         map_err_to_result(err)
     }
 
