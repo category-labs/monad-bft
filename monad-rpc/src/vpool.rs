@@ -409,7 +409,7 @@ impl ChainCache {
                     entry.update(*nonce + 1);
                 }
                 None => {
-                    if let Err(_) = inner.accounts.insert(*sender, *nonce + 1) {
+                    if inner.accounts.insert(*sender, *nonce + 1).is_err() {
                         error!("attempted to insert an account that already exists in chain cache")
                     }
                 }
@@ -595,7 +595,7 @@ impl VirtualPool {
                     let tree = HashMap::new();
                     tree.insert(txn.signer(), txn.nonce()).unwrap_or_default();
                     let (promoted, _) = self.queued_pool.filter_by_nonce_gap(&tree);
-                    if promoted.len() > 0 {
+                    if !promoted.is_empty() {
                         for promoted in promoted.into_iter() {
                             self.pending_pool.add(promoted.clone(), false).await;
                             if let Err(error) = self.publisher.send(promoted.into()) {
@@ -734,7 +734,7 @@ impl VirtualPool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, str::FromStr, sync::Arc, u64};
+    use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
     use alloy_primitives::FixedBytes;
     use alloy_rlp::Decodable;
@@ -1530,7 +1530,7 @@ mod tests {
                 v_pool.queued_pool.pool.scan(|_, v| {
                     queued_txs.push(
                         v.iter(&Guard::new())
-                            .map(|(nonce, tx)| (nonce.clone(), tx.signer()))
+                            .map(|(nonce, tx)| (*nonce, tx.signer()))
                             .collect::<Vec<_>>(),
                     );
                 });

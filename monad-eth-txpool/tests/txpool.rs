@@ -1,26 +1,12 @@
-use std::collections::{BTreeMap, VecDeque};
-
 use alloy_primitives::{hex, B256};
-use alloy_rlp::Decodable;
-use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::BlockPolicy, quorum_certificate::QuorumCertificate, txpool::TxPool,
-};
-use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_tx};
-use monad_eth_tx::EthSignedTransaction;
-use monad_eth_txpool::{
-    test_utils::{
-        make_test_block_policy, run_custom_eth_txpool_test, run_eth_txpool_test, TxPoolTestEvent,
-    },
-    EthTxPool,
+use monad_eth_testutil::make_tx;
+use monad_eth_txpool::test_utils::{
+    make_test_block_policy, run_custom_eth_txpool_test, run_eth_txpool_test, TxPoolTestEvent,
 };
-use monad_eth_types::{Balance, EthAddress};
-use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
-use monad_testutil::signing::MockSignatures;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_eth_types::EthAddress;
+use monad_types::GENESIS_SEQ_NUM;
 use tracing_test::traced_test;
 
 const BASE_FEE: u128 = 1000;

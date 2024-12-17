@@ -1,12 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use alloy_primitives::{hex, B256};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::BlockPolicy, quorum_certificate::QuorumCertificate, txpool::TxPool,
-};
+use monad_consensus_types::{block::BlockPolicy, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
@@ -22,7 +19,6 @@ const EXECUTION_DELAY: u64 = 4;
 
 pub type SignatureType = NopSignature;
 pub type StateBackendType = InMemoryState;
-type QC = QuorumCertificate<MockSignatures<SignatureType>>;
 
 pub type Pool = dyn TxPool<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>;
 
