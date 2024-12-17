@@ -328,7 +328,7 @@ mod test {
             let uds_path = self.uds_path.clone();
             let upserts_bufs = self.upserts_bufs.clone();
             let server = async move {
-                let stream = loop {
+                let mut stream = loop {
                     tokio::select! {
                         _ = rx.recv() => {
                             return;
@@ -356,6 +356,7 @@ mod test {
                     } else {
                         Interest::WRITABLE
                     };
+                    println!("waiting for interest {:?}", interest);
                     tokio::select! {
                         _ = rx.recv() => {
                             return;
@@ -366,6 +367,30 @@ mod test {
                                     if result.is_readable() {
                                         while read_offset < request_buf.len() {
                                             match stream.try_read(&mut request_buf[read_offset..]) {
+                                                Ok(0) => {
+                                                    println!("reconnecting");
+                                                    stream = loop {
+                                                            tokio::select! {
+                                                            _ = rx.recv() => {
+                                                                return;
+                                                            }
+                                                            result = tokio::net::UnixStream::connect(&uds_path) => {
+                                                                match result {
+                                                                    Ok(server) => {
+                                                                        break server;
+                                                                    }
+                                                                    Err(_) => {
+                                                                        tokio::time::sleep(Duration::from_millis(100)).await;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    };
+                                                    read_offset = 0;
+                                                    request = None;
+                                                    offset = 0;
+                                                    continue;
+                                                }
                                                 Ok(n) => {
                                                     read_offset += n;
                                                 }
@@ -1214,5 +1239,181 @@ mod test {
                 StateSyncNetworkMessage::Request(_)
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn test_server_side_timeout() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let node = NodeId::new(NopPubKey::from_bytes(&[1; 32]).unwrap());
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::StartExecution];
+        state_sync.exec(commands);
+
+        assert!(matches!(state_sync.mode, StateSyncMode::Live(_)));
+
+        const DATA_SIZE: usize = 1000;
+        {
+            let mut backend = bh.backend.lock().unwrap();
+
+            for i in 0..100 {
+                let mut data = [i as u8; DATA_SIZE];
+                let n = thread_rng().gen::<u64>();
+                data[0..8].copy_from_slice(n.to_le_bytes().as_ref());
+                backend.handle_upsert(0, StateSyncUpsertType::Account, &data);
+            }
+
+            backend.run_server();
+        }
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 0,
+                prefix_bytes: 1,
+            }),
+        ))];
+
+        state_sync.exec(cmds);
+
+        let mut responses_sent: usize = 0;
+        loop {
+            let e = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout")
+                .expect("stream closed unexpectedly");
+            match e {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    n,
+                    StateSyncNetworkMessage::Response(r),
+                )) => {
+                    assert_eq!(n, node);
+                    assert_eq!(r.response_index, responses_sent as u32);
+                    assert_eq!(
+                        r.response.len(),
+                        config.max_response_size.div_ceil(DATA_SIZE)
+                    );
+                    assert_eq!(r.response_n, 0);
+                }
+                _ => {
+                    assert!(
+                        false,
+                        "unexpected event {:?}, should produce response message",
+                        e
+                    );
+                }
+            }
+            responses_sent += 1;
+            if responses_sent == config.max_outstanding_responses {
+                break;
+            }
+        }
+
+        assert!(
+            stream_idle(&mut state_sync),
+            "shouldn't send more messages without completions"
+        );
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Completion,
+        ))];
+
+        state_sync.exec(cmds);
+
+        let e = timeout(Duration::from_secs(1), state_sync.next())
+            .await
+            .expect("timeout, should send next message after completion")
+            .expect("stream closed unexpectedly");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                n,
+                StateSyncNetworkMessage::Response(r),
+            )) => {
+                assert_eq!(n, node);
+                assert_eq!(r.response_index, responses_sent as u32);
+                assert_eq!(
+                    r.response.len(),
+                    config.max_response_size.div_ceil(DATA_SIZE)
+                );
+                assert_eq!(r.response_n, 0);
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should produce response message",
+                    e
+                );
+            }
+        }
+
+        assert!(
+            stream_idle(&mut state_sync),
+            "shouldn't send more messages without completions"
+        );
+
+        // Wait for the current request to timeout
+        tokio::time::sleep(config.incoming_request_timeout * 3 / 2).await;
+        println!("waited for request to timeout send new request");
+
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 0,
+                prefix_bytes: 1,
+            }),
+        ))];
+        state_sync.exec(cmds);
+
+        // Should restart request from beginning
+        responses_sent = 0;
+        let e = timeout(Duration::from_secs(1), state_sync.next())
+            .await
+            .expect("timeout")
+            .expect("stream closed unexpectedly");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                n,
+                StateSyncNetworkMessage::Response(r),
+            )) => {
+                assert_eq!(n, node);
+                assert_eq!(r.response_index, responses_sent as u32);
+                assert_eq!(
+                    r.response.len(),
+                    config.max_response_size.div_ceil(DATA_SIZE)
+                );
+                assert_eq!(r.response_n, 0);
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should produce response message",
+                    e
+                );
+            }
+        }
+
+        bh.backend.lock().unwrap().shutdown().await;
     }
 }
