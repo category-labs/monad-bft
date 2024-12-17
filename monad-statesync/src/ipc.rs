@@ -117,10 +117,11 @@ impl<PT: PubKey> WipResponse<PT> {
             response: Vec::new(),
             response_n: 0,
         };
+        let now = Instant::now();
         Self {
             from,
             rx_time,
-            service_start_time: Instant::now(),
+            service_start_time: now,
             response_size: 0,
             response,
         }
@@ -156,19 +157,14 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
     /// Top-level function that's used to step StreamState forward
     async fn poll(&mut self) -> Result<(), tokio::io::Error> {
+        tracing::debug!("polling");
         tokio::select! {
             stream = self.listener.accept(), if self.stream.is_none() => {
+                tracing::info!("polling accepted connection");
                 let (stream, _addr) = stream?;
                 self.stream = Some(BufReader::with_capacity(1024 * 1024, stream));
                 if let Some(wip_response) = self.wip_response.as_ref() {
-                    self.write_execution_request(bindings::monad_sync_request {
-                        prefix: wip_response.response.request.prefix,
-                        prefix_bytes: wip_response.response.request.prefix_bytes,
-                        target: wip_response.response.request.target,
-                        from: wip_response.response.request.from,
-                        until: wip_response.response.request.until,
-                        old_target: wip_response.response.request.old_target,
-                    }).await?;
+                    self.write_execution_request(wip_response.response.request.into()).await?;
                 }
                 Ok(())
             }
@@ -185,6 +181,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.handle_execution_message(execution_message).await
             }
             network_message = self.request_tx_reader.recv() => {
+                tracing::debug!(?network_message, "received network message");
                 match network_message.expect("msg_tx_writer dropped") {
                     (from, StateSyncNetworkMessage::Request(request)) => {
                         self.handle_request(from, request).await
@@ -197,6 +194,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                         Ok(())
                     }
                 }
+            }
+            _ = tokio::time::sleep(self.request_timeout),
+                    if self.wip_response.is_some() => {
+                self.handle_client_timeout().await
             }
         }
     }
@@ -421,6 +422,23 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn write_response(&self, to: NodeId<PT>, response: StateSyncResponse) {
         if self.response_rx_writer.try_send((to, response)).is_err() {
             tracing::warn!("dropping outbound statesync response, consensus state backlogged?")
+        }
+    }
+
+    async fn handle_client_timeout(&mut self) -> Result<(), tokio::io::Error> {
+        if self.wip_response.is_some() {
+            if let Some(stream) = self.stream.as_mut() {
+                let _ = stream.shutdown().await;
+                self.stream = None;
+            }
+            self.wip_response = None;
+            self.outstanding_responses = 0;
+            self.try_queue_response().await?;
+
+            tracing::warn!("client timed out, aborting session");
+            Ok(())
+        } else {
+            Ok(())
         }
     }
 }
