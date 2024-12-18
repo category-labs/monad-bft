@@ -103,6 +103,7 @@ struct WipResponse<PT: PubKey> {
     rx_time: Instant,
     service_start_time: Instant,
     response_size: usize, // accumulated response size in bytes
+    request: StateSyncRequest,
     response: StateSyncResponse,
 }
 
@@ -110,10 +111,9 @@ impl<PT: PubKey> WipResponse<PT> {
     fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
         let response = StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
-            nonce: rand::random(),
+            session_id: request.session_id,
             response_index: 0,
 
-            request,
             response: Vec::new(),
             response_n: 0,
         };
@@ -123,6 +123,7 @@ impl<PT: PubKey> WipResponse<PT> {
             rx_time,
             service_start_time: now,
             response_size: 0,
+            request,
             response,
         }
     }
@@ -157,14 +158,13 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
     /// Top-level function that's used to step StreamState forward
     async fn poll(&mut self) -> Result<(), tokio::io::Error> {
-        tracing::debug!("polling");
         tokio::select! {
             stream = self.listener.accept(), if self.stream.is_none() => {
                 tracing::info!("polling accepted connection");
                 let (stream, _addr) = stream?;
                 self.stream = Some(BufReader::with_capacity(1024 * 1024, stream));
                 if let Some(wip_response) = self.wip_response.as_ref() {
-                    self.write_execution_request(wip_response.response.request.into()).await?;
+                    self.write_execution_request(wip_response.request.into()).await?;
                 }
                 Ok(())
             }
@@ -174,7 +174,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 } else {
                     futures::future::pending().await
                 }
-            }, if self.stream.is_some() && self.outstanding_responses < self.max_outstanding_responses => {
+            }, if self.outstanding_responses < self.max_outstanding_responses => {
                 // Only read the executor stream if we have capacity to send more responses
                 let msg_type = stream_result?;
                 let execution_message = self.read_execution_message(msg_type).await?;
@@ -221,10 +221,9 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     // send batch
                     let response = StateSyncResponse {
                         version: wip_response.response.version,
-                        nonce: wip_response.response.nonce,
+                        session_id: wip_response.response.session_id,
                         response_index: wip_response.response.response_index,
 
-                        request: wip_response.response.request,
                         response: std::mem::take(&mut wip_response.response.response),
                         response_n: wip_response.response.response_n,
                     };
@@ -252,7 +251,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     "received SyncDone"
                 );
                 if done.success {
-                    assert_eq!(wip_response.response.request.prefix, done.prefix);
+                    assert_eq!(wip_response.request.prefix, done.prefix);
                     // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
                     self.write_response(wip_response.from, wip_response.response);
@@ -291,7 +290,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         if self
             .wip_response
             .as_ref()
-            .is_some_and(|wip_response| wip_response.response.request == request)
+            .is_some_and(|wip_response| wip_response.request.session_id == request.session_id)
         {
             // we are already servicing this request, drop the new one
             return Ok(());
@@ -427,6 +426,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
     async fn handle_client_timeout(&mut self) -> Result<(), tokio::io::Error> {
         if self.wip_response.is_some() {
+            tracing::warn!("client timed out, aborting session");
             if let Some(stream) = self.stream.as_mut() {
                 let _ = stream.shutdown().await;
                 self.stream = None;
@@ -434,11 +434,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             self.wip_response = None;
             self.outstanding_responses = 0;
             self.try_queue_response().await?;
-
-            tracing::warn!("client timed out, aborting session");
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 }
