@@ -280,7 +280,8 @@ mod test {
     use monad_crypto::{NopPubKey, NopSignature};
     use monad_executor::Executor;
     use monad_executor_glue::{
-        StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+        StateSyncRequest, StateSyncResponse, StateSyncSessionId, StateSyncUpsertType,
+        SELF_STATESYNC_VERSION,
     };
     use monad_multi_sig::MultiSig;
     use monad_types::{Hash, NodeId, SeqNum};
@@ -553,6 +554,7 @@ mod test {
                     };
                     let req = StateSyncRequest {
                         version: SELF_STATESYNC_VERSION,
+                        session_id: StateSyncSessionId(thread_rng().gen::<u64>()),
                         prefix: i,
                         prefix_bytes: 1,
                         from: from.0,
@@ -728,9 +730,8 @@ mod test {
         };
         let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
-            nonce: 1,
+            session_id: request.session_id,
             response: vec![],
-            request,
             response_index: 0,
             response_n: 1,
         });
@@ -818,10 +819,12 @@ mod test {
             backend.run_server();
         }
 
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
         let cmds = vec![StateSyncCommand::Message((
             node,
             StateSyncNetworkMessage::Request(StateSyncRequest {
                 version: SELF_STATESYNC_VERSION,
+                session_id: session_id,
                 from: 0,
                 until: 1,
                 old_target: 0,
@@ -846,6 +849,7 @@ mod test {
                 assert_eq!(r.response_index, 0);
                 assert_eq!(r.response_n, 1);
                 assert_eq!(r.response.len(), 2);
+                assert_eq!(r.session_id, session_id);
             }
             _ => {
                 assert!(
@@ -895,10 +899,12 @@ mod test {
             backend.run_server();
         }
 
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
         let cmds = vec![StateSyncCommand::Message((
             node,
             StateSyncNetworkMessage::Request(StateSyncRequest {
                 version: SELF_STATESYNC_VERSION,
+                session_id,
                 from: 0,
                 until: 1,
                 old_target: 0,
@@ -928,6 +934,7 @@ mod test {
                         config.max_response_size.div_ceil(DATA_SIZE)
                     );
                     assert_eq!(r.response_n, 0);
+                    assert_eq!(r.session_id, session_id);
                 }
                 _ => {
                     assert!(
@@ -971,6 +978,7 @@ mod test {
                     config.max_response_size.div_ceil(DATA_SIZE)
                 );
                 assert_eq!(r.response_n, 0);
+                assert_eq!(r.session_id, session_id);
             }
             _ => {
                 assert!(
@@ -1006,6 +1014,7 @@ mod test {
                 )) => {
                     assert_eq!(n, node);
                     assert_eq!(r.response_index, responses_sent as u32);
+                    assert_eq!(r.session_id, session_id);
                     if r.response_n == 0 {
                         assert_eq!(
                             r.response.len(),
@@ -1088,9 +1097,8 @@ mod test {
         for response_index in 0..10 {
             let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
                 version: SELF_STATESYNC_VERSION,
-                nonce: 1,
+                session_id: request.session_id,
                 response: vec![(StateSyncUpsertType::Account, vec![response_index as u8; 20])],
-                request,
                 response_index,
                 response_n: 0,
             });
@@ -1126,9 +1134,8 @@ mod test {
         }
         let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
-            nonce: 1,
+            session_id: request.session_id,
             response: vec![(StateSyncUpsertType::Account, vec![10 as u8; 20])],
-            request,
             response_index: 10,
             response_n: 1,
         });
@@ -1277,10 +1284,12 @@ mod test {
             backend.run_server();
         }
 
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
         let cmds = vec![StateSyncCommand::Message((
             node,
             StateSyncNetworkMessage::Request(StateSyncRequest {
                 version: SELF_STATESYNC_VERSION,
+                session_id,
                 from: 0,
                 until: 1,
                 old_target: 0,
@@ -1353,6 +1362,7 @@ mod test {
                     config.max_response_size.div_ceil(DATA_SIZE)
                 );
                 assert_eq!(r.response_n, 0);
+                assert_eq!(r.session_id, session_id);
             }
             _ => {
                 assert!(
@@ -1372,10 +1382,12 @@ mod test {
         tokio::time::sleep(config.incoming_request_timeout * 3 / 2).await;
         println!("waited for request to timeout send new request");
 
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
         let cmds = vec![StateSyncCommand::Message((
             node,
             StateSyncNetworkMessage::Request(StateSyncRequest {
                 version: SELF_STATESYNC_VERSION,
+                session_id,
                 from: 0,
                 until: 1,
                 old_target: 0,
@@ -1404,6 +1416,7 @@ mod test {
                     config.max_response_size.div_ceil(DATA_SIZE)
                 );
                 assert_eq!(r.response_n, 0);
+                assert_eq!(r.session_id, session_id);
             }
             _ => {
                 assert!(

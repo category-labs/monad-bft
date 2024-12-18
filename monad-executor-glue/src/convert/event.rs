@@ -13,7 +13,8 @@ use monad_proto::{
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent,
     MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers, ValidatorEvent,
+    StateSyncSessionId, StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers,
+    ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -705,6 +706,7 @@ where
 impl From<&StateSyncRequest> for monad_proto::proto::message::ProtoStateSyncRequest {
     fn from(request: &StateSyncRequest) -> Self {
         Self {
+            session_id: request.session_id.0,
             version: StateSyncVersion::to_u32(&request.version),
             prefix: request.prefix,
             prefix_bytes: request.prefix_bytes.into(),
@@ -742,9 +744,8 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
     fn from(response: &StateSyncResponse) -> Self {
         Self {
             version: StateSyncVersion::to_u32(&response.version),
-            nonce: response.nonce,
+            session_id: response.session_id.0,
             response_index: response.response_index,
-            request: Some((&response.request).into()),
             upserts: response
                 .response
                 .iter()
@@ -835,6 +836,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
     ) -> Result<Self, Self::Error> {
         Ok(StateSyncRequest {
             version: StateSyncVersion::from_u32(request.version),
+            session_id: StateSyncSessionId(request.session_id),
             prefix: request.prefix,
             prefix_bytes: request
                 .prefix_bytes
@@ -888,14 +890,8 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
             OneofMessage::Response(response) => {
                 Ok(StateSyncNetworkMessage::Response(StateSyncResponse {
                     version: StateSyncVersion::from_u32(response.version),
-                    nonce: response.nonce,
+                    session_id: StateSyncSessionId(response.session_id),
                     response_index: response.response_index,
-                    request: response
-                        .request
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "StateSyncResponse::request".to_owned(),
-                        ))?
-                        .try_into()?,
                     response: response
                         .upserts
                         .into_iter()

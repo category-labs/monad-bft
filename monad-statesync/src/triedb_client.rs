@@ -1,7 +1,10 @@
 use std::ffi::CString;
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncUpsertType, SELF_STATESYNC_VERSION};
+use monad_executor_glue::{
+    StateSyncRequest, StateSyncSessionId, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+};
+use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -67,6 +70,7 @@ impl TriedbSyncClient {
             move |request| {
                 let result = request_tx.send(SyncRequest::Request(StateSyncRequest {
                     version: SELF_STATESYNC_VERSION,
+                    session_id: StateSyncSessionId(thread_rng().gen()),
                     prefix: request.prefix,
                     prefix_bytes: request.prefix_bytes,
                     target: request.target,

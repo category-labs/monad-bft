@@ -64,7 +64,7 @@ message ProtoForwardedTx {
 
 message ProtoStateSyncRequest {
   uint32 version = 7;
-
+  uint64 session_id = 8;
   uint64 prefix = 1;
   uint32 prefix_bytes = 2;
   uint64 target = 3;
@@ -88,10 +88,9 @@ message ProtoStateSyncUpsert {
 
 message ProtoStateSyncResponse {
   uint32 version = 4;
-  uint64 nonce = 5;
+  uint64 session_id = 5;
   uint32 response_index = 6;
 
-  ProtoStateSyncRequest request = 1;
   repeated ProtoStateSyncUpsert upserts = 2;
   uint64 n = 3;
 }

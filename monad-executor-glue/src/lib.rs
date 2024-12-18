@@ -474,9 +474,13 @@ impl StateSyncVersion {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StateSyncSessionId(pub u64);
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
+    pub session_id: StateSyncSessionId, // unique session id allocated by client
 
     pub prefix: u64,
     pub prefix_bytes: u8,
@@ -498,22 +502,20 @@ pub enum StateSyncUpsertType {
 #[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
-    pub nonce: u64,
-    pub response_index: u32,
+    pub session_id: StateSyncSessionId, // unique session id provided by client
+    pub response_index: u32,            // index of this response in the session
 
-    pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
     pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
-    pub response_n: u64,
+    pub response_n: u64, // if non-zero, last response in the session
 }
 
 impl Debug for StateSyncResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateSyncResponse")
             .field("version", &self.version)
-            .field("nonce", &self.nonce)
+            .field("session_id", &self.session_id)
             .field("response_index", &self.response_index)
-            .field("request", &self.request)
             .field("response_len", &self.response.len())
             .field("response_n", &self.response_n)
             .finish()

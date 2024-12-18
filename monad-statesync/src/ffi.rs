@@ -12,7 +12,6 @@ use monad_executor_glue::{
     StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_types::{NodeId, SeqNum};
-use rand::seq::SliceRandom;
 
 use crate::{bindings, outbound_requests::OutboundRequests};
 
@@ -58,7 +57,7 @@ pub enum SyncRequest<R, PT: PubKey> {
 /// from the perspective of this module. InputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an output event.
 pub(crate) enum SyncResponse<P: PubKey> {
-    Response((NodeId<P>, StateSyncResponse)),
+    Response((NodeId<P>, StateSyncRequest, StateSyncResponse)),
     UpdateTarget(Target),
 }
 
@@ -173,27 +172,20 @@ impl<PT: PubKey> StateSync<PT> {
                         ));
                         progress.lock().unwrap().update_target(target)
                     }
-                    SyncResponse::Response((from, response)) => {
+                    SyncResponse::Response((from, request, response)) => {
                         let sync_ctx = sync_ctx.as_mut().expect("sync_ctx must be set");
                         for (upsert_type, upsert_data) in &response.response {
-                            let upsert_result = sync_ctx.handle_upsert(
-                                response.request.prefix,
-                                *upsert_type,
-                                upsert_data,
-                            );
+                            let upsert_result =
+                                sync_ctx.handle_upsert(request.prefix, *upsert_type, upsert_data);
                             assert!(upsert_result, "failed upsert for response: {:?}", &response);
                         }
                         if response.response_n != 0 {
-                            sync_ctx
-                                .handle_done(response.request.prefix, SeqNum(response.response_n));
+                            sync_ctx.handle_done(request.prefix, SeqNum(response.response_n));
                         }
                         request_tx
                             .send(SyncRequest::Completion(from))
                             .expect("request_rx dropped");
-                        progress
-                            .lock()
-                            .unwrap()
-                            .update_handled_request(&response.request)
+                        progress.lock().unwrap().update_handled_request(&request)
                     }
                 }
                 let ctx = sync_ctx.as_mut().expect("sync_ctx must be set");
@@ -256,9 +248,9 @@ impl<PT: PubKey> StateSync<PT> {
             return;
         }
 
-        for ready_response in self.outbound_requests.handle_response(from, response) {
+        for (request, ready_response) in self.outbound_requests.handle_response(from, response) {
             self.response_tx
-                .send(SyncResponse::Response((from, ready_response)))
+                .send(SyncResponse::Response((from, request, ready_response)))
                 .expect("response_rx dropped");
         }
     }
@@ -298,7 +290,6 @@ impl<PT: PubKey> Stream for StateSync<PT> {
                     // from the perspective of the statesync thread. Any subsequent queued requests
                     // therefore must have been sequenced after this DoneSync is handled.
                     assert!(this.outbound_requests.is_empty());
-                    this.outbound_requests.clear_prefix_peers();
 
                     return Poll::Ready(Some(SyncRequest::DoneSync(target)));
                 }
@@ -308,14 +299,9 @@ impl<PT: PubKey> Stream for StateSync<PT> {
             }
         }
 
-        let fut = this.outbound_requests.poll();
-        if let Poll::Ready((maybe_locked_peer, request)) = pin!(fut).poll_unpin(cx) {
-            let servicer = maybe_locked_peer.unwrap_or_else(|| {
-                this.state_sync_peers
-                    .choose(&mut rand::thread_rng())
-                    .expect("unable to send statesync request, no peers")
-            });
-            return Poll::Ready(Some(SyncRequest::Request((*servicer, request))));
+        let fut = this.outbound_requests.poll(&this.state_sync_peers);
+        if let Poll::Ready(res) = pin!(fut).poll_unpin(cx) {
+            return Poll::Ready(Some(SyncRequest::Request(res)));
         }
 
         Poll::Pending
