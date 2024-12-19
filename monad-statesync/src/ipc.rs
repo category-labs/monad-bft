@@ -5,8 +5,8 @@ use std::{
 
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-    SELF_STATESYNC_VERSION,
+    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsert,
+    StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_types::NodeId;
 use tokio::{
@@ -104,27 +104,20 @@ struct WipResponse<PT: PubKey> {
     service_start_time: Instant,
     response_size: usize, // accumulated response size in bytes
     request: StateSyncRequest,
-    response: StateSyncResponse,
+    response_index: u64,
+    upserts: Vec<StateSyncUpsert>,
 }
 
 impl<PT: PubKey> WipResponse<PT> {
     fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
-        let response = StateSyncResponse {
-            version: SELF_STATESYNC_VERSION,
-            session_id: request.session_id,
-            response_index: 0,
-
-            response: Vec::new(),
-            response_n: 0,
-        };
-        let now = Instant::now();
         Self {
             from,
             rx_time,
-            service_start_time: now,
+            service_start_time: Instant::now(),
             response_size: 0,
             request,
-            response,
+            response_index: 0,
+            upserts: Vec::new(),
         }
     }
 }
@@ -216,20 +209,20 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .as_mut()
                     .expect("SyncUpsert with no pending_response");
                 wip_response.response_size += data.len();
-                wip_response.response.response.push((upsert_type, data));
+                wip_response
+                    .upserts
+                    .push(StateSyncUpsert { upsert_type, data });
                 if wip_response.response_size > self.max_response_size {
                     // send batch
-                    let response = StateSyncResponse {
-                        version: wip_response.response.version,
-                        session_id: wip_response.response.session_id,
-                        response_index: wip_response.response.response_index,
-
-                        response: std::mem::take(&mut wip_response.response.response),
-                        response_n: wip_response.response.response_n,
-                    };
-                    wip_response.response.response_index += 1;
+                    let response = StateSyncResponse::new(
+                        wip_response.request.session_id,
+                        wip_response.response_index,
+                        std::mem::take(&mut wip_response.upserts),
+                        0,
+                    );
+                    wip_response.response_index += 1;
                     // unnecessary but keeping for clarity
-                    wip_response.response.response.clear();
+                    wip_response.upserts.clear();
                     wip_response.response_size = 0;
                     let from = wip_response.from;
                     self.write_response(from, response);
@@ -252,9 +245,13 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 );
                 if done.success {
                     assert_eq!(wip_response.request.prefix, done.prefix);
-                    // response_n is overloaded to indicate that the response is done
-                    wip_response.response.response_n = done.n;
-                    self.write_response(wip_response.from, wip_response.response);
+                    let response = StateSyncResponse::new(
+                        wip_response.request.session_id,
+                        wip_response.response_index,
+                        std::mem::take(&mut wip_response.upserts),
+                        done.n,
+                    );
+                    self.write_response(wip_response.from, response);
                 } else {
                     // request failed, so don't send finish the response. we've dropped the
                     // wip_response at this point.

@@ -25,6 +25,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_proto::proto::message::StateSyncResponseErr;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
@@ -490,7 +491,7 @@ pub struct StateSyncRequest {
     pub old_target: u64,
 }
 
-#[derive(Clone, PartialEq, Eq, Copy)]
+#[derive(Clone, PartialEq, Eq, Copy, Debug)]
 pub enum StateSyncUpsertType {
     Code,
     Account,
@@ -500,25 +501,67 @@ pub enum StateSyncUpsertType {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct StateSyncResponse {
-    pub version: StateSyncVersion,
-    pub session_id: StateSyncSessionId, // unique session id provided by client
-    pub response_index: u32,            // index of this response in the session
+pub struct StateSyncUpsert {
+    pub upsert_type: StateSyncUpsertType,
+    pub data: Vec<u8>,
+}
 
+impl Debug for StateSyncUpsert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateSyncUpsert")
+            .field("upsert_type", &self.upsert_type)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct StateSyncResponseOk {
+    pub response_index: u64, // index of this response in the session
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<(StateSyncUpsertType, Vec<u8>)>,
+    pub response: Vec<StateSyncUpsert>,
     pub response_n: u64, // if non-zero, last response in the session
 }
 
-impl Debug for StateSyncResponse {
+impl Debug for StateSyncResponseOk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StateSyncResponse")
-            .field("version", &self.version)
-            .field("session_id", &self.session_id)
+        f.debug_struct("StateSyncResponseOk")
             .field("response_index", &self.response_index)
             .field("response_len", &self.response.len())
             .field("response_n", &self.response_n)
             .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum StateSyncResponseBody {
+    Ok(StateSyncResponseOk),
+    Err(StateSyncResponseErr),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StateSyncResponse {
+    pub version: StateSyncVersion,
+    pub session_id: StateSyncSessionId, // unique session id provided by client
+    pub body: StateSyncResponseBody,
+}
+
+impl StateSyncResponse {
+    pub fn new(
+        session_id: StateSyncSessionId,
+        response_index: u64,
+        response: Vec<StateSyncUpsert>,
+        response_n: u64,
+    ) -> Self {
+        Self {
+            version: SELF_STATESYNC_VERSION,
+            session_id,
+            body: StateSyncResponseBody::Ok(StateSyncResponseOk {
+                response_index,
+                response,
+                response_n,
+            }),
+        }
     }
 }
 

@@ -5,7 +5,10 @@ use std::{
 };
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse, StateSyncSessionId};
+use monad_executor_glue::{
+    StateSyncRequest, StateSyncResponse, StateSyncResponseBody, StateSyncResponseOk,
+    StateSyncSessionId,
+};
 use monad_types::NodeId;
 use rand::{prelude::SliceRandom, thread_rng, Rng};
 
@@ -25,10 +28,10 @@ struct InFlightRequest<PT: PubKey> {
     last_active: Instant,
 
     // out-of-order responses indexed by response_idx
-    responses: BTreeMap<u32, StateSyncResponse>,
+    responses: BTreeMap<u64, StateSyncResponseOk>,
 
     // next expected response index
-    response_index: u32,
+    response_index: u64,
 
     _pd: PhantomData<PT>,
 }
@@ -48,8 +51,8 @@ impl<PT: PubKey> InFlightRequest<PT> {
     fn apply_response(
         &mut self,
         from: &NodeId<PT>,
-        response: StateSyncResponse,
-    ) -> Vec<(StateSyncRequest, StateSyncResponse)> {
+        response: StateSyncResponseOk,
+    ) -> Vec<(StateSyncRequest, StateSyncResponseOk)> {
         self.last_active = std::time::Instant::now();
 
         if from != &self.peer {
@@ -137,15 +140,29 @@ impl<PT: PubKey> OutboundRequests<PT> {
         &mut self,
         from: NodeId<PT>,
         response: StateSyncResponse,
-    ) -> Vec<(StateSyncRequest, StateSyncResponse)> {
+    ) -> Vec<(StateSyncRequest, StateSyncResponseOk)> {
         match self.in_flight_requests.entry(response.session_id) {
             Entry::Occupied(mut in_flight_request) => {
-                let responses = in_flight_request.get_mut().apply_response(&from, response);
-                if responses.last().is_some_and(|(_, r)| r.response_n != 0) {
-                    // Received last response, request is complete
-                    in_flight_request.remove();
+                match response.body {
+                    StateSyncResponseBody::Ok(response) => {
+                        if in_flight_request.get().peer != from {
+                            tracing::info!(?from, ?response, "dropping response, wrong peer");
+                            return Vec::new();
+                        }
+                        let responses = in_flight_request.get_mut().apply_response(&from, response);
+                        if responses.last().is_some_and(|(_, r)| r.response_n != 0) {
+                            // Received last response, request is complete
+                            in_flight_request.remove();
+                        }
+                        responses
+                    }
+                    StateSyncResponseBody::Err(e) => {
+                        tracing::warn!(?from, ?response, ?e, "received error, retrying");
+                        self.pending_requests
+                            .insert(in_flight_request.remove().request);
+                        return Vec::new();
+                    }
                 }
-                responses
             }
             Entry::Vacant(_) => {
                 tracing::debug!(

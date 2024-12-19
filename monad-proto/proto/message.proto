@@ -86,13 +86,24 @@ message ProtoStateSyncUpsert {
   bytes data = 2;
 }
 
-message ProtoStateSyncResponse {
-  uint32 version = 4;
-  uint64 session_id = 5;
-  uint32 response_index = 6;
-
+message ProtoStateSyncResponseOk {
+  uint64 response_index = 1;
   repeated ProtoStateSyncUpsert upserts = 2;
   uint64 n = 3;
+}
+
+enum StateSyncResponseErr {
+  INVALID_VERSION = 0;
+  INSUFFICIENT_RESOURCES = 1; // Server is over limit of pending requests
+}
+
+message ProtoStateSyncResponse {
+  uint32 version = 1;
+  uint64 session_id = 2;
+  oneof message {
+    ProtoStateSyncResponseOk ok = 3;
+    StateSyncResponseErr err = 4;
+  }
 }
 
 message ProtoStateSyncCompletion {
