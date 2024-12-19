@@ -12,7 +12,8 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse, StateSyncSessionId, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncResponse, StateSyncResponseBody, StateSyncSessionId, StateSyncUpsert,
+    StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_state_backend::InMemoryState;
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -109,13 +110,15 @@ where
                             let state = self.state_backend.lock().unwrap();
                             if let Some(state) = state.block_state(&SeqNum(request.target)) {
                                 let serialized = serde_json::to_vec(&*state).unwrap();
-                                let response = StateSyncResponse {
-                                    version: SELF_STATESYNC_VERSION,
-                                    session_id: StateSyncSessionId(0),
-                                    response_index: 0,
-                                    response: vec![(StateSyncUpsertType::Code, serialized)],
-                                    response_n: 1,
-                                };
+                                let response = StateSyncResponse::new(
+                                    StateSyncSessionId(0),
+                                    0,
+                                    vec![StateSyncUpsert {
+                                        upsert_type: StateSyncUpsertType::Code,
+                                        data: serialized,
+                                    }],
+                                    1,
+                                );
                                 self.events.push_back(MonadEvent::StateSyncEvent(
                                     StateSyncEvent::Outbound(
                                         from,
@@ -131,8 +134,14 @@ where
                                 .request
                                 .is_some_and(|request| request.session_id == response.session_id)
                         {
-                            let deserialized =
-                                serde_json::from_slice(&response.response[0].1).unwrap();
+                            let deserialized = match response.body {
+                                StateSyncResponseBody::Ok(r) => {
+                                    serde_json::from_slice(&r.response[0].data).unwrap()
+                                }
+                                StateSyncResponseBody::Err(e) => {
+                                    panic!("Received error response: {:?}", e);
+                                }
+                            };
                             let mut old_state = self.state_backend.lock().unwrap();
                             old_state.reset_state(deserialized);
                             self.events.push_back(MonadEvent::StateSyncEvent(

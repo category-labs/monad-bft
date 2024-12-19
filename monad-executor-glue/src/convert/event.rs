@@ -1,3 +1,5 @@
+use crate::StateSyncResponseBody;
+use crate::StateSyncResponseOk;
 use std::{net::SocketAddr, str::FromStr};
 
 use bytes::Bytes;
@@ -13,8 +15,8 @@ use monad_proto::{
 use crate::{
     AsyncStateVerifyEvent, BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent,
     MonadEvent, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
-    StateSyncSessionId, StateSyncUpsertType, StateSyncVersion, UpdateFullNodes, UpdatePeers,
-    ValidatorEvent,
+    StateSyncSessionId, StateSyncUpsert, StateSyncUpsertType, StateSyncVersion, UpdateFullNodes,
+    UpdatePeers, ValidatorEvent,
 };
 
 impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEvent<S, SCT>>
@@ -740,26 +742,34 @@ impl From<&StateSyncUpsertType> for monad_proto::proto::message::ProtoStateSyncU
     }
 }
 
+impl From<&StateSyncUpsert> for monad_proto::proto::message::ProtoStateSyncUpsert {
+    fn from(upsert: &StateSyncUpsert) -> Self {
+        let upsert_type: monad_proto::proto::message::ProtoStateSyncUpsertType =
+            (&upsert.upsert_type).into();
+        Self {
+            r#type: upsert_type as i32,
+            data: Bytes::copy_from_slice(&upsert.data),
+        }
+    }
+}
+
 impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncResponse {
     fn from(response: &StateSyncResponse) -> Self {
+        use monad_proto::proto::message::proto_state_sync_response::Message;
+
         Self {
             version: StateSyncVersion::to_u32(&response.version),
             session_id: response.session_id.0,
-            response_index: response.response_index,
-            upserts: response
-                .response
-                .iter()
-                .map(
-                    |(upsert_type, data)| monad_proto::proto::message::ProtoStateSyncUpsert {
-                        r#type: monad_proto::proto::message::ProtoStateSyncUpsertType::from(
-                            upsert_type,
-                        )
-                        .into(),
-                        data: Bytes::copy_from_slice(data),
-                    },
-                )
-                .collect(),
-            n: response.response_n,
+            message: Some(match response.body {
+                StateSyncResponseBody::Ok(ref response) => {
+                    Message::Ok(monad_proto::proto::message::ProtoStateSyncResponseOk {
+                        response_index: response.response_index,
+                        upserts: response.response.iter().map(Into::into).collect(),
+                        n: response.response.len() as u64,
+                    })
+                }
+                StateSyncResponseBody::Err(ref error) => Message::Err(*error as i32),
+            }),
         }
     }
 }
@@ -872,6 +882,61 @@ impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUp
     }
 }
 
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncUpsert> for StateSyncUpsert {
+    type Error = ProtoError;
+
+    fn try_from(
+        upsert: monad_proto::proto::message::ProtoStateSyncUpsert,
+    ) -> Result<Self, Self::Error> {
+        let upsert_type: monad_proto::proto::message::ProtoStateSyncUpsertType = upsert
+            .r#type
+            .try_into()
+            .map_err(|_| ProtoError::DeserializeError("unknown upsert type".to_owned()))?;
+        Ok(StateSyncUpsert {
+            upsert_type: upsert_type.into(),
+            data: Vec::from(upsert.data),
+        })
+    }
+}
+
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncResponseOk> for StateSyncResponseOk {
+    type Error = ProtoError;
+
+    fn try_from(
+        response: monad_proto::proto::message::ProtoStateSyncResponseOk,
+    ) -> Result<Self, Self::Error> {
+        Ok(StateSyncResponseOk {
+            response_index: response.response_index,
+            response: response
+                .upserts
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, ProtoError>>()?,
+            response_n: response.n,
+        })
+    }
+}
+
+impl TryFrom<monad_proto::proto::message::ProtoStateSyncResponse> for StateSyncResponse {
+    type Error = ProtoError;
+
+    fn try_from(
+        response: monad_proto::proto::message::ProtoStateSyncResponse,
+    ) -> Result<Self, Self::Error> {
+        use monad_proto::proto::message::proto_state_sync_response::Message;
+        Ok(StateSyncResponse {
+            version: StateSyncVersion::from_u32(response.version),
+            session_id: StateSyncSessionId(response.session_id),
+            body: match response.message.ok_or(ProtoError::MissingRequiredField(
+                "StateSyncResponse::message".to_owned(),
+            ))? {
+                Message::Ok(ok) => StateSyncResponseBody::Ok(ok.try_into()?),
+                Message::Err(error) => StateSyncResponseBody::Err(error.try_into()?),
+            },
+        })
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -888,27 +953,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                 Ok(StateSyncNetworkMessage::Request(request.try_into()?))
             }
             OneofMessage::Response(response) => {
-                Ok(StateSyncNetworkMessage::Response(StateSyncResponse {
-                    version: StateSyncVersion::from_u32(response.version),
-                    session_id: StateSyncSessionId(response.session_id),
-                    response_index: response.response_index,
-                    response: response
-                        .upserts
-                        .into_iter()
-                        .map(|upsert| {
-                            let upsert_type =
-                                monad_proto::proto::message::ProtoStateSyncUpsertType::try_from(
-                                    upsert.r#type,
-                                )
-                                .map_err(|_| {
-                                    ProtoError::DeserializeError("unknown upsert type".to_owned())
-                                })?
-                                .into();
-                            Ok((upsert_type, Vec::from(upsert.data)))
-                        })
-                        .collect::<Result<_, ProtoError>>()?,
-                    response_n: response.n,
-                }))
+                Ok(StateSyncNetworkMessage::Response(response.try_into()?))
             }
             OneofMessage::Completion(_) => Ok(StateSyncNetworkMessage::Completion),
         }

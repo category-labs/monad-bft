@@ -9,8 +9,8 @@ use std::{
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncSessionId, StateSyncUpsertType,
-    SELF_STATESYNC_VERSION,
+    StateSyncRequest, StateSyncResponse, StateSyncResponseOk, StateSyncSessionId,
+    StateSyncUpsertType, SELF_STATESYNC_VERSION,
 };
 use monad_types::{NodeId, SeqNum};
 use rand::{thread_rng, Rng};
@@ -47,7 +47,7 @@ pub(crate) enum SyncRequest<R, PT: PubKey> {
 /// from the perspective of this module. InputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an output event.
 pub(crate) enum SyncResponse<P: PubKey> {
-    Response((NodeId<P>, StateSyncRequest, StateSyncResponse)),
+    Response((NodeId<P>, StateSyncRequest, StateSyncResponseOk)),
     UpdateTarget(Target),
 }
 
@@ -177,11 +177,11 @@ impl<PT: PubKey> StateSync<PT> {
                     }
                     SyncResponse::Response((from, request, response)) => {
                         assert!(current_target.is_some());
-                        for (upsert_type, upsert_data) in &response.response {
+                        for upsert in &response.response {
                             let upsert_result = sync_ctx.ctx.handle_upsert(
                                 request.prefix,
-                                *upsert_type,
-                                &upsert_data,
+                                upsert.upsert_type,
+                                &upsert.data,
                             );
                             assert!(upsert_result, "failed upsert for response: {:?}", &response);
                         }
@@ -232,15 +232,6 @@ impl<PT: PubKey> StateSync<PT> {
     }
 
     pub fn handle_response(&mut self, from: NodeId<PT>, response: StateSyncResponse) {
-        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
-            tracing::warn!(
-                ?from,
-                ?response,
-                "dropping statesync response from untrusted peer",
-            );
-            return;
-        }
-
         if !response.version.is_compatible() {
             tracing::debug!(
                 ?from,

@@ -1,3 +1,4 @@
+use monad_executor_glue::StateSyncResponseBody;
 use std::{
     marker::PhantomData,
     ops::DerefMut,
@@ -250,7 +251,10 @@ where
                     tracing::debug!(
                         ?to,
                         ?response,
-                        upserts_len = response.response.len(),
+                        upserts_len = match &response.body {
+                            StateSyncResponseBody::Ok(ok) => ok.response.len(),
+                            StateSyncResponseBody::Err(_) => 0,
+                        },
                         "sending response"
                     );
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
@@ -266,6 +270,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use monad_executor_glue::StateSyncResponseOk;
     use std::{
         collections::HashMap,
         fs,
@@ -279,8 +284,8 @@ mod test {
     use monad_crypto::{NopPubKey, NopSignature};
     use monad_executor::Executor;
     use monad_executor_glue::{
-        StateSyncRequest, StateSyncResponse, StateSyncSessionId, StateSyncUpsertType,
-        SELF_STATESYNC_VERSION,
+        StateSyncRequest, StateSyncResponse, StateSyncSessionId, StateSyncUpsert,
+        StateSyncUpsertType, SELF_STATESYNC_VERSION,
     };
     use monad_multi_sig::MultiSig;
     use monad_types::{Hash, NodeId, SeqNum};
@@ -690,9 +695,11 @@ mod test {
         let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
             session_id: request.session_id,
-            response: vec![],
-            response_index: 0,
-            response_n: 1,
+            body: StateSyncResponseBody::Ok(StateSyncResponseOk {
+                response: vec![],
+                response_index: 0,
+                response_n: 1,
+            }),
         });
         let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
         state_sync.exec(commands);
@@ -805,9 +812,16 @@ mod test {
                 StateSyncNetworkMessage::Response(r),
             )) => {
                 assert_eq!(n, node);
-                assert_eq!(r.response_index, 0);
-                assert_eq!(r.response_n, 1);
-                assert_eq!(r.response.len(), 2);
+                match r.body {
+                    StateSyncResponseBody::Ok(r) => {
+                        assert_eq!(r.response_index, 0);
+                        assert_eq!(r.response_n, 1);
+                        assert_eq!(r.response.len(), 2);
+                    }
+                    StateSyncResponseBody::Err(_) => {
+                        assert!(false, "unexpected error response");
+                    }
+                }
                 assert_eq!(r.session_id, session_id);
             }
             _ => {
@@ -887,12 +901,19 @@ mod test {
                     StateSyncNetworkMessage::Response(r),
                 )) => {
                     assert_eq!(n, node);
-                    assert_eq!(r.response_index, responses_sent as u32);
-                    assert_eq!(
-                        r.response.len(),
-                        config.max_response_size.div_ceil(DATA_SIZE)
-                    );
-                    assert_eq!(r.response_n, 0);
+                    match r.body {
+                        StateSyncResponseBody::Ok(r) => {
+                            assert_eq!(r.response_index, responses_sent as u64);
+                            assert_eq!(
+                                r.response.len(),
+                                config.max_response_size.div_ceil(DATA_SIZE)
+                            );
+                            assert_eq!(r.response_n, 0);
+                        }
+                        StateSyncResponseBody::Err(_) => {
+                            assert!(false, "unexpected error response");
+                        }
+                    }
                     assert_eq!(r.session_id, session_id);
                 }
                 _ => {
@@ -931,12 +952,19 @@ mod test {
                 StateSyncNetworkMessage::Response(r),
             )) => {
                 assert_eq!(n, node);
-                assert_eq!(r.response_index, responses_sent as u32);
-                assert_eq!(
-                    r.response.len(),
-                    config.max_response_size.div_ceil(DATA_SIZE)
-                );
-                assert_eq!(r.response_n, 0);
+                match r.body {
+                    StateSyncResponseBody::Ok(r) => {
+                        assert_eq!(r.response_index, responses_sent as u64);
+                        assert_eq!(
+                            r.response.len(),
+                            config.max_response_size.div_ceil(DATA_SIZE)
+                        );
+                        assert_eq!(r.response_n, 0);
+                    }
+                    StateSyncResponseBody::Err(_) => {
+                        assert!(false, "unexpected error response");
+                    }
+                };
                 assert_eq!(r.session_id, session_id);
             }
             _ => {
@@ -972,15 +1000,22 @@ mod test {
                     StateSyncNetworkMessage::Response(r),
                 )) => {
                     assert_eq!(n, node);
-                    assert_eq!(r.response_index, responses_sent as u32);
                     assert_eq!(r.session_id, session_id);
-                    if r.response_n == 0 {
-                        assert_eq!(
-                            r.response.len(),
-                            config.max_response_size.div_ceil(DATA_SIZE)
-                        );
-                    } else {
-                        break;
+                    match r.body {
+                        StateSyncResponseBody::Ok(r) => {
+                            assert_eq!(r.response_index, responses_sent as u64);
+                            if r.response_n == 0 {
+                                assert_eq!(
+                                    r.response.len(),
+                                    config.max_response_size.div_ceil(DATA_SIZE)
+                                );
+                            } else {
+                                break;
+                            }
+                        }
+                        StateSyncResponseBody::Err(_) => {
+                            assert!(false, "unexpected error response");
+                        }
                     }
                 }
                 _ => {
@@ -1057,9 +1092,14 @@ mod test {
             let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
                 version: SELF_STATESYNC_VERSION,
                 session_id: request.session_id,
-                response: vec![(StateSyncUpsertType::Account, vec![response_index as u8; 20])],
-                response_index,
-                response_n: 0,
+                body: StateSyncResponseBody::Ok(StateSyncResponseOk {
+                    response: vec![StateSyncUpsert {
+                        upsert_type: StateSyncUpsertType::Account,
+                        data: vec![response_index as u8; 20],
+                    }],
+                    response_index,
+                    response_n: 0,
+                }),
             });
             let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
             state_sync.exec(commands);
@@ -1094,9 +1134,14 @@ mod test {
         let msg = StateSyncNetworkMessage::Response(StateSyncResponse {
             version: SELF_STATESYNC_VERSION,
             session_id: request.session_id,
-            response: vec![(StateSyncUpsertType::Account, vec![10 as u8; 20])],
-            response_index: 10,
-            response_n: 1,
+            body: StateSyncResponseBody::Ok(StateSyncResponseOk {
+                response: vec![StateSyncUpsert {
+                    upsert_type: StateSyncUpsertType::Account,
+                    data: vec![10 as u8; 20],
+                }],
+                response_index: 10,
+                response_n: 1,
+            }),
         });
         let commands = vec![StateSyncCommand::Message((messages[0].0, msg))];
         state_sync.exec(commands);
@@ -1272,12 +1317,19 @@ mod test {
                     StateSyncNetworkMessage::Response(r),
                 )) => {
                     assert_eq!(n, node);
-                    assert_eq!(r.response_index, responses_sent as u32);
-                    assert_eq!(
-                        r.response.len(),
-                        config.max_response_size.div_ceil(DATA_SIZE)
-                    );
-                    assert_eq!(r.response_n, 0);
+                    match r.body {
+                        StateSyncResponseBody::Ok(r) => {
+                            assert_eq!(r.response_index, responses_sent as u64);
+                            assert_eq!(
+                                r.response.len(),
+                                config.max_response_size.div_ceil(DATA_SIZE)
+                            );
+                            assert_eq!(r.response_n, 0);
+                        }
+                        StateSyncResponseBody::Err(_) => {
+                            assert!(false, "unexpected error response");
+                        }
+                    }
                 }
                 _ => {
                     assert!(
@@ -1315,12 +1367,19 @@ mod test {
                 StateSyncNetworkMessage::Response(r),
             )) => {
                 assert_eq!(n, node);
-                assert_eq!(r.response_index, responses_sent as u32);
-                assert_eq!(
-                    r.response.len(),
-                    config.max_response_size.div_ceil(DATA_SIZE)
-                );
-                assert_eq!(r.response_n, 0);
+                match r.body {
+                    StateSyncResponseBody::Ok(r) => {
+                        assert_eq!(r.response_index, responses_sent as u64);
+                        assert_eq!(
+                            r.response.len(),
+                            config.max_response_size.div_ceil(DATA_SIZE)
+                        );
+                        assert_eq!(r.response_n, 0);
+                    }
+                    StateSyncResponseBody::Err(_) => {
+                        assert!(false, "unexpected error response");
+                    }
+                };
                 assert_eq!(r.session_id, session_id);
             }
             _ => {
@@ -1369,12 +1428,19 @@ mod test {
                 StateSyncNetworkMessage::Response(r),
             )) => {
                 assert_eq!(n, node);
-                assert_eq!(r.response_index, responses_sent as u32);
-                assert_eq!(
-                    r.response.len(),
-                    config.max_response_size.div_ceil(DATA_SIZE)
-                );
-                assert_eq!(r.response_n, 0);
+                match r.body {
+                    StateSyncResponseBody::Ok(r) => {
+                        assert_eq!(r.response_index, responses_sent as u64);
+                        assert_eq!(
+                            r.response.len(),
+                            config.max_response_size.div_ceil(DATA_SIZE)
+                        );
+                        assert_eq!(r.response_n, 0);
+                    }
+                    StateSyncResponseBody::Err(_) => {
+                        assert!(false, "unexpected error response");
+                    }
+                }
                 assert_eq!(r.session_id, session_id);
             }
             _ => {
