@@ -358,10 +358,12 @@ mod test {
     // is a C library
     #[link(name = "monad_event_test_server")]
     extern "C" {
-        fn monad_event_test_server_create(
+        fn monad_event_test_server_create_from_bytes(
             socket_path: *const libc::c_char,
             output: *const libc::c_void,
-            capture_path: *const libc::c_char,
+            capture_data: *const u8,
+            capture_len: usize,
+            unmap_on_close: u8,
             server_p: *mut *const libc::c_void,
         ) -> libc::c_int;
 
@@ -372,7 +374,7 @@ mod test {
 
     struct TestServer {
         test_server: *const libc::c_void,
-        socket_file_path: std::path::PathBuf,
+        socket_file_path: PathBuf,
     }
 
     use std::{ffi::CString, os::unix::fs::FileTypeExt, path::PathBuf};
@@ -380,7 +382,7 @@ mod test {
     use monad_exec_event::{event::EventQueueType, event_queue::*};
 
     impl TestServer {
-        pub fn create(socket_path: &str, capture_path: &str) -> TestServer {
+        pub fn create(socket_path: &str, capture_bytes: &'static [u8]) -> TestServer {
             let socket_file_path = std::path::PathBuf::from(socket_path);
 
             // If the socket path already exists and is definitely a socket,
@@ -395,15 +397,15 @@ mod test {
             let socket_path_cstr =
                 CString::new(socket_path.as_bytes()).expect("embedded nul in socket_path?");
             let output: *const libc::c_void = std::ptr::null();
-            let capture_path_cstr =
-                CString::new(capture_path.as_bytes()).expect("embedded nul in capture_path?");
             let mut server: *const libc::c_void = std::ptr::null_mut();
 
             let r = unsafe {
-                monad_event_test_server_create(
+                monad_event_test_server_create_from_bytes(
                     socket_path_cstr.as_ptr(),
                     std::ptr::null(),
-                    capture_path_cstr.as_ptr(),
+                    capture_bytes.as_ptr(),
+                    capture_bytes.len(),
+                    /*unmap_on_close=*/ 0,
                     &mut server,
                 )
             };
@@ -431,9 +433,9 @@ mod test {
     #[test]
     fn basic_test() {
         let socket_address = "/tmp/monad_rpc_exec_event.sock";
-        let shmem_capture_path = "/tmp/zzz.shm";
+        let basic_test_shmem_contents = include_bytes!("test_data/exec_events.shm");
 
-        let mut test_server = TestServer::create(socket_address, shmem_capture_path);
+        let mut test_server = TestServer::create(socket_address, basic_test_shmem_contents);
         test_server.prepare_accept_one();
 
         let options = EventQueueOptions {
@@ -454,7 +456,7 @@ mod test {
         loop {
             // TODO(ken): decide how to actually verify this for real
             if let PollResult::Update(update) = update_builder.poll() {
-                println!("{update:?}");
+                println!("{update:#?}");
             }
             update_count += 1;
             if update_count == 10000 {
