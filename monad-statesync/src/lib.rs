@@ -271,6 +271,7 @@ where
 #[cfg(test)]
 mod test {
     use monad_executor_glue::StateSyncResponseOk;
+    use monad_proto::proto::message::StateSyncResponseErr;
     use std::{
         collections::HashMap,
         fs,
@@ -1453,5 +1454,92 @@ mod test {
         }
 
         bh.backend.lock().unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    // Restart client request if server responds with an error
+    async fn test_client_error_restart() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::RequestSync(StateRootHashInfo {
+            seq_num: SeqNum(1),
+            state_root_hash: StateRootHash(Hash([0; 32])),
+        })];
+
+        state_sync.exec(commands);
+
+        let mut messages = Vec::new();
+        loop {
+            match timeout(Duration::from_secs(1), state_sync.next()).await {
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::DoneSync(_)))) => {
+                    assert!(false, "sync should send messages");
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(n, m)))) => {
+                    println!("got message from {:?}: {:?}", n, m);
+                    messages.push((n, m));
+                    if messages.len() == config.max_parallel_requests {
+                        break;
+                    }
+                }
+                Ok(Some(MonadEvent::StateSyncEvent(e))) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(Some(e)) => {
+                    assert!(false, "unexpected event {:?}", e);
+                }
+                Ok(None) => {
+                    assert!(false, "unexpected stream end");
+                }
+                Err(_) => {
+                    assert!(false, "timeout");
+                }
+            }
+        }
+
+        let StateSyncNetworkMessage::Request(req) = &messages[0].1 else {
+            panic!("Expected StateSyncNetworkMessage::Request");
+        };
+        let session_id = req.session_id;
+        let cmds = vec![StateSyncCommand::Message((
+            messages[0].0,
+            StateSyncNetworkMessage::Response(StateSyncResponse {
+                version: SELF_STATESYNC_VERSION,
+                session_id,
+                body: StateSyncResponseBody::Err(StateSyncResponseErr::InsufficientResources),
+            }),
+        ))];
+        state_sync.exec(cmds);
+
+        let e = timeout(config.request_timeout * 2, state_sync.next())
+            .await
+            .expect("no event timeout, should retry errored request")
+            .expect("unexpected stream end");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                _,
+                StateSyncNetworkMessage::Request(r),
+            )) => {
+                assert!(r.session_id != session_id, "should create new request");
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should retry errored request",
+                    e
+                );
+            }
+        }
     }
 }

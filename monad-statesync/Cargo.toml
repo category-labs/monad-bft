@@ -27,6 +27,7 @@ lazy_static = { workspace = true }
 rand = { workspace = true }
 monad-multi-sig = { path = "../monad-multi-sig" }
 tracing-subscriber = { workspace = true }
+monad-proto = { path = "../monad-proto" }
 
 [build-dependencies]
 bindgen = { workspace = true }

@@ -4830,6 +4830,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-multi-sig",
+ "monad-proto",
  "monad-types",
  "rand",
  "tempfile",
