@@ -41,6 +41,14 @@ const MIN_CHUNK_LENGTH: usize = 980;
 // if we have many peers to transmit the message to.
 const MAX_NUM_PACKETS: usize = 65535;
 
+// For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
+// Merkle proof section in the constructed RaptorCast packets.
+//
+// For a tree depth of 9, the index of the rightmost Merkle tree leaf will be 0xff, and the
+// Merkle leaf index field is 8 bits wide.
+const MIN_MERKLE_TREE_DEPTH: u8 = 1;
+const MAX_MERKLE_TREE_DEPTH: u8 = 9;
+
 struct DecoderState {
     decoder: ManagedDecoder,
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
@@ -414,11 +422,10 @@ where
 
     // TODO make this more sophisticated
     let tree_depth: u8 = 6; // corresponds to 32 chunks (2^(h-1))
-    assert!(
-        tree_depth & (1 << 7) == 0,
-        "tree depth doesn't fit in 7 bits"
-    );
-    let chunks_per_merkle_batch: u8 = 2_u8
+    assert!(tree_depth >= MIN_MERKLE_TREE_DEPTH);
+    assert!(tree_depth <= MAX_MERKLE_TREE_DEPTH);
+
+    let chunks_per_merkle_batch: usize = 2_usize
         .checked_pow(u32::from(tree_depth) - 1)
         .expect("tree depth too big");
     let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
@@ -615,8 +622,8 @@ where
     let epoch_no: u64 = epoch_no;
     let unix_ts_ms: u64 = unix_ts_ms;
     message
-        // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
-        .chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
+        // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch)
+        .chunks_mut(gso_size as usize * chunks_per_merkle_batch)
         .for_each(|merkle_batch| {
             let mut merkle_batch = merkle_batch.chunks_mut(gso_size as usize).collect_vec();
             let merkle_leaves = merkle_batch
@@ -779,7 +786,7 @@ where
     let broadcast = (cursor_broadcast_tree_depth >> 7) != 0;
     let tree_depth = cursor_broadcast_tree_depth & !(1 << 7);
 
-    if tree_depth < 1 {
+    if !(MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&tree_depth) {
         return Err(MessageValidationError::InvalidTreeDepth);
     }
 

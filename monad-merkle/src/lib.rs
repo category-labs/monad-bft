@@ -14,7 +14,7 @@ pub struct MerkleProof {
 impl MerkleProof {
     pub fn new_from_leaf_idx(siblings: Vec<MerkleHash>, leaf_idx: u8) -> Option<Self> {
         let num_leaves = 2_u16.checked_pow(siblings.len() as u32)?;
-        let tree_len = 2 * num_leaves - 1;
+        let tree_len = 2_u16.checked_mul(num_leaves)?.checked_sub(1)?;
         let tree_leaf_start_idx = tree_len - num_leaves;
         Some(Self {
             tree_leaf_idx: tree_leaf_start_idx + u16::from(leaf_idx),
