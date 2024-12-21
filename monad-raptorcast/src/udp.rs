@@ -64,10 +64,8 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     // TODO strong bound on max amount of memory used per decoder?
     // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
     pending_message_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, DecoderState>,
-    signature_cache: LruCache<
-        [u8; HEADER_LEN as usize - SIGNATURE_SIZE + 20],
-        NodeId<CertificateSignaturePubKey<ST>>,
-    >,
+    signature_cache:
+        LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
     recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
 }
@@ -756,7 +754,7 @@ pub enum MessageValidationError {
 /// - rest => data
 pub fn parse_message<ST>(
     signature_cache: &mut LruCache<
-        [u8; HEADER_LEN as usize - 65 + 20],
+        [u8; HEADER_LEN as usize + 20],
         NodeId<CertificateSignaturePubKey<ST>>,
     >,
     message: Bytes,
@@ -772,7 +770,7 @@ where
             Ok(cursor.split_to(mid))
         }
     };
-    let cursor_signature = split_off(65)?;
+    let cursor_signature = split_off(SIGNATURE_SIZE)?;
     let signature =
         ST::deserialize(&cursor_signature).map_err(|_| MessageValidationError::InvalidSignature)?;
 
@@ -865,14 +863,14 @@ where
     let root = merkle_proof
         .compute_root(&leaf_hash)
         .ok_or(MessageValidationError::InvalidMerkleProof)?;
-    let mut signed_over = [0_u8; HEADER_LEN as usize - 65 + 20];
+    let mut signed_over = [0_u8; HEADER_LEN as usize + 20];
     // TODO can avoid this copy if necessary
-    signed_over[..HEADER_LEN as usize - 65].copy_from_slice(&message[65..HEADER_LEN as usize]);
-    signed_over[HEADER_LEN as usize - 65..].copy_from_slice(&root);
+    signed_over[..HEADER_LEN as usize].copy_from_slice(&message[..HEADER_LEN as usize]);
+    signed_over[HEADER_LEN as usize..].copy_from_slice(&root);
 
     let author = *signature_cache.try_get_or_insert(signed_over, || {
         let author = signature
-            .recover_pubkey(&signed_over)
+            .recover_pubkey(&signed_over[SIGNATURE_SIZE..])
             .map_err(|_| MessageValidationError::InvalidSignature)?;
         Ok(NodeId::new(author))
     })?;
