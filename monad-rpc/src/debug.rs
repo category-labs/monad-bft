@@ -149,6 +149,35 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     Ok(hex::encode(&res))
 }
 
+#[derive(Serialize, Debug, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct MonadDebugGetRawTracesResult {
+    traces: Vec<String>,
+}
+
+#[rpc(method = "debug_getRawTraces")]
+#[allow(non_snake_case)]
+/// Returns an array of raw traces in a block
+pub async fn monad_debug_getRawTraces<T: Triedb>(
+    triedb_env: &T,
+    params: DebugBlockParams,
+) -> JsonRpcResult<MonadDebugGetRawTracesResult> {
+    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let call_frames = triedb_env
+        .get_call_frames(block_num)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+
+    let mut rlp_traces = Vec::new();
+    for trace in call_frames {
+        let mut res = Vec::new();
+        trace.encode(&mut res);
+        rlp_traces.push(hex::encode(&res));
+    }
+
+    Ok(MonadDebugGetRawTracesResult { traces: rlp_traces })
+}
+
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct DebugTraceCallParams {
     pub call: Vec<TraceCallObject>,

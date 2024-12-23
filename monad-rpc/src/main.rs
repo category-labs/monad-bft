@@ -36,7 +36,7 @@ use crate::{
     cli::Cli,
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
-        monad_debug_getRawTransaction, monad_debug_traceCall,
+        monad_debug_getRawTraces, monad_debug_getRawTransaction, monad_debug_traceCall,
     },
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
@@ -189,6 +189,13 @@ async fn rpc_select(
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
             monad_debug_getRawTransaction(triedb_env, params)
+                .await
+                .map(serialize_result)?
+        }
+        "debug_getRawTraces" => {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_debug_getRawTraces(triedb_env, params)
                 .await
                 .map(serialize_result)?
         }
