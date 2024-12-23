@@ -17,8 +17,8 @@ use chrono::{Local, TimeZone};
 use clap::Parser;
 use monad_exec_event::{
     event::{self, *},
+    event_client::*,
     event_metadata,
-    event_queue::*,
     event_reader::*,
     event_types::{self, monad_event_type},
 };
@@ -150,24 +150,25 @@ fn print_event(
     }
 }
 
-fn event_loop(event_queue: EventQueue) {
-    let mut not_ready: u64 = 0;
-    let mut reader = event_queue.create_reader();
+fn event_loop(imported_ring: ImportedEventRing) {
+    let mut not_ready_count: u64 = 0;
+    let mut reader = EventReader::new(&imported_ring);
     let stdout = std::io::stdout();
     let mut stdout_handle = stdout.lock();
 
     // This is only for print_event, but given the strangeness of thread_local
     // in Rust, we just create this here and pass it in
-    let mut fmtbuf = Box::new([0u8; 1 << 25]);
+    let mut fmtbuf = vec!(0u8; 1 << 25).into_boxed_slice();
     let mut fmtcursor: Cursor<&mut [u8]> = Cursor::new(fmtbuf.as_mut());
+    let event_proc = &imported_ring.parent;
 
     loop {
         match reader.peek() {
             PeekResult::NotReady => {
-                not_ready += 1;
-                if not_ready & ((1 << 20) - 1) == 0 {
+                not_ready_count += 1;
+                if not_ready_count & ((1 << 20) - 1) == 0 {
                     let _ = stdout_handle.flush();
-                    if !event_queue.is_connected() {
+                    if !event_proc.is_connected() {
                         break;
                     }
                 }
@@ -182,12 +183,12 @@ fn event_loop(event_queue: EventQueue) {
                 continue;
             }
             PeekResult::Ready(event) => {
-                not_ready = 0;
+                not_ready_count = 0;
                 print_event(
                     &mut reader,
                     event,
-                    event_queue.thread_table,
-                    event_queue.block_header_table,
+                    event_proc.thread_table,
+                    event_proc.block_header_table,
                     &mut fmtcursor,
                     &mut stdout_handle,
                 )
@@ -199,20 +200,27 @@ fn event_loop(event_queue: EventQueue) {
 fn main() {
     let cli = Cli::parse();
 
-    let queue_options = EventQueueOptions {
+    let connect_options = ConnectOptions {
         socket_path: cli.server,
         timeout: libc::timeval {
             tv_sec: cli.timeout as libc::time_t,
             tv_usec: 0,
         },
-        queue_type: EventQueueType::Exec,
     };
 
-    match EventQueue::connect(&queue_options) {
+    match EventProc::connect(&connect_options) {
         Err(e) => {
-            eprintln!("fatal: {e}");
+            eprintln!("fatal error during IPC connect: {e}");
             process::exit(1);
         }
-        Ok(event_queue) => event_loop(event_queue),
+        Ok(exec_proc) => {
+            match ImportedEventRing::import(exec_proc, EventRingType::Exec) {
+                Err(e) => {
+                    eprintln!("fatal error during event ring import: {e}");
+                    process::exit(1);
+                }
+                Ok(imported_ring) => event_loop(imported_ring)
+            }
+        }
     }
 }

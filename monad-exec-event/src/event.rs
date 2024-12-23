@@ -1,25 +1,26 @@
 //! Definitions of fundamental event objects shared between readers and
 //! writers. Most of these are resident in shared memory segments.
 
+use std::sync::atomic::AtomicU64;
 use bit_field::BitField;
 
 use crate::event_types::monad_event_type;
 
-/// Describes which event queue an event is recorded to; different categories
-/// of events are recorded to different queues
-pub enum EventQueueType {
+/// Describes which event ring an event is recorded to; different categories
+/// of events are recorded to different rings
+pub enum EventRingType {
     Exec,
     Trace,
 }
 
 /// Descriptor for a single event; this fixed-size object is passed via a
-/// shared memory queue between threads, potentially in different processes;
+/// shared memory ring between threads, potentially in different processes;
 /// the rest of the (variably-sized) event is called the "event payload", and
 /// lives in a shared memory heap that can be accessed using this descriptor
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct monad_event_descriptor {
-    pub seqno: std::sync::atomic::AtomicU64,
+    pub seqno: AtomicU64,
     pub event_type: monad_event_type,
     pub payload_page: u16,
     pub offset: u32,
@@ -48,6 +49,14 @@ impl monad_event_descriptor {
     pub fn get_txn_num(&self) -> u32 {
         self.flow_bitfields.get_bits(12..)
     }
+}
+
+// This is not the full definition of the structure, but this is the
+// only cache line the reader is allowed to read
+#[allow(non_camel_case_types)]
+#[repr(C, align(64))]
+pub(crate) struct monad_event_payload_page {
+    pub(crate) overwrite_seqno: AtomicU64,
 }
 
 /// Default location of the UNIX domain socket address for the event server

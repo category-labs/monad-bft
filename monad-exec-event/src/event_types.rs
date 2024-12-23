@@ -15,7 +15,7 @@ use alloy_primitives::{Address, B256, U256};
 #[derive(Copy, Clone, Debug)]
 pub enum monad_event_type {
     NONE,
-    QUEUE_INIT,
+    RING_INIT,
     THREAD_CREATE,
     THREAD_EXIT,
     HEARTBEAT,
