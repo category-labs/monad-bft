@@ -2,7 +2,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::event::monad_event_descriptor;
+use crate::event::{monad_event_descriptor, monad_event_payload_page};
+use crate::event_client::ImportedEventRing;
 
 /// Result of calling the zero-copy non-blocking API, polling for a new
 /// event
@@ -21,43 +22,38 @@ pub enum CopyResult {
     Ready,
 }
 
-// This is not the full definition of the structure, but this is the
-// only cache line the reader is allowed to read
-#[allow(non_camel_case_types)]
-#[repr(C, align(64))]
-pub(crate) struct monad_event_payload_page {
-    overwrite_seqno: AtomicU64,
-}
-
-pub struct EventReader<'a> {
-    desc_table: &'a [monad_event_descriptor],
-    payload_pages: &'a [*const monad_event_payload_page],
+/// Holds the iterator state of a single event reader; these are initialized
+/// from the ImportedEventRing they read from. This is a native Rust
+/// reimplementation of the functionality in event_iterator.h, in the C API.
+///
+/// It is not called EventIterator in Rust, to prevent confusing with the
+/// formal Rust iterator concept (it does not implement the Iterator trait)
+/// because of the more complex nature of the zero-copy API.
+///
+/// As in the C API, readers are lightweight and an arbitrary number may
+/// exist, but they are single-threaded.
+pub struct EventReader<'meta, 'shm> {
+    descriptor_table: &'shm [monad_event_descriptor],
+    payload_pages: &'shm [*const monad_event_payload_page],
     pub last_seqno: u64,
     capacity_mask: usize,
-    prod_next: &'a mut AtomicU64,
+    prod_next: &'shm AtomicU64,
+    imported_ring: ImportedEventRing<'meta, 'shm>,
 }
 
-/// Holds the iterator state of a single event reader; these are initialized
-/// from the EventQueue they read from. This is a native Rust reimplementation
-/// of the functionality in event_reader.h, in the C API. It is not presented
-/// as a formal Rust iterator (it does not implement the Iterator trait)
-/// because of the more complex nature of the zero-copy API. As in the C API,
-/// readers are lightweight and an arbitrary number may exist, but they are
-/// single-threaded.
-impl<'shm> EventReader<'shm> {
-    pub(crate) fn new(
-        desc_table: &'shm [monad_event_descriptor],
-        payload_pages: &'shm [*const monad_event_payload_page],
-        last_seqno: u64,
-        capacity_mask: usize,
-        prod_next: &'shm mut AtomicU64,
-    ) -> Self {
+impl<'meta, 'shm> EventReader<'meta, 'shm> {
+    /// Initialize a reader of the event ring; each reader has its own state,
+    /// and this is called once to initialize that state and set the initial
+    /// iteration point; afterwards, the EventReader's reset method can be
+    /// used to reseat the iterator
+    pub fn new(imported_ring: &ImportedEventRing<'meta, 'shm>) -> EventReader<'meta, 'shm> {
         EventReader {
-            desc_table,
-            payload_pages,
-            last_seqno,
-            capacity_mask,
-            prod_next,
+            descriptor_table: imported_ring.descriptor_table,
+            payload_pages: imported_ring.payload_pages,
+            last_seqno: imported_ring.prod_next.load(Ordering::Acquire),
+            capacity_mask: imported_ring.descriptor_table.len() - 1,
+            prod_next: imported_ring.prod_next,
+            imported_ring: imported_ring.clone(),
         }
     }
 
@@ -66,7 +62,7 @@ impl<'shm> EventReader<'shm> {
     #[inline]
     pub fn peek(&'_ self) -> PeekResult<'shm> {
         let event: &'shm monad_event_descriptor =
-            &self.desc_table[(self.last_seqno as usize) & self.capacity_mask];
+            &self.descriptor_table[(self.last_seqno as usize) & self.capacity_mask];
         let seqno = event.seqno.load(Ordering::Acquire);
         if seqno == self.last_seqno + 1 {
             PeekResult::Ready(event)
@@ -84,7 +80,7 @@ impl<'shm> EventReader<'shm> {
     #[inline]
     pub fn advance(&'_ mut self) -> bool {
         let event: &'shm monad_event_descriptor =
-            &self.desc_table[(self.last_seqno as usize) & self.capacity_mask];
+            &self.descriptor_table[(self.last_seqno as usize) & self.capacity_mask];
         let seqno = event.seqno.load(Ordering::Acquire);
         if seqno == self.last_seqno + 1 {
             self.last_seqno += 1;
@@ -190,7 +186,7 @@ impl<'shm> EventReader<'shm> {
             // stored (with Ordering::Acquire). This waits for that to happen,
             // if it hasn't happened already.
             let index = ((prod_next - 1) as usize) & self.capacity_mask;
-            let slot_seqno: &AtomicU64 = &self.desc_table[index].seqno;
+            let slot_seqno: &AtomicU64 = &self.descriptor_table[index].seqno;
             while slot_seqno.load(Ordering::Acquire) < prod_next {} // Empty
             prod_next - 1
         }

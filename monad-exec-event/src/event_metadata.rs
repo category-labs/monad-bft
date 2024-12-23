@@ -20,9 +20,9 @@ pub const EVENT_METADATA: [EventMetadata; 16] = [
         description: "reserved code so that 0 remains invalid",
     },
     EventMetadata {
-        event_type: monad_event_type::QUEUE_INIT,
-        c_name: "QUEUE_INIT",
-        description: "Posted when a recorder queue is enabled after being reset",
+        event_type: monad_event_type::RING_INIT,
+        c_name: "RING_INIT",
+        description: "Posted when a recorder ring is enabled after being reset",
     },
     EventMetadata {
         event_type: monad_event_type::THREAD_CREATE,
@@ -97,10 +97,10 @@ pub const EVENT_METADATA: [EventMetadata; 16] = [
     },
 ];
 
-/// libmonad_event_queue_ffi.so expects this symbol to be defined
+/// libmonad_event_client.a expects this symbol to be defined
 #[allow(non_upper_case_globals)]
 #[no_mangle]
 pub static g_monad_event_metadata_hash: [u8; 32] = [
-    0x90, 0xae, 0x97, 0x6f, 0xd9, 0xbb, 0x84, 0x23, 0x1e, 0x51, 0xd1, 0x57, 0xfb, 0x64, 0x71, 0xb5,
-    0xc6, 0x92, 0x2a, 0x7, 0xff, 0xa0, 0xaa, 0x0, 0x9d, 0x9b, 0xa2, 0xa1, 0x3b, 0xcc, 0xdb, 0x27,
+    0xe9, 0x6b, 0xa9, 0xe0, 0x3f, 0xfc, 0xe6, 0xa4, 0x62, 0x23, 0x84, 0x4c, 0xf7, 0x85, 0x4f, 0xdc,
+    0x3, 0xa5, 0xdd, 0x69, 0xc9, 0xea, 0xaa, 0x98, 0x9, 0x8, 0x5f, 0xf6, 0x10, 0x7, 0x84, 0xf2,
 ];
