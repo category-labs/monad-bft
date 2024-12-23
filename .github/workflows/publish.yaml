@@ -9,16 +9,27 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  AWS_REGION: "us-east-2"
+  MONAD_EXECUTION_ROOT: ${{ github.workspace }}/monad-cxx/monad-execution
 
 jobs:
-  publish-monad-bft:
+  publish:
     runs-on: ubuntu-24.04-32
+
+    strategy:
+      matrix:
+        dockerfile:
+          - { name: "monad-bft", file: "docker/devnet/Dockerfile" }
+          - { name: "monad-fullnode", file: "docker/devnet/fullnode.Dockerfile" }
+          - { name: "monad-rpc", file: "docker/rpc/Dockerfile" }
+          - { name: "monad-execution", file: "monad-cxx/monad-execution/docker/release.Dockerfile", context: "monad-cxx/monad-execution" }
+          - { name: "monad-tx-gen", file: "docker/txgen/Dockerfile" }
+          - { name: "monad-archive", file: "docker/archive/Dockerfile" }
 
     permissions:
       contents: read
       packages: write
+      id-token: write
 
     steps:
       - name: Generate a token
@@ -36,54 +47,16 @@ jobs:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
 
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+          role-to-assume: ${{ secrets.AWS_ECR_GITHUB_ACTION_ROLE }}
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/category-labs/monad-bft
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/devnet/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish-monad-full-node:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
@@ -97,108 +70,8 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            peach10.devcore4.com/category-labs/monad-full-node
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/devnet/fullnode.Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish-monad-rpc:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/category-labs/monad-rpc
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/rpc/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  publish-monad-execution:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    env:
-      MONAD_EXECUTION_ROOT: ${{ github.workspace }}/monad-cxx/monad-execution
-
-    steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/category-labs/monad-execution
+            ${{ secrets.AWS_ECR_REGISTRY }}/category-labs/${{ matrix.dockerfile.name }}
+            peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -209,7 +82,7 @@ jobs:
         with:
           buildkitd-flags: |
             --allow-insecure-entitlement security.insecure
-      
+
       - run: cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
       - run: cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
       - run: sudo bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
@@ -218,111 +91,18 @@ jobs:
       - run: cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
 
       - name: Get Execution Commit Hash
+        if: ${{ matrix.dockerfile.name == 'monad-execution' }}
         run: echo "GIT_COMMIT_HASH=$(git -C ${{ env.MONAD_EXECUTION_ROOT }} rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5.3.0
         with:
-          context: ${{ env.MONAD_EXECUTION_ROOT }}
+          context: ${{ matrix.dockerfile.context || '.' }}
           push: true
-          file: ${{ env.MONAD_EXECUTION_ROOT }}/docker/release.Dockerfile
+          file: ${{ matrix.dockerfile.file }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GIT_COMMIT_HASH=${{ env.GIT_COMMIT_HASH }}
           builder: ${{ steps.setup-buildx.outputs.name }}
           allow: security.insecure
-
-  publish-monad-tx-gen:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/category-labs/monad-tx-gen
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/txgen/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-    
-  publish-monad-archive:
-    runs-on: ubuntu-24.04-32
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Generate a token
-        id: generate_token
-        uses: tibdex/github-app-token@v1
-        with:
-          app_id: ${{ secrets.REPO_READONLY_GITHUB_APP_ID }}
-          private_key: ${{ secrets.REPO_READONLY_GITHUB_APP_KEY }}
-          permissions: >-
-            {"contents": "read"}
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ steps.generate_token.outputs.token }}
-
-      - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@v3.1.0
-        with:
-          registry: peach10.devcore4.com
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5.5.1
-        with:
-          images: |
-            peach10.devcore4.com/category-labs/monad-archive
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5.3.0
-        with:
-          context: .
-          push: true
-          file: docker/archive/Dockerfile
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
