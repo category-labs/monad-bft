@@ -32,8 +32,8 @@ pub struct BlockUpdate {
 /// This holds the event reader state and the fixed-sized buffers that
 /// the next incoming event is copied into; all of this data is immutable
 /// outside of the code that calls reader.copy_next()
-struct ReaderState<'shm> {
-    reader: EventReader<'shm>,
+struct ReaderState<'meta, 'shm> {
+    reader: EventReader<'meta, 'shm>,
     block_header_table: &'shm [event_types::block_exec_header],
     event: monad_event_descriptor,
     payload_buf: Vec<u8>,
@@ -48,8 +48,8 @@ struct UpdateState {
 
 /// Object which captures low-level execution events and builds complete
 /// BlockUpdate objects out of them
-pub struct ExecUpdateBuilder<'shm> {
-    reader_state: ReaderState<'shm>,
+pub struct ExecUpdateBuilder<'meta, 'shm> {
+    reader_state: ReaderState<'meta, 'shm>,
     update_state: UpdateState,
 }
 
@@ -66,11 +66,11 @@ pub enum PollResult {
     Update(Box<BlockUpdate>),
 }
 
-impl<'shm> ExecUpdateBuilder<'shm> {
+impl<'meta, 'shm> ExecUpdateBuilder<'meta, 'shm> {
     pub fn new(
-        reader: EventReader<'shm>,
+        reader: EventReader<'meta, 'shm>,
         block_header_table: &'shm [event_types::block_exec_header],
-    ) -> ExecUpdateBuilder<'shm> {
+    ) -> ExecUpdateBuilder<'meta, 'shm> {
         const NONE_INIT: Option<Box<BlockUpdate>> = None;
         ExecUpdateBuilder {
             reader_state: ReaderState {
@@ -379,7 +379,7 @@ mod test {
 
     use std::{ffi::CString, os::unix::fs::FileTypeExt, path::PathBuf};
 
-    use monad_exec_event::{event::EventQueueType, event_queue::*};
+    use monad_exec_event::{event::EventRingType, event_client::*};
 
     impl TestServer {
         pub fn create(socket_path: &str, capture_bytes: &'static [u8]) -> TestServer {
@@ -438,19 +438,19 @@ mod test {
         let mut test_server = TestServer::create(socket_address, basic_test_shmem_contents);
         test_server.prepare_accept_one();
 
-        let options = EventQueueOptions {
+        let options = ConnectOptions {
             socket_path: PathBuf::from(socket_address),
             timeout: libc::timeval {
                 tv_sec: 1,
                 tv_usec: 0,
             },
-            queue_type: EventQueueType::Exec,
         };
-        let mut event_queue = EventQueue::connect(&options).unwrap();
-        let mut event_reader = event_queue.create_reader();
+        let mut event_proc = EventProc::connect(&options).unwrap();
+        let imported_ring = ImportedEventRing::import(event_proc,  EventRingType::Exec).unwrap();
+        let mut event_reader = EventReader::new(&imported_ring);
         event_reader.last_seqno = 0;
         let mut update_builder =
-            ExecUpdateBuilder::new(event_reader, event_queue.block_header_table);
+            ExecUpdateBuilder::new(event_reader, imported_ring.parent.block_header_table);
 
         let mut update_count: u32 = 0;
         loop {

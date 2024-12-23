@@ -7,7 +7,7 @@ fn main() {
 
     let target = "monad_event_test_server";
     let dst = cmake::Config::new("../monad-cxx/monad-execution/libs/event")
-        .define("MONAD_EVENT_BUILD_EVENT_QUEUE_TEST_SERVER", "ON")
+        .define("MONAD_EVENT_BUILD_TEST_SERVER", "ON")
         .define("CMAKE_BUILD_TARGET", target)
         .build_target(target)
         .build();
