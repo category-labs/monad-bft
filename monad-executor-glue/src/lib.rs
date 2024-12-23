@@ -563,6 +563,14 @@ impl StateSyncResponse {
             }),
         }
     }
+
+    pub fn new_invalid_version(session_id: StateSyncSessionId) -> Self {
+        Self {
+            version: SELF_STATESYNC_VERSION,
+            session_id,
+            body: StateSyncResponseBody::Err(StateSyncResponseErr::InvalidVersion),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

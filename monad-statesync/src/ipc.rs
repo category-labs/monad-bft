@@ -268,11 +268,17 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         request: StateSyncRequest,
     ) -> Result<(), tokio::io::Error> {
         if !request.version.is_compatible() {
+            self.response_rx_writer
+                .try_send((
+                    from,
+                    StateSyncResponse::new_invalid_version(request.session_id),
+                ))
+                .expect("response_rx_writer dropped");
             tracing::debug!(
                 ?from,
                 ?request,
                 ?SELF_STATESYNC_VERSION,
-                "dropping statesync request, version incompatible"
+                "incompatible statesync version"
             );
             return Ok(());
         }
