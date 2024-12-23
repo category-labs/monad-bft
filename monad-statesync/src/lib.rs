@@ -1625,4 +1625,149 @@ mod test {
 
         bh.backend.lock().unwrap().shutdown().await;
     }
+
+    #[tokio::test]
+    async fn test_max_sessions() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        let bh = BackendHandle::new(SeqNum(u64::MAX));
+
+        let node = NodeId::new(NopPubKey::from_bytes(&[1; 32]).unwrap());
+        let config = make_config();
+        let mut state_sync =
+            StateSync::<SignatureType, SignatureCollectionType>::new::<TestSyncClientBackend>(
+                vec![bh.db_name.clone()],
+                "genesis_path".to_string(),
+                vec![NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap())],
+                config.clone(),
+                bh.uds_path(),
+            );
+
+        let commands = vec![StateSyncCommand::StartExecution];
+        state_sync.exec(commands);
+
+        assert!(matches!(state_sync.mode, StateSyncMode::Live(_)));
+
+        const DATA_SIZE: usize = 1000;
+        {
+            let mut backend = bh.backend.lock().unwrap();
+
+            for i in 0..100 {
+                let mut data = [i as u8; DATA_SIZE];
+                let n = thread_rng().gen::<u64>();
+                data[0..8].copy_from_slice(n.to_le_bytes().as_ref());
+                backend.handle_upsert(0, StateSyncUpsertType::Account, &data);
+            }
+
+            backend.run_server();
+        }
+
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                session_id,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 0,
+                prefix_bytes: 1,
+            }),
+        ))];
+
+        state_sync.exec(cmds);
+
+        let mut responses_sent: usize = 0;
+        loop {
+            let e = timeout(Duration::from_secs(1), state_sync.next())
+                .await
+                .expect("timeout")
+                .expect("stream closed unexpectedly");
+            match e {
+                MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                    n,
+                    StateSyncNetworkMessage::Response(r),
+                )) => {
+                    assert_eq!(n, node);
+                    match r.body {
+                        StateSyncResponseBody::Ok(r) => {
+                            assert_eq!(r.response_index, responses_sent as u64);
+                            assert_eq!(
+                                r.response.len(),
+                                config.max_response_size.div_ceil(DATA_SIZE)
+                            );
+                            assert_eq!(r.response_n, 0);
+                        }
+                        StateSyncResponseBody::Err(_) => {
+                            assert!(false, "unexpected error response");
+                        }
+                    }
+                    assert_eq!(r.session_id, session_id);
+                }
+                _ => {
+                    assert!(
+                        false,
+                        "unexpected event {:?}, should produce response message",
+                        e
+                    );
+                }
+            }
+            responses_sent += 1;
+            if responses_sent == config.max_outstanding_responses {
+                break;
+            }
+        }
+
+        assert!(
+            stream_idle(&mut state_sync),
+            "shouldn't send more messages without completions"
+        );
+
+        let session_id = StateSyncSessionId(thread_rng().gen::<u64>());
+        let cmds = vec![StateSyncCommand::Message((
+            node,
+            StateSyncNetworkMessage::Request(StateSyncRequest {
+                version: SELF_STATESYNC_VERSION,
+                session_id,
+                from: 0,
+                until: 1,
+                old_target: 0,
+                target: 1,
+                prefix: 1,
+                prefix_bytes: 1,
+            }),
+        ))];
+        state_sync.exec(cmds);
+
+        let e = timeout(Duration::from_secs(1), state_sync.next())
+            .await
+            .expect("timeout, should send response to new request")
+            .expect("stream closed unexpectedly");
+        match e {
+            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
+                n,
+                StateSyncNetworkMessage::Response(r),
+            )) => {
+                assert_eq!(n, node);
+                assert_eq!(r.session_id, session_id);
+                match r.body {
+                    StateSyncResponseBody::Err(StateSyncResponseErr::InsufficientResources) => {}
+                    _ => {
+                        assert!(false, "unexpected response");
+                    }
+                };
+            }
+            _ => {
+                assert!(
+                    false,
+                    "unexpected event {:?}, should produce response message",
+                    e
+                );
+            }
+        }
+
+        bh.backend.lock().unwrap().shutdown().await;
+    }
 }
