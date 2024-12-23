@@ -571,6 +571,14 @@ impl StateSyncResponse {
             body: StateSyncResponseBody::Err(StateSyncResponseErr::InvalidVersion),
         }
     }
+
+    pub fn new_insufficient_resources(session_id: StateSyncSessionId) -> Self {
+        Self {
+            version: SELF_STATESYNC_VERSION,
+            session_id,
+            body: StateSyncResponseBody::Err(StateSyncResponseErr::InsufficientResources),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

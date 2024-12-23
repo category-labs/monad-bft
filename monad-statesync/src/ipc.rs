@@ -19,6 +19,9 @@ use crate::{bindings, StateSyncConfig};
 pub type SyncRequest = bindings::monad_sync_request;
 pub type SyncDone = bindings::monad_sync_done;
 
+/// Limits number of pending requests. Currently only one db traversal can be in progress at a time.
+pub(crate) const MAX_PENDING_REQUESTS: usize = 1;
+
 /// StateSyncIpc encapsulates a connection to a live execution client, used for servicing statesync
 /// requests
 pub(crate) struct StateSyncIpc<PT: PubKey> {
@@ -283,13 +286,12 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             return Ok(());
         }
 
-        self.pending_requests.retain(|pending_request| {
+        self.pending_requests.retain(|pending_request| 
             // delete any requests from this peer for an old target
             // delete any duplicate requests from this peer
             !(pending_request.from == from
-                && (pending_request.request.target != request.target
-                    || pending_request.request == request))
-        });
+                && pending_request.request.session_id == request.session_id)
+        );
         if self
             .wip_response
             .as_ref()
@@ -298,6 +300,18 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             // we are already servicing this request, drop the new one
             return Ok(());
         }
+        let num_pending = self.pending_requests.len() + self.wip_response.is_some() as usize;
+        if num_pending >= MAX_PENDING_REQUESTS {
+            tracing::warn!(?from, ?request, "too many pending requests");
+            self.response_rx_writer
+                .try_send((
+                    from,
+                    StateSyncResponse::new_insufficient_resources(request.session_id),
+                ))
+                .expect("response_rx_writer dropped");
+            return Ok(());
+        }
+
         self.pending_requests.push_back(PendingRequest {
             from,
             request,
