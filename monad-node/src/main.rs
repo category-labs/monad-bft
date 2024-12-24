@@ -252,6 +252,8 @@ async fn run(
                 ),
                 max_outstanding_responses: 30,
                 max_response_size: 32 * 1024,
+                min_backoff: Duration::from_secs(1),
+                max_backoff: Duration::from_secs(10),
             },
             node_state
                 .statesync_ipc_path
