@@ -1,20 +1,18 @@
 use std::{
     ops::DerefMut,
-    pin::{pin, Pin},
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::Duration,
+    time::Instant,
 };
 
-use futures::{FutureExt, Stream};
+use crate::bindings;
+use futures::{Future, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     StateSyncRequest, StateSyncResponse, StateSyncResponseOk, StateSyncUpsertType,
-    SELF_STATESYNC_VERSION,
 };
 use monad_types::{NodeId, SeqNum};
-
-use crate::{bindings, outbound_requests::OutboundRequests};
 
 pub(crate) type StateSyncContext = Box<dyn FnMut(bindings::monad_sync_request)>;
 
@@ -28,8 +26,33 @@ pub extern "C" fn statesync_send_request(
     unsafe { (*statesync)(request) }
 }
 
+use crate::{
+    ipc::MAX_PENDING_REQUESTS,
+    outbound_requests::{OutboundRequests, RequestPollResult},
+    StateSyncConfig,
+};
+
+pub(crate) struct Peer<PT: PubKey> {
+    pub(crate) node_id: NodeId<PT>,
+    pub(crate) next_available: Instant, // when the peer will be available for a new request
+    pub(crate) outstanding_requests: usize,
+}
+
+pub(crate) fn available_peers<PT: PubKey>(peers: &[Peer<PT>], now: Instant) -> Vec<usize> {
+    peers
+        .iter()
+        .enumerate()
+        .filter_map(|(index, peer)| {
+            if peer.outstanding_requests < MAX_PENDING_REQUESTS && peer.next_available <= now {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub(crate) struct StateSync<PT: PubKey> {
-    state_sync_peers: Vec<NodeId<PT>>,
     outbound_requests: OutboundRequests<PT>,
     current_target: Option<Target>,
 
@@ -37,6 +60,7 @@ pub(crate) struct StateSync<PT: PubKey> {
     response_tx: std::sync::mpsc::Sender<SyncResponse<PT>>,
 
     progress: Arc<Mutex<Progress>>,
+    sleep_future: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,8 +164,7 @@ impl<PT: PubKey> StateSync<PT> {
         db_paths: Vec<String>,
         genesis_path: String,
         state_sync_peers: Vec<NodeId<PT>>,
-        max_parallel_requests: usize,
-        request_timeout: Duration,
+        config: StateSyncConfig,
     ) -> Self {
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
         let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse<PT>>();
@@ -210,14 +233,14 @@ impl<PT: PubKey> StateSync<PT> {
         });
 
         Self {
-            state_sync_peers: state_sync_peers.to_vec(),
-            outbound_requests: OutboundRequests::new(max_parallel_requests, request_timeout),
+            outbound_requests: OutboundRequests::new(config, state_sync_peers),
             current_target: None,
 
             request_rx,
             response_tx,
 
             progress: progress_clone,
+            sleep_future: None,
         }
     }
 
@@ -233,16 +256,6 @@ impl<PT: PubKey> StateSync<PT> {
     }
 
     pub fn handle_response(&mut self, from: NodeId<PT>, response: StateSyncResponse) {
-        if !response.version.is_compatible() {
-            tracing::debug!(
-                ?from,
-                ?response,
-                ?SELF_STATESYNC_VERSION,
-                "dropping statesync response, version incompatible"
-            );
-            return;
-        }
-
         for (request, ready_response) in self.outbound_requests.handle_response(from, response) {
             self.response_tx
                 .send(SyncResponse::Response((from, request, ready_response)))
@@ -293,13 +306,24 @@ impl<PT: PubKey> Stream for StateSync<PT> {
                 }
             }
         }
-
-        let fut = this.outbound_requests.poll(&this.state_sync_peers);
-        if let Poll::Ready(res) = pin!(fut).poll_unpin(cx) {
-            return Poll::Ready(Some(SyncRequest::Request(res)));
+        match this.outbound_requests.poll() {
+            RequestPollResult::Request(node_id, request) => {
+                Poll::Ready(Some(SyncRequest::Request((node_id, request))))
+            }
+            RequestPollResult::Timer(Some(instant)) => {
+                this.sleep_future = Some(Box::pin(tokio::time::sleep_until(instant.into())));
+                let sleep_future = this.sleep_future.as_mut().unwrap();
+                match sleep_future.as_mut().poll(cx) {
+                    Poll::Ready(_) => {
+                        this.sleep_future = None;
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+            RequestPollResult::Timer(None) => Poll::Pending,
         }
-
-        Poll::Pending
     }
 }
 

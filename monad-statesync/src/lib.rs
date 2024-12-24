@@ -62,6 +62,8 @@ pub struct StateSyncConfig {
     pub incoming_request_timeout: Duration, // server request timeout
     pub max_outstanding_responses: usize, // max server outstanding responses
     pub max_response_size: usize,     // max server response message size
+    pub min_backoff: Duration,        // min backoff time
+    pub max_backoff: Duration,        // max backoff time
 }
 
 pub struct StateSync<ST, SCT>
@@ -97,8 +99,7 @@ where
                 db_paths,
                 genesis_path,
                 state_sync_peers,
-                config.max_parallel_requests,
-                config.request_timeout,
+                config,
             )),
 
             waker: None,
@@ -628,11 +629,13 @@ mod test {
 
     fn make_config() -> StateSyncConfig {
         StateSyncConfig {
-            max_parallel_requests: 2,
+            max_parallel_requests: 1,
             request_timeout: Duration::from_secs(1),
             incoming_request_timeout: Duration::from_secs(1),
             max_outstanding_responses: 2,
             max_response_size: 4 * 1024,
+            min_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(1),
         }
     }
 
@@ -1269,21 +1272,13 @@ mod test {
             }
         }
 
-        let e = timeout(config.request_timeout * 2, state_sync.next())
-            .await
-            .expect("no event timeout, should timeout request and send next")
-            .expect("unexpected stream end");
-        assert!(matches!(
-            e,
-            MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
-                _,
-                StateSyncNetworkMessage::Request(_)
-            ))
-        ));
-        let e = timeout(config.request_timeout / 2, state_sync.next())
-            .await
-            .expect("no event timeout, should timeout request and send next")
-            .expect("unexpected stream end");
+        let e = timeout(
+            (config.request_timeout + config.max_backoff) * 2,
+            state_sync.next(),
+        )
+        .await
+        .expect("no event timeout, should timeout request and send next")
+        .expect("unexpected stream end");
         assert!(matches!(
             e,
             MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
@@ -1562,7 +1557,13 @@ mod test {
         ))];
         state_sync.exec(cmds);
 
-        let e = timeout(config.request_timeout * 2, state_sync.next())
+        let e = timeout(config.min_backoff / 2, state_sync.next()).await;
+        assert!(
+            e.is_err(),
+            "should not retry request until backoff time expired"
+        );
+
+        let e = timeout(config.max_backoff, state_sync.next())
             .await
             .expect("no event timeout, should retry errored request")
             .expect("unexpected stream end");
