@@ -279,7 +279,7 @@ mod tests {
     use alloy_primitives::private::alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
-    use monad_eth_tx::EthTransaction;
+    use monad_eth_types::EthTransaction;
     use reth_primitives::{bytes::Bytes, hex::encode_to_slice, Address, TxValue};
 
     use super::*;

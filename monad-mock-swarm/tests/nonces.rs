@@ -17,9 +17,8 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_tx, secret_to_eth_address};
-    use monad_eth_tx::EthSignedTransaction;
     use monad_eth_txpool::EthTxPool;
-    use monad_eth_types::{Balance, EthAddress};
+    use monad_eth_types::{Balance, EthAddress, EthSignedTransaction, BASE_FEE_PER_GAS};
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -89,7 +88,7 @@ mod test {
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
-    const BASE_FEE: u128 = 1000;
+    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
     fn generate_eth_swarm(

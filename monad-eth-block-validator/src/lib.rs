@@ -11,8 +11,7 @@ use monad_eth_block_policy::{
     checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_tx::{EthSignedTransaction, EthTransaction};
-use monad_eth_types::{EthAddress, Nonce};
+use monad_eth_types::{EthAddress, EthSignedTransaction, EthTransaction, Nonce, BASE_FEE_PER_GAS};
 use monad_state_backend::StateBackend;
 use reth_primitives::U256;
 use tracing::warn;
@@ -74,9 +73,9 @@ impl EthValidator {
                         return Err(BlockValidationError::TxnError);
                     }
 
-                    // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+                    // TODO(kai): currently block base fee is hardcoded
                     // update this when base fee is included in consensus proposal
-                    if eth_txn.max_fee_per_gas() < 1000 {
+                    if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
                         return Err(BlockValidationError::TxnError);
                     }
 
@@ -192,7 +191,7 @@ mod test {
     use alloy_primitives::B256;
     use monad_consensus_types::payload::FullTransactionList;
     use monad_eth_testutil::make_tx;
-    use monad_eth_tx::EthFullTransactionList;
+    use monad_eth_types::EthFullTransactionList;
 
     use super::*;
 

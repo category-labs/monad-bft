@@ -13,7 +13,7 @@ monad-block-persist = { path = "../monad-block-persist" }
 monad-blocksync = { path = "../monad-blocksync" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-types = { path = "../monad-types" }

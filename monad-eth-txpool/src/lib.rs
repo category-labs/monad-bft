@@ -11,8 +11,9 @@ use monad_consensus_types::{
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
-use monad_eth_tx::{EthFullTransactionList, EthTransaction};
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{
+    Balance, EthAddress, EthFullTransactionList, EthTransaction, BASE_FEE_PER_GAS,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -322,9 +323,9 @@ where
             }
 
             // We also want to make sure that the transaction has max_fee_per_gas larger than base fee
-            // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+            // TODO(kai): currently block base fee is hardcoded
             // update this when base fee is included in consensus proposal
-            if best_tx.max_fee_per_gas() < 1000 {
+            if best_tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
                 transaction_iters.remove(&address);
                 continue;
             }

@@ -10,7 +10,6 @@ bench = false
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-eth-tx = { path = "../monad-eth-tx" }
 monad-state-backend = { path = "../monad-state-backend" }
 
 alloy-primitives = { workspace = true }

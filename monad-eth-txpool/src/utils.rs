@@ -1,4 +1,4 @@
-use monad_eth_tx::EthTransaction;
+use monad_eth_types::EthTransaction;
 use reth_primitives::{Transaction, TxEip1559, TxEip2930, TxEip4844, TxLegacy};
 
 pub fn effective_tip_per_gas(transaction: &EthTransaction) -> u128 {

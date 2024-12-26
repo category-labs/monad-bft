@@ -9,8 +9,9 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
 };
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
-use monad_eth_types::{Balance, EthAddress, Nonce};
+use monad_eth_types::{
+    Balance, EthAddress, EthSignedTransaction, EthTransaction, EthTxHash, Nonce,
+};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use reth_primitives::U256;

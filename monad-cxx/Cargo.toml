@@ -19,8 +19,7 @@ reth-primitives = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-monad-eth-tx = { path = "../monad-eth-tx" }
-
+monad-eth-types = { path = "../monad-eth-types" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

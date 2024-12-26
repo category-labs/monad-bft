@@ -4127,7 +4127,6 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-multi-sig",
@@ -4205,7 +4204,7 @@ dependencies = [
  "futures",
  "hex",
  "hex-literal",
- "monad-eth-tx",
+ "monad-eth-types",
  "reth-primitives",
  "serde",
  "serde_json",
@@ -4295,7 +4294,6 @@ dependencies = [
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",
  "monad-types",
@@ -4313,7 +4311,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-eth-block-policy",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-state-backend",
  "reth-primitives",
@@ -4329,7 +4326,6 @@ dependencies = [
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4354,13 +4350,8 @@ dependencies = [
  "eyre",
  "futures",
  "itertools 0.10.5",
- "monad-consensus-types",
- "monad-crypto",
- "monad-eth-block-policy",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-secp",
- "monad-testutil",
  "monad-types",
  "rand",
  "reth-primitives",
@@ -4372,16 +4363,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "monad-eth-tx"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives 0.6.0",
- "alloy-rlp",
- "bytes",
- "reth-primitives",
 ]
 
 [[package]]
@@ -4397,7 +4378,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-types",
  "monad-perf-util",
  "monad-state-backend",
@@ -4417,6 +4397,9 @@ name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives 0.6.0",
+ "alloy-rlp",
+ "bytes",
+ "reth-primitives",
  "serde",
 ]
 
@@ -4460,7 +4443,7 @@ dependencies = [
  "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
+ "monad-eth-types",
  "monad-executor-glue",
  "monad-secp",
  "rand",
@@ -4508,7 +4491,7 @@ dependencies = [
  "monad-blocksync",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-tx",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-types",
@@ -4545,7 +4528,6 @@ dependencies = [
  "monad-eth-block-validator",
  "monad-eth-ledger",
  "monad-eth-testutil",
- "monad-eth-tx",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",

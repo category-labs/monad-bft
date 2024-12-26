@@ -1579,9 +1579,10 @@ mod test {
     use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
     use monad_eth_block_validator::EthValidator;
     use monad_eth_testutil::make_tx;
-    use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{
+        EthAddress, EthFullTransactionList, EthSignedTransaction, EthTransaction, BASE_FEE_PER_GAS,
+    };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{
         InMemoryBlockState, InMemoryState, InMemoryStateInner, StateBackend,
@@ -1610,7 +1611,7 @@ mod test {
         ConsensusStateWrapper, OutgoingVoteStatus,
     };
 
-    const BASE_FEE: u128 = 1000;
+    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
     type SignatureType = NopSignature;

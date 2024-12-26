@@ -26,7 +26,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hasher, HasherType},
 };
-use monad_eth_tx::EthSignedTransaction;
+use monad_eth_types::{EthSignedTransaction, BASE_FEE_PER_GAS};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum};
@@ -413,7 +413,7 @@ fn generate_header<SCT: SignatureCollection>(
         // TODO: calculate base fee according to EIP1559
         // Remember to remove hardcoded value in monad-eth-block-validator
         // and in monad-eth-txpool
-        base_fee_per_gas: Some(1000),
+        base_fee_per_gas: Some(BASE_FEE_PER_GAS),
         blob_gas_used: None,
         excess_blob_gas: None,
         parent_beacon_block_root: None,

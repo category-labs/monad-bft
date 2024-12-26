@@ -7,7 +7,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_tx::EthSignedTransaction;
+use monad_eth_types::EthSignedTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
 use tokio::{
     net::{UnixListener, UnixStream},

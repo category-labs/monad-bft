@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use monad_eth_tx::{EthTransaction, EthTxHash};
+use monad_eth_types::{EthTransaction, EthTxHash};
 
 use crate::utils::effective_tip_per_gas;
 

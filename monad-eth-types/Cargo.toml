@@ -8,4 +8,7 @@ bench = false
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+reth-primitives = { workspace = true }
 serde = { workspace = true }

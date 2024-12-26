@@ -1,25 +1,26 @@
+#[path = "../test-utils/mod.rs"]
+mod test_utils;
+
 use std::collections::{BTreeMap, VecDeque};
 
 use alloy_primitives::{hex, B256};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::{
-    block::BlockPolicy, quorum_certificate::QuorumCertificate, txpool::TxPool,
-};
+use monad_consensus_types::{block::BlockPolicy, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_tx};
-use monad_eth_tx::EthSignedTransaction;
+use monad_eth_testutil::make_tx;
 use monad_eth_txpool::EthTxPool;
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{Balance, EthAddress, EthSignedTransaction, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use test_utils::generate_block_with_txs;
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
-const BASE_FEE: u128 = 1000;
+const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
 
 // pubkey starts with AAA
@@ -49,7 +50,6 @@ const S5: B256 = B256::new(hex!(
 
 type SignatureType = NopSignature;
 type StateBackendType = InMemoryState;
-type QC = QuorumCertificate<MockSignatures<SignatureType>>;
 
 type Pool = dyn TxPool<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>;
 

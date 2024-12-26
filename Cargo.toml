@@ -21,7 +21,6 @@ members = [
     "monad-eth-block-validator",
     "monad-eth-ledger",
     "monad-eth-testutil",
-    "monad-eth-tx",
     "monad-eth-txpool",
     "monad-eth-types",
     "monad-eth-types",

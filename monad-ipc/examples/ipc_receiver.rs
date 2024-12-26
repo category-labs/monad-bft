@@ -12,7 +12,7 @@ use clap::Parser;
 use futures::{Sink, SinkExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_eth_tx::EthTransaction;
+use monad_eth_types::EthTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
 use monad_ipc::IpcReceiver;
 use monad_secp::SecpSignature;

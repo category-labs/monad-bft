@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_eth_block_policy::{compute_txn_max_value_to_u128, EthValidatedBlock};
-use monad_eth_tx::EthTransaction;
-use monad_eth_types::{EthAddress, Nonce};
+use monad_eth_types::{EthAddress, EthTransaction, Nonce};
 use monad_types::SeqNum;
 use reth_primitives::TransactionSignedEcRecovered;
 use sorted_vector_map::{
