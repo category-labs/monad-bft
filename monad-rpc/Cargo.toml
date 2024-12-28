@@ -22,8 +22,10 @@ actix-http = { workspace = true }
 actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-rpc-types = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }

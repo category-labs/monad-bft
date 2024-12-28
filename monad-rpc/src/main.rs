@@ -731,10 +731,10 @@ mod tests {
         dev::{Service, ServiceResponse},
         test, Error,
     };
-    use reth_primitives::{
-        sign_message, AccessList, Address, Transaction, TransactionKind, TransactionSigned,
-        TxEip1559, TxLegacy, B256,
-    };
+    use alloy_consensus::{TxEip1559, TxLegacy};
+    use alloy_primitives::{Address, TxKind, B256, U256};
+    use alloy_rlp::Encodable;
+    use reth_primitives::{sign_message, Transaction, TransactionSigned};
     use serde_json::{json, Number};
     use test_case::test_case;
 
@@ -772,8 +772,8 @@ mod tests {
             nonce,
             gas_price: 1000,
             gas_limit: 30000,
-            to: TransactionKind::Call(Address::random()),
-            value: 0.into(),
+            to: TxKind::Call(Address::random()),
+            value: U256::from(0),
             input: input.into(),
         });
 
@@ -782,9 +782,11 @@ mod tests {
         let sender_secret_key = B256::repeat_byte(0xcc);
         let signature =
             sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
+        let txn = TransactionSigned::new_unhashed(transaction, signature);
 
-        (txn.recalculate_hash(), txn.envelope_encoded().to_string())
+        let mut rlp_tx = Vec::new();
+        txn.encode(&mut rlp_tx);
+        (txn.hash(), hex::encode(&rlp_tx))
     }
 
     fn make_tx_eip1559(nonce: u64) -> (B256, String) {
@@ -795,10 +797,10 @@ mod tests {
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 123,
             gas_limit: 30000,
-            to: TransactionKind::Call(Address::random()),
-            value: 0.into(),
+            to: TxKind::Call(Address::random()),
+            value: U256::from(0),
             input: input.into(),
-            access_list: AccessList::default(),
+            ..Default::default()
         });
 
         let hash = transaction.signature_hash();
@@ -806,9 +808,11 @@ mod tests {
         let sender_secret_key = B256::repeat_byte(0xcc);
         let signature =
             sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
+        let txn = TransactionSigned::new_unhashed(transaction, signature);
 
-        (txn.recalculate_hash(), txn.envelope_encoded().to_string())
+        let mut rlp_tx = Vec::new();
+        txn.encode(&mut rlp_tx);
+        (txn.hash(), hex::encode(&rlp_tx))
     }
 
     async fn recover_response_body(resp: ServiceResponse<impl MessageBody>) -> serde_json::Value {

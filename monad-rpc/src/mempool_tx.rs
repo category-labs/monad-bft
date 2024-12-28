@@ -164,7 +164,7 @@ impl Sink<TransactionSigned> for MempoolTxIpcSender {
         mut self: std::pin::Pin<&mut Self>,
         tx: TransactionSigned,
     ) -> Result<(), Self::Error> {
-        let buf = tx.envelope_encoded();
+        let buf = alloy_rlp::encode(tx);
         self.writer.start_send_unpin(buf.into())
     }
 

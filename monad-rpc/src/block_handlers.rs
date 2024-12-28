@@ -1,11 +1,8 @@
-use alloy_primitives::{
-    aliases::{U256, U64},
-    FixedBytes,
-};
+use alloy_consensus::{Header as RlpHeader, TxEnvelope};
+use alloy_primitives::{FixedBytes, U256};
+use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
-use reth_primitives::{Header as RlpHeader, TransactionSigned};
-use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -32,67 +29,42 @@ pub async fn get_block_num_from_tag<T: Triedb>(
 
 fn parse_block_content(
     block_hash: FixedBytes<32>,
-    rlp_header: RlpHeader,
-    transactions: Vec<TransactionSigned>,
+    header: RlpHeader,
+    transactions: Vec<TxEnvelope>,
     return_full_txns: bool,
 ) -> Result<Block, JsonRpcError> {
-    let size = rlp_header.size();
-
-    // parse block header
-    let header = Header {
-        hash: Some(block_hash),
-        parent_hash: rlp_header.parent_hash,
-        uncles_hash: rlp_header.ommers_hash,
-        miner: rlp_header.beneficiary,
-        state_root: rlp_header.state_root,
-        transactions_root: rlp_header.transactions_root,
-        receipts_root: rlp_header.receipts_root,
-        withdrawals_root: rlp_header.withdrawals_root,
-        number: Some(U256::from(rlp_header.number)),
-        gas_used: U256::from(rlp_header.gas_used),
-        gas_limit: U256::from(rlp_header.gas_limit),
-        extra_data: rlp_header.extra_data,
-        logs_bloom: rlp_header.logs_bloom,
-        timestamp: U256::from(rlp_header.timestamp),
-        difficulty: rlp_header.difficulty,
-        mix_hash: Some(rlp_header.mix_hash),
-        nonce: Some(rlp_header.nonce.to_be_bytes().into()),
-        base_fee_per_gas: rlp_header.base_fee_per_gas.map(U256::from),
-        blob_gas_used: rlp_header.blob_gas_used.map(U64::from),
-        excess_blob_gas: rlp_header.excess_blob_gas.map(U64::from),
-        parent_beacon_block_root: rlp_header.parent_beacon_block_root,
-    };
-
     // parse transactions
     let transactions = if return_full_txns {
-        BlockTransactions::Full(
-            transactions
-                .into_iter()
-                .enumerate()
-                .map(|(index, tx)| {
-                    parse_tx_content(
-                        block_hash,
-                        rlp_header.number,
-                        rlp_header.base_fee_per_gas,
-                        tx,
-                        index as u64,
-                    )
-                })
-                .collect::<Result<Vec<Transaction>, JsonRpcError>>()?,
-        )
+        let txs = transactions
+            .into_iter()
+            .enumerate()
+            .map(|(idx, tx)| {
+                parse_tx_content(
+                    block_hash,
+                    header.number,
+                    header.base_fee_per_gas,
+                    tx,
+                    idx as u64,
+                )
+            })
+            .collect::<Result<_, JsonRpcError>>()?;
+
+        BlockTransactions::Full(txs)
     } else {
-        BlockTransactions::Hashes(transactions.iter().map(TransactionSigned::hash).collect())
+        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx_hash()).collect())
     };
 
     // NOTE: no withdrawals currently in monad-bft
     let retval = Block {
-        header,
+        header: Header {
+            total_difficulty: Some(header.difficulty),
+            hash: block_hash,
+            size: Some(U256::from(header.size())),
+            inner: header,
+        },
         transactions,
         uncles: vec![],
-        total_difficulty: Some(rlp_header.difficulty),
         withdrawals: None,
-        size: Some(U256::from(size)),
-        other: Default::default(),
     };
 
     Ok(retval)
@@ -310,7 +282,7 @@ pub async fn map_block_receipts<T: Triedb, R>(
         .zip(receipts.into_iter())
         .enumerate()
         .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
-            let prev_receipt = prev_receipt.replace(receipt.receipt.to_owned());
+            let prev_receipt = prev_receipt.replace(receipt.to_owned());
 
             let parsed_receipt = parse_tx_receipt(
                 block_header,

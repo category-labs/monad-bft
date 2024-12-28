@@ -1,6 +1,6 @@
+use alloy_primitives::B256;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
-use reth_primitives::B256;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::trace;

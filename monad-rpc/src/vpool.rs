@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
+use alloy_consensus::Transaction as _;
+use alloy_primitives::Address;
 use monad_rpc_docs::rpc;
-use reth_primitives::{Address, TransactionSigned, TransactionSignedEcRecovered};
+use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -229,7 +231,7 @@ impl ChainCache {
         let senders = HashIndex::new();
 
         for txn in block.transactions.iter().rev() {
-            let sender = txn.recover_signer_unchecked().unwrap_or_default();
+            let sender = txn.recover_signer().unwrap_or_default();
             let nonce = txn.nonce();
             senders.insert(sender, nonce);
         }
@@ -396,7 +398,8 @@ impl VirtualPool {
                     .transactions
                     .iter()
                     .filter_map(|txn| {
-                        txn.recover_signer_unchecked()
+                        txn.recover_signer()
+                            .ok()
                             .map(|sender| (sender, txn.nonce()))
                     })
                     .collect::<Vec<_>>();
@@ -465,9 +468,10 @@ mod tests {
         sync::Arc,
     };
 
-    use alloy_primitives::FixedBytes;
+    use alloy_consensus::{SignableTransaction, Signed, Transaction as _, TxEip1559, TxEnvelope};
+    use alloy_primitives::{hex::FromHex, FixedBytes, B256, U256};
     use monad_triedb_utils::triedb_env::BlockHeader;
-    use reth_primitives::{hex::FromHex, sign_message, Header, TxEip1559, B256, U256};
+    use reth_primitives::{sign_message, Header};
 
     use super::*;
 
@@ -491,27 +495,17 @@ mod tests {
         ]
     }
 
-    fn transaction(sk: B256, nonce: u64, fee: Option<u128>) -> TransactionSignedEcRecovered {
-        let transaction = reth_primitives::Transaction::Eip1559(TxEip1559 {
+    fn transaction(sk: B256, nonce: u64, fee: Option<u128>) -> Signed<TxEip1559> {
+        let transaction = TxEip1559 {
             nonce,
             max_fee_per_gas: fee.unwrap_or(1_000),
             ..Default::default()
-        });
-        let signature = sign_message(sk, transaction.signature_hash()).unwrap();
-
-        let mut hasher = DefaultHasher::new();
-        transaction.hash(&mut hasher);
-        let hash = U256::from(hasher.finish()).into();
-
-        let signed_tx = TransactionSigned {
-            transaction,
-            signature,
-            hash,
         };
-
+        let signature = sign_message(sk, transaction.signature_hash()).unwrap();
+        let signed_tx = transaction.into_signed(signature);
         let signer = signed_tx.recover_signer().unwrap();
 
-        TransactionSignedEcRecovered::from_signed_transaction(signed_tx, signer)
+        signed_tx.into()
     }
 
     #[tokio::test]
@@ -528,7 +522,13 @@ mod tests {
         ];
 
         for tx in txs.clone() {
-            tx_pool.add_transaction(tx).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.pending_pool.len(), 4);
@@ -539,7 +539,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: txs.into_iter().map(|tx| tx.into()).collect(),
                     ..Default::default()
                 },
                 1000,
@@ -564,7 +564,13 @@ mod tests {
 
         tx_pool.new_block(BlockWithReceipts::default(), 1_000).await;
         for tx in txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
 
         // Expect to discard txs[0] and put remaining in queued pool
@@ -583,7 +589,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    transactions: vec![transaction(sk, 1, Some(2000)).into_signed()],
+                    transactions: vec![transaction(sk, 1, Some(2000)).into()],
                     ..Default::default()
                 },
                 1_000,
@@ -596,7 +602,13 @@ mod tests {
         let txs = vec![transaction(sk, 3, None), transaction(sk, 4, None)];
 
         for tx in txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 0);
         assert_eq!(tx_pool.queued_pool.pool.len(), 1);
@@ -612,7 +624,13 @@ mod tests {
 
         // Add pending transaction with base fee of 1000
         let base = transaction(accounts()[0].0, 0, Some(1000));
-        tx_pool.add_transaction(base.clone()).await;
+        let signer = base.recover_signer().unwrap();
+        tx_pool
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                base.clone().into(),
+                signer,
+            ))
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -625,7 +643,12 @@ mod tests {
         );
 
         let replace = transaction(accounts()[0].0, 0, Some(2000));
-        tx_pool.add_transaction(replace.clone()).await;
+        tx_pool
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                replace.clone().into(),
+                signer,
+            ))
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -638,7 +661,12 @@ mod tests {
         );
 
         let underpriced = transaction(accounts()[0].0, 0, Some(1000));
-        tx_pool.add_transaction(underpriced.clone()).await;
+        tx_pool
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                underpriced.clone().into(),
+                signer,
+            ))
+            .await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
@@ -654,10 +682,10 @@ mod tests {
             let res = ipc_receiver.recv_async().await.unwrap();
             match i {
                 0 => {
-                    assert_eq!(res, base.clone().into_signed());
+                    assert_eq!(res, base.clone().into());
                 }
                 1 => {
-                    assert_eq!(res, replace.clone().into_signed());
+                    assert_eq!(res, replace.clone().into());
                 }
                 _ => {
                     panic!("unexpected txn");
@@ -679,7 +707,13 @@ mod tests {
 
         assert_eq!(txs.len(), 10_000);
         for tx in txs.clone() {
-            tx_pool.add_transaction(tx.clone()).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.queued_pool.pool.len(), 0);
@@ -689,7 +723,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: txs.into_iter().map(|tx| tx.into()).collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -730,7 +764,13 @@ mod tests {
 
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
-            tx_pool.add_transaction(tx.clone()).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K transactions took {:?}", elapsed);
@@ -741,7 +781,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: pending_txs.into_iter().map(|tx| tx.into_signed()).collect(),
+                    transactions: pending_txs.into_iter().map(|tx| tx.into()).collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -758,7 +798,13 @@ mod tests {
 
         let timer = std::time::Instant::now();
         for tx in queued_txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            let signer = tx.recover_signer().unwrap();
+            tx_pool
+                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                    tx.into(),
+                    signer,
+                ))
+                .await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K queued transactions took {:?}", elapsed);
@@ -781,10 +827,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    transactions: fix_nonce_gap_txs
-                        .into_iter()
-                        .map(|tx| tx.into_signed())
-                        .collect(),
+                    transactions: fix_nonce_gap_txs.into_iter().map(|tx| tx.into()).collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -799,14 +842,32 @@ mod tests {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2));
+
+        let tx1 = transaction(accounts()[0].0, 0, None);
+        let signer1 = tx1.recover_signer().unwrap();
         tx_pool
-            .add_transaction(transaction(accounts()[0].0, 0, None))
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                tx1.into(),
+                signer1,
+            ))
             .await;
+
+        let tx2 = transaction(accounts()[1].0, 0, None);
+        let signer2 = tx2.recover_signer().unwrap();
         tx_pool
-            .add_transaction(transaction(accounts()[1].0, 0, None))
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                tx2.into(),
+                signer2,
+            ))
             .await;
+
+        let tx3 = transaction(accounts()[2].0, 0, None);
+        let signer3 = tx3.recover_signer().unwrap();
         tx_pool
-            .add_transaction(transaction(accounts()[2].0, 0, None))
+            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
+                tx3.into(),
+                signer3,
+            ))
             .await;
 
         assert_eq!(tx_pool.pending_pool.evict.try_read().unwrap().len(), 2);

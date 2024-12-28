@@ -207,7 +207,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
         .iter()
-        .map(|tx| tx.hash())
+        .map(|tx| *tx.tx_hash())
         .collect::<Vec<_>>();
     let call_frames = triedb_env
         .get_call_frames(block_num)
@@ -222,7 +222,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
         resp.push(MonadDebugTraceBlockResult {
-            tx_hash: FixedData::<32>::from(tx_id),
+            tx_hash: tx_id.into(),
             result: traces,
         });
     }
@@ -269,7 +269,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
         .iter()
-        .map(|tx| tx.hash())
+        .map(|tx| *tx.tx_hash())
         .collect::<Vec<_>>();
     let call_frames = triedb_env
         .get_call_frames(block_num)
@@ -284,7 +284,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
         resp.push(MonadDebugTraceBlockResult {
-            tx_hash: FixedData::<32>::from(tx_id),
+            tx_hash: tx_id.into(),
             result: traces,
         });
     }

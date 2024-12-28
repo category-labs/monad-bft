@@ -2,11 +2,12 @@
 
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
-use alloy_primitives::{
-    bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
-};
+use alloy_consensus::{Header, Transaction as _};
+use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
+use alloy_rlp::Encodable;
 use autocxx::{block, moveit::moveit, WithinBox};
 use futures::pin_mut;
+use reth_primitives::{Transaction, TransactionSigned};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string, Value};
 
@@ -67,9 +68,9 @@ pub struct StateOverrideObject {
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub fn eth_call(
-    transaction: reth_primitives::Transaction,
-    block_header: reth_primitives::Header,
-    sender: reth_primitives::Address,
+    transaction: Transaction,
+    block_header: Header,
+    sender: Address,
     block_number: u64,
     triedb_path: &Path,
     blockdb_path: &Path,
@@ -84,11 +85,11 @@ pub fn eth_call(
     }
 
     // TODO: move the buffer copying into C++ for the reserve/push idiom
-    let rlp_encoded_tx: Bytes = {
-        let mut buf = BytesMut::new();
-        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
-        buf.freeze().into()
-    };
+    let default_signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+    let tx = TransactionSigned::new_unhashed(transaction, default_signature);
+    let mut rlp_encoded_tx = Vec::new();
+    tx.encode(&mut rlp_encoded_tx);
+
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
     for byte in &rlp_encoded_tx {
         cxx_rlp_encoded_tx.pin_mut().push(*byte);
@@ -276,11 +277,11 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::private::alloy_rlp::Encodable;
+    use alloy_consensus::TxLegacy;
+    use alloy_primitives::{Bytes, TxKind};
+    use alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
-    use monad_eth_tx::EthTransaction;
-    use reth_primitives::{bytes::Bytes, hex::encode_to_slice, Address, TxValue};
 
     use super::*;
     use crate::eth_call;
@@ -540,14 +541,12 @@ mod tests {
     fn test_sha256_precompile() {
         let temp_blockdb_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
         let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
+            reth_primitives::transaction::Transaction::Legacy(TxLegacy {
                 chain_id: Some(1337),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 100000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("0000000000000000000000000000000000000002").into(),
-                ),
+                to: TxKind::Call(hex!("0000000000000000000000000000000000000002").into()),
                 value: Default::default(),
                 input: hex!("deadbeef").into(),
             }),

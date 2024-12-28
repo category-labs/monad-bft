@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use alloy_consensus::Header;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
@@ -13,7 +14,6 @@ use monad_eth_types::{EthAccount, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
 use monad_types::{BlockId, Hash, Round, SeqNum};
-use reth_primitives::Header;
 use tracing::{debug, trace, warn};
 
 use crate::{

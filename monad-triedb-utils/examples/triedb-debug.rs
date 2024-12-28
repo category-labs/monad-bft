@@ -1,5 +1,6 @@
 use std::{error::Error, path::PathBuf};
 
+use alloy_consensus::Header;
 use alloy_rlp::Decodable;
 use clap::{Parser, Subcommand};
 use monad_triedb_utils::{
@@ -7,7 +8,6 @@ use monad_triedb_utils::{
     TriedbReader,
 };
 use monad_types::{Round, SeqNum};
-use reth_primitives::Header;
 
 #[derive(Debug, Parser)]
 struct Args {

@@ -3,12 +3,12 @@ use std::{
     path::Path,
 };
 
-use alloy_primitives::{U256, U64};
+use alloy_consensus::Transaction as _;
+use alloy_primitives::{TxKind, U256, U64};
+use alloy_rpc_types::FeeHistory;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
-use reth_primitives::{Transaction, TransactionKind};
-use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use tracing::trace;
 
@@ -27,24 +27,6 @@ pub struct MonadEthEstimateGasParams {
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_override_set: StateOverrideSet,
-}
-
-// TODO: bump reth-primitives to use the setter method from library
-fn set_gas_limit(tx: &mut Transaction, gas_limit: u64) {
-    match tx {
-        Transaction::Legacy(tx) => {
-            tx.gas_limit = gas_limit;
-        }
-        Transaction::Eip2930(tx) => {
-            tx.gas_limit = gas_limit;
-        }
-        Transaction::Eip1559(tx) => {
-            tx.gas_limit = gas_limit;
-        }
-        Transaction::Eip4844(tx) => {
-            tx.gas_limit = gas_limit;
-        }
-    }
 }
 
 #[rpc(method = "eth_estimateGas", ignore = "chain_id")]
@@ -106,7 +88,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     let sender = params.tx.from.unwrap_or_default();
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
 
-    if matches!(txn.kind(), TransactionKind::Call(_)) && txn.input().is_empty() {
+    if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
         return Ok(Quantity(21_000));
     }
 
@@ -130,7 +112,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     };
 
     let upper_bound_gas_limit: u64 = txn.gas_limit();
-    set_gas_limit(&mut txn, (gas_used + gas_refund) * 64 / 63);
+    txn.set_gas_limit((gas_used + gas_refund) * 64 / 63);
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
@@ -165,7 +147,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
         let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
 
-        set_gas_limit(&mut txn, mid);
+        txn.set_gas_limit(mid);
 
         match monad_cxx::eth_call(
             txn.clone(),
@@ -275,6 +257,8 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
     let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
     let gas_used_ratio = (header.header.gas_used as f64).div(header.header.gas_limit as f64);
+    let blob_gas_used = header.header.blob_gas_used.unwrap_or_default();
+    let blob_gas_used_ratio = (blob_gas_used as f64).div(header.header.gas_limit as f64);
 
     let reward = match params.reward_percentiles {
         Some(percentiles) => {
@@ -295,10 +279,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
             if percentiles.is_empty() {
                 None
             } else {
-                Some(vec![
-                    vec![U256::ZERO; percentiles.len()];
-                    block_count as usize
-                ])
+                Some(vec![vec![0; percentiles.len()]; block_count as usize])
             }
         }
         None => None,
@@ -306,9 +287,12 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
     // TODO: retrieve fee parameters from historical blocks. For now, return a hacky default
     Ok(MonadFeeHistory(FeeHistory {
-        base_fee_per_gas: vec![U256::from(base_fee_per_gas); (block_count + 1) as usize],
+        base_fee_per_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
         gas_used_ratio: vec![gas_used_ratio; block_count as usize],
+        // TODO: proper calculation of blob fee
+        base_fee_per_blob_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
+        blob_gas_used_ratio: vec![blob_gas_used_ratio; block_count as usize],
+        oldest_block: header.header.number.saturating_sub(block_count),
         reward,
-        oldest_block: U256::from(header.header.number.saturating_sub(block_count)),
     }))
 }

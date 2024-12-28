@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use alloy_rpc_types::TransactionReceipt;
 use reth_primitives::{Block, TransactionSigned};
-use reth_rpc_types::TransactionReceipt;
 use tracing::warn;
 
 /// Number of transactions to sample in a block
@@ -134,7 +134,11 @@ fn process_block(
         .base_fee_per_gas
         .ok_or(GasOracleError::MissingBaseFee)?;
 
-    let mut transactions = block.body.iter().collect::<Vec<&TransactionSigned>>();
+    let mut transactions = block
+        .body
+        .transactions
+        .iter()
+        .collect::<Vec<&TransactionSigned>>();
     transactions.sort_by_cached_key(|tx| tx.effective_tip_per_gas(Some(base_fee)));
 
     let mut prices = Vec::new();
@@ -153,15 +157,9 @@ fn process_block(
         let receipt = receipts
             .get(idx)
             .ok_or(GasOracleError::TransactionReceiptMissing)?;
-        let Some(gas_used) = receipt.gas_used else {
-            warn!(
-                "receipt for {:#?} is missing gas_used",
-                receipt.transaction_hash
-            );
-            continue;
-        };
+        let gas_used = receipt.gas_used;
 
-        let gas_used: f64 = gas_used.into();
+        let gas_used = gas_used as f64;
         let gas_used_ratio = gas_used / block.gas_limit as f64;
         gas_used_ratios.push(gas_used_ratio);
 
@@ -191,30 +189,32 @@ fn process_block(
 
 #[cfg(test)]
 mod tests {
-    use reth_primitives::{Header, Signature, TxEip1559, U256};
+    use alloy_consensus::TxEip1559;
+    use alloy_primitives::{PrimitiveSignature, U256};
+    use reth_primitives::{Block, BlockBody, Header, Transaction};
 
     use super::*;
 
     fn make_tx(price: u128) -> TransactionSigned {
         TransactionSigned {
-            transaction: reth_primitives::Transaction::Eip1559(TxEip1559 {
+            transaction: Transaction::Eip1559(TxEip1559 {
                 max_priority_fee_per_gas: price - 1000,
                 max_fee_per_gas: price,
                 ..Default::default()
             }),
-            signature: Signature {
-                odd_y_parity: false,
-                r: U256::from_str_radix(
+            signature: PrimitiveSignature::new(
+                U256::from_str_radix(
                     "b129895435986f95c27e02bfae5f32e83aa09465154ed216b9534164ecab1016",
                     16,
                 )
                 .unwrap(),
-                s: U256::from_str_radix(
+                U256::from_str_radix(
                     "732a1eaaaa968aeedcfdf67fe34ee6157c169e7b6f5267601ec89a62a8b836c9",
                     16,
                 )
                 .unwrap(),
-            },
+                false,
+            ),
             ..Default::default()
         }
     }
@@ -236,8 +236,10 @@ mod tests {
                     number: 1,
                     ..Default::default()
                 },
-                body: vec![make_tx(1100), make_tx(1101), make_tx(1102)],
-                ..Default::default()
+                body: BlockBody {
+                    transactions: vec![make_tx(1100), make_tx(1101), make_tx(1102)],
+                    ..Default::default()
+                },
             },
             Block {
                 header: Header {
@@ -245,8 +247,10 @@ mod tests {
                     number: 2,
                     ..Default::default()
                 },
-                body: vec![make_tx(1103), make_tx(1104), make_tx(1105)],
-                ..Default::default()
+                body: BlockBody {
+                    transactions: vec![make_tx(1103), make_tx(1104), make_tx(1105)],
+                    ..Default::default()
+                },
             },
         ];
 
@@ -254,11 +258,13 @@ mod tests {
 
         for block in blocks {
             let mut receipts = Vec::new();
-            for _ in block.body.iter() {
-                receipts.push(TransactionReceipt {
-                    gas_used: Some(U256::from(21_000)),
-                    ..Default::default()
-                });
+            for _ in block.body.transactions.iter() {
+                // TODO: we might want to reconsider input type for process_block
+                // receipts.push(TransactionReceipt {
+                //     inner: Default::default(),
+                //     gas_used: 21_000,
+                //     ..Default::default()
+                // });
             }
             oracle.process_block(block, receipts).unwrap();
         }
