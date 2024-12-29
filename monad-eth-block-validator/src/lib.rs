@@ -86,6 +86,12 @@ where
             return Err(BlockValidationError::PayloadError);
         }
 
+        // early return if number of transactions exceed limit
+        // no need to individually validate transactions
+        if transactions.len() > self.tx_limit {
+            return Err(BlockValidationError::TxnError);
+        }
+
         // recovering the signers verifies that these are valid signatures
         let signers = recover_signers(transactions, transactions.len())
             .ok_or(BlockValidationError::TxnError)?;
@@ -101,9 +107,9 @@ where
                 return Err(BlockValidationError::TxnError);
             }
 
-            // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+            // TODO(kai): currently block base fee is hardcoded
             // update this when base fee is included in consensus proposal
-            if eth_txn.max_fee_per_gas() < 1000 {
+            if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -121,10 +127,6 @@ where
 
             *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
             validated_txns.push(eth_txn.clone().with_signer(signer));
-        }
-
-        if validated_txns.len() > self.tx_limit {
-            return Err(BlockValidationError::TxnError);
         }
 
         let total_gas = validated_txns

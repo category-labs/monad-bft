@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use alloy_consensus::Transaction as _;
 use alloy_primitives::TxHash;
+use alloy_rlp::Encodable;
 use monad_consensus_types::{
     payload::BASE_FEE_PER_GAS, signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
@@ -92,6 +93,10 @@ impl ValidEthTransaction {
 
     pub fn gas_limit(&self) -> u64 {
         self.tx.gas_limit()
+    }
+
+    pub fn size(&self) -> u64 {
+        self.tx.length() as u64
     }
 
     pub fn raw(&self) -> &TransactionSignedEcRecovered {

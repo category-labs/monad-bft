@@ -173,8 +173,6 @@ where
             }
         }
 
-        // TODO: unwrap can be removed when this is made generic over the actual
-        // tx type rather than Bytes and decoding won't be necessary
         // TODO(rene): sender recovery is done inline here
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
