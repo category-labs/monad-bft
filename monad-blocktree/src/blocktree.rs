@@ -287,7 +287,7 @@ where
             // extending blocks are always coherent, because we only call
             // update_coherency on the first incoherent block in the chain
             if block_policy
-                .check_coherency(block, extending_blocks, state_backend)
+                .check_coherency(block, extending_blocks, self.root.info, state_backend)
                 .is_ok()
             {
                 // FIXME: make the set coherent helper return something to trigger the optimisitc
@@ -394,6 +394,22 @@ where
         }
 
         None
+    }
+
+    // Take a QC and look for the block it certifies in the blocktree. If it exists, return its
+    // seq_num
+    pub fn get_seq_num_of_qc(&self, qc: &QuorumCertificate<SCT>) -> Option<SeqNum> {
+        let block_id = qc.get_block_id();
+
+        if self.root.info.block_id == block_id {
+            return Some(self.get_root_seq_num());
+        }
+
+        let Some(certified_block) = self.tree.get(&block_id) else {
+            return None;
+        };
+
+        Some(certified_block.validated_block.get_seq_num())
     }
 
     /// A block is valid to insert if it does not already exist in the block

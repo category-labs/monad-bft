@@ -111,7 +111,9 @@ where
             block_body_id: Some((&value.block_body_id).into()),
             qc: Some((&value.qc).into()),
             seq_num: Some((&value.seq_num).into()),
-            timestamp: value.timestamp,
+            timestamp: value.timestamp_ns as u64, // TODO: this is obv not correct but protobuf
+            // is not used in protocol and definitions will be
+            // removed
             round_signature: Some(certificate_signature_to_proto(&value.round_signature.0)),
         }
     }
@@ -179,7 +181,7 @@ where
                     "BlockHeader.seq_num".to_owned(),
                 ))?
                 .try_into()?,
-            value.timestamp,
+            value.timestamp.into(),
             RoundSignature(proto_to_certificate_signature(
                 value
                     .round_signature

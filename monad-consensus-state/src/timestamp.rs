@@ -4,51 +4,51 @@ use monad_consensus_types::quorum_certificate::{
 
 #[derive(Debug)]
 pub struct BlockTimestamp {
-    local_time: u64,
+    local_time_ns: u128,
 
-    max_delta: u64,
+    max_delta_ns: u128,
 
     /// TODO: this needs an upper-bound
-    latency_estimate_ms: u64,
+    latency_estimate_ns: u128,
 }
 
 impl BlockTimestamp {
-    pub fn new(max_delta: u64, latency_estimate_ms: u64) -> Self {
-        assert!(latency_estimate_ms > 0);
+    pub fn new(max_delta_ns: u128, latency_estimate_ns: u128) -> Self {
+        assert!(latency_estimate_ns > 0);
         Self {
-            local_time: 0,
-            max_delta,
-            latency_estimate_ms,
+            local_time_ns: 0,
+            max_delta_ns,
+            latency_estimate_ns,
         }
     }
 
-    pub fn update_time(&mut self, time: u64) {
-        self.local_time = time;
+    pub fn update_time(&mut self, time: u128) {
+        self.local_time_ns = time;
     }
 
-    pub fn get_current_time(&self) -> u64 {
-        self.local_time
+    pub fn get_current_time(&self) -> u128 {
+        self.local_time_ns
     }
 
-    pub fn get_valid_block_timestamp(&self, prev_block_ts: u64) -> u64 {
-        if self.local_time <= prev_block_ts {
+    pub fn get_valid_block_timestamp(&self, prev_block_ts: u128) -> u128 {
+        if self.local_time_ns <= prev_block_ts {
             prev_block_ts + 1
         } else {
-            self.local_time
+            self.local_time_ns
         }
     }
 
-    fn valid_bounds(&self, timestamp: u64) -> bool {
-        let lower_bound = self.local_time.saturating_sub(self.max_delta);
-        let upper_bound = self.local_time.saturating_add(self.max_delta);
+    fn valid_bounds(&self, timestamp: u128) -> bool {
+        let lower_bound = self.local_time_ns.saturating_sub(self.max_delta_ns);
+        let upper_bound = self.local_time_ns.saturating_add(self.max_delta_ns);
 
         lower_bound <= timestamp && timestamp <= upper_bound
     }
 
     pub fn valid_block_timestamp(
         &self,
-        prev_block_ts: u64,
-        curr_block_ts: u64,
+        prev_block_ts: u128,
+        curr_block_ts: u128,
     ) -> Option<TimestampAdjustment> {
         let delta = curr_block_ts.checked_sub(prev_block_ts);
         match delta {
@@ -61,10 +61,10 @@ impl BlockTimestamp {
                     None
                 } else {
                     // return the delta between local time and block time for adjustment
-                    let mut adjustment = self.local_time.abs_diff(curr_block_ts);
+                    let mut adjustment = self.local_time_ns.abs_diff(curr_block_ts);
                     // adjust for estimated latency
-                    adjustment = adjustment.saturating_sub(self.latency_estimate_ms);
-                    if curr_block_ts > self.local_time {
+                    adjustment = adjustment.saturating_sub(self.latency_estimate_ns);
+                    if curr_block_ts > self.local_time_ns {
                         Some(TimestampAdjustment {
                             delta: adjustment,
                             direction: TimestampAdjustmentDirection::Forward,

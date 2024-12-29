@@ -98,7 +98,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 // Live starts execution here
                 start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
                 vote_pace,
-                timestamp_latency_estimate_ms: 10,
+                timestamp_latency_estimate_ns: 10,
             },
 
             _phantom: PhantomData,

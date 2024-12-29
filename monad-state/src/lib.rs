@@ -831,15 +831,9 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
-        let delta: u64 = self
-            .consensus_config
-            .delta
-            .as_millis()
-            .try_into()
-            .expect("consensus config delta should not be too large for a u64");
         let block_timestamp = BlockTimestamp::new(
-            5 * delta,
-            self.consensus_config.timestamp_latency_estimate_ms,
+            5 * self.consensus_config.delta.as_nanos(),
+            self.consensus_config.timestamp_latency_estimate_ns,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
         let mut monad_state = MonadState {

@@ -148,7 +148,7 @@ where
                                 *updating_target = true;
                                 info!(
                                     ?new_root,
-                                    consensus_tip =? new_high_qc.get_seq_num(),
+                                    consensus_tip =? new_root.seq_num,
                                     "setting new statesync target",
                                 );
                                 cmds.push(WrappedConsensusCommand {

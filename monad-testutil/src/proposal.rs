@@ -41,7 +41,8 @@ pub struct ProposalGen<ST, SCT> {
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
     last_tc: Option<TimeoutCertificate<SCT>>,
-    timestamp: u64,
+    last_seq_num: SeqNum,
+    timestamp: u128,
     phantom: PhantomData<ST>,
 }
 
@@ -68,6 +69,7 @@ where
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
+            last_seq_num: SeqNum(0),
             timestamp: 0,
             phantom: PhantomData,
         }
@@ -112,7 +114,8 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = qc.get_seq_num() + SeqNum(1);
+        let seq_num = self.last_seq_num + SeqNum(1);
+        self.last_seq_num = seq_num;
         let block_body = ConsensusBlockBody {
             execution_body: MockExecutionBody {
                 data: Default::default(),
@@ -235,9 +238,6 @@ where
             round: block.round,
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),
-            seq_num: block.seq_num,
-            timestamp: block.timestamp,
-            version: MonadVersion::version(),
         };
 
         let msg = HasherType::hash_object(&vote);

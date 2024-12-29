@@ -74,15 +74,13 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
-        
-        SeqNum(1),          // state_root_delay
-        delta,              // delta
-        vote_pace,          // vote pace
-        10,                 // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        
-        SeqNum(100),        // state_sync_threshold
+        SeqNum(1),    // state_root_delay
+        delta,        // delta
+        vote_pace,    // vote pace
+        10,           // proposal_tx_limit
+        SeqNum(2000), // val_set_update_interval
+        Round(50),    // epoch_start_delay
+        SeqNum(100),  // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -213,12 +211,8 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let blocksync_requests_range = match direction {
         // when replayed forward, node should populate blocktree in order
         TransformerReplayOrder::Forward => (0, 7),
-        // when replayed in reverse, should request every block in ledger
-        // +1 is the case where the proposal to commit the last block in
-        // ledger is in flight and not delivered to all peers yet
-        // +2 is the case where the proposal to commit the last block in
-        // ledger is received by all peers
-        TransformerReplayOrder::Reverse => (longest_ledger_before + 1, longest_ledger_before + 2),
+        // when replayed in reverse, only one request is done from high_qc
+        TransformerReplayOrder::Reverse => (1, 1),
         // when replayed in random order, could be any number of requests
         // max_blocksync_retries is to ensure that failed blocksync is not
         // triggered too many times

@@ -1,3 +1,5 @@
+use std::u64;
+
 use alloy_consensus::{constants::EMPTY_WITHDRAWALS, EMPTY_OMMER_ROOT_HASH};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -205,7 +207,7 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         beneficiary: &EthAddress,
-        timestamp_ms: u64,
+        timestamp_ns: u128,
         round_signature: &RoundSignature<SCT::SignatureType>,
 
         block_policy: &EthBlockPolicy<ST, SCT>,
@@ -213,6 +215,10 @@ where
         state_backend: &SBT,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
         self.tracked.evict_expired_txs();
+
+        let timestamp_seconds = timestamp_ns / 1_000_000_000;
+        // u64::MAX seconds is ~500 Billion years
+        assert!(timestamp_seconds < u64::MAX.into());
 
         let transactions = self.tracked.create_proposal(
             proposed_seq_num,
@@ -245,7 +251,7 @@ where
             difficulty: 0,
             number: proposed_seq_num.0,
             gas_limit: PROPOSAL_GAS_LIMIT,
-            timestamp: timestamp_ms / 1_000,
+            timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],
             extra_data: [0_u8; 32],

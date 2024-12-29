@@ -340,25 +340,14 @@ where
     }
 
     /// A well-formed proposal
-    /// 1. extends the sequence number in the QC by 1 and
-    /// 2. carries a QC/TC from r-1, proving that the block is proposed on a
+    /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
-        self.valid_seq_num()?;
         well_formed(
             self.obj.block_header.round,
             self.obj.block_header.qc.get_round(),
             &self.obj.last_round_tc,
         )
-    }
-
-    fn valid_seq_num(&self) -> Result<(), Error> {
-        // Non-empty blocks must extend their parent QC by 1
-        if self.obj.block_header.seq_num != self.obj.block_header.qc.get_seq_num() + SeqNum(1) {
-            return Err(Error::InvalidSeqNum);
-        }
-
-        Ok(())
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch

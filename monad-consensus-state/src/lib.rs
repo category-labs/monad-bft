@@ -198,7 +198,7 @@ pub struct ConsensusConfig {
     /// Must be lower than live_to_statesync_threshold
     pub start_execution_threshold: SeqNum,
 
-    pub timestamp_latency_estimate_ms: u64,
+    pub timestamp_latency_estimate_ns: u128,
 }
 
 /// Actions after state root validation
@@ -484,6 +484,9 @@ where
             };
         let block_round = block.get_round();
 
+        // TODO: ts adjustments are disabled anyways. this needs to be moved to where timestamp
+        // validation is done, in block_policy right now
+        /*
         if let Some(ts_delta) = self
             .block_timestamp
             .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
@@ -493,6 +496,7 @@ where
                 cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
             }
         }
+        */
 
         // at this point, block is valid and can be added to the blocktree
         let res_cmds = self.try_add_and_commit_blocktree(block, Some(state_root_action));
@@ -680,7 +684,6 @@ where
         assert!(!full_blocks.is_empty());
 
         let last_block_round = full_blocks.last().unwrap().get_round();
-        let last_block_qc = full_blocks.last().unwrap().get_qc().clone();
         assert_eq!(removed, Some((last_block_round, block_range)));
 
         for full_block in full_blocks {
@@ -705,8 +708,6 @@ where
                 cmds.extend(res_cmds);
             }
         }
-
-        cmds.extend(self.request_blocks_if_missing_ancestor(&last_block_qc));
 
         cmds
     }
@@ -990,7 +991,7 @@ where
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
-        cmds.extend(self.request_blocks_if_missing_ancestor(qc));
+        cmds.extend(self.request_blocks_if_missing_ancestor());
 
         // update vote_state round
         // it's ok if not leader for round; we will never propose
@@ -1025,6 +1026,8 @@ where
 
         // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
+
+        cmds.extend(self.request_blocks_if_missing_ancestor());
 
         cmds
     }
@@ -1061,7 +1064,14 @@ where
             return Vec::new();
         }
 
-        let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
+        let Some(high_qc_seq_num) = self
+            .consensus
+            .pending_block_tree
+            .get_seq_num_of_qc(&self.consensus.high_qc)
+        else {
+            return Vec::new();
+        };
+
         if self.consensus.pending_block_tree.get_root_seq_num()
             + self.config.live_to_statesync_threshold
             > high_qc_seq_num
@@ -1080,23 +1090,6 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         let mut cmds = Vec::new();
         let round = self.consensus.pacemaker.get_current_round();
-
-        if self
-            .block_timestamp
-            .valid_block_timestamp(
-                validated_block.get_qc().get_timestamp(),
-                validated_block.get_timestamp(),
-            )
-            .is_none()
-        {
-            self.metrics.consensus_events.failed_ts_validation += 1;
-            warn!(prev_block_ts = ?validated_block.get_qc().get_timestamp(),
-                curr_block_ts = ?validated_block.get_timestamp(),
-                local_ts = ?self.block_timestamp.get_current_time(),
-                "Timestamp validation failed"
-            );
-            return cmds;
-        }
 
         // check that the block is coherent
         if !self
@@ -1228,11 +1221,6 @@ where
         let high_qc = self.consensus.high_qc.clone();
 
         let parent_bid = high_qc.get_block_id();
-        let seq_num_qc = high_qc.get_seq_num();
-        let try_propose_seq_num = seq_num_qc + SeqNum(1);
-        let timestamp_ms = self
-            .block_timestamp
-            .get_valid_block_timestamp(high_qc.get_timestamp());
         let round_signature = RoundSignature::new(round, self.cert_keypair);
 
         let proposer_builder =
@@ -1247,6 +1235,22 @@ where
             .pending_block_tree
             .get_blocks_on_path_from_root(&parent_bid)
             .expect("there should be a path to root");
+
+        // building a proposal off the pending branch or against the root of the blocktree if
+        // there is no branch
+        let (try_propose_seq_num, timestamp_ns) =
+            if let Some(extending_block) = pending_blocktree_blocks.last() {
+                (
+                    extending_block.get_seq_num() + SeqNum(1),
+                    self.block_timestamp
+                        .get_valid_block_timestamp(extending_block.get_timestamp()),
+                )
+            } else {
+                (
+                    self.consensus.pending_block_tree.root().seq_num + SeqNum(1),
+                    self.block_timestamp.get_valid_block_timestamp(0),
+                )
+            };
 
         let Some(delayed_execution_results) =
             self.get_expected_execution_results(try_propose_seq_num, &pending_blocktree_blocks)
@@ -1277,7 +1281,7 @@ where
             try_propose_seq_num,
             self.config.proposal_txn_limit,
             self.beneficiary,
-            timestamp_ms,
+            timestamp_ns,
             &round_signature,
             self.block_policy,
             pending_blocktree_blocks,
@@ -1306,7 +1310,7 @@ where
             block_body.get_id(),
             high_qc.clone(),
             try_propose_seq_num,
-            timestamp_ms,
+            timestamp_ns,
             round_signature,
         );
 
@@ -1331,49 +1335,60 @@ where
     }
 
     #[must_use]
-    fn request_blocks_if_missing_ancestor(
-        &mut self,
-        qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
+    fn request_blocks_if_missing_ancestor(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         if self.consensus.started_statesync {
             // stop consensus blocksync after statesync is initiated
             return Vec::new();
         }
-        let Some(qc) = self.consensus.pending_block_tree.get_missing_ancestor(qc) else {
-            return Vec::new();
-        };
+
+        let high_qc = &self.consensus.high_qc;
+        let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
 
         if self
             .consensus
             .block_sync_requests
-            .contains_key(&qc.get_block_id())
+            .contains_key(&high_qc.get_block_id())
         {
             return Vec::new();
         }
 
-        let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
-        let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
-        let request_range =
-            if root_seq_num + self.config.live_to_statesync_threshold <= high_qc_seq_num {
-                // crash the client to move into statesync mode and recover
-                panic!(
-                    "blocksync request range is outside statesync threshold, range: {:?}",
-                    high_qc_seq_num - root_seq_num
-                );
-            } else {
-                let max_blocks = qc.get_seq_num().max(root_seq_num) - root_seq_num;
-                let request_range = BlockRange {
-                    last_block_id: qc.get_block_id(),
-                    max_blocks,
-                };
-                debug!(?request_range, "consensus blocksyncing blocks up to root");
+        let Some(_) = self
+            .consensus
+            .pending_block_tree
+            .get_missing_ancestor(high_qc)
+        else {
+            return Vec::new();
+        };
 
-                request_range
-            };
+        let range = if let Some(high_qc_seq_num) =
+            self.consensus.pending_block_tree.get_seq_num_of_qc(high_qc)
+        {
+            high_qc_seq_num - root_seq_num
+        } else {
+            SeqNum(1)
+        };
+
+        if root_seq_num + self.config.live_to_statesync_threshold <= range {
+            // crash the client to move into statesync mode and recover
+            panic!(
+                "blocksync request range is outside statesync threshold, range: {:?}",
+                range - root_seq_num
+            );
+        }
+
+        if range == SeqNum(0) {
+            warn!("consensus tried to blocksync with range of 0 blocks");
+            return Vec::new();
+        }
+        let request_range = BlockRange {
+            last_block_id: high_qc.get_block_id(),
+            max_blocks: range,
+        };
+        debug!(?request_range, "consensus blocksyncing blocks up to root");
 
         self.consensus
             .block_sync_requests
-            .insert(qc.get_block_id(), (qc.get_round(), request_range));
+            .insert(high_qc.get_block_id(), (high_qc.get_round(), request_range));
 
         vec![ConsensusCommand::RequestSync(request_range)]
     }

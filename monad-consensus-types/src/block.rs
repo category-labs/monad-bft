@@ -14,6 +14,7 @@ use std::{fmt::Debug, ops::Deref};
 
 use crate::{
     block_validator::BlockValidationError,
+    checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -54,7 +55,7 @@ where
     pub author: NodeId<CertificateSignaturePubKey<ST>>,
 
     pub seq_num: SeqNum,
-    pub timestamp: u64,
+    pub timestamp_ns: u128,
     // This is SCT::SignatureType because SCT signatures are guaranteed to be deterministic
     pub round_signature: RoundSignature<SCT::SignatureType>,
 
@@ -114,7 +115,7 @@ where
             .field("block_body_id", &self.block_body_id)
             .field("qc", &self.qc)
             .field("seq_num", &self.seq_num)
-            .field("timestamp", &self.timestamp)
+            .field("timestamp_ns", &self.timestamp_ns)
             .field("id", &self.get_id())
             .finish_non_exhaustive()
     }
@@ -136,7 +137,7 @@ where
         block_body_id: ConsensusBlockBodyId,
         qc: QuorumCertificate<SCT>,
         seq_num: SeqNum,
-        timestamp: u64,
+        timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
     ) -> Self {
         Self {
@@ -148,7 +149,7 @@ where
             block_body_id,
             qc,
             seq_num,
-            timestamp,
+            timestamp_ns,
             round_signature,
         }
     }
@@ -158,6 +159,7 @@ where
 pub enum BlockPolicyError {
     BlockNotCoherent,
     StateBackendError(StateBackendError),
+    TimestampError,
 }
 
 impl From<StateBackendError> for BlockPolicyError {
@@ -187,6 +189,7 @@ where
         &self,
         block: &Self::ValidatedBlock,
         extending_blocks: Vec<&Self::ValidatedBlock>,
+        blocktree_root: RootInfo,
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError>;
 
@@ -232,10 +235,28 @@ where
 
     fn check_coherency(
         &self,
-        _: &Self::ValidatedBlock,
-        _: Vec<&Self::ValidatedBlock>,
+        block: &Self::ValidatedBlock,
+        extending_blocks: Vec<&Self::ValidatedBlock>,
+        blocktree_root: RootInfo,
         _: &InMemoryState,
     ) -> Result<(), BlockPolicyError> {
+        // check coherency against the block being extended or against the root of the blocktree if
+        // there is no extending branch
+        let (extending_seq_num, extending_timestamp) =
+            if let Some(extended_block) = extending_blocks.last() {
+                (extended_block.get_seq_num(), extended_block.get_timestamp())
+            } else {
+                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
+            };
+
+        if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+            return Err(BlockPolicyError::BlockNotCoherent);
+        }
+
+        if block.get_timestamp() <= extending_timestamp {
+            // timestamps must be monotonically increasing
+            return Err(BlockPolicyError::TimestampError);
+        }
         Ok(())
     }
 
@@ -319,8 +340,8 @@ where
     pub fn get_seq_num(&self) -> SeqNum {
         self.header.seq_num
     }
-    pub fn get_timestamp(&self) -> u64 {
-        self.header.timestamp
+    pub fn get_timestamp(&self) -> u128 {
+        self.header.timestamp_ns
     }
     pub fn get_author(&self) -> &NodeId<CertificateSignaturePubKey<ST>> {
         &self.header.author

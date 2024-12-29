@@ -156,11 +156,6 @@ where
             return Err(BlockValidationError::HeaderPayloadMismatchError);
         }
 
-        if header.timestamp <= header.qc.get_timestamp() {
-            // timestamps must be monotonically increasing
-            return Err(BlockValidationError::TimestampError);
-        }
-
         if let Some(author_pubkey) = author_pubkey {
             if let Err(e) = header.round_signature.verify(header.round, author_pubkey) {
                 warn!("Invalid randao_reveal signature, reason: {:?}", e);
@@ -201,7 +196,7 @@ where
         if gas_limit != &PROPOSAL_GAS_LIMIT {
             return Err(BlockValidationError::HeaderError);
         }
-        if *timestamp != header.timestamp / 1_000 {
+        if u128::from(*timestamp) != header.timestamp_ns / 1_000_000_000 {
             return Err(BlockValidationError::HeaderError);
         }
         if *mix_hash != header.round_signature.get_hash().0 {

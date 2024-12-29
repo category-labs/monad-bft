@@ -12,7 +12,7 @@ pub struct TimestampAdjuster {
     /// list of deltas received from consensus to use towards updating adjustment
     deltas: SortedVec<i64>,
     /// maximum abs value of a delta we can use
-    max_delta: u64,
+    max_delta: u128,
 }
 
 impl TimestampAdjuster {
@@ -26,7 +26,7 @@ impl TimestampAdjuster {
             adjustment: 0,
             adjustment_period,
             deltas: SortedVec::new(),
-            max_delta,
+            max_delta: max_delta.into(),
         }
     }
 

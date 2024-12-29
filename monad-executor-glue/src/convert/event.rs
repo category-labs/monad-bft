@@ -48,7 +48,8 @@ where
             }
             MonadEvent::TimestampUpdateEvent(event) => {
                 proto_monad_event::Event::TimestampUpdateEvent(ProtoTimestampUpdate {
-                    update: *event,
+                    update: (*event) as u64, // TODO: this is wrong but protobuf is not used in
+                                             // protocol and will be deleted
                 })
             }
             MonadEvent::StateSyncEvent(event) => {
@@ -87,7 +88,7 @@ where
                 MonadEvent::ControlPanelEvent(e.try_into()?)
             }
             Some(proto_monad_event::Event::TimestampUpdateEvent(event)) => {
-                MonadEvent::TimestampUpdateEvent(event.update)
+                MonadEvent::TimestampUpdateEvent(event.update as u128)
             }
             Some(proto_monad_event::Event::StateSyncEvent(event)) => {
                 MonadEvent::StateSyncEvent(event.try_into()?)

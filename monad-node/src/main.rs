@@ -314,7 +314,7 @@ async fn run(
             // Live starts execution here
             start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
             vote_pace: Duration::from_millis(1000),
-            timestamp_latency_estimate_ms: 20,
+            timestamp_latency_estimate_ns: 20_000_000,
         },
         _phantom: PhantomData,
     };

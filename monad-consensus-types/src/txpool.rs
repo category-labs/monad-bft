@@ -61,7 +61,7 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         beneficiary: &EthAddress,
-        timestamp_ms: u64,
+        timestamp_ns: u128,
         round_signature: &RoundSignature<SCT::SignatureType>,
 
         block_policy: &BPT,
@@ -118,7 +118,7 @@ where
         _proposed_seq_num: SeqNum,
         tx_limit: usize,
         _beneficiary: &EthAddress,
-        _timestamp_ms: u64,
+        _timestamp_ns: u128,
         _round_signature: &RoundSignature<SCT::SignatureType>,
 
         _block_policy: &PassthruBlockPolicy,

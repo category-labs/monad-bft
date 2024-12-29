@@ -43,12 +43,6 @@ pub struct Vote {
     pub parent_id: BlockId,
     /// parent round of the proposed block
     pub parent_round: Round,
-    /// seqnum of the proposed block
-    pub seq_num: SeqNum,
-    /// timestamp of the proposed block
-    pub timestamp: u64,
-    /// version info of consensus protocol that voted on the proposed block
-    pub version: MonadVersion,
 }
 
 impl Hashable for Vote {
@@ -65,8 +59,6 @@ impl std::fmt::Debug for Vote {
             .field("r", &self.round)
             .field("pid", &self.parent_id)
             .field("pr", &self.parent_round)
-            .field("sn", &self.seq_num)
-            .field("ts", &self.timestamp)
             .finish()
     }
 }
@@ -79,9 +71,6 @@ impl DontCare for Vote {
             round: Round(0),
             parent_id: BlockId(Hash([0x0_u8; 32])),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
-            timestamp: 0,
-            version: MonadVersion::version(),
         }
     }
 }
