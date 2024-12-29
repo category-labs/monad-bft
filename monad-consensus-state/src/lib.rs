@@ -23,7 +23,7 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, RootInfo},
     ledger::OptimisticCommit,
     metrics::Metrics,
-    payload::{ConsensusBlockBody, FullTransactionList, RoundSignature, BASE_FEE_PER_GAS},
+    payload::{ConsensusBlockBody, RoundSignature},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
