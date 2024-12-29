@@ -1561,7 +1561,7 @@ mod test {
         metrics::Metrics,
         payload::{
             FullTransactionList, MissingNextStateRoot, NopStateRoot, StateRoot, StateRootValidator,
-            TransactionPayload, INITIAL_DELAY_STATE_ROOT_HASH,
+            TransactionPayload, BASE_FEE_PER_GAS, INITIAL_DELAY_STATE_ROOT_HASH,
         },
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1610,7 +1610,7 @@ mod test {
         ConsensusStateWrapper, OutgoingVoteStatus,
     };
 
-    const BASE_FEE: u128 = 1000;
+    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
     type SignatureType = NopSignature;
@@ -4835,7 +4835,7 @@ mod test {
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );
@@ -4896,7 +4896,7 @@ mod test {
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );
@@ -4956,7 +4956,7 @@ mod test {
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );
@@ -5043,7 +5043,7 @@ mod test {
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );
@@ -5165,7 +5165,7 @@ mod test {
                     InMemoryBlockState::genesis(std::iter::once((sender_1_address, 0)).collect()),
                 )
             },
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );
@@ -5274,7 +5274,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            || EthValidator::new(10000, u64::MAX, 1337),
+            || EthValidator::new(10000, 1337),
             EthTxPool::default_testing(),
             || NopStateRoot,
         );

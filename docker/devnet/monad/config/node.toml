@@ -50,5 +50,4 @@ max_mbps = 1000
 #########################################################
 [consensus]
 block_txn_limit = 10_000
-block_gas_limit = 1_000_000_000
 execution_delay = 10

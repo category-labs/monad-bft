@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 
 use alloy_consensus::Transaction;
-use monad_consensus_types::txpool::TxPoolInsertionError;
+use alloy_rlp::Encodable;
+use monad_consensus_types::{payload::BASE_FEE_PER_GAS, txpool::TxPoolInsertionError};
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
 };
@@ -21,9 +22,9 @@ impl ValidEthTransaction {
         tx: EthTransaction,
         block_policy: &EthBlockPolicy,
     ) -> Result<Self, TxPoolInsertionError> {
-        // TODO(andr-dev): Block base fee is hardcoded to 1000 in monad-ledger, we need to update
+        // TODO(andr-dev): Block base fee is hardcoded we need to update
         // this logic once its included in the consensus proposal
-        if tx.max_fee_per_gas() < 1000 {
+        if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
             return Err(TxPoolInsertionError::FeeTooLow);
         }
 
@@ -82,6 +83,10 @@ impl ValidEthTransaction {
 
     pub fn gas_limit(&self) -> u64 {
         self.tx.gas_limit()
+    }
+
+    pub fn size(&self) -> u64 {
+        self.tx.length() as u64
     }
 
     pub fn raw(&self) -> &EthTransaction {

@@ -20,7 +20,10 @@ use monad_blocksync::messages::message::{
 };
 use monad_consensus_types::{
     block::{Block, BlockRange, BlockType, FullBlock as MonadBlock},
-    payload::{ExecutionProtocol, FullTransactionList, Payload, PayloadId, TransactionPayload},
+    payload::{
+        ExecutionProtocol, FullTransactionList, Payload, PayloadId, TransactionPayload,
+        BASE_FEE_PER_GAS,
+    },
     quorum_certificate::GENESIS_BLOCK_ID,
     signature_collection::SignatureCollection,
 };
@@ -421,7 +424,7 @@ fn generate_header<SCT: SignatureCollection>(
         // TODO: calculate base fee according to EIP1559
         // Remember to remove hardcoded value in monad-eth-block-validator
         // and in monad-eth-txpool
-        base_fee_per_gas: Some(1000),
+        base_fee_per_gas: Some(BASE_FEE_PER_GAS),
         blob_gas_used: None,
         excess_blob_gas: None,
         parent_beacon_block_root: None,

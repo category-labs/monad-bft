@@ -4,6 +4,5 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct NodeConsensusConfig {
     pub block_txn_limit: usize,
-    pub block_gas_limit: u64,
     pub execution_delay: u64,
 }

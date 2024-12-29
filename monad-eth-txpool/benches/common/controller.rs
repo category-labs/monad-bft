@@ -2,7 +2,7 @@ use alloy_consensus::Transaction;
 use alloy_primitives::{Uint, B256};
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{payload::BASE_FEE_PER_GAS, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_tx};
@@ -144,7 +144,8 @@ impl<'a> BenchController<'a> {
 
                         let tx = make_tx(
                             *account,
-                            rng.gen_range(1000..=10_000),
+                            rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
+                                .into(),
                             30000,
                             *nonce,
                             TRANSACTION_SIZE_BYTES,
@@ -170,7 +171,8 @@ impl<'a> BenchController<'a> {
 
                 make_tx(
                     *account,
-                    rng.gen_range(1000..=10_000),
+                    rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
+                        .into(),
                     30000,
                     nonce
                         .checked_add(rng.gen_range(0..=nonce_var as u64))

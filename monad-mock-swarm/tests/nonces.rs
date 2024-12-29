@@ -8,7 +8,7 @@ mod test {
     use alloy_primitives::B256;
     use alloy_rlp::Decodable;
     use itertools::Itertools;
-    use monad_consensus_types::payload::{StateRoot, TransactionPayload};
+    use monad_consensus_types::payload::{StateRoot, TransactionPayload, BASE_FEE_PER_GAS};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -83,7 +83,7 @@ mod test {
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
-    const BASE_FEE: u128 = 1000;
+    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
     fn generate_eth_swarm(
@@ -100,7 +100,7 @@ mod test {
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             EthTxPool::default_testing,
-            || EthValidator::new(10_000, 1_000_000, 1337),
+            || EthValidator::new(10_000, 1337),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || {
                 InMemoryStateInner::new(

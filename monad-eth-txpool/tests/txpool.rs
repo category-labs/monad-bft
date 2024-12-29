@@ -4,7 +4,11 @@ use alloy_primitives::{hex, B256};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::{block::BlockPolicy, txpool::TxPool};
+use monad_consensus_types::{
+    block::BlockPolicy,
+    payload::{BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT},
+    txpool::TxPool,
+};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_tx};
@@ -17,7 +21,7 @@ use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
-const BASE_FEE: u128 = 1000;
+const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
 
 // pubkey starts with AAA
@@ -262,7 +266,7 @@ fn test_create_proposal_with_insufficient_tx_limit() {
 #[test]
 #[traced_test]
 fn test_create_proposal_with_insufficient_gas_limit() {
-    let tx = make_tx(S1, BASE_FEE, GAS_LIMIT + 1, 0, 10);
+    let tx = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -271,7 +275,7 @@ fn test_create_proposal_with_insufficient_gas_limit() {
         },
         TxPoolTestEvent::CreateProposal {
             tx_limit: 1,
-            gas_limit: GAS_LIMIT,
+            gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -284,9 +288,9 @@ fn test_create_proposal_with_insufficient_gas_limit() {
 #[test]
 #[traced_test]
 fn test_create_partial_proposal_with_insufficient_gas_limit() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx1 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 0, 10);
+    let tx2 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 1, 10);
+    let tx3 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 2, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -295,7 +299,7 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
         },
         TxPoolTestEvent::CreateProposal {
             tx_limit: 3,
-            gas_limit: GAS_LIMIT * 2,
+            gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: true,
         },
@@ -408,7 +412,7 @@ fn another_non_trivial_example() {
 #[test]
 #[traced_test]
 fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_creation_early() {
-    let tx1 = make_tx(S1, 10 * BASE_FEE, 100 * GAS_LIMIT, 0, 10);
+    let tx1 = make_tx(S1, 10 * BASE_FEE, 2 * PROPOSAL_GAS_LIMIT, 0, 10);
     let tx2 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
     let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
@@ -442,17 +446,17 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
 #[test]
 #[traced_test]
 fn suboptimal_block() {
-    let tx1 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 3, 10);
-    let tx5 = make_tx(S2, BASE_FEE, GAS_LIMIT, 4, 10);
-    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 5, 10);
-    let tx7 = make_tx(S2, BASE_FEE, GAS_LIMIT, 6, 10);
-    let tx8 = make_tx(S2, BASE_FEE, GAS_LIMIT, 7, 10);
-    let tx9 = make_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
-    let tx10 = make_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
-    let tx11 = make_tx(S1, 2 * BASE_FEE, 10 * GAS_LIMIT, 0, 10);
+    let tx1 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 0, 10);
+    let tx2 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 1, 10);
+    let tx3 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 2, 10);
+    let tx4 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 3, 10);
+    let tx5 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 4, 10);
+    let tx6 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 5, 10);
+    let tx7 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 6, 10);
+    let tx8 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 7, 10);
+    let tx9 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 8, 10);
+    let tx10 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 9, 10);
+    let tx11 = make_tx(S1, 2 * BASE_FEE, PROPOSAL_GAS_LIMIT, 0, 10);
 
     for reverse in [false, true] {
         let mut txs = vec![
@@ -470,7 +474,7 @@ fn suboptimal_block() {
             },
             TxPoolTestEvent::CreateProposal {
                 tx_limit: 11,
-                gas_limit: 10 * GAS_LIMIT,
+                gas_limit: PROPOSAL_GAS_LIMIT,
                 expected_txs: vec![&tx11],
                 add_to_blocktree: true,
             },

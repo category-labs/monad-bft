@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 
 use alloy_consensus::transaction::Transaction;
 use alloy_primitives::U256;
+use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{Block, BlockKind, BlockPolicy, BlockType},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::{Payload, TransactionPayload},
+    payload::{
+        Payload, TransactionPayload, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT,
+    },
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_eth_block_policy::{
@@ -27,19 +30,13 @@ type ValidatedTxns = Vec<EthTransaction>;
 pub struct EthValidator {
     /// max number of txns to fetch
     pub tx_limit: usize,
-    /// limit on cumulative gas from transactions in a block
-    pub block_gas_limit: u64,
     /// chain id
     pub chain_id: u64,
 }
 
 impl EthValidator {
-    pub fn new(tx_limit: usize, block_gas_limit: u64, chain_id: u64) -> Self {
-        Self {
-            tx_limit,
-            block_gas_limit,
-            chain_id,
-        }
+    pub fn new(tx_limit: usize, chain_id: u64) -> Self {
+        Self { tx_limit, chain_id }
     }
 
     fn validate_payload(
@@ -59,6 +56,12 @@ impl EthValidator {
                     return Err(BlockValidationError::TxnError);
                 };
 
+                // early return if number of transactions exceed limit
+                // no need to individually validate transactions
+                if eth_txns.len() > self.tx_limit {
+                    return Err(BlockValidationError::TxnError);
+                }
+
                 // recover the account nonces and txn fee usage in this block
                 let mut nonces = BTreeMap::new();
                 let mut txn_fees: BTreeMap<EthAddress, U256> = BTreeMap::new();
@@ -70,9 +73,9 @@ impl EthValidator {
                         return Err(BlockValidationError::TxnError);
                     }
 
-                    // TODO(kai): currently block base fee is hardcoded to 1000 in monad-ledger
+                    // TODO(kai): currently block base fee is hardcoded
                     // update this when base fee is included in consensus proposal
-                    if eth_txn.max_fee_per_gas() < 1000 {
+                    if eth_txn.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
                         return Err(BlockValidationError::TxnError);
                     }
 
@@ -95,14 +98,15 @@ impl EthValidator {
                     validated_txns.push(eth_txn);
                 }
 
-                if validated_txns.len() > self.tx_limit {
-                    return Err(BlockValidationError::TxnError);
-                }
-
                 let total_gas = validated_txns
                     .iter()
                     .fold(0, |acc, tx| acc + tx.gas_limit());
-                if total_gas > self.block_gas_limit {
+                if total_gas > PROPOSAL_GAS_LIMIT {
+                    return Err(BlockValidationError::TxnError);
+                }
+
+                let proposal_size = validated_txns.iter().fold(0, |acc, tx| acc + tx.length());
+                if proposal_size as u64 > PROPOSAL_SIZE_LIMIT {
                     return Err(BlockValidationError::TxnError);
                 }
 
@@ -194,13 +198,15 @@ mod test {
 
     use super::*;
 
+    const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
+
     #[test]
     fn test_invalid_block_with_nonce_gap() {
-        let block_validator = EthValidator::new(10, 100_000, 1337);
+        let block_validator = EthValidator::new(10, 1337);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 3, 10);
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
@@ -217,11 +223,11 @@ mod test {
 
     #[test]
     fn test_invalid_block_over_gas_limit() {
-        let block_validator = EthValidator::new(10, 100_000, 1337);
+        let block_validator = EthValidator::new(10, 1337);
 
-        // total gas used is 120_000 which is higher than block gas limit
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 2, 10);
+        // total gas used is 400_000_000 which is higher than block gas limit
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 2, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
@@ -238,14 +244,40 @@ mod test {
 
     #[test]
     fn test_invalid_block_over_tx_limit() {
-        let block_validator = EthValidator::new(1, 100_000, 1337);
+        let block_validator = EthValidator::new(1, 1337);
 
         // tx limit per block is 1
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 2, 10);
+        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 2, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
+        let rlp_txs = alloy_rlp::encode(txs).into();
+        let full_txn_list = FullTransactionList::new(rlp_txs);
+        let payload = Payload {
+            txns: TransactionPayload::List(full_txn_list),
+        };
+
+        // block validation should return error
+        let result = block_validator.validate_payload(&payload);
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_block_over_size_limit() {
+        let block_validator = EthValidator::new(10, 1337);
+
+        // proposal limit is 4MB
+        let txn1 = make_tx(
+            B256::repeat_byte(0xAu8),
+            BASE_FEE,
+            300_000_000,
+            1,
+            PROPOSAL_SIZE_LIMIT as usize,
+        );
+
+        // create a block with the above transactions
+        let txs = vec![txn1];
         let rlp_txs = alloy_rlp::encode(txs).into();
         let full_txn_list = FullTransactionList::new(rlp_txs);
         let payload = Payload {

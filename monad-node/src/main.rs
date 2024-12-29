@@ -10,7 +10,10 @@ use clap::CommandFactory;
 use config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, payload::StateRoot};
+use monad_consensus_types::{
+    metrics::Metrics,
+    payload::{StateRoot, PROPOSAL_GAS_LIMIT},
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -200,7 +203,7 @@ async fn run(
             node_state.bft_block_header_path,
             node_state.bft_block_payload_path,
             EthHeaderParam {
-                gas_limit: node_state.node_config.consensus.block_gas_limit,
+                gas_limit: PROPOSAL_GAS_LIMIT,
             },
         ),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
@@ -277,7 +280,6 @@ async fn run(
         transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
-            block_gas_limit: node_state.node_config.consensus.block_gas_limit,
             chain_id: node_state.node_config.chain_id,
         },
         // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only
@@ -303,7 +305,7 @@ async fn run(
         forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
-            proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
+            proposal_gas_limit: PROPOSAL_GAS_LIMIT,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),

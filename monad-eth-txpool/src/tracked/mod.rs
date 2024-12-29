@@ -3,7 +3,9 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    block::BlockType, payload::FullTransactionList, signature_collection::SignatureCollection,
+    block::BlockType,
+    payload::{FullTransactionList, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT},
+    signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
@@ -240,12 +242,20 @@ where
 
         let mut txs = Vec::new();
         let mut total_gas = 0u64;
+        let mut total_size = 0u64;
 
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
                 .checked_add(tx.gas_limit())
-                .map(|total_gas| total_gas > proposal_gas_limit)
-                .unwrap_or(true)
+                .map_or(true, |new_total_gas| new_total_gas > PROPOSAL_GAS_LIMIT)
+            {
+                return TrackedTxHeapDrainAction::Skip;
+            }
+
+            let tx_size = tx.size();
+            if total_size
+                .checked_add(tx_size)
+                .map_or(true, |new_total_size| new_total_size > PROPOSAL_SIZE_LIMIT)
             {
                 return TrackedTxHeapDrainAction::Skip;
             }
@@ -263,6 +273,7 @@ where
                     *account_balance = new_account_balance;
 
                     total_gas += tx.gas_limit();
+                    total_size += tx_size;
                     trace!(txn_hash = ?tx.hash(), "txn included in proposal");
                     txs.push(tx.raw().to_owned());
 
