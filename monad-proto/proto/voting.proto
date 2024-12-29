@@ -5,7 +5,7 @@ package monad_proto.voting;
 import "basic.proto";
 import "ledger.proto";
 
-message ProtoVoteInfo {
+message ProtoVote {
   monad_proto.basic.ProtoBlockId id = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
   monad_proto.basic.ProtoRound round = 3;
@@ -14,12 +14,4 @@ message ProtoVoteInfo {
   monad_proto.basic.ProtoSeqNum seq_num = 6;
   uint64 timestamp = 7;
   monad_proto.basic.ProtoMonadVersion version = 8;
-}
-
-message ProtoVote {
-  ProtoVoteInfo vote_info = 1;
-  oneof ledger_commit_info {
-    monad_proto.ledger.ProtoNoCommit no_commit = 2;
-    monad_proto.ledger.ProtoCommit commit = 3;
-  }
 }

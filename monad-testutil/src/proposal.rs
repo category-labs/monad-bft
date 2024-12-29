@@ -11,11 +11,11 @@ use monad_consensus_types::{
     },
     ledger::CommitResult,
     payload::{ConsensusBlockBody, FullTransactionList, ProposedEthHeader, RoundSignature},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{
@@ -229,7 +229,7 @@ where
             SignatureCollectionKeyPairType<SCT>,
         >,
     ) -> QuorumCertificate<SCT> {
-        let vi = VoteInfo {
+        let vote = Vote {
             id: block.get_id(),
             epoch: block.epoch,
             round: block.round,
@@ -239,14 +239,8 @@ where
             timestamp: block.timestamp,
             version: MonadVersion::version(),
         };
-        let qcinfo = QcInfo {
-            vote: Vote {
-                vote_info: vi,
-                ledger_commit_info: CommitResult::Commit,
-            },
-        };
 
-        let msg = HasherType::hash_object(&qcinfo.vote);
+        let msg = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
         for ck in certkeys {
@@ -261,6 +255,6 @@ where
 
         let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
 
-        QuorumCertificate::new(qcinfo, sigcol)
+        QuorumCertificate::new(vote, sigcol)
     }
 }

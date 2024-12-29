@@ -162,7 +162,7 @@ where
     pub fn get_round(&self) -> Round {
         match &self.message {
             ProtocolMessage::Proposal(p) => p.block_header.round,
-            ProtocolMessage::Vote(v) => v.vote.vote_info.round,
+            ProtocolMessage::Vote(v) => v.vote.round,
             ProtocolMessage::Timeout(t) => t.timeout.tminfo.round,
         }
     }

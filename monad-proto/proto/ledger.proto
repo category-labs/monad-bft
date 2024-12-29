@@ -1,6 +1,3 @@
 syntax = "proto3";
 
 package monad_proto.ledger;
-
-message ProtoNoCommit {}
-message ProtoCommit {}

@@ -319,14 +319,11 @@ where
         let mut high_commit_qc: Option<QuorumCertificate<SCT>> = None;
         let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
         while let Some(bid) = iter.pop_front() {
-            let qc = self
-                .tree
-                .get(&bid)
-                .expect("block in tree")
-                .validated_block
-                .get_qc();
-            if qc.info.vote.ledger_commit_info.is_commitable()
-                && self.is_coherent(&qc.info.vote.vote_info.parent_id)
+            let block = self.tree.get(&bid).expect("block in tree");
+            let qc = block.validated_block.get_qc();
+
+            if qc.is_commitable()
+                && self.is_coherent(&qc.info.parent_id)
                 && high_commit_qc
                     .as_ref()
                     .map(|high_commit_qc| high_commit_qc.get_round() < qc.get_round())
@@ -335,14 +332,7 @@ where
                 high_commit_qc = Some(qc.clone());
             }
 
-            iter.extend(
-                self.tree
-                    .get(&bid)
-                    .expect("should be in tree")
-                    .children_blocks
-                    .iter()
-                    .cloned(),
-            )
+            iter.extend(block.children_blocks.iter().cloned())
         }
         high_commit_qc
     }
@@ -504,58 +494,34 @@ mod test {
     }
 
     fn get_vote(block: &Block) -> Vote {
-        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
-            CommitResult::Commit
-        } else {
-            CommitResult::NoCommit
-        };
         Vote {
-            vote_info: VoteInfo {
-                id: block.get_id(),
-                epoch: block.get_epoch(),
-                round: block.get_round(),
-                parent_id: block.get_parent_id(),
-                parent_round: block.get_parent_round(),
-                seq_num: block.get_seq_num(),
-                timestamp: 0,
-                version: MonadVersion::version(),
-            },
-            ledger_commit_info,
+            id: block.get_id(),
+            epoch: block.get_epoch(),
+            round: block.get_round(),
+            parent_id: block.get_parent_id(),
+            parent_round: block.get_parent_round(),
+            seq_num: block.get_seq_num(),
+            timestamp: 0,
+            version: MonadVersion::version(),
         }
     }
 
-    pub fn mock_qc(vote_info: VoteInfo) -> QC {
-        QC::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info,
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
-            },
-            MockSignatures::with_pubkeys(&[]),
-        )
+    pub fn mock_qc(vote_info: Vote) -> QC {
+        QC::new(vote_info, MockSignatures::with_pubkeys(&[]))
     }
 
     pub fn mock_qc_for_block(block: &Block) -> QC {
-        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
-            CommitResult::Commit
-        } else {
-            CommitResult::NoCommit
-        };
         let vote = Vote {
-            vote_info: VoteInfo {
-                id: block.get_id(),
-                epoch: block.get_epoch(),
-                round: block.get_round(),
-                parent_id: block.get_parent_id(),
-                parent_round: block.get_parent_round(),
-                seq_num: block.get_seq_num(),
-                timestamp: block.get_timestamp(),
-                version: MonadVersion::version(),
-            },
-            ledger_commit_info,
+            id: block.get_id(),
+            epoch: block.get_epoch(),
+            round: block.get_round(),
+            parent_id: block.get_parent_id(),
+            parent_round: block.get_parent_round(),
+            seq_num: block.get_seq_num(),
+            timestamp: block.get_timestamp(),
+            version: MonadVersion::version(),
         };
-        QC::new(QcInfo { vote }, MockSignatures::with_pubkeys(&[]))
+        QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }
 
     fn full_block_new(b: &Block, p: &Payload) -> FullBlock<MockSignatures<SignatureType>> {

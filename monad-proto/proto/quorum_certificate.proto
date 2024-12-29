@@ -5,11 +5,7 @@ package monad_proto.quorum_certificate;
 import "signing.proto";
 import "voting.proto";
 
-message ProtoQcInfo{
-  monad_proto.voting.ProtoVote vote = 1;
-}
-
 message ProtoQuorumCertificate {
-  ProtoQcInfo info = 1;
+  monad_proto.voting.ProtoVote info = 1;
   monad_proto.signing.ProtoSignatureCollection signatures = 2;
 }

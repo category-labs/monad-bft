@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use monad_crypto::hasher::{Hash, Hasher, HasherType};
+use monad_crypto::hasher::{Hasher, HasherType};
 use monad_types::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    ledger::*,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::*,
 };
@@ -15,7 +14,7 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[serde(deny_unknown_fields)]
 pub struct QuorumCertificate<SCT> {
-    pub info: QcInfo,
+    pub info: Vote,
 
     #[serde(serialize_with = "serialize_signature_collection::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_signature_collection::<_, SCT>")]
@@ -24,8 +23,6 @@ pub struct QuorumCertificate<SCT> {
         deserialize = "SCT: SignatureCollection",
     ))]
     pub signatures: SCT,
-
-    signature_hash: Hash,
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
@@ -33,8 +30,30 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
         f.debug_struct("QC")
             .field("info", &self.info)
             .field("sigs", &self.signatures)
-            .field("signature_hash", &self.signature_hash)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Rank(pub Vote);
+
+impl PartialEq for Rank {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.round == other.0.round
+    }
+}
+
+impl Eq for Rank {}
+
+impl PartialOrd for Rank {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Rank {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.round.0.cmp(&other.0.round.0)
     }
 }
 
@@ -66,63 +85,14 @@ where
     SCT::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, RlpDecodable, RlpEncodable)]
-pub struct QcInfo {
-    pub vote: Vote,
-}
-
-impl QcInfo {
-    pub fn get_round(&self) -> Round {
-        self.vote.vote_info.round
-    }
-
-    pub fn get_epoch(&self) -> Epoch {
-        self.vote.vote_info.epoch
-    }
-}
-
-impl std::fmt::Debug for QcInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QcInfo").field("v", &self.vote).finish()
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct Rank(pub QcInfo);
-
-impl PartialEq for Rank {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.get_round() == other.0.get_round()
-    }
-}
-
-impl Eq for Rank {}
-
-impl PartialOrd for Rank {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Rank {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.get_round().0.cmp(&other.0.get_round().0)
-    }
-}
-
 impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
-    pub fn new(info: QcInfo, signatures: SCT) -> Self {
-        let hash = signatures.get_hash();
-        QuorumCertificate {
-            info,
-            signatures,
-            signature_hash: hash,
-        }
+    pub fn new(info: Vote, signatures: SCT) -> Self {
+        QuorumCertificate { info, signatures }
     }
 
     // This will be the initial high qc for all nodes
     pub fn genesis_qc() -> Self {
-        let vote_info = VoteInfo {
+        let vote_info = Vote {
             id: GENESIS_BLOCK_ID,
             epoch: Epoch(1),
             round: Round(0),
@@ -135,22 +105,15 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
             .expect("genesis qc sigs");
-        let sig_hash = sigs.get_hash();
 
         QuorumCertificate {
-            info: QcInfo {
-                vote: Vote {
-                    vote_info,
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
-            },
+            info: vote_info,
             signatures: sigs,
-            signature_hash: sig_hash,
         }
     }
 
-    pub fn get_hash(&self) -> Hash {
-        self.signature_hash
+    pub fn is_commitable(&self) -> bool {
+        self.info.round == self.info.parent_round + Round(1)
     }
 
     pub fn get_participants(
@@ -161,29 +124,29 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         >,
     ) -> HashSet<NodeId<SCT::NodeIdPubKey>> {
         // TODO-3, consider caching this qc_msg hash in qc for performance in future
-        let qc_msg = HasherType::hash_object(&self.info.vote);
+        let qc_msg = HasherType::hash_object(&self.info);
         self.signatures
             .get_participants(validator_mapping, qc_msg.as_ref())
     }
 
     pub fn get_round(&self) -> Round {
-        self.info.get_round()
+        self.info.round
     }
 
     pub fn get_epoch(&self) -> Epoch {
-        self.info.get_epoch()
+        self.info.epoch
     }
 
     pub fn get_block_id(&self) -> BlockId {
-        self.info.vote.vote_info.id
+        self.info.id
     }
 
     pub fn get_seq_num(&self) -> SeqNum {
-        self.info.vote.vote_info.seq_num
+        self.info.seq_num
     }
 
     pub fn get_timestamp(&self) -> u64 {
-        self.info.vote.vote_info.timestamp
+        self.info.timestamp
     }
 }
 

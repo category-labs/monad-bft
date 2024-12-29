@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use monad_consensus::{messages::message::ProposalMessage, validation::safety::commit_condition};
+use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
     block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionProtocol},
     checkpoint::RootInfo,
@@ -127,10 +127,10 @@ where
             self.proposal_buffer.pop_front();
         }
 
-        if commit_condition(block_header.round, block_header.qc.info) {
+        if block_header.qc.is_commitable() {
             let committed_seq_num = block_header.seq_num - self.commit_distance;
             if committed_seq_num > root_seq_num + self.resync_threshold {
-                let target_blockid = block_header.qc.info.vote.vote_info.parent_id;
+                let target_blockid = block_header.qc.info.parent_id;
                 if let Some(target_block) = self.block_headers.get(&target_blockid) {
                     assert_eq!(target_block.seq_num, committed_seq_num);
                     return Some((target_block.clone(), block_header.qc.clone()));

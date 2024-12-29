@@ -138,7 +138,7 @@ where
                     ProtocolMessage::Proposal(p) => {
                         TwinsCapture::Process(pid, p.block_header.round)
                     }
-                    ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
+                    ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
                 }

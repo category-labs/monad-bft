@@ -521,7 +521,7 @@ where
         vote_msg: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         debug!(?vote_msg, "Vote Message");
-        if vote_msg.vote.vote_info.round < self.consensus.pacemaker.get_current_round() {
+        if vote_msg.vote.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
         }
@@ -531,7 +531,7 @@ where
 
         let epoch = self
             .epoch_manager
-            .get_epoch(vote_msg.vote.vote_info.round)
+            .get_epoch(vote_msg.vote.round)
             .expect("epoch verified");
         let validator_set = self
             .val_epoch_map
@@ -875,16 +875,13 @@ where
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
-        if qc.info.vote.ledger_commit_info.is_commitable()
+        if qc.is_commitable()
             && self
                 .consensus
                 .pending_block_tree
-                .is_coherent(&qc.info.vote.vote_info.parent_id)
+                .is_coherent(&qc.info.parent_id)
         {
-            let blocks_to_commit = self
-                .consensus
-                .pending_block_tree
-                .prune(&qc.info.vote.vote_info.parent_id);
+            let blocks_to_commit = self.consensus.pending_block_tree.prune(&qc.info.parent_id);
 
             debug!(
                 num_commits = ?blocks_to_commit.len(),
@@ -1137,9 +1134,7 @@ where
                     let vote_cmd = self.send_vote_and_reset_timer(round, v);
                     cmds.extend(vote_cmd);
                 }
-                Some(OutgoingVoteStatus::VoteReady(r))
-                    if r.vote_info.round >= v.vote_info.round =>
-                {
+                Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
                     panic!("trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}", r, v);
                 }
                 Some(OutgoingVoteStatus::VoteReady(_)) | None => {

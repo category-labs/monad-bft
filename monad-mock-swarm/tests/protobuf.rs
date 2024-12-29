@@ -8,10 +8,9 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::MockExecutionProtocol,
-    ledger::CommitResult,
     payload::FullTransactionList,
     state_root_hash::StateRootHash,
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
@@ -56,7 +55,7 @@ fn test_consensus_timeout_event() {
 fn test_consensus_message_event_vote_multisig() {
     let keypair = get_key::<SignatureType>(0);
     let certkeypair = get_certificate_key::<SignatureCollectionType>(7);
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: Round(1),
@@ -65,10 +64,6 @@ fn test_consensus_message_event_vote_multisig() {
         seq_num: SeqNum(0),
         timestamp: 0,
         version: MonadVersion::version(),
-    };
-    let vote = Vote {
-        vote_info: vi,
-        ledger_commit_info: CommitResult::Commit,
     };
 
     let votemsg: ProtocolMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType> =

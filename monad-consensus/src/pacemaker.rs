@@ -386,7 +386,7 @@ mod test {
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valmap: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     ) -> QuorumCertificate<SCT> {
-        let vote_info = VoteInfo {
+        let vote = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: qc_epoch,
             round: qc_round,
@@ -397,11 +397,6 @@ mod test {
             version: MonadVersion::version(),
         };
 
-        let vote = Vote {
-            vote_info,
-            ledger_commit_info: CommitResult::NoCommit,
-        };
-        let qc_info = QcInfo { vote };
         let vote_hash = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
@@ -414,7 +409,7 @@ mod test {
 
         let sigcol = SCT::new(sigs, valmap, vote_hash.as_ref()).expect("success");
 
-        QuorumCertificate::<SCT>::new(qc_info, sigcol)
+        QuorumCertificate::<SCT>::new(vote, sigcol)
     }
 
     fn create_timeout_message<SCT: SignatureCollection>(
