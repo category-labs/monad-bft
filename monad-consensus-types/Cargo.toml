@@ -32,5 +32,9 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
-test-case = { workspace = true }
+monad-bls = { path = "../monad-bls" }
 monad-multi-sig = { path = "../monad-multi-sig" }
+monad-secp = { path = "../monad-secp" }
+
+test-case = { workspace = true }
+toml = { workspace = true }

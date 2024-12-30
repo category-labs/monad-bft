@@ -1,9 +1,10 @@
+use alloy_consensus::Header;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
     payload::{
-        ConsensusBlockBody, ConsensusBlockBodyId, EthBlockBody, EthExecutionProtocol,
-        EthProtocolHeader, ProposedEthHeader, RoundSignature,
+        ConsensusBlockBody, EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader,
+        RoundSignature,
     },
     quorum_certificate::QuorumCertificate,
 };
@@ -14,7 +15,6 @@ use monad_crypto::{
 };
 use monad_multi_sig::MultiSig;
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
-use reth_primitives::Address;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let body: ConsensusBlockBody<EthExecutionProtocol> = ConsensusBlockBody {
@@ -31,10 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             NodeId::new(keypair.pubkey()),
             Epoch(5),
             Round(10),
-            EthProtocolHeader {
-                delayed_execution_results: vec![reth_primitives::Header::default()],
-                execution_inputs: ProposedEthHeader::default(),
-            },
+            vec![EthHeader(Header::default())],
+            ProposedEthHeader::default(),
             body.get_id(),
             QuorumCertificate::genesis_qc(),
             SeqNum(5),

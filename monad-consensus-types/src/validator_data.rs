@@ -38,7 +38,6 @@ pub struct ValidatorSetData<SCT: SignatureCollection>(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidatorData<SCT: SignatureCollection> {
-    #[serde(flatten)]
     pub node_id: NodeId<SCT::NodeIdPubKey>,
     pub stake: Stake,
     #[serde(serialize_with = "serialize_cert_pubkey::<_, SCT>")]
