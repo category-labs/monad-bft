@@ -46,8 +46,8 @@ impl AsRef<[u8]> for Gas {
     }
 }
 
-pub const BASE_FEE_PER_GAS: u64 = 1_000;
-pub const PROPOSAL_GAS_LIMIT: u64 = 150_000_000;
+pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
+pub const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 /// Max proposal size in bytes (average transactions ~400 bytes)
 pub const PROPOSAL_SIZE_LIMIT: u64 = 5_000_000;
 
