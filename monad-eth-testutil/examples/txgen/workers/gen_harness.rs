@@ -6,7 +6,12 @@ pub trait Generator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)>;
+}
+
+pub struct GenCtx {
+    pub base_fee: u128,
 }
 
 pub struct GeneratorHarness {
@@ -20,6 +25,7 @@ pub struct GeneratorHarness {
     pub min_native: U256,
     pub seed_native_amt: U256,
     pub metrics: Arc<Metrics>,
+    pub base_fee: u128,
 }
 
 impl GeneratorHarness {
@@ -31,6 +37,7 @@ impl GeneratorHarness {
         min_native: U256,
         seed_native_amt: U256,
         metrics: &Arc<Metrics>,
+        base_fee: u128,
     ) -> Self {
         Self {
             generator,
@@ -41,6 +48,7 @@ impl GeneratorHarness {
             min_native,
             metrics: Arc::clone(metrics),
             seed_native_amt,
+            base_fee,
         }
     }
 
@@ -60,7 +68,12 @@ impl GeneratorHarness {
                 a.native_bal < self.min_native
             });
 
-            let mut txs = self.generator.handle_acct_group(&mut accts[seeded_idx..]);
+            let mut txs = self.generator.handle_acct_group(
+                &mut accts[seeded_idx..],
+                &GenCtx {
+                    base_fee: self.base_fee,
+                },
+            );
 
             // handle low native bals
             let root = if seeded_idx != 0 {
@@ -73,6 +86,9 @@ impl GeneratorHarness {
                             acct.addr,
                             self.seed_native_amt,
                             1000,
+                            &GenCtx {
+                                base_fee: self.base_fee,
+                            },
                         );
                         txs.push((tx, acct.addr));
                     }

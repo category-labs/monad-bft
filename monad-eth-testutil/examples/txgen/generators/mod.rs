@@ -78,33 +78,19 @@ impl Generator for NullGen {
     fn handle_acct_group(
         &mut self,
         _accts: &mut [SimpleAccount],
+        _ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         vec![]
     }
 }
 
-pub fn native_transfer(from: &mut SimpleAccount, to: Address, amt: U256) -> TransactionSigned {
-    let tx = reth_primitives::Transaction::Eip1559(reth_primitives::TxEip1559 {
-        chain_id: 41454,
-        nonce: from.nonce,
-        gas_limit: 21_000,
-        max_fee_per_gas: 2_000,
-        max_priority_fee_per_gas: 0,
-        to: reth_primitives::TransactionKind::Call(to),
-        value: amt.into(),
-        access_list: reth_primitives::AccessList::default(),
-        input: Default::default(),
-    });
-
-    // update from
-    from.nonce += 1;
-    from.native_bal = from
-        .native_bal
-        .checked_sub(amt + U256::from(21_000 * 1_000))
-        .unwrap_or(U256::ZERO);
-
-    let sig = from.key.sign_transaction(&tx);
-    TransactionSigned::from_transaction_and_signature(tx, sig)
+pub fn native_transfer(
+    from: &mut SimpleAccount,
+    to: Address,
+    amt: U256,
+    ctx: &GenCtx,
+) -> TransactionSigned {
+    native_transfer_priority_fee(from, to, amt, 0, ctx)
 }
 
 pub fn native_transfer_priority_fee(
@@ -112,12 +98,14 @@ pub fn native_transfer_priority_fee(
     to: Address,
     amt: U256,
     priority_fee: u128,
+    ctx: &GenCtx,
 ) -> TransactionSigned {
+    let max_fee_per_gas = ctx.base_fee * 2;
     let tx = reth_primitives::Transaction::Eip1559(reth_primitives::TxEip1559 {
         chain_id: 41454,
         nonce: from.nonce,
         gas_limit: 21_000,
-        max_fee_per_gas: 2_000,
+        max_fee_per_gas,
         max_priority_fee_per_gas: priority_fee,
         to: reth_primitives::TransactionKind::Call(to),
         value: amt.into(),
@@ -129,7 +117,7 @@ pub fn native_transfer_priority_fee(
     from.nonce += 1;
     from.native_bal = from
         .native_bal
-        .checked_sub(amt + U256::from(21_000 * 1_000))
+        .checked_sub(amt + U256::from(21_000 * max_fee_per_gas))
         .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
@@ -141,8 +129,9 @@ pub fn erc20_transfer(
     to: Address,
     amt: U256,
     erc20: &ERC20,
+    ctx: &GenCtx,
 ) -> TransactionSigned {
-    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt);
+    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt, ctx.base_fee * 2);
 
     // update from
     from.nonce += 1;
@@ -154,8 +143,8 @@ pub fn erc20_transfer(
     tx
 }
 
-pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20) -> TransactionSigned {
-    let tx = erc20.construct_mint(&from.key, from.nonce);
+pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TransactionSigned {
+    let tx = erc20.construct_mint(&from.key, from.nonce, ctx.base_fee * 2);
 
     // update from
     from.nonce += 1;

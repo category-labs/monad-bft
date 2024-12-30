@@ -13,6 +13,8 @@ impl Generator for SelfDestructTxGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
@@ -35,14 +37,17 @@ impl Generator for SelfDestructTxGenerator {
                         "Self destructing contract"
                     );
 
-                    txs.push((contract.self_destruct_tx(sender), contract.addr))
+                    txs.push((
+                        contract.self_destruct_tx(sender, ctx.base_fee * 2),
+                        contract.addr,
+                    ))
                 } else {
                     let addr = calculate_contract_addr(&sender.addr, sender.nonce);
                     trace!(addr = addr.to_string(), "Deploying contract");
 
                     self.contracts.push(ERC20 { addr });
                     // TODO: ugly inconsistency
-                    let tx = ERC20::deploy_tx(sender.nonce, &sender.key);
+                    let tx = ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2);
                     sender.nonce += 1;
                     txs.push((tx, addr));
                 }

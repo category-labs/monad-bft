@@ -55,6 +55,7 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         U256::from(1e14),
         U256::from(1e15),
         &metrics,
+        config.base_fee(),
     );
 
     let refresher = Refresher {
@@ -159,6 +160,7 @@ async fn load_or_deploy_contracts(
     let contract_to_ensure = config.required_contract();
     let path = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
+    let max_fee_per_gas = config.base_fee() * 2;
 
     match contract_to_ensure {
         crate::RequiredContract::None => Ok(DeployedContract::None),
@@ -190,7 +192,7 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let erc20 = ERC20::deploy(&deployer, client).await?;
+            let erc20 = ERC20::deploy(&deployer, client, max_fee_per_gas).await?;
 
             let deployed = DeployedContractFile {
                 erc20: Some(erc20.addr),
@@ -228,7 +230,7 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let ecmul = ECMul::deploy(&deployer, client).await?;
+            let ecmul = ECMul::deploy(&deployer, client, max_fee_per_gas).await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,

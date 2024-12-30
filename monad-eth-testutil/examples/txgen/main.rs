@@ -85,6 +85,9 @@ pub struct Config {
 
     #[clap(long, global = true, default_value = "false")]
     use_get_logs: bool,
+
+    #[clap(long, global = true, default_value_t = 50)]
+    base_fee_gwei: u128,
 }
 
 impl Config {
@@ -160,6 +163,12 @@ impl Config {
             GeneratorConfig::NullGen => None,
             GeneratorConfig::ECMul => ECMUL,
         }
+    }
+
+    pub fn base_fee(&self) -> u128 {
+        self.base_fee_gwei
+            .checked_mul(10u128.pow(9))
+            .expect("Gwei must be convertable to wei using u128")
     }
 }
 

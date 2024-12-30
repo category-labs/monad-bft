@@ -52,9 +52,13 @@ pub async fn ensure_contract_deployed(client: &ReqwestClient, addr: Address) -> 
 }
 
 impl ERC20 {
-    pub async fn deploy(deployer: &(Address, PrivateKey), client: &ReqwestClient) -> Result<Self> {
+    pub async fn deploy(
+        deployer: &(Address, PrivateKey),
+        client: &ReqwestClient,
+        max_fee_per_gas: u128,
+    ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1);
+        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
 
         // make compiler happy, actually parse string : (
         let _: String = client
@@ -66,13 +70,17 @@ impl ERC20 {
         Ok(ERC20 { addr })
     }
 
-    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey) -> TransactionSigned {
+    pub fn deploy_tx(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+    ) -> TransactionSigned {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = Transaction::Eip1559(TxEip1559 {
             chain_id: 41454,
             nonce,
             gas_limit: 800_000, // usually around 600k gas
-            max_fee_per_gas: 100_000,
+            max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TransactionKind::Create,
             value: U256::ZERO.into(),
@@ -84,24 +92,41 @@ impl ERC20 {
         TransactionSigned::from_transaction_and_signature(tx, sig)
     }
 
-    pub fn self_destruct_tx(&self, sender: &mut SimpleAccount) -> TransactionSigned {
-        self.construct_tx(sender, IERC20::destroySmartContractCall {})
+    pub fn self_destruct_tx(
+        &self,
+        sender: &mut SimpleAccount,
+        max_fee_per_gas: u128,
+    ) -> TransactionSigned {
+        self.construct_tx(sender, IERC20::destroySmartContractCall {}, max_fee_per_gas)
     }
 
     pub fn construct_tx<T: alloy_sol_types::SolCall>(
         &self,
         sender: &mut SimpleAccount,
         input: T,
+        max_fee_per_gas: u128,
     ) -> TransactionSigned {
         let input = input.abi_encode();
-        let tx = make_tx(sender.nonce, &sender.key, self.addr, U256::ZERO, input);
+        let tx = make_tx(
+            sender.nonce,
+            &sender.key,
+            self.addr,
+            U256::ZERO,
+            input,
+            max_fee_per_gas,
+        );
         sender.nonce += 1;
         tx
     }
 
-    pub fn construct_mint(&self, from: &PrivateKey, nonce: u64) -> TransactionSigned {
+    pub fn construct_mint(
+        &self,
+        from: &PrivateKey,
+        nonce: u64,
+        max_fee_per_gas: u128,
+    ) -> TransactionSigned {
         let input = IERC20::mintCall {}.abi_encode();
-        make_tx(nonce, from, self.addr, U256::ZERO, input)
+        make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
     }
 
     pub fn construct_transfer(
@@ -110,9 +135,10 @@ impl ERC20 {
         recipient: Address,
         nonce: u64,
         amount: U256,
+        max_fee_per_gas: u128,
     ) -> TransactionSigned {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
-        make_tx(nonce, from, self.addr, U256::ZERO, input)
+        make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
     }
 
     // pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
@@ -131,12 +157,13 @@ fn make_tx(
     contract_or_to: Address,
     value: U256,
     input: impl Into<Bytes>,
+    max_fee_per_gas: u128,
 ) -> TransactionSigned {
     let tx = Transaction::Eip1559(TxEip1559 {
         chain_id: 41454,
         nonce,
         gas_limit: 200_000, // probably closer to 80k
-        max_fee_per_gas: 10_000,
+        max_fee_per_gas,
         max_priority_fee_per_gas: 0,
         to: TransactionKind::Call(contract_or_to),
         value: value.into(),

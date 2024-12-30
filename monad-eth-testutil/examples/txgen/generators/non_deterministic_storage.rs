@@ -14,6 +14,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
@@ -32,14 +33,18 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             IERC20::transferToFriendsCall {
                                 amount: U256::from(10),
                             },
+                            ctx.base_fee * 2,
                         ),
                         from.addr,
                     ));
                 } else {
                     let to = self.recipient_keys.next_addr(); // change sampling strategy?
                     txs.push((
-                        self.erc20
-                            .construct_tx(from, IERC20::addFriendCall { friend: to }),
+                        self.erc20.construct_tx(
+                            from,
+                            IERC20::addFriendCall { friend: to },
+                            ctx.base_fee * 2,
+                        ),
                         to,
                     ));
                 };

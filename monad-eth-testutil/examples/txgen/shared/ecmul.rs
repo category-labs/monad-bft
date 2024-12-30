@@ -21,9 +21,13 @@ pub struct ECMul {
 }
 
 impl ECMul {
-    pub async fn deploy(deployer: &(Address, PrivateKey), client: &ReqwestClient) -> Result<Self> {
+    pub async fn deploy(
+        deployer: &(Address, PrivateKey),
+        client: &ReqwestClient,
+        max_fee_per_gas: u128,
+    ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1);
+        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
 
         let _: String = client
             .request("eth_sendRawTransaction", [tx.envelope_encoded()])
@@ -34,13 +38,17 @@ impl ECMul {
         Ok(Self { addr })
     }
 
-    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey) -> TransactionSigned {
+    pub fn deploy_tx(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+    ) -> TransactionSigned {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = Transaction::Eip1559(TxEip1559 {
             chain_id: 41454,
             nonce,
             gas_limit: 2_000_000,
-            max_fee_per_gas: 100_000,
+            max_fee_per_gas,
             max_priority_fee_per_gas: 10,
             to: TransactionKind::Create,
             value: U256::ZERO.into(),
@@ -53,7 +61,11 @@ impl ECMul {
     }
 
     // Helper function to construct an ECMul transaction
-    pub fn construct_tx(&self, sender: &mut SimpleAccount) -> TransactionSigned {
+    pub fn construct_tx(
+        &self,
+        sender: &mut SimpleAccount,
+        max_fee_per_gas: u128,
+    ) -> TransactionSigned {
         let input = IECMul::performzksyncECMulsCall {
             iterations: U256::from(200),
         }
@@ -63,7 +75,7 @@ impl ECMul {
             chain_id: 41454,
             nonce: sender.nonce,
             gas_limit: 2_000_000,
-            max_fee_per_gas: 10_000,
+            max_fee_per_gas,
             max_priority_fee_per_gas: 0,
             to: TransactionKind::Call(self.addr),
             value: U256::ZERO.into(),

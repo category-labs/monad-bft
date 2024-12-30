@@ -14,6 +14,7 @@ impl Generator for StorageDeletesTxGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
@@ -28,7 +29,7 @@ impl Generator for StorageDeletesTxGenerator {
 
                 let tx = if rng.gen_bool(0.3) {
                     self.erc20
-                        .construct_tx(from, IERC20::resetCall { addr: to })
+                        .construct_tx(from, IERC20::resetCall { addr: to }, ctx.base_fee * 2)
                 } else {
                     self.erc20.construct_tx(
                         from,
@@ -36,6 +37,7 @@ impl Generator for StorageDeletesTxGenerator {
                             recipient: to,
                             amount: U256::from(10),
                         },
+                        ctx.base_fee * 2,
                     )
                 };
 

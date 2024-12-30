@@ -12,6 +12,7 @@ impl Generator for CreateAccountsGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut txs = Vec::with_capacity(accts.len());
 
@@ -20,8 +21,8 @@ impl Generator for CreateAccountsGenerator {
                 let to = self.recipient_keys.next_addr();
 
                 let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
-                    TxType::Native => native_transfer(sender, to, U256::from(10)),
+                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20, ctx),
+                    TxType::Native => native_transfer(sender, to, U256::from(10), ctx),
                 };
 
                 txs.push((tx, to));

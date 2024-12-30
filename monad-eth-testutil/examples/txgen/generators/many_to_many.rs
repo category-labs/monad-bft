@@ -12,6 +12,7 @@ impl Generator for ManyToManyGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut idxs: Vec<usize> = (0..accts.len()).collect();
         let mut rng = SmallRng::from_entropy();
@@ -25,8 +26,8 @@ impl Generator for ManyToManyGenerator {
                 let to = self.recipient_keys.next_addr(); // change sampling strategy?
 
                 let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20),
-                    TxType::Native => native_transfer(sender, to, U256::from(10)),
+                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20, ctx),
+                    TxType::Native => native_transfer(sender, to, U256::from(10), ctx),
                 };
 
                 txs.push((tx, to));

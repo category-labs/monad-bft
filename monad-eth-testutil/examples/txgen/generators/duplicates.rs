@@ -11,6 +11,7 @@ impl Generator for DuplicateTxGenerator {
     fn handle_acct_group(
         &mut self,
         accts: &mut [SimpleAccount],
+        ctx: &GenCtx,
     ) -> Vec<(TransactionSigned, Address)> {
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
@@ -23,7 +24,8 @@ impl Generator for DuplicateTxGenerator {
                 } else {
                     0
                 };
-                let tx = native_transfer_priority_fee(sender, to, U256::from(10), priority_fee);
+                let tx =
+                    native_transfer_priority_fee(sender, to, U256::from(10), priority_fee, ctx);
                 txs.push((tx, to));
             }
         }
