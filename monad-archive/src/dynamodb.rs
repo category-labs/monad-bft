@@ -1,6 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_primitives::BlockHash;
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
@@ -8,7 +10,6 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use reth_primitives::{Block, BlockHash, ReceiptWithBloom, TransactionSigned};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
@@ -17,7 +18,7 @@ use tokio_retry::{
 };
 use tracing::error;
 
-use crate::metrics::Metrics;
+use crate::{metrics::Metrics, s3_archive::Block};
 
 const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
 const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
@@ -28,17 +29,17 @@ pub trait TxIndexArchiver {
         &self,
         block: Block,
         traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<ReceiptEnvelope>,
     ) -> Result<()>;
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable,
 )]
 pub struct TxIndexedData {
-    pub tx: TransactionSigned,
+    pub tx: TxEnvelope,
     pub trace: Vec<u8>,
-    pub receipt: ReceiptWithBloom,
+    pub receipt: ReceiptEnvelope,
     pub header_subset: HeaderSubset,
 }
 
@@ -50,7 +51,7 @@ pub struct HeaderSubset {
     pub block_hash: BlockHash,
     pub block_number: u64,
     pub tx_index: u64,
-    pub gas_used: u64,
+    pub gas_used: u128,
     pub base_fee_per_gas: Option<u64>,
 }
 
@@ -99,20 +100,20 @@ impl TxIndexArchiver for DynamoDBArchive {
         &self,
         block: Block,
         traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<ReceiptEnvelope>,
     ) -> Result<()> {
         let mut requests = Vec::new();
-        let block_number = block.number;
-        let block_hash = block.hash_slow();
-        let base_fee_per_gas = block.base_fee_per_gas;
+        let block_number = block.header.number;
+        let block_hash = block.header.hash_slow();
+        let base_fee_per_gas = block.header.base_fee_per_gas;
 
         let gas_used_vec: Vec<_> = {
             let mut last = 0;
             receipts
                 .iter()
                 .map(|r| {
-                    let gas_used = r.receipt.cumulative_gas_used - last;
-                    last = r.receipt.cumulative_gas_used;
+                    let gas_used = r.cumulative_gas_used() - last;
+                    last = r.cumulative_gas_used();
                     gas_used
                 })
                 .collect()
@@ -120,12 +121,13 @@ impl TxIndexArchiver for DynamoDBArchive {
 
         for (idx, ((tx, trace), receipt)) in block
             .body
+            .transactions
             .into_iter()
             .zip(traces.into_iter())
             .zip(receipts.into_iter())
             .enumerate()
         {
-            let hash = tx.hash();
+            let hash = tx.tx_hash();
             let mut attribute_map = HashMap::new();
             attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hex::encode(hash)));
 

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
 use eyre::Result;
-use reth_primitives::{Block, ReceiptWithBloom};
 
 use crate::{
     dynamodb::{DynamoDBArchive, TxIndexedData},
     metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
+    s3_archive::{get_aws_config, Block, S3Archive, S3Bucket},
 };
 
 pub enum LatestKind {
@@ -62,7 +62,7 @@ impl ArchiveReader {
         self.s3.get_block_by_number(block_num).await
     }
 
-    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         self.s3.get_block_receipts(block_number).await
     }
 

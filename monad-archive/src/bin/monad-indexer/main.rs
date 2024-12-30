@@ -149,17 +149,17 @@ async fn handle_block(
         archive.get_block_traces(block_num),
         archive.get_block_receipts(block_num)
     )?;
-    let num_txs = block.body.len();
+    let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Block");
 
-    let first = block.body.first().cloned();
+    let first = block.body.transactions.first().cloned();
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
     dynamodb.index_block(block, traces, receipts).await?;
 
     // check 1 key
     if let Some(tx) = first {
-        let key = tx.hash.to_string();
+        let key = tx.tx_hash().to_string();
         tokio::spawn(async move {
             match dynamodb.get_txdata(&key).await {
                 Ok(Some(resp)) => {

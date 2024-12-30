@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
 use eyre::Result;
 use futures::{future::join_all, join};
@@ -9,9 +10,8 @@ use monad_archive::{
     archive_reader::LatestKind,
     fault::{BlockCheckResult, Fault, FaultWriter},
     metrics::Metrics,
-    s3_archive::{get_aws_config, S3Archive, S3Bucket},
+    s3_archive::{get_aws_config, Block, S3Archive, S3Bucket},
 };
-use reth_primitives::{Block, ReceiptWithBloom};
 use tokio::{
     sync::Semaphore,
     time::{sleep, Duration},
@@ -181,7 +181,7 @@ async fn latest_uploaded_block(
 struct BlockData {
     pub bucket: String,
     pub block: Option<Block>,
-    pub receipts: Option<Vec<ReceiptWithBloom>>,
+    pub receipts: Option<Vec<ReceiptEnvelope>>,
     pub traces: Option<Vec<Vec<u8>>>,
 }
 
