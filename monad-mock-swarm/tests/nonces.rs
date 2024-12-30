@@ -10,7 +10,7 @@ mod test {
     use alloy_rlp::{encode, Decodable};
     use itertools::Itertools;
 
-    use monad_consensus_types::payload::EthExecutionProtocol;
+    use monad_consensus_types::payload::{EthExecutionProtocol, BASE_FEE_PER_GAS};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -108,7 +108,6 @@ mod test {
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
-    const BASE_FEE: u128 = 1000;
     const GAS_LIMIT: u64 = 30000;
 
     fn generate_eth_swarm(
@@ -233,7 +232,7 @@ mod test {
 
         let mut expected_txns = Vec::new();
         for nonce in 0..10 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn = make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
@@ -241,7 +240,7 @@ mod test {
         }
 
         for nonce in 20..30 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn = make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_1_id, encode(&eth_txn).into());
         }
@@ -285,7 +284,7 @@ mod test {
         let mut expected_txns = Vec::new();
         // Send 10 transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn = make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
@@ -306,7 +305,13 @@ mod test {
 
         // Send 10 different transactions with nonces 0..10 to Node 2
         for nonce in 0..10 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 1000);
+            let eth_txn = make_tx(
+                sender_1_key,
+                BASE_FEE_PER_GAS.into(),
+                GAS_LIMIT,
+                nonce,
+                1000,
+            );
 
             swarm.send_transaction(node_2_id, encode(&eth_txn).into());
         }
@@ -358,8 +363,10 @@ mod test {
         let mut expected_txns = Vec::new();
         // Send transactions with nonces 0..10 to Node 1. Leader for round 1
         for nonce in 0..10 {
-            let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
-            let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_1 =
+                make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_2 =
+                make_tx(sender_2_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_1_id, encode(&eth_txn_sender_1).into());
             swarm.send_transaction(node_1_id, encode(&eth_txn_sender_2).into());
@@ -392,8 +399,10 @@ mod test {
 
         // Send transactions with nonces 5..10 to Node 2 that shouldn't be in the blocks
         for nonce in 5..10 {
-            let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
-            let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_1 =
+                make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_2 =
+                make_tx(sender_2_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_2_id, encode(&eth_txn_sender_1).into());
             swarm.send_transaction(node_2_id, encode(&eth_txn_sender_2).into());
@@ -401,8 +410,10 @@ mod test {
 
         // Send transactions with nonces 10..20 to Node 2
         for nonce in 10..20 {
-            let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
-            let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_1 =
+                make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
+            let eth_txn_sender_2 =
+                make_tx(sender_2_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_2_id, encode(&eth_txn_sender_1).into());
             swarm.send_transaction(node_2_id, encode(&eth_txn_sender_2).into());
@@ -462,7 +473,7 @@ mod test {
         let mut expected_txns = Vec::new();
         // Send transactions with nonces 0..10 to node 2 so that nodes 2, 3 and 4 can make progress
         for nonce in 0..10 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn = make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(other_nodes[0], encode(&eth_txn).into());
 
@@ -502,7 +513,7 @@ mod test {
 
         // Send transactions with nonces 10..20 to node 1 so that it can propose them after it catches up with blocksync
         for nonce in 10..20 {
-            let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
+            let eth_txn = make_tx(sender_1_key, BASE_FEE_PER_GAS.into(), GAS_LIMIT, nonce, 10);
 
             swarm.send_transaction(node_1_id, encode(&eth_txn).into());
 
