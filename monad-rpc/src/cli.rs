@@ -26,7 +26,7 @@ pub struct Cli {
     pub rpc_port: u16,
 
     /// Set the chain ID
-    #[arg(long, default_value_t = 41454)]
+    #[arg(long, default_value_t = 10143)]
     pub chain_id: u64,
 
     /// Set the max number of requests in a batch request
