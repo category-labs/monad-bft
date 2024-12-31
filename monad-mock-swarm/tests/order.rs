@@ -212,11 +212,13 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         // when replayed forward, node should populate blocktree in order
         TransformerReplayOrder::Forward => (0, 7),
         // when replayed in reverse, only one request is done from high_qc
-        TransformerReplayOrder::Reverse => (1, 1),
+        TransformerReplayOrder::Reverse => (longest_ledger_before + 1, longest_ledger_before + 2),
         // when replayed in random order, could be any number of requests
         // max_blocksync_retries is to ensure that failed blocksync is not
         // triggered too many times
         TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2 + max_blocksync_retries),
+        // TODO add a TransformerReplayOrder::Forward, but with the first block skipped.
+        // We expect to see 1 blocksync request happen in this case.
     };
 
     let mut verifier_after_delayed_messages = MockSwarmVerifier::default();

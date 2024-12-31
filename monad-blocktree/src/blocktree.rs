@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ExecutionProtocol},
+    block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ExecutionProtocol},
     checkpoint::RootInfo,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     quorum_certificate::QuorumCertificate,
@@ -326,27 +326,44 @@ where
         high_commit_qc
     }
 
-    /// Find the missing block along the path from `qc` to the tree root.
-    /// Returns the QC certifying that block
-    pub fn get_missing_ancestor(
-        &self,
-        qc: &QuorumCertificate<SCT>,
-    ) -> Option<QuorumCertificate<SCT>> {
+    /// returns a BlockRange that should be requested to fill the path from `qc` to the tree root.
+    pub fn maybe_fill_path_to_root(&self, qc: &QuorumCertificate<SCT>) -> Option<BlockRange> {
         if self.root.info.round >= qc.get_round() {
+            // root cannot be an ancestor of qc
             return None;
         }
 
-        let mut maybe_unknown_block_qc = qc;
-        let mut maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
+        let mut maybe_unknown_bid = qc.get_block_id();
+        let mut maybe_unknown_seq_num = None;
         while let Some(known_block_entry) = self.tree.get(&maybe_unknown_bid) {
-            maybe_unknown_block_qc = known_block_entry.validated_block.get_qc();
-            maybe_unknown_bid = known_block_entry.validated_block.get_parent_id();
-            // If the unknown block's round == self.root, that means we've already committed it
-            if maybe_unknown_block_qc.get_round() == self.root.info.round {
+            // If the parent round == self.root, we have path to root
+            if known_block_entry.validated_block.get_parent_round() == self.root.info.round {
+                assert_eq!(
+                    known_block_entry.validated_block.get_parent_id(),
+                    self.root.info.block_id
+                );
                 return None;
             }
+            maybe_unknown_bid = known_block_entry.validated_block.get_parent_id();
+            // this can never underflow, because it must be at least 1 greater than GENESIS_SEQ_NUM
+            let unknown_bid_seq_num = known_block_entry.validated_block.get_seq_num() - SeqNum(1);
+            assert!(unknown_bid_seq_num > self.root.info.seq_num);
+            maybe_unknown_seq_num = Some(unknown_bid_seq_num);
         }
-        Some(maybe_unknown_block_qc.clone())
+
+        Some(BlockRange {
+            last_block_id: maybe_unknown_bid,
+            num_blocks: match maybe_unknown_seq_num {
+                // request all blocks up to root
+                Some(last_block_seq_num) => {
+                    assert!(last_block_seq_num > self.root.info.seq_num);
+                    // if last_block_seq_num=1 and root=0, then we need to request 1 block
+                    last_block_seq_num - self.root.info.seq_num
+                }
+                // request only the missing block, because we don't know its sequence number
+                None => SeqNum(1),
+            },
+        })
     }
 
     pub fn is_coherent(&self, b: &BlockId) -> bool {

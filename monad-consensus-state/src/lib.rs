@@ -74,7 +74,7 @@ where
     pacemaker: Pacemaker<SCT>,
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety,
-    block_sync_requests: BTreeMap<BlockId, (Round, BlockRange)>,
+    block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
     last_proposed_round: Round,
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
@@ -115,6 +115,12 @@ where
             .field("safety", &self.safety)
             .finish()
     }
+}
+
+struct BlockSyncRequestStatus {
+    range: BlockRange,
+    // once a block with round >= cancel_round is committed, this request will be canceled.
+    cancel_round: Round,
 }
 
 #[derive(Debug, Clone)]
@@ -675,12 +681,7 @@ where
             // this can happen if corresponding proposal is received before blocksync response
             return cmds;
         }
-        // expected non-empty response from blocksync module
-        assert!(!full_blocks.is_empty());
-
-        let last_block_round = full_blocks.last().unwrap().get_round();
-        assert_eq!(removed, Some((last_block_round, block_range)));
-
+        assert_eq!(block_range.num_blocks.0, full_blocks.len() as u64);
         for full_block in full_blocks {
             let (header, body) = full_block.split();
             if self
@@ -786,8 +787,8 @@ where
             .consensus
             .block_sync_requests
             .iter()
-            .filter_map(|(block_id, (round, _))| {
-                if round <= &self.consensus.pending_block_tree.root().round {
+            .filter_map(|(block_id, status)| {
+                if status.cancel_round <= self.consensus.pending_block_tree.root().round {
                     Some(*block_id)
                 } else {
                     None
@@ -795,8 +796,8 @@ where
             })
             .collect();
         for block_id in &to_cancel {
-            let (_, block_range) = self.consensus.block_sync_requests.remove(block_id).unwrap();
-            cmds.push(ConsensusCommand::CancelSync(block_range));
+            let canceled_request = self.consensus.block_sync_requests.remove(block_id).unwrap();
+            cmds.push(ConsensusCommand::CancelSync(canceled_request.range));
         }
 
         // statesync if too far from tip
@@ -1328,53 +1329,44 @@ where
         let high_qc = &self.consensus.high_qc;
         let root_seq_num = self.consensus.pending_block_tree.get_root_seq_num();
 
-        if self
-            .consensus
-            .block_sync_requests
-            .contains_key(&high_qc.get_block_id())
-        {
-            return Vec::new();
-        }
-
-        let Some(_) = self
+        let Some(range) = self
             .consensus
             .pending_block_tree
-            .get_missing_ancestor(high_qc)
+            .maybe_fill_path_to_root(high_qc)
         else {
             return Vec::new();
         };
+        assert_ne!(range.num_blocks, SeqNum(0));
 
-        let range = if let Some(high_qc_seq_num) =
-            self.consensus.pending_block_tree.get_seq_num_of_qc(high_qc)
+        if self
+            .consensus
+            .block_sync_requests
+            .contains_key(&range.last_block_id)
         {
-            high_qc_seq_num - root_seq_num
-        } else {
-            SeqNum(1)
-        };
+            return Vec::new();
+        }
 
-        if root_seq_num + self.config.live_to_statesync_threshold <= range {
+        if root_seq_num + self.config.live_to_statesync_threshold <= range.num_blocks {
             // crash the client to move into statesync mode and recover
             panic!(
                 "blocksync request range is outside statesync threshold, range: {:?}",
-                range - root_seq_num
+                range
             );
         }
 
-        if range == SeqNum(0) {
-            warn!("consensus tried to blocksync with range of 0 blocks");
-            return Vec::new();
-        }
-        let request_range = BlockRange {
-            last_block_id: high_qc.get_block_id(),
-            num_blocks: range,
-        };
-        debug!(?request_range, "consensus blocksyncing blocks up to root");
+        debug!(?range, "consensus blocksyncing blocks up to root");
 
-        self.consensus
-            .block_sync_requests
-            .insert(high_qc.get_block_id(), (high_qc.get_round(), request_range));
+        self.consensus.block_sync_requests.insert(
+            range.last_block_id,
+            BlockSyncRequestStatus {
+                range,
+                // the round of last_block_id would be more precise, but it doesn't matter
+                // because this is just used for garbage collection.
+                cancel_round: high_qc.get_round(),
+            },
+        );
 
-        vec![ConsensusCommand::RequestSync(request_range)]
+        vec![ConsensusCommand::RequestSync(range)]
     }
 
     #[must_use]

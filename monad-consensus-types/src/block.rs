@@ -20,9 +20,7 @@ use crate::{
     signature_collection::SignatureCollection,
 };
 
-/// Represent a range of blocks the last of which is `last_block_id` and includes
-/// all blocks upto to `root_seq_num`
-/// For a valid block range, the seq num of block `last_block_id` >= `root_seq_num`
+/// Represent a range of blocks the last of which is `last_block_id` and includes `num_blocks`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRange {
     pub last_block_id: BlockId,
