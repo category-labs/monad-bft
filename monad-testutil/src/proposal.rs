@@ -186,7 +186,7 @@ where
             high_qc: self.high_qc.clone(),
         };
 
-        let tmo_digest = tminfo.timeout_digest();
+        let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
         // aggregate all tmo signatures into one collection because all nodes share a global state
         // in reality we don't have this configuration because timeout messages
         // can't all contain TC carrying signatures from all validators. It's fine

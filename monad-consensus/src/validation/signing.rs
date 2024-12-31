@@ -493,14 +493,12 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        let mut h = HasherType::new();
         let td = TimeoutDigest {
             epoch: tc.epoch,
             round: tc.round,
             high_qc_round: t.high_qc_round.qc_round,
         };
-        td.hash(&mut h);
-        let msg = h.hash();
+        let msg = alloy_rlp::encode(td);
 
         // TODO-3: evidence collection
         let signers = t

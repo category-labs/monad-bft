@@ -48,7 +48,7 @@ impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct TimeoutDigest {
     pub epoch: Epoch,
     pub round: Round,
@@ -62,15 +62,12 @@ impl Hashable for TimeoutDigest {
 }
 
 impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
-    pub fn timeout_digest(&self) -> Hash {
-        let mut hasher = HasherType::new();
-        let td = TimeoutDigest {
+    pub fn timeout_digest(&self) -> TimeoutDigest {
+        TimeoutDigest {
             epoch: self.epoch,
             round: self.round,
             high_qc_round: self.high_qc.get_round(),
-        };
-        td.hash(&mut hasher);
-        hasher.hash()
+        }
     }
 }
 
@@ -135,7 +132,8 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
         }
         let mut high_qc_rounds = Vec::new();
         for (high_qc_round, (tminfo_digest, sigs)) in sigs.into_iter() {
-            let sct = SCT::new(sigs, validator_mapping, tminfo_digest.as_ref())?;
+            let tminfo_digest_enc = alloy_rlp::encode(tminfo_digest);
+            let sct = SCT::new(sigs, validator_mapping, tminfo_digest_enc.as_ref())?;
             high_qc_rounds.push(HighQcRoundSigColTuple::<SCT> {
                 high_qc_round,
                 sigs: sct,

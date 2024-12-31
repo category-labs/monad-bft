@@ -68,8 +68,8 @@ pub struct TimeoutMessage<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
     pub fn new(timeout: Timeout<SCT>, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
-        let tmo_hash = timeout.tminfo.timeout_digest();
-        let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_hash.as_ref(), key);
+        let tmo_enc = alloy_rlp::encode(&timeout.tminfo.timeout_digest());
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_enc.as_ref(), key);
 
         Self { timeout, sig }
     }
