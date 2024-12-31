@@ -6,7 +6,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{
-        ConsensusBlockHeader, ExecutionResult, MockExecutionBody, MockExecutionFinalizedHeader,
+        ConsensusBlockHeader, MockExecutionBody, MockExecutionFinalizedHeader,
         MockExecutionProposedHeader, MockExecutionProtocol,
     },
     ledger::CommitResult,
@@ -16,7 +16,6 @@ use monad_consensus_types::{
     },
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote},
 };
@@ -27,7 +26,6 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_eth_types::EthAddress;
 use monad_types::{Epoch, MonadVersion, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -35,7 +33,6 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use reth_primitives::Header;
 
 #[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {

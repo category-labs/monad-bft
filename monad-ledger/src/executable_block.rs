@@ -1,14 +1,14 @@
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::Address;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
-    block::{ConsensusFullBlock, ExecutionProtocol},
+    block::ConsensusFullBlock,
     payload::{EthExecutionProtocol, Ommer, Withdrawal},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use reth_primitives::{Header, TransactionSigned};
 
 #[derive(RlpEncodable, RlpDecodable)]
 pub struct ExecutableBlockHeader {
@@ -36,7 +36,7 @@ pub struct ExecutableBlockHeader {
 pub struct ExecutableBlock {
     pub header: ExecutableBlockHeader,
 
-    transactions: Vec<TransactionSigned>,
+    transactions: Vec<TxEnvelope>,
     ommers: Vec<Ommer>,
     withdrawals: Vec<Withdrawal>,
 }
@@ -89,7 +89,7 @@ impl ExecutableBlock {
         self.transactions.len()
     }
 
-    pub fn transactions(&self) -> &Vec<TransactionSigned> {
+    pub fn transactions(&self) -> &Vec<TxEnvelope> {
         &self.transactions
     }
 }

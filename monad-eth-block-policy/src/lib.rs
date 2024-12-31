@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, marker::PhantomData, ops::Deref};
 
-use alloy_consensus::transaction::Transaction;
+use alloy_consensus::{transaction::Transaction, TxEnvelope};
 use alloy_primitives::{TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{
-        BlockPolicy, BlockPolicyError, ConsensusBlockHeader, ConsensusFullBlock, ExecutionProtocol,
+        BlockPolicy, BlockPolicyError, ConsensusFullBlock,
     },
     checkpoint::RootInfo,
     payload::{ConsensusBlockBodyId, EthExecutionProtocol},
@@ -16,10 +16,9 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hashable, Hasher},
 };
-use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce};
+use monad_eth_types::{Balance, EthAccount, EthAddress, Nonce, TxEnvelopeWithSigner};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
-use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
 use tracing::{debug, trace};
 
@@ -54,7 +53,7 @@ fn checked_from(arg: U256) -> u128 {
     }
 }
 
-fn compute_intrinsic_gas(tx: &TransactionSigned) -> u64 {
+fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
 
@@ -89,14 +88,14 @@ fn compute_intrinsic_gas(tx: &TransactionSigned) -> u64 {
 }
 
 #[allow(clippy::unnecessary_fallible_conversions)]
-pub fn compute_txn_max_value(txn: &TransactionSigned) -> U256 {
+pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
 
     checked_sum(txn_value, gas_cost)
 }
 
-pub fn compute_txn_max_value_to_u128(txn: &TransactionSigned) -> u128 {
+pub fn compute_txn_max_value_to_u128(txn: &TxEnvelope) -> u128 {
     let txn_value = compute_txn_max_value(txn);
     trace!(
         "compute_txn_max_value gas_cost + txn_value: {:?} ",
@@ -116,7 +115,7 @@ pub enum TransactionError {
 
 /// Stateless helper function to check validity of an Ethereum transaction
 pub fn static_validate_transaction(
-    tx: &TransactionSigned,
+    tx: &TxEnvelope,
     chain_id: u64,
 ) -> Result<(), TransactionError> {
     // EIP-155
@@ -158,7 +157,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
-    pub validated_txns: Vec<TransactionSignedEcRecovered>,
+    pub validated_txns: Vec<TxEnvelopeWithSigner>,
     pub nonces: BTreeMap<EthAddress, Nonce>,
     pub txn_fees: BTreeMap<EthAddress, U256>,
 }
@@ -180,7 +179,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn get_validated_txn_hashes(&self) -> Vec<TxHash> {
-        self.validated_txns.iter().map(|t| t.hash()).collect()
+        self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
     /// Returns the highest tx nonce per account in the block
@@ -660,7 +659,7 @@ where
         let tx_signers = block
             .validated_txns
             .iter()
-            .map(|txn| EthAddress(txn.signer()))
+            .map(|txn| EthAddress(txn.signer))
             .collect_vec();
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -678,7 +677,7 @@ where
         )?;
 
         for txn in block.validated_txns.iter() {
-            let eth_address = EthAddress(txn.signer());
+            let eth_address = EthAddress(txn.signer);
             let txn_nonce = txn.nonce();
 
             let expected_nonce = account_nonces

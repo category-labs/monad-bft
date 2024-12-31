@@ -7,7 +7,6 @@ use std::{
 };
 
 use alloy_consensus::Transaction as _;
-use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
@@ -129,11 +128,11 @@ where
                         .transactions
                         .iter()
                         .map(|tx| {
-                            let tx = tx
+                            let signer = tx
                                 .clone()
-                                .into_ecrecovered()
+                                .recover_signer()
                                 .expect("failed to recover proposed tx signer");
-                            (EthAddress(tx.signer()), tx.nonce() + 1)
+                            (EthAddress(signer), tx.nonce() + 1)
                         })
                         // collecting into a map will handle a sender sending multiple
                         // transactions gracefully

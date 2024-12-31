@@ -21,7 +21,6 @@ bytes = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true }
-reth-primitives = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

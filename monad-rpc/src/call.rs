@@ -1,12 +1,11 @@
 use std::{cmp::min, path::Path};
 
-use alloy_consensus::{Header, TxEip1559, TxLegacy};
-use alloy_primitives::{Address, TxKind, Uint, U256, U64, U8};
+use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
+use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
-use reth_primitives::Transaction;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -16,7 +15,7 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallRequest {
     pub from: Option<Address>,
@@ -144,7 +143,7 @@ pub struct CallInput {
     pub data: Option<alloy_primitives::Bytes>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum GasPriceDetails {
     Legacy {
@@ -167,7 +166,7 @@ impl Default for GasPriceDetails {
 
 /// Optimistically create a typed Ethereum transaction from a CallRequest based on provided fields.
 /// TODO: add support for other transaction types.
-impl TryFrom<CallRequest> for Transaction {
+impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
         match call_request {
@@ -176,7 +175,10 @@ impl TryFrom<CallRequest> for Transaction {
                 ..
             } => {
                 // Legacy
-                Ok(Transaction::Legacy(TxLegacy {
+
+                // default signature as eth_call doesn't require it
+                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let transaction = TxLegacy {
                     chain_id: call_request
                         .chain_id
                         .map(|id| id.try_into())
@@ -202,7 +204,9 @@ impl TryFrom<CallRequest> for Transaction {
                     },
                     value: call_request.value.unwrap_or_default(),
                     input: call_request.input.input.unwrap_or_default(),
-                }))
+                };
+
+                Ok(transaction.into_signed(signature).into())
             }
             CallRequest {
                 gas_price_details:
@@ -213,7 +217,10 @@ impl TryFrom<CallRequest> for Transaction {
                 ..
             } => {
                 // EIP-1559
-                Ok(Transaction::Eip1559(TxEip1559 {
+
+                // default signature as eth_call doesn't require it
+                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let transaction = TxEip1559 {
                     chain_id: call_request
                         .chain_id
                         .unwrap_or_default()
@@ -252,7 +259,9 @@ impl TryFrom<CallRequest> for Transaction {
                     },
                     value: call_request.value.unwrap_or_default(),
                     input: call_request.input.input.unwrap_or_default(),
-                }))
+                };
+
+                Ok(transaction.into_signed(signature).into())
             }
         }
     }
@@ -374,7 +383,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         params.transaction.chain_id = Some(U64::from(chain_id));
     }
 
-    let txn: Transaction = params.transaction.try_into()?;
+    let txn: TxEnvelope = params.transaction.try_into()?;
     let block_number = header.header.number;
     match monad_cxx::eth_call(
         txn,

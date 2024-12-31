@@ -3,7 +3,6 @@ use bytes::BytesMut;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
     proto::{
@@ -23,8 +22,7 @@ use crate::{
         ProposedExecutionResult,
     },
     payload::{
-        Bloom, ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner,
-        FullTransactionList, Gas, RoundSignature,
+        Bloom, ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, Gas, RoundSignature,
     },
     signature_collection::SignatureCollection,
 };

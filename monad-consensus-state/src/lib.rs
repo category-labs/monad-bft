@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     ops::Deref,
     time::Duration,
 };
@@ -31,10 +31,7 @@ use monad_consensus_types::{
     validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::Vote,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
 use monad_eth_types::EthAddress;
 use monad_state_backend::StateBackend;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
@@ -44,7 +41,6 @@ use monad_validator::{
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
-use reth_primitives::Header;
 use tracing::{debug, info, trace, warn};
 
 use crate::{command::ConsensusCommand, timestamp::BlockTimestamp};

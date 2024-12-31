@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use alloy_consensus::Transaction as _;
+use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_primitives::{TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
 use monad_cxx::StateOverrideSet;
@@ -85,7 +85,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     }
 
     let sender = params.tx.from.unwrap_or_default();
-    let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
+    let mut txn: TxEnvelope = params.tx.clone().try_into()?;
 
     if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
         return Ok(Quantity(21_000));
@@ -110,7 +110,8 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     };
 
     let upper_bound_gas_limit: u64 = txn.gas_limit();
-    txn.set_gas_limit((gas_used + gas_refund) * 64 / 63);
+    params.tx.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
+    txn = params.tx.clone().try_into()?;
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
@@ -144,7 +145,8 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
         let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
 
-        txn.set_gas_limit(mid);
+        params.tx.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
+        txn = params.tx.clone().try_into()?;
 
         match monad_cxx::eth_call(
             txn.clone(),

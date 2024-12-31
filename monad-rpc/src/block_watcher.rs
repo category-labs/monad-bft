@@ -4,12 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{Block, Header, TxEnvelope};
 use alloy_rpc_types::TransactionReceipt;
 use futures::{FutureExt, Stream};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};
 use pin_project::pin_project;
-use reth_primitives::{Block, TransactionSigned};
 use tracing::error;
 
 use crate::{block_handlers::block_receipts, jsonrpc::JsonRpcError};
@@ -96,7 +95,7 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
 
 #[derive(Clone)]
 pub struct MockBlockState {
-    blocks: Vec<Block>,
+    blocks: Vec<Block<Header>>,
 }
 
 impl MockBlockState {
@@ -104,7 +103,7 @@ impl MockBlockState {
         Self { blocks: Vec::new() }
     }
 
-    pub fn set_blocks(&mut self, blocks: Vec<Block>) {
+    pub fn set_blocks(&mut self, blocks: Vec<Block<Header>>) {
         self.blocks = blocks;
     }
 }
@@ -113,7 +112,7 @@ impl BlockState for MockBlockState {
     async fn get_block(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
         match self.blocks.get(block_num as usize) {
             Some(b) => Ok(Some(BlockHeader {
-                hash: b.hash_slow(),
+                hash: b.header.hash_slow(),
                 header: b.header.clone(),
             })),
             None => Ok(None),
@@ -232,8 +231,8 @@ impl<B: BlockState + Clone + Send + Sync + 'static> Stream for BlockWatcher<B> {
 
 #[cfg(test)]
 mod test {
+    use alloy_consensus::Header;
     use futures::StreamExt;
-    use reth_primitives::Header;
 
     use super::*;
 

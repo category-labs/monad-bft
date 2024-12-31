@@ -9,12 +9,11 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    hasher::Hash,
+    certificate_signature::CertificateKeyPair,
     NopKeyPair, NopSignature,
 };
 use monad_multi_sig::MultiSig;
-use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let body: ConsensusBlockBody<EthExecutionProtocol> = ConsensusBlockBody {

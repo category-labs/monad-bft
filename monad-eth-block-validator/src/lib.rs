@@ -4,35 +4,29 @@ use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, Transaction,
     EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::U256;
-use alloy_rlp::{Decodable, Encodable};
+use alloy_primitives::{Address, U256};
+use alloy_rlp::Encodable;
 use monad_consensus_types::{
-    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody},
+    block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     payload::{
-        ConsensusBlockBody, ConsensusBlockBodyId, EthBlockBody, EthExecutionProtocol,
+        ConsensusBlockBody, EthBlockBody, EthExecutionProtocol,
         ProposedEthHeader, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT,
     },
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
 use monad_eth_block_policy::{
     checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
 };
-use monad_eth_types::{EthAddress, Nonce};
+use monad_eth_types::{EthAddress, Nonce, TxEnvelopeWithSigner};
 use monad_state_backend::StateBackend;
-use reth_primitives::{
-    transaction::recover_signers, TransactionSigned, TransactionSignedEcRecovered,
-};
 use tracing::warn;
 
 type NonceMap = BTreeMap<EthAddress, Nonce>;
 type TxnFeeMap = BTreeMap<EthAddress, U256>;
-type ValidatedTxns = Vec<TransactionSignedEcRecovered>;
+type ValidatedTxns = Vec<TxEnvelopeWithSigner>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
@@ -93,8 +87,10 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let signers = recover_signers(transactions, transactions.len())
-            .ok_or(BlockValidationError::TxnError)?;
+        let signers: Vec<Address> = transactions
+            .iter()
+            .map(|tx| tx.recover_signer().map_err(|_| BlockValidationError::TxnError))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // recover the account nonces and txn fee usage in this block
         let mut nonces = BTreeMap::new();
@@ -126,7 +122,10 @@ where
             let txn_fee_entry = txn_fees.entry(EthAddress(signer)).or_insert(U256::ZERO);
 
             *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(&eth_txn));
-            validated_txns.push(eth_txn.clone().with_signer(signer));
+            validated_txns.push(TxEnvelopeWithSigner {
+                transaction: eth_txn.clone(),
+                signer,
+            });
         }
 
         let total_gas = validated_txns

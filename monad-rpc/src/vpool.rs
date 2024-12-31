@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 
-use alloy_consensus::Transaction as _;
+use alloy_consensus::{Transaction as _, TxEnvelope};
 use alloy_primitives::Address;
+use monad_eth_types::TxEnvelopeWithSigner;
 use monad_rpc_docs::rpc;
-use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
 use scc::{ebr::Guard, HashIndex, HashMap, TreeIndex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -66,12 +66,12 @@ pub struct VirtualPool {
     // Cache of chain state and account nonces
     chain_cache: ChainCache,
     // Publish transactions to validator
-    pub publisher: flume::Sender<TransactionSigned>,
+    pub publisher: flume::Sender<TxEnvelope>,
 }
 
 struct SubPool {
     // Mapping of sender to a transaction tree ordered by nonce
-    pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
+    pool: HashMap<Address, TreeIndex<u64, TxEnvelopeWithSigner>>,
     evict: RwLock<VecDeque<Address>>,
     capacity: usize,
     name: &'static str,
@@ -87,11 +87,11 @@ impl SubPool {
         }
     }
 
-    async fn add(&self, txn: TransactionSignedEcRecovered, overwrite: bool) {
-        match self.pool.entry(txn.signer()) {
+    async fn add(&self, txn: TxEnvelopeWithSigner, overwrite: bool) {
+        match self.pool.entry(txn.signer) {
             scc::hash_map::Entry::Occupied(mut entry) => {
                 let tree = entry.get();
-                match tree.contains(&txn.nonce()) {
+                match tree.contains(&txn.transaction.nonce()) {
                     true if overwrite => {
                         entry.get_mut().remove(&txn.nonce());
                         entry.get_mut().insert(txn.nonce(), txn.clone());
@@ -107,7 +107,7 @@ impl SubPool {
                 tree.insert(txn.nonce(), txn.clone());
                 entry.insert_entry(tree);
 
-                self.evict.write().await.push_front(txn.signer());
+                self.evict.write().await.push_front(txn.signer);
             }
         };
 
@@ -138,7 +138,7 @@ impl SubPool {
         }
     }
 
-    fn by_addr(&self, address: &Address) -> Vec<TransactionSignedEcRecovered> {
+    fn by_addr(&self, address: &Address) -> Vec<TxEnvelopeWithSigner> {
         let mut pending = Vec::new();
         self.pool.read(address, |_, map| {
             map.iter(&Guard::new())
@@ -147,7 +147,7 @@ impl SubPool {
         pending
     }
 
-    fn get(&self, address: &Address, nonce: &u64) -> Option<TransactionSignedEcRecovered> {
+    fn get(&self, address: &Address, nonce: &u64) -> Option<TxEnvelopeWithSigner> {
         self.pool
             .get(address)?
             .get()
@@ -156,10 +156,7 @@ impl SubPool {
     }
 
     // Returns a list of transaction entries that are ready to be promoted because a nonce gap was resolved.
-    fn filter_by_nonce_gap(
-        &self,
-        state: &HashIndex<Address, u64>,
-    ) -> Vec<TransactionSignedEcRecovered> {
+    fn filter_by_nonce_gap(&self, state: &HashIndex<Address, u64>) -> Vec<TxEnvelopeWithSigner> {
         let mut to_promote = Vec::new();
         for (sender, nonce) in state.iter(&Guard::new()) {
             if let Some(mut entry) = self.pool.get(sender) {
@@ -285,7 +282,7 @@ enum TxPoolType {
 
 pub enum TxPoolEvent {
     AddValidTransaction {
-        txn: TransactionSignedEcRecovered,
+        txn: TxEnvelopeWithSigner,
     },
     BlockUpdate {
         block: BlockWithReceipts,
@@ -294,7 +291,7 @@ pub enum TxPoolEvent {
 }
 
 impl VirtualPool {
-    pub fn new(publisher: flume::Sender<TransactionSigned>, capacity: usize) -> Self {
+    pub fn new(publisher: flume::Sender<TxEnvelope>, capacity: usize) -> Self {
         Self {
             pending_pool: SubPool::new(capacity, "pending"),
             queued_pool: SubPool::new(capacity, "queued"),
@@ -303,10 +300,10 @@ impl VirtualPool {
         }
     }
 
-    async fn decide_pool(&self, txn: &TransactionSignedEcRecovered) -> TxPoolType {
-        let sender = txn.signer();
+    async fn decide_pool(&self, txn: &TxEnvelopeWithSigner) -> TxPoolType {
+        let sender = txn.signer;
         let nonce = txn.nonce();
-        let base_fee = txn.transaction.max_fee_per_gas();
+        let base_fee = txn.max_fee_per_gas();
 
         if base_fee < self.chain_cache.get_base_fee().await {
             return TxPoolType::Discard;
@@ -351,10 +348,10 @@ impl VirtualPool {
         if last_pending_nonce + 1 == nonce {
             TxPoolType::Pending
         } else if last_pending_nonce == nonce {
-            if let Some(entry) = self.pending_pool.get(&txn.signer(), &txn.nonce()) {
+            if let Some(entry) = self.pending_pool.get(&txn.signer, &txn.nonce()) {
                 // Replace a pending transaction if the fee is at least 10% higher than the current fee
-                let current_gas_price = entry.transaction.max_fee_per_gas();
-                let new_gas_price = txn.transaction.max_fee_per_gas();
+                let current_gas_price = entry.max_fee_per_gas();
+                let new_gas_price = txn.max_fee_per_gas();
                 if new_gas_price >= current_gas_price + (current_gas_price / 10) {
                     TxPoolType::Replace
                 } else {
@@ -376,13 +373,13 @@ impl VirtualPool {
                 }
                 TxPoolType::Pending => {
                     self.pending_pool.add(txn.clone(), false).await;
-                    if self.publisher.send(txn.into()).is_err() {
+                    if self.publisher.send(txn.transaction).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
                 TxPoolType::Replace => {
                     self.pending_pool.add(txn.clone(), true).await;
-                    if self.publisher.send(txn.into()).is_err() {
+                    if self.publisher.send(txn.transaction).is_err() {
                         warn!("issue broadcasting transaction from pending pool");
                     }
                 }
@@ -421,7 +418,7 @@ impl VirtualPool {
                 // Add promoted transactions to the pending pool
                 for promoted in promote_queued.into_iter() {
                     self.pending_pool.add(promoted.clone(), false).await;
-                    if let Err(error) = self.publisher.send(promoted.into()) {
+                    if let Err(error) = self.publisher.send(promoted.transaction) {
                         warn!(
                             "issue broadcasting transaction from pending pool: {:?}",
                             error
@@ -433,7 +430,7 @@ impl VirtualPool {
     }
 
     // Adds a transaction to the txpool and decides which sub-pool to add it to
-    pub async fn add_transaction(&self, txn: TransactionSignedEcRecovered) {
+    pub async fn add_transaction(&self, txn: TxEnvelopeWithSigner) {
         self.process_event(TxPoolEvent::AddValidTransaction { txn })
             .await
     }
@@ -450,10 +447,7 @@ impl VirtualPool {
     pub fn pool_by_address(
         &self,
         address: &Address,
-    ) -> (
-        Vec<TransactionSignedEcRecovered>,
-        Vec<TransactionSignedEcRecovered>,
-    ) {
+    ) -> (Vec<TxEnvelopeWithSigner>, Vec<TxEnvelopeWithSigner>) {
         let pending = self.pending_pool.by_addr(address);
         let queued = self.queued_pool.by_addr(address);
         (pending, queued)
@@ -462,57 +456,56 @@ impl VirtualPool {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        hash::{DefaultHasher, Hash, Hasher},
-        str::FromStr,
-        sync::Arc,
-    };
+    use std::{str::FromStr, sync::Arc};
 
-    use alloy_consensus::{SignableTransaction, Signed, Transaction as _, TxEip1559, TxEnvelope};
-    use alloy_primitives::{hex::FromHex, FixedBytes, B256, U256};
+    use alloy_consensus::{Header, SignableTransaction, Transaction as _, TxEip1559, TxEnvelope};
+    use alloy_primitives::hex;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use monad_triedb_utils::triedb_env::BlockHeader;
-    use reth_primitives::{sign_message, Header};
 
     use super::*;
 
-    fn accounts() -> Vec<(B256, Address)> {
+    fn accounts() -> Vec<(String, Address)> {
         vec![
             (
-                B256::from_hex("71ca04724a6d890ca96be3c2d3aa15df5e16619bec2bfe6d891065fb5f70eff5")
-                    .unwrap(),
+                String::from("71ca04724a6d890ca96be3c2d3aa15df5e16619bec2bfe6d891065fb5f70eff5"),
                 Address::from_str("0xc29b3e29e33fe4612c946e72ffe4fcea013bf99b").unwrap(),
             ),
             (
-                B256::from_hex("07cb040b0e2bdaad5bad62d9433f6a3880358005cf054260c7ddfc8d8ae169f0")
-                    .unwrap(),
+                String::from("07cb040b0e2bdaad5bad62d9433f6a3880358005cf054260c7ddfc8d8ae169f0"),
                 Address::from_str("0xf78357155A03e155e0EdFbC3aC5f4532C95367f6").unwrap(),
             ),
             (
-                B256::from_hex("ae208cc6a28de248173a7ba8385c3e1b9811160099dc55fbf8606cc974b96c72")
-                    .unwrap(),
+                String::from("ae208cc6a28de248173a7ba8385c3e1b9811160099dc55fbf8606cc974b96c72"),
                 Address::from_str("0xB6A5df2311E4D3F5376619FD05224AAFe4352aB9").unwrap(),
             ),
         ]
     }
 
-    fn transaction(sk: B256, nonce: u64, fee: Option<u128>) -> Signed<TxEip1559> {
+    fn transaction(sk: &str, nonce: u64, fee: Option<u128>) -> TxEnvelopeWithSigner {
         let transaction = TxEip1559 {
             nonce,
             max_fee_per_gas: fee.unwrap_or(1_000),
             ..Default::default()
         };
-        let signature = sign_message(sk, transaction.signature_hash()).unwrap();
+        let signer = sk.parse::<PrivateKeySigner>().unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
         let signed_tx = transaction.into_signed(signature);
-        let signer = signed_tx.recover_signer().unwrap();
 
-        signed_tx.into()
+        TxEnvelopeWithSigner {
+            signer: signer.address(),
+            transaction: signed_tx.into(),
+        }
     }
 
     #[tokio::test]
     async fn test_txpool() {
-        let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
+        let (ipc_sender, _ipc_receiver) = flume::bounded::<TxEnvelope>(100);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
-        let (sk, addr) = accounts()[0];
+        let (sk, addr) = &accounts()[0];
 
         let txs = vec![
             transaction(sk, 1, None),
@@ -522,24 +515,18 @@ mod tests {
         ];
 
         for tx in txs.clone() {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.pending_pool.len(), 4);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 4);
+        assert_eq!(tx_pool.pending_pool.pool.get(addr).unwrap().len(), 4);
         assert_eq!(tx_pool.queued_pool.pool.len(), 0);
         assert_eq!(tx_pool.chain_cache.len().await, 0);
 
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into()).collect(),
+                    transactions: txs.into_iter().map(|tx| tx.transaction).collect(),
                     ..Default::default()
                 },
                 1000,
@@ -554,9 +541,9 @@ mod tests {
 
     #[tokio::test]
     async fn txpool_nonce_gap() {
-        let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100);
+        let (ipc_sender, _ipc_receiver) = flume::bounded::<TxEnvelope>(100);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
-        let (sk, addr) = accounts()[0];
+        let (sk, addr) = &accounts()[0];
 
         let txs = vec![
             transaction(sk, 1, None), // included
@@ -564,19 +551,13 @@ mod tests {
 
         tx_pool.new_block(BlockWithReceipts::default(), 1_000).await;
         for tx in txs {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
 
         // Expect to discard txs[0] and put remaining in queued pool
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 1);
+        assert_eq!(tx_pool.pending_pool.pool.get(addr).unwrap().len(), 1);
         assert_eq!(tx_pool.chain_cache.len().await, 0);
 
         tx_pool
@@ -589,7 +570,7 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    transactions: vec![transaction(sk, 1, Some(2000)).into()],
+                    transactions: vec![transaction(sk, 1, Some(2000)).transaction],
                     ..Default::default()
                 },
                 1_000,
@@ -602,90 +583,65 @@ mod tests {
         let txs = vec![transaction(sk, 3, None), transaction(sk, 4, None)];
 
         for tx in txs {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 0);
         assert_eq!(tx_pool.queued_pool.pool.len(), 1);
-        assert_eq!(tx_pool.queued_pool.pool.get(&addr).unwrap().len(), 2);
+        assert_eq!(tx_pool.queued_pool.pool.get(addr).unwrap().len(), 2);
     }
 
     // Test behavior with fee replacement.
     // `tx_pool.add_transaction` should replace a pending transaction with a higher fee.
     #[tokio::test]
     async fn txpool_fee_replace() {
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(100);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100));
 
         // Add pending transaction with base fee of 1000
-        let base = transaction(accounts()[0].0, 0, Some(1000));
-        let signer = base.recover_signer().unwrap();
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                base.clone().into(),
-                signer,
-            ))
-            .await;
+        let base = transaction(&accounts()[0].0, 0, Some(1000));
+        tx_pool.add_transaction(base.clone()).await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
-                .transaction
                 .max_fee_per_gas(),
             1000
         );
 
-        let replace = transaction(accounts()[0].0, 0, Some(2000));
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                replace.clone().into(),
-                signer,
-            ))
-            .await;
+        let replace = transaction(&accounts()[0].0, 0, Some(2000));
+        tx_pool.add_transaction(replace.clone()).await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
-                .transaction
                 .max_fee_per_gas(),
             2000
         );
 
-        let underpriced = transaction(accounts()[0].0, 0, Some(1000));
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                underpriced.clone().into(),
-                signer,
-            ))
-            .await;
+        let underpriced = transaction(&accounts()[0].0, 0, Some(1000));
+        tx_pool.add_transaction(underpriced).await;
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(
             tx_pool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
-                .transaction
                 .max_fee_per_gas(),
             2000
         );
 
-        for i in 0..1 {
+        for i in 0..2 {
             let res = ipc_receiver.recv_async().await.unwrap();
             match i {
                 0 => {
-                    assert_eq!(res, base.clone().into());
+                    assert_eq!(res, base.transaction);
                 }
                 1 => {
-                    assert_eq!(res, replace.clone().into());
+                    assert_eq!(res, replace.transaction);
                 }
                 _ => {
                     panic!("unexpected txn");
@@ -697,9 +653,9 @@ mod tests {
     // Create 10_000 transactions from a single sender.
     #[tokio::test]
     async fn txpool_stress() {
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(10_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 20_000));
-        let (sk, addr) = accounts()[0];
+        let (sk, addr) = &accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
             txs.push(transaction(sk, i, None));
@@ -707,23 +663,17 @@ mod tests {
 
         assert_eq!(txs.len(), 10_000);
         for tx in txs.clone() {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
         assert_eq!(tx_pool.pending_pool.pool.len(), 1);
         assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 10_000);
+        assert_eq!(tx_pool.pending_pool.pool.get(addr).unwrap().len(), 10_000);
 
         let timer = std::time::Instant::now();
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: txs.into_iter().map(|tx| tx.into()).collect(),
+                    transactions: txs.into_iter().map(|tx| tx.transaction).collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -755,22 +705,16 @@ mod tests {
 
         for sk in senders.clone() {
             for i in 0..100 {
-                pending_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), i, None));
+                pending_txs.push(transaction(&hex::encode(sk.clone()), i, None));
             }
         }
 
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(100_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 100));
 
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K transactions took {:?}", elapsed);
@@ -781,7 +725,7 @@ mod tests {
         tx_pool
             .new_block(
                 BlockWithReceipts {
-                    transactions: pending_txs.into_iter().map(|tx| tx.into()).collect(),
+                    transactions: pending_txs.into_iter().map(|tx| tx.transaction).collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -792,19 +736,13 @@ mod tests {
         let mut queued_txs = Vec::new();
         for sk in senders.clone() {
             for i in 101..200 {
-                queued_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), i, None));
+                queued_txs.push(transaction(&hex::encode(sk.clone()), i, None));
             }
         }
 
         let timer = std::time::Instant::now();
         for tx in queued_txs {
-            let signer = tx.recover_signer().unwrap();
-            tx_pool
-                .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                    tx.into(),
-                    signer,
-                ))
-                .await;
+            tx_pool.add_transaction(tx).await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K queued transactions took {:?}", elapsed);
@@ -814,7 +752,7 @@ mod tests {
 
         let mut fix_nonce_gap_txs = Vec::new();
         for sk in senders.clone() {
-            fix_nonce_gap_txs.push(transaction(FixedBytes::<32>::from_slice(&sk), 100, None));
+            fix_nonce_gap_txs.push(transaction(&hex::encode(sk), 100, None));
         }
 
         tx_pool
@@ -827,7 +765,10 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    transactions: fix_nonce_gap_txs.into_iter().map(|tx| tx.into()).collect(),
+                    transactions: fix_nonce_gap_txs
+                        .into_iter()
+                        .map(|tx| tx.transaction)
+                        .collect(),
                     ..Default::default()
                 },
                 1_000,
@@ -840,35 +781,17 @@ mod tests {
     #[tokio::test]
     async fn txpool_eviction() {
         // Set capacity to 2, add three transactions from unique senders. Expect pool to evict first transaction.
-        let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
+        let (ipc_sender, _ipc_receiver) = flume::bounded::<TxEnvelope>(10_000);
         let tx_pool = Arc::new(VirtualPool::new(ipc_sender.clone(), 2));
 
-        let tx1 = transaction(accounts()[0].0, 0, None);
-        let signer1 = tx1.recover_signer().unwrap();
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                tx1.into(),
-                signer1,
-            ))
-            .await;
+        let tx1 = transaction(&accounts()[0].0, 0, None);
+        tx_pool.add_transaction(tx1).await;
 
-        let tx2 = transaction(accounts()[1].0, 0, None);
-        let signer2 = tx2.recover_signer().unwrap();
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                tx2.into(),
-                signer2,
-            ))
-            .await;
+        let tx2 = transaction(&accounts()[1].0, 0, None);
+        tx_pool.add_transaction(tx2).await;
 
-        let tx3 = transaction(accounts()[2].0, 0, None);
-        let signer3 = tx3.recover_signer().unwrap();
-        tx_pool
-            .add_transaction(TransactionSignedEcRecovered::from_signed_transaction(
-                tx3.into(),
-                signer3,
-            ))
-            .await;
+        let tx3 = transaction(&accounts()[2].0, 0, None);
+        tx_pool.add_transaction(tx3).await;
 
         assert_eq!(tx_pool.pending_pool.evict.try_read().unwrap().len(), 2);
         assert_eq!(tx_pool.pending_pool.pool.len(), 2)

@@ -421,6 +421,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-serde",
+ "serde",
 ]
 
 [[package]]
@@ -501,6 +503,31 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.9",
  "tracing",
+]
+
+[[package]]
+name = "alloy-network"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "510cc00b318db0dfccfdd2d032411cfae64fc144aef9679409e014145d3dacc4"
+dependencies = [
+ "alloy-consensus",
+ "alloy-consensus-any",
+ "alloy-eips",
+ "alloy-json-rpc",
+ "alloy-network-primitives",
+ "alloy-primitives",
+ "alloy-rpc-types-any",
+ "alloy-rpc-types-eth",
+ "alloy-serde",
+ "alloy-signer",
+ "alloy-sol-types",
+ "async-trait",
+ "auto_impl",
+ "futures-utils-wasm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.9",
 ]
 
 [[package]]
@@ -604,6 +631,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-rpc-types-any"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed98e1af55a7d856bfa385f30f63d8d56be2513593655c904a8f4a7ec963aa3e"
+dependencies = [
+ "alloy-consensus-any",
+ "alloy-rpc-types-eth",
+ "alloy-serde",
+]
+
+[[package]]
 name = "alloy-rpc-types-engine"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -650,6 +688,36 @@ dependencies = [
  "alloy-primitives",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "alloy-signer"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e10ca565da6500cca015ba35ee424d59798f2e1b85bc0dd8f81dafd401f029a"
+dependencies = [
+ "alloy-primitives",
+ "async-trait",
+ "auto_impl",
+ "elliptic-curve 0.13.8",
+ "k256",
+ "thiserror 2.0.9",
+]
+
+[[package]]
+name = "alloy-signer-local"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47fababf5a745133490cde927d48e50267f97d3d1209b9fc9f1d1d666964d172"
+dependencies = [
+ "alloy-consensus",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-signer",
+ "async-trait",
+ "k256",
+ "rand",
+ "thiserror 2.0.9",
 ]
 
 [[package]]
@@ -4512,6 +4580,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-client",
+ "alloy-signer",
+ "alloy-signer-local",
  "alloy-sol-macro",
  "alloy-sol-types",
  "alloy-transport",
@@ -4561,7 +4631,6 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rayon",
- "reth-primitives",
  "tracing",
  "tracing-test",
 ]
@@ -4570,6 +4639,7 @@ dependencies = [
 name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "reth-primitives",
@@ -4608,6 +4678,7 @@ dependencies = [
 name = "monad-ipc"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-rlp",
  "bytes",
  "clap 4.4.10",
@@ -4656,6 +4727,7 @@ dependencies = [
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "clap 4.4.10",
@@ -4899,6 +4971,8 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-client",
  "alloy-rpc-types",
+ "alloy-signer",
+ "alloy-signer-local",
  "bytes",
  "clap 4.4.10",
  "env_logger 0.10.1",
@@ -4908,6 +4982,7 @@ dependencies = [
  "monad-archive",
  "monad-cxx",
  "monad-eth-block-policy",
+ "monad-eth-types",
  "monad-rpc-docs",
  "monad-triedb-utils",
  "monad-types",
@@ -4917,7 +4992,6 @@ dependencies = [
  "opentelemetry_sdk",
  "pin-project",
  "reqwest 0.11.27",
- "reth-primitives",
  "scc",
  "schemars",
  "serde",
@@ -5012,6 +5086,7 @@ dependencies = [
 name = "monad-statesync"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-rlp",
  "bindgen",
  "cmake",

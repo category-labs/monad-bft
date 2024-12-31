@@ -5,7 +5,7 @@ mod test {
         time::Duration,
     };
 
-    use alloy_consensus::Transaction as _;
+    use alloy_consensus::{Transaction as _, TxEnvelope};
     use alloy_primitives::B256;
     use alloy_rlp::{encode, Decodable};
     use itertools::Itertools;
@@ -47,7 +47,6 @@ mod test {
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
-    use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
     use tracing::info;
 
     pub struct EthSwarm;
@@ -184,15 +183,15 @@ mod test {
     fn verify_transactions_in_ledger(
         swarm: &Nodes<EthSwarm>,
         node_ids: Vec<ID<NopPubKey>>,
-        txns: Vec<TransactionSigned>,
+        txns: Vec<TxEnvelope>,
     ) -> bool {
-        let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| t.hash()));
+        let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| t.tx_hash()));
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
             for (round, block) in state.executor.ledger().get_finalized_blocks() {
                 for txn in &block.body().execution_body.transactions {
-                    let txn_hash = txn.hash();
+                    let txn_hash = txn.tx_hash();
                     if txns_to_see.contains(&txn_hash) {
                         txns_to_see.remove(&txn_hash);
                     } else {

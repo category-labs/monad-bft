@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
-use alloy_consensus::{Header, Transaction as _, TxEip1559};
+use alloy_consensus::{Header, Transaction as _, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
 use alloy_rlp::Encodable;
@@ -69,7 +69,7 @@ pub struct StateOverrideObject {
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub fn eth_call(
-    transaction: Transaction,
+    transaction: TxEnvelope,
     block_header: Header,
     sender: Address,
     block_number: u64,
@@ -85,10 +85,8 @@ pub fn eth_call(
     }
 
     // TODO: move the buffer copying into C++ for the reserve/push idiom
-    let default_signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
-    let tx = TransactionSigned::new_unhashed(transaction, default_signature);
     let mut rlp_encoded_tx = Vec::new();
-    tx.encode_2718(&mut rlp_encoded_tx);
+    transaction.encode_2718(&mut rlp_encoded_tx);
 
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
     for byte in &rlp_encoded_tx {
@@ -522,7 +520,7 @@ mod tests {
         };
     }
 
-    #[ignore]
+    #[cfg(triedb)]
     #[test]
     fn test_sha256_precompile() {
         let result = eth_call(

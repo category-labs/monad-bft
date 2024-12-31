@@ -1,6 +1,9 @@
+use std::ops::Deref;
+
 use ::serde::{Deserialize, Serialize};
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, B256};
-use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
+use alloy_rlp::{Decodable, Error as RlpError, RlpDecodableWrapper, RlpEncodableWrapper};
 
 pub mod serde;
 
@@ -51,4 +54,28 @@ pub struct EthAccount {
     pub nonce: Nonce,
     pub balance: Balance,
     pub code_hash: Option<B256>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxEnvelopeWithSigner {
+    pub signer: Address,
+    pub transaction: TxEnvelope,
+}
+
+impl Deref for TxEnvelopeWithSigner {
+    type Target = TxEnvelope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.transaction
+    }
+}
+
+impl Decodable for TxEnvelopeWithSigner {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let transaction: TxEnvelope = TxEnvelope::decode(buf)?;
+        let signer = transaction
+            .recover_signer()
+            .map_err(|_| RlpError::Custom("Unable to recover decoded transaction signer."))?;
+        Ok(Self { signer, transaction })
+    }
 }

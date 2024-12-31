@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::Encodable;
 use executable_block::{format_block_id, ExecutableBlock};
 use futures::Stream;
 use monad_block_persist::{BlockPersist, FileBlockPersist};
@@ -16,19 +16,15 @@ use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionProtocol},
+    block::{BlockRange, ConsensusFullBlock},
     ledger::OptimisticCommit,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, EthExecutionProtocol},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_types::{BlockId, Hash, Round, SeqNum, GENESIS_BLOCK_ID};
-use reth_primitives::TransactionSigned;
+use monad_types::{BlockId, Hash, Round, SeqNum};
 use tracing::{info, trace};
 
 pub mod executable_block;

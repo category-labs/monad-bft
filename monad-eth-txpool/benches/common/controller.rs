@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
@@ -12,7 +13,6 @@ use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum};
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use reth_primitives::B256;
 
 const TRANSACTION_SIZE_BYTES: usize = 400;
 

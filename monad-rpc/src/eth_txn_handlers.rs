@@ -2,6 +2,7 @@ use std::cmp::min;
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{FixedBytes, TxKind};
+use alloy_rlp::Decodable;
 use alloy_rpc_types::{
     BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Receipt, Transaction,
     TransactionReceipt,
@@ -328,7 +329,7 @@ pub async fn monad_eth_sendRawTransaction(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
-    match alloy_rlp::decode_exact(&mut &params.hex_tx.0[..]) {
+    match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
             // drop transactions that will fail consensus check
             if let Err(err) = static_validate_transaction(&txn, chain_id) {
@@ -348,8 +349,18 @@ pub async fn monad_eth_sendRawTransaction(
                 ));
             }
 
-            let hash = txn.hash();
+            let hash = *txn.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
+
+            let _signer = txn.recover_signer().map_err(|_| {
+                JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
+            })?;
+
+            // TODO: send recovered_tx when we enable virtual mempool
+            // let recovered_tx = TxEnvelopeWithSigner {
+            //     signer,
+            //     transaction: txn,
+            // };
 
             if tx_pool.publisher.send(txn).is_err() {
                 warn!("issue broadcasting transaction from pending pool");

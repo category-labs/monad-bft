@@ -1,19 +1,18 @@
-use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc};
 
 use crate::block::{ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader};
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::Address;
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
-use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{
-        CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+        CertificateSignature, CertificateSignaturePubKey,
     },
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    hasher::{Hash, Hasher, HasherType},
 };
-use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{DontCare, Round, SeqNum};
-use reth_primitives::{Header, TransactionSigned};
+use monad_eth_types::EMPTY_RLP_TX_LIST;
+use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
@@ -195,7 +194,7 @@ where
 #[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
-    pub transactions: Vec<TransactionSigned>,
+    pub transactions: Vec<TxEnvelope>,
     pub ommers: Vec<Ommer>,
     pub withdrawals: Vec<Withdrawal>,
 }

@@ -3,13 +3,12 @@ use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+        CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
     hasher::{Hashable, Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
-use monad_types::{BlockId, DontCare, Epoch, NodeId, Round, SeqNum};
-use reth_primitives::Header;
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use std::{fmt::Debug, ops::Deref};
 
 use crate::{

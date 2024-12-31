@@ -6,10 +6,10 @@ use std::{
     task::Poll,
 };
 
+use alloy_consensus::TxEnvelope;
 use futures::{executor::block_on, ready, Future, FutureExt, Sink, SinkExt};
 use notify::{Event, RecursiveMode, Watcher};
 use pin_project::pin_project;
-use reth_primitives::TransactionSigned;
 use tokio::{net::UnixStream, pin};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 use tracing::{debug, error};
@@ -150,7 +150,7 @@ impl Future for SocketWatcher {
     }
 }
 
-impl Sink<TransactionSigned> for MempoolTxIpcSender {
+impl Sink<TxEnvelope> for MempoolTxIpcSender {
     type Error = std::io::Error;
 
     fn poll_ready(
@@ -160,10 +160,7 @@ impl Sink<TransactionSigned> for MempoolTxIpcSender {
         self.writer.poll_ready_unpin(cx)
     }
 
-    fn start_send(
-        mut self: std::pin::Pin<&mut Self>,
-        tx: TransactionSigned,
-    ) -> Result<(), Self::Error> {
+    fn start_send(mut self: std::pin::Pin<&mut Self>, tx: TxEnvelope) -> Result<(), Self::Error> {
         let buf = alloy_rlp::encode(tx);
         self.writer.start_send_unpin(buf.into())
     }
@@ -223,6 +220,8 @@ impl Sink<TransactionSigned> for MempoolTxIpcSender {
 mod tests {
     use std::fs::File;
 
+    use alloy_consensus::{SignableTransaction, TxLegacy};
+    use alloy_primitives::{PrimitiveSignature, U256};
     use futures::future::join;
     use tempfile::tempdir;
     use tokio::{io::AsyncReadExt, net::UnixListener};
@@ -252,13 +251,22 @@ mod tests {
             listener_func(listener).await.unwrap();
         });
 
-        sender.send(TransactionSigned::default()).await.unwrap();
+        let transaction = TxLegacy::default();
+        let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+
+        sender
+            .send(transaction.clone().into_signed(signature).into())
+            .await
+            .unwrap();
 
         listener_task.await.unwrap();
         std::fs::remove_file(&socket_path).unwrap();
 
         let sender_task = tokio::spawn(async move {
-            sender.send(TransactionSigned::default()).await.unwrap();
+            sender
+                .send(transaction.into_signed(signature).into())
+                .await
+                .unwrap();
         });
 
         let listener_task = tokio::spawn(async move {

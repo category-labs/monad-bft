@@ -17,20 +17,18 @@ use monad_consensus_types::{
     block::{
         BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionProtocol, ExecutionResult,
     },
-    checkpoint::{Checkpoint, RootInfo},
+    checkpoint::Checkpoint,
     ledger::OptimisticCommit,
     metrics::Metrics,
     payload::ConsensusBlockBodyId,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
-    state_root_hash::{StateRootHash, StateRootHashInfo},
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
-use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";

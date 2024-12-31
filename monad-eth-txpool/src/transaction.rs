@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use alloy_consensus::Transaction as _;
+use alloy_consensus::Transaction;
 use alloy_primitives::TxHash;
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
@@ -13,20 +13,19 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
 };
-use monad_eth_types::{Balance, EthAddress, Nonce};
-use reth_primitives::TransactionSignedEcRecovered;
+use monad_eth_types::{Balance, EthAddress, Nonce, TxEnvelopeWithSigner};
 use tracing::trace;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
-    tx: TransactionSignedEcRecovered,
+    tx: TxEnvelopeWithSigner,
     gas_per_gas_limit: u64,
     txn_fee: u128,
 }
 
 impl ValidEthTransaction {
     pub fn validate<ST, SCT>(
-        tx: TransactionSignedEcRecovered,
+        tx: TxEnvelopeWithSigner,
         block_policy: &EthBlockPolicy<ST, SCT>,
     ) -> Result<Self, TxPoolInsertionError>
     where
@@ -70,7 +69,7 @@ impl ValidEthTransaction {
                             for address: {:?}",
                 account_balance,
                 self.txn_fee,
-                self.tx.signer()
+                self.tx.signer,
             );
 
             return Err(TxPoolInsertionError::InsufficientBalance);
@@ -80,7 +79,7 @@ impl ValidEthTransaction {
     }
 
     pub fn sender(&self) -> EthAddress {
-        EthAddress(self.tx.signer())
+        EthAddress(self.tx.signer)
     }
 
     pub fn nonce(&self) -> Nonce {
@@ -88,7 +87,7 @@ impl ValidEthTransaction {
     }
 
     pub fn hash(&self) -> TxHash {
-        self.tx.hash()
+        *self.tx.tx_hash()
     }
 
     pub fn gas_limit(&self) -> u64 {
@@ -99,7 +98,7 @@ impl ValidEthTransaction {
         self.tx.length() as u64
     }
 
-    pub fn raw(&self) -> &TransactionSignedEcRecovered {
+    pub fn raw(&self) -> &TxEnvelopeWithSigner {
         &self.tx
     }
 }

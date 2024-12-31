@@ -9,11 +9,11 @@ use monad_types::SeqNum;
 
 use crate::{
     block::{
-        BlockPolicy, ConsensusFullBlock, ExecutionProtocol, MockExecutionBody,
+        BlockPolicy, ExecutionProtocol, MockExecutionBody,
         MockExecutionProposedHeader, MockExecutionProtocol, PassthruBlockPolicy,
         ProposedExecutionInputs,
     },
-    payload::{FullTransactionList, RoundSignature},
+    payload::RoundSignature,
     signature_collection::SignatureCollection,
 };
 

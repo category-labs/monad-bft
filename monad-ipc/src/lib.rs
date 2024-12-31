@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, path::PathBuf, pin::Pin, task::Poll};
 
+use alloy_consensus::TxEnvelope;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -10,7 +11,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{MempoolEvent, MonadEvent};
-use reth_primitives::TransactionSigned;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::mpsc,
@@ -158,7 +158,7 @@ where
     }
 }
 fn validate_ethtx(bytes: &mut &[u8]) -> bool {
-    match TransactionSigned::decode(bytes) {
+    match TxEnvelope::decode(bytes) {
         Ok(_) => true,
         Err(err) => {
             warn!("tx decoder error error={:?}", err);

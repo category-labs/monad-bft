@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_consensus::Header;
 use alloy_rlp::Encodable;
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
@@ -15,7 +16,6 @@ use monad_executor_glue::{
 };
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
-use reth_primitives::Header;
 
 use crate::{bindings, outbound_requests::OutboundRequests};
 

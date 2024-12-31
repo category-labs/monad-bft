@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use alloy_rpc_types::TransactionReceipt;
-use reth_primitives::{Block, TransactionSigned};
+use alloy_consensus::{Block, BlockHeader, Transaction, TxEnvelope};
 use tracing::warn;
 
 /// Number of transactions to sample in a block
@@ -27,10 +26,11 @@ pub struct Oracle {
 
 pub trait GasOracle: Send + Sync {
     // Adds a block to the gas oracle's cache to process tips and base fees.
+    // gas_used_vec contains the gas usage of each transaction in the block.
     fn process_block(
         &self,
-        block: Block,
-        receipts: Vec<TransactionReceipt>,
+        block: Block<TxEnvelope>,
+        gas_used_vec: Vec<u64>,
     ) -> Result<(), GasOracleError>;
     // Returns the expected base fee for the next block.
     fn base_fee(&self) -> Option<u64>;
@@ -73,10 +73,10 @@ impl GasOracle for Oracle {
 
     fn process_block(
         &self,
-        block: Block,
-        receipts: Vec<TransactionReceipt>,
+        block: Block<TxEnvelope>,
+        gas_used_vec: Vec<u64>,
     ) -> Result<(), GasOracleError> {
-        let processed_block = process_block(block, receipts)?;
+        let processed_block = process_block(block, gas_used_vec)?;
 
         let Ok(mut cache) = self.cache.lock() else {
             warn!("could not access gas oracle cache");
@@ -127,40 +127,35 @@ pub struct ProcessedBlock {
 }
 
 fn process_block(
-    block: Block,
-    receipts: Vec<TransactionReceipt>,
+    block: Block<TxEnvelope>,
+    gas_used_vec: Vec<u64>,
 ) -> Result<ProcessedBlock, GasOracleError> {
     let base_fee = block
-        .base_fee_per_gas
+        .header
+        .base_fee_per_gas()
         .ok_or(GasOracleError::MissingBaseFee)?;
 
-    let mut transactions = block
-        .body
-        .transactions
-        .iter()
-        .collect::<Vec<&TransactionSigned>>();
-    transactions.sort_by_cached_key(|tx| tx.effective_tip_per_gas(Some(base_fee)));
+    let mut transactions: Vec<TxEnvelope> = block.body.transactions;
+    transactions.sort_by_cached_key(|tx| tx.effective_tip_per_gas(base_fee));
 
     let mut prices = Vec::new();
     let mut rewards = Vec::new();
     let mut gas_used_ratios = Vec::new();
     for (idx, tx) in transactions.iter().enumerate() {
-        let tip = if let Some(tip) = tx.effective_tip_per_gas(Some(base_fee)) {
+        let tip = if let Some(tip) = tx.effective_tip_per_gas(base_fee) {
             rewards.push(tip);
             tip
         } else {
-            warn!("could not calculate effective tip for {:?}", tx.hash());
+            warn!("could not calculate effective tip for {:?}", tx.tx_hash());
             continue;
         };
 
         // For each receipt, calculate gas_used_ratio
-        let receipt = receipts
+        let gas_used = gas_used_vec
             .get(idx)
             .ok_or(GasOracleError::TransactionReceiptMissing)?;
-        let gas_used = receipt.gas_used;
-
-        let gas_used = gas_used as f64;
-        let gas_used_ratio = gas_used / block.gas_limit as f64;
+        let gas_used = *gas_used as f64;
+        let gas_used_ratio = gas_used / block.header.gas_limit() as f64;
         gas_used_ratios.push(gas_used_ratio);
 
         if tip < IGNORE_PRICE {
@@ -178,8 +173,8 @@ fn process_block(
     }
 
     Ok(ProcessedBlock {
-        block_gas_limit: block.gas_limit,
-        block_gas_used: block.gas_used,
+        block_gas_limit: block.header.gas_limit(),
+        block_gas_used: block.header.gas_used(),
         sampled_tips: prices,
         base_fee,
         gas_used_ratios,
@@ -189,34 +184,25 @@ fn process_block(
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::TxEip1559;
-    use alloy_primitives::{PrimitiveSignature, U256};
-    use reth_primitives::{Block, BlockBody, Header, Transaction};
+    use alloy_consensus::{Block, BlockBody, Header, SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_primitives::B256;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
 
     use super::*;
 
-    fn make_tx(price: u128) -> TransactionSigned {
-        TransactionSigned {
-            transaction: Transaction::Eip1559(TxEip1559 {
-                max_priority_fee_per_gas: price - 1000,
-                max_fee_per_gas: price,
-                ..Default::default()
-            }),
-            signature: PrimitiveSignature::new(
-                U256::from_str_radix(
-                    "b129895435986f95c27e02bfae5f32e83aa09465154ed216b9534164ecab1016",
-                    16,
-                )
-                .unwrap(),
-                U256::from_str_radix(
-                    "732a1eaaaa968aeedcfdf67fe34ee6157c169e7b6f5267601ec89a62a8b836c9",
-                    16,
-                )
-                .unwrap(),
-                false,
-            ),
+    fn make_tx(price: u128) -> TxEnvelope {
+        let transaction = TxEip1559 {
+            max_priority_fee_per_gas: price - 1000,
+            max_fee_per_gas: price,
             ..Default::default()
-        }
+        };
+        let sk = B256::repeat_byte(0xcc).to_string();
+        let signer = sk.parse::<PrivateKeySigner>().unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        transaction.into_signed(signature).into()
     }
 
     #[tokio::test]
@@ -257,16 +243,11 @@ mod tests {
         let oracle = Oracle::new(Some(2));
 
         for block in blocks {
-            let mut receipts = Vec::new();
+            let mut gas_used_vec = Vec::new();
             for _ in block.body.transactions.iter() {
-                // TODO: we might want to reconsider input type for process_block
-                // receipts.push(TransactionReceipt {
-                //     inner: Default::default(),
-                //     gas_used: 21_000,
-                //     ..Default::default()
-                // });
+                gas_used_vec.push(21000);
             }
-            oracle.process_block(block, receipts).unwrap();
+            oracle.process_block(block, gas_used_vec).unwrap();
         }
 
         let tip = oracle.tip().unwrap();

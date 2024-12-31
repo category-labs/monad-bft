@@ -12,7 +12,8 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
-alloy-consensus = { workspace = true }
+
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 reth-primitives = { workspace = true }
 itertools = { workspace = true }

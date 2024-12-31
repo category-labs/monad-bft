@@ -3,18 +3,17 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
-    payload::{EthExecutionProtocol, FullTransactionList, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT},
+    payload::{PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT},
     signature_collection::SignatureCollection,
     txpool::TxPoolInsertionError,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{AccountNonceRetrievable, EthBlockPolicy, EthValidatedBlock};
-use monad_eth_types::EthAddress;
+use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_types::{EthAddress, TxEnvelopeWithSigner};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
-use reth_primitives::TransactionSignedEcRecovered;
 use tracing::{debug, error, info, trace};
 use tx_heap::TrackedTxHeapDrainAction;
 
@@ -89,7 +88,7 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-    ) -> Result<Vec<TransactionSignedEcRecovered>, StateBackendError> {
+    ) -> Result<Vec<TxEnvelopeWithSigner>, StateBackendError> {
         assert!(
             block_policy.get_last_commit().ge(&self.last_commit_seq_num),
             "txpool received block policy with lower committed seq num"
@@ -217,7 +216,7 @@ where
         tx_limit: usize,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&EthAddress, u128>,
-    ) -> Result<(u64, Vec<TransactionSignedEcRecovered>), StateBackendError> {
+    ) -> Result<(u64, Vec<TxEnvelopeWithSigner>), StateBackendError> {
         assert!(tx_limit > 0);
 
         let mut txs = Vec::new();

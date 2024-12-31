@@ -14,6 +14,7 @@ bench = false
 monad-archive = { path = "../monad-archive" }
 monad-cxx = { path = "../monad-cxx" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-rpc-docs = { path = "./monad-rpc-docs" }
@@ -33,7 +34,6 @@ env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-reth-primitives = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
@@ -50,6 +50,8 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
 alloy-rpc-client = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }

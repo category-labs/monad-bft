@@ -7,22 +7,18 @@ use itertools::{Either, Itertools};
 use monad_consensus_types::{
     block::ProposedExecutionInputs,
     payload::{
-        EthBlockBody, EthExecutionProtocol, FullTransactionList, ProposedEthHeader, RoundSignature,
+        EthBlockBody, EthExecutionProtocol, ProposedEthHeader, RoundSignature,
         BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT,
     },
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_types::{Balance, EthAddress};
+use monad_eth_types::{Balance, EthAddress, TxEnvelopeWithSigner};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
 use tracing::warn;
 
 use crate::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
@@ -94,7 +90,7 @@ where
 
     fn validate_and_insert_tx(
         &mut self,
-        tx: TransactionSignedEcRecovered,
+        tx: TxEnvelopeWithSigner,
         block_policy: &EthBlockPolicy<ST, SCT>,
         account_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
@@ -117,9 +113,9 @@ where
         &mut self,
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
-        txs: Vec<TransactionSignedEcRecovered>,
+        txs: Vec<TxEnvelopeWithSigner>,
     ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError> {
-        let senders = txs.iter().map(|tx| EthAddress(tx.signer())).collect_vec();
+        let senders = txs.iter().map(|tx| EthAddress(tx.signer)).collect_vec();
 
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1); // ?????
         let sender_account_balances = block_policy.compute_account_base_balances(
@@ -179,7 +175,7 @@ where
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
             .filter_map(|b| {
-                TransactionSignedEcRecovered::decode(&mut b.as_ref())
+                TxEnvelopeWithSigner::decode(&mut b.as_ref())
                     .ok()
                     .map(|valid_tx| (valid_tx, b))
             })
@@ -230,7 +226,7 @@ where
         )?;
 
         let body = EthBlockBody {
-            transactions: transactions.into_iter().map_into().collect(),
+            transactions: transactions.into_iter().map(|tx_with_signer| tx_with_signer.transaction).collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };

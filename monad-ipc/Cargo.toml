@@ -11,6 +11,7 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 
+alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

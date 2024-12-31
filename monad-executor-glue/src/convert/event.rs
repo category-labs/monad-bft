@@ -1,9 +1,8 @@
 use std::{net::SocketAddr, str::FromStr};
 
-use alloy_rlp::{Decodable, Encodable};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use monad_consensus_types::{
-    block::{ExecutionProtocol, ExecutionResult, ProposedExecutionResult},
+    block::ExecutionProtocol,
     signature_collection::SignatureCollection,
     validator_data::ValidatorSetDataWithEpoch,
 };
@@ -14,7 +13,6 @@ use monad_proto::{
     error::ProtoError,
     proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
 };
-use reth_primitives::Header;
 
 use crate::{
     BlockSyncEvent, ControlPanelEvent, GetFullNodes, GetPeers, MempoolEvent, MonadEvent,
