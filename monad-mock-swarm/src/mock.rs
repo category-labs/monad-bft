@@ -212,6 +212,10 @@ impl<S: SwarmRelation> MockExecutor<S> {
         self.ipc.add_transaction(txn);
     }
 
+    pub fn set_state_root_poll(&mut self, keep_update: bool) {
+        self.state_root_hash.set_state_root_poll(keep_update);
+    }
+
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(

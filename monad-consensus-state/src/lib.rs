@@ -10,7 +10,7 @@ use monad_consensus::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    pacemaker::Pacemaker,
+    pacemaker::{Pacemaker, PacemakerCommand},
     validation::safety::Safety,
     vote_state::VoteState,
 };
@@ -79,6 +79,8 @@ where
 
     finalized_execution_results: BTreeMap<SeqNum, EPT::FinalizedHeader>,
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
+
+    pending_proposals: BTreeMap<SeqNum, (NodeId<SCT::NodeIdPubKey>, ProposalMessage<ST, SCT, EPT>)>,
 
     /// Set to true once consensus has kicked off stastesync
     /// This is a bit janky; because initiating statesync is asynchronous (via loopback executor)
@@ -215,6 +217,8 @@ pub enum StateRootAction {
     /// out-of-range. It's ok to insert to the block tree and observe if a QC
     /// forms on the block. But we shouldn't vote on the block
     Defer,
+    /// Execution result not ready
+    NotReady,
 }
 
 impl<ST, SCT, EPT, BPT, SBT> ConsensusState<ST, SCT, EPT, BPT, SBT>
@@ -280,6 +284,7 @@ where
 
             finalized_execution_results: Default::default(),
             proposed_execution_results: Default::default(),
+            pending_proposals: Default::default(),
 
             started_statesync: false,
         }
@@ -348,6 +353,7 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT>> {
         match execution_result {
             ExecutionResult::Finalized(seq_num, execution_result) => {
+                trace!("Received finilized StateRoot for {:?}", seq_num.0);
                 match self.consensus.finalized_execution_results.entry(seq_num) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
                         entry.insert(execution_result);
@@ -359,6 +365,7 @@ where
                 Vec::new()
             }
             ExecutionResult::Proposed(execution_result) => {
+                let seq_num = execution_result.seq_num;
                 if execution_result.round <= self.consensus.pending_block_tree.root().round {
                     // not necessary, but here for clarity
                     // try_update_coherency would drop it anyways
@@ -368,7 +375,13 @@ where
                 self.consensus
                     .proposed_execution_results
                     .insert(execution_result.round, execution_result);
-                self.try_update_coherency(block_id)
+
+                // check if this result is for a proposal N that is waiting on N-K
+                trace!("Received proposed StateRoot for {:?}", seq_num.0);
+                match self.consensus.pending_proposals.get(&seq_num) {
+                    Some(p) => self.handle_proposal_message(p.0, p.1.clone()),
+                    None => self.try_update_coherency(block_id),
+                }
             }
         }
     }
@@ -405,9 +418,27 @@ where
 
         let state_root_action = self.state_root_hash_validation(&p);
 
-        if matches!(state_root_action, StateRootAction::Reject) {
-            return cmds;
+        match state_root_action {
+            StateRootAction::Reject => {
+                trace!("StateRoot Reject {:?}", p.block_header.seq_num.0);
+                return cmds;
+            }
+            StateRootAction::NotReady => {
+                trace!("StateRoot NotReady {:?}", p.block_header.seq_num.0);
+                // cancel the current round timer
+                cmds.push(ConsensusCommand::ScheduleReset);
+                // store the pending proposal
+                self.consensus.pending_proposals.insert(p.block_header.seq_num, (author,p));
+                return cmds;
+            }
+            StateRootAction::Defer => {
+                trace!("StateRoot Proceed {:?}", p.block_header.seq_num.0);
+            }
+            StateRootAction::Proceed => {
+                trace!("StateRoot Proceed {:?}", p.block_header.seq_num.0);
+            }
         }
+
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
@@ -889,6 +920,8 @@ where
                 "qc triggered commit"
             );
 
+            // if the pending proposal is committed remove
+
             if !blocks_to_commit.is_empty() {
                 for block in blocks_to_commit.iter() {
                     // when epoch boundary block is committed, this updates
@@ -942,6 +975,17 @@ where
                     })
                 {
                     self.consensus.finalized_execution_results.pop_first();
+                }
+
+                while self
+                    .consensus
+                    .pending_proposals
+                    .first_key_value()
+                    .is_some_and(|(&proposed_seq_num, _)| {
+                        proposed_seq_num <= last_committed_block.get_seq_num()
+                    })
+                {
+                    self.consensus.pending_proposals.pop_first();
                 }
 
                 // enter new pacemaker epoch if committing the boundary block
@@ -1411,7 +1455,7 @@ where
                 "execution result not ready, unable to verify"
             );
             self.metrics.consensus_events.rx_execution_lagging += 1;
-            return StateRootAction::Defer;
+            return StateRootAction::NotReady;
         };
 
         if expected_execution_results != p.block_header.delayed_execution_results {
