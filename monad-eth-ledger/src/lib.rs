@@ -161,18 +161,10 @@ where
                         }
                     }
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
-                    let block_round = self
-                        .block_ids
-                        .get(&block_id)
-                        .expect("committed block round doesn't exist");
-                    let block = self
-                        .blocks
-                        .get(block_round)
-                        .expect("committed block doesn't exist");
+                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.finalized.insert(block.get_seq_num(), block.clone());
                     let mut state = self.state.lock().unwrap();
-                    state.ledger_commit(&block_id);
+                    state.ledger_commit(&block.get_id());
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Verified(_)) => {}
                 LedgerCommand::LedgerFetchHeaders(block_range) => {

@@ -186,15 +186,13 @@ where
                         }
                     }
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
-                    let round = self
-                        .block_ids
-                        .get(&block_id)
-                        .expect("must have proposed block");
-                    let block = self.blocks.get(round).expect("must have committed round");
+                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.committed_blocks
                         .insert(block.get_seq_num(), block.clone());
-                    self.state_backend.lock().unwrap().ledger_commit(&block_id);
+                    self.state_backend
+                        .lock()
+                        .unwrap()
+                        .ledger_commit(&block.get_id());
                 }
                 LedgerCommand::LedgerCommit(OptimisticCommit::Verified(_)) => {}
                 LedgerCommand::LedgerFetchHeaders(block_range) => {

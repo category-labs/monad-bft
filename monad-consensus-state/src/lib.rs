@@ -899,10 +899,9 @@ where
                     self.epoch_manager
                         .schedule_epoch_start(block.get_seq_num(), block.get_round());
 
-                    cmds.push(ConsensusCommand::LedgerCommit(
-                        block.get_seq_num(),
-                        OptimisticCommit::Committed(block.get_id()),
-                    ));
+                    cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Finalized(
+                        block.deref().clone(),
+                    )));
 
                     if let Some(execution_result) = self
                         .consensus
@@ -1044,10 +1043,9 @@ where
             self.state_backend,
         ) {
             // optimistically commit any block that has been added to the blocktree and is coherent
-            cmds.push(ConsensusCommand::LedgerCommit(
-                newly_coherent_block.get_seq_num(),
-                OptimisticCommit::Proposed(newly_coherent_block.deref().clone()),
-            ));
+            cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Proposed(
+                newly_coherent_block.deref().clone(),
+            )));
         }
 
         let high_commit_qc = self.consensus.pending_block_tree.get_high_committable_qc();
@@ -2025,8 +2023,8 @@ mod test {
     {
         cmds.iter()
             .filter_map(|c| match c {
-                ConsensusCommand::LedgerCommit(OptimisticCommit::Committed(committed)) => {
-                    Some(committed)
+                ConsensusCommand::LedgerCommit(OptimisticCommit::Finalized(committed)) => {
+                    Some(committed.get_id())
                 }
                 _ => None,
             })
@@ -2984,7 +2982,7 @@ mod test {
         assert_eq!(cmds.len(), 6);
         assert!(matches!(
             cmds[0],
-            ConsensusCommand::LedgerCommit(OptimisticCommit::Committed(_))
+            ConsensusCommand::LedgerCommit(OptimisticCommit::Finalized(_))
         ));
         assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave(_)));
         assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));

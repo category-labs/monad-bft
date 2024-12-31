@@ -153,9 +153,6 @@ where
             metrics: Default::default(),
             last_commit,
 
-            // FIXME this currently needs to be bigger than max statesync
-            // buffer size, cuz committed proposed block must exist in
-            // cache
             block_cache_size: 1_000, // TODO configurable
 
             block_cache: Default::default(),
@@ -375,15 +372,12 @@ where
 
                     self.mark_proposed(&block_id.0 .0).unwrap();
                 }
-                LedgerCommand::LedgerCommit(OptimisticCommit::Committed(block_id)) => {
+                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
                     self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
 
-                    let block = self
-                        .block_cache
-                        .get(&block_id)
-                        .expect("must have committed proposed block (in cache)");
+                    let block_id = block.get_id();
                     let block_round = block.get_round();
-                    let executable_block = ExecutableBlock::from(block);
+                    let executable_block = ExecutableBlock::from(&block);
                     let num_tx = executable_block.num_tx() as u64;
                     let block_num = executable_block.number();
                     info!(num_tx, block_num, "committed block");

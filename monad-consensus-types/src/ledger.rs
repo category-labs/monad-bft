@@ -7,7 +7,10 @@ use monad_types::BlockId;
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
-use crate::{block::{ConsensusFullBlock, ExecutionProtocol}, signature_collection::SignatureCollection};
+use crate::{
+    block::{ConsensusFullBlock, ExecutionProtocol},
+    signature_collection::SignatureCollection,
+};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, Serialize, Deserialize)]
@@ -71,6 +74,6 @@ where
     EPT: ExecutionProtocol,
 {
     Proposed(ConsensusFullBlock<ST, SCT, EPT>),
-    Committed(BlockId),
+    Finalized(ConsensusFullBlock<ST, SCT, EPT>),
     Verified(BlockId),
 }

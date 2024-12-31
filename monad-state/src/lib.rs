@@ -1289,7 +1289,7 @@ where
                 OptimisticCommit::Proposed(block.deref().clone()),
             )));
             commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                OptimisticCommit::Committed(block.get_id()),
+                OptimisticCommit::Finalized(block.deref().clone()),
             )));
             commands.push(Command::StateRootHashCommand(
                 StateRootHashCommand::RequestFinalized(block.get_seq_num()),

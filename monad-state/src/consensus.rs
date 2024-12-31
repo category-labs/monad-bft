@@ -417,12 +417,12 @@ where
             ConsensusCommand::StartExecution => {
                 parent_cmds.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
             }
-            ConsensusCommand::LedgerCommit(seq_num, cmd) => {
+            ConsensusCommand::LedgerCommit(cmd) => {
                 match cmd {
                     OptimisticCommit::Proposed(block) => {
-                        assert_eq!(seq_num, block.get_seq_num());
                         let block_id = block.get_id();
                         let round = block.get_round();
+                        let seq_num = block.get_seq_num();
                         parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
                             OptimisticCommit::Proposed(block),
                         )));
@@ -430,12 +430,13 @@ where
                             StateRootHashCommand::RequestProposed(block_id, seq_num, round),
                         ));
                     }
-                    OptimisticCommit::Committed(block_id) => {
+                    OptimisticCommit::Finalized(block) => {
+                        let finalized_seq_num = block.get_seq_num();
                         parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                            OptimisticCommit::Committed(block_id),
+                            OptimisticCommit::Finalized(block),
                         )));
                         parent_cmds.push(Command::StateRootHashCommand(
-                            StateRootHashCommand::RequestFinalized(seq_num),
+                            StateRootHashCommand::RequestFinalized(finalized_seq_num),
                         ));
                         parent_cmds.push(Command::StateRootHashCommand(
                             // upon committing block N, we no longer need state_root_N-delay
@@ -444,7 +445,7 @@ where
                             // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
                             // exactly `delay` number of roots
                             StateRootHashCommand::CancelBelow(
-                                (seq_num + SeqNum(1)).max(wrapped.state_root_delay)
+                                (finalized_seq_num + SeqNum(1)).max(wrapped.state_root_delay)
                                     - wrapped.state_root_delay,
                             ),
                         ));
