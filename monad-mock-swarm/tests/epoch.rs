@@ -239,7 +239,7 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num = val_set_update_interval;
+        let update_block_num = val_set_update_interval - SeqNum(1);
         // terminates when any node produced more than `until_block` blocks. we
         // want the longest ledger to be shorter than update_block_num
         let mut term_before_update_block =
@@ -346,7 +346,7 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num = val_set_update_interval;
+        let update_block_num = val_set_update_interval - SeqNum(1);
 
         let mut term_before_update_block =
             UntilTerminator::new().until_block((update_block_num.0 - 2) as usize);
@@ -539,7 +539,7 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num_end_1 = val_set_update_interval;
+        let update_block_num_end_1 = val_set_update_interval - SeqNum(1);
 
         let mut term_on_schedule_epoch_2 =
             UntilTerminator::new().until_block(update_block_num_end_1.0 as usize + 1);
@@ -561,7 +561,7 @@ mod test {
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        let update_block_num_end_2 = SeqNum(val_set_update_interval.0 * 2);
+        let update_block_num_end_2 = SeqNum(val_set_update_interval.0 * 2) - SeqNum(1);
 
         let mut term_on_schedule_epoch_3 =
             UntilTerminator::new().until_block(update_block_num_end_2.0 as usize + 1);
@@ -583,7 +583,7 @@ mod test {
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
 
-        let update_block_num_end_3 = SeqNum(val_set_update_interval.0 * 3);
+        let update_block_num_end_3 = SeqNum(val_set_update_interval.0 * 3) - SeqNum(1);
 
         let mut term_on_schedule_epoch_4 =
             UntilTerminator::new().until_block(update_block_num_end_3.0 as usize + 1);

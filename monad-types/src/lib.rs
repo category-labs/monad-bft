@@ -233,21 +233,16 @@ impl SeqNum {
     /// Compute the epoch that the sequence number belong to. It does NOT mean
     /// that the block is proposed in the epoch
     ///
-    /// [0, val_set_update_interval] -> Epoch 1
-    /// [val_set_update_interval + 1, 2 * val_set_update_interval] -> Epoch 2
-    /// ... The first epoch is one block longer than all other ones
+    /// [0, val_set_update_interval-1] -> Epoch 1
+    /// [val_set_update_interval, (2 * val_set_update_interval)-1] -> Epoch 2
     pub fn to_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        Epoch((self.0.saturating_sub(1) / val_set_update_interval.0) + 1)
+        Epoch((self.0 / val_set_update_interval.0) + 1)
     }
 
-    /// The first epoch starts with SeqNum 0 and end with 100. Every epoch
-    /// afterwards starts at SeqNum (X * interval) + 1 and end with (X *
-    /// interval + interval)
-    ///
     /// This tells us what the boundary block of the epoch is. Note that this only indicates when
     /// the next epoch's round is scheduled.
     pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
-        *self % val_set_update_interval == SeqNum(0) && *self != SeqNum(0)
+        *self % val_set_update_interval == val_set_update_interval - SeqNum(1)
     }
 
     /// Get the epoch number whose validator set is locked by this block. Should
