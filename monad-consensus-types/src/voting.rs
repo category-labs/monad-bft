@@ -39,10 +39,6 @@ pub struct Vote {
     pub epoch: Epoch,
     /// round of the proposed block
     pub round: Round,
-    /// parent block id of the proposed block
-    pub parent_id: BlockId,
-    /// parent round of the proposed block
-    pub parent_round: Round,
 }
 
 impl Hashable for Vote {
@@ -57,8 +53,6 @@ impl std::fmt::Debug for Vote {
             .field("id", &self.id)
             .field("epoch", &self.epoch)
             .field("r", &self.round)
-            .field("pid", &self.parent_id)
-            .field("pr", &self.parent_round)
             .finish()
     }
 }
@@ -69,8 +63,6 @@ impl DontCare for Vote {
             id: BlockId(Hash([0x0_u8; 32])),
             epoch: Epoch(1),
             round: Round(0),
-            parent_id: BlockId(Hash([0x0_u8; 32])),
-            parent_round: Round(0),
         }
     }
 }

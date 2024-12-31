@@ -871,92 +871,109 @@ where
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
-        if qc.is_commitable()
-            && self
-                .consensus
-                .pending_block_tree
-                .is_coherent(&qc.info.parent_id)
+        let Some(parent_block) = self.consensus.pending_block_tree.get_block(&qc.info.id) else {
+            // parent isn't available, nothing to commit
+            return cmds;
+        };
+
+        let Some(committable_block_id) = qc.check_committable(parent_block.header()) else {
+            // qc is not committable (not consecutive rounds)
+            return cmds;
+        };
+        if committable_block_id == self.consensus.pending_block_tree.root().block_id {
+            // nothing new to commit
+            return cmds;
+        }
+
+        if !self
+            .consensus
+            .pending_block_tree
+            .is_coherent(&committable_block_id)
         {
-            let blocks_to_commit = self.consensus.pending_block_tree.prune(&qc.info.parent_id);
+            // the committable block is not (yet) coherent
+            // likely because execution is lagging
+            return cmds;
+        }
 
-            debug!(
-                num_commits = ?blocks_to_commit.len(),
-                "qc triggered commit"
-            );
+        let blocks_to_commit = self
+            .consensus
+            .pending_block_tree
+            .prune(&committable_block_id);
 
-            if !blocks_to_commit.is_empty() {
-                for block in blocks_to_commit.iter() {
-                    // when epoch boundary block is committed, this updates
-                    // epoch manager records
-                    self.metrics.consensus_events.commit_block += 1;
-                    self.block_policy.update_committed_block(block);
-                    self.tx_pool.update_committed_block(block);
-                    self.epoch_manager
-                        .schedule_epoch_start(block.get_seq_num(), block.get_round());
+        debug!(
+            num_commits = ?blocks_to_commit.len(),
+            "qc triggered commit"
+        );
 
-                    cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Finalized(
-                        block.deref().clone(),
-                    )));
+        let last_committed_block = blocks_to_commit
+            .last()
+            .expect("blocks_to_commit is not empty, we checked root already");
+        let last_committed_round = last_committed_block.get_round();
+        let last_committed_seq_num = last_committed_block.get_seq_num();
 
-                    if let Some(execution_result) = self
-                        .consensus
-                        .proposed_execution_results
-                        .remove(&block.get_round())
-                    {
-                        if execution_result.block_id == block.get_id() {
-                            assert_eq!(execution_result.seq_num, block.get_seq_num());
-                            self.consensus
-                                .finalized_execution_results
-                                .insert(block.get_seq_num(), execution_result.result);
-                        }
-                    }
-                }
+        for block in blocks_to_commit {
+            self.metrics.consensus_events.commit_block += 1;
+            self.block_policy.update_committed_block(&block);
+            self.tx_pool.update_committed_block(&block);
+            // when epoch boundary block is committed, this updates
+            // epoch manager records
+            self.epoch_manager
+                .schedule_epoch_start(block.get_seq_num(), block.get_round());
 
-                let last_committed_block = blocks_to_commit
-                    .last()
-                    .expect("blocks_to_commit is not empty");
+            cmds.push(ConsensusCommand::LedgerCommit(OptimisticCommit::Finalized(
+                block.deref().clone(),
+            )));
 
-                while self
-                    .consensus
-                    .proposed_execution_results
-                    .first_key_value()
-                    .is_some_and(|(proposed_round, _)| {
-                        proposed_round <= &last_committed_block.get_round()
-                    })
-                {
-                    self.consensus.proposed_execution_results.pop_first();
-                }
-
-                while self
-                    .consensus
-                    .finalized_execution_results
-                    .first_key_value()
-                    .is_some_and(|(&finalized_seq_num, _)| {
-                        finalized_seq_num + self.config.execution_delay
-                            <= last_committed_block.get_seq_num()
-                    })
-                {
-                    self.consensus.finalized_execution_results.pop_first();
-                }
-
-                // enter new pacemaker epoch if committing the boundary block
-                // bumps the current epoch
-                cmds.extend(
+            if let Some(execution_result) = self
+                .consensus
+                .proposed_execution_results
+                .remove(&block.get_round())
+            {
+                if execution_result.block_id == block.get_id() {
+                    assert_eq!(execution_result.seq_num, block.get_seq_num());
                     self.consensus
-                        .pacemaker
-                        .advance_epoch(self.epoch_manager)
-                        .into_iter()
-                        .map(|cmd| {
-                            ConsensusCommand::from_pacemaker_command(
-                                self.keypair,
-                                self.cert_keypair,
-                                self.version,
-                                cmd,
-                            )
-                        }),
-                );
+                        .finalized_execution_results
+                        .insert(block.get_seq_num(), execution_result.result);
+                }
             }
         }
+
+        while self
+            .consensus
+            .proposed_execution_results
+            .first_key_value()
+            .is_some_and(|(proposed_round, _)| proposed_round <= &last_committed_round)
+        {
+            self.consensus.proposed_execution_results.pop_first();
+        }
+
+        while self
+            .consensus
+            .finalized_execution_results
+            .first_key_value()
+            .is_some_and(|(&finalized_seq_num, _)| {
+                finalized_seq_num + self.config.execution_delay <= last_committed_seq_num
+            })
+        {
+            self.consensus.finalized_execution_results.pop_first();
+        }
+
+        // enter new pacemaker epoch if committing the boundary block
+        // bumps the current epoch
+        cmds.extend(
+            self.consensus
+                .pacemaker
+                .advance_epoch(self.epoch_manager)
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                }),
+        );
         cmds
     }
 

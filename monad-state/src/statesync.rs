@@ -28,9 +28,6 @@ where
     /// trigger resync once passively observe new_root > current_root + resync_threshold
     resync_threshold: SeqNum,
     state_root_delay: SeqNum,
-    /// Different in sequence number between a block that satisfies the commit condition and the
-    /// seqnum that gets committed
-    commit_distance: SeqNum,
 
     root: BlockId,
     // blocks <= root
@@ -49,17 +46,11 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(
-        state_root_delay: SeqNum,
-        root: BlockId,
-        resync_threshold: SeqNum,
-        commit_distance: SeqNum,
-    ) -> Self {
+    pub fn new(state_root_delay: SeqNum, root: BlockId, resync_threshold: SeqNum) -> Self {
         Self {
             max_buffered_proposals: resync_threshold.0 as usize,
             resync_threshold,
             state_root_delay,
-            commit_distance,
 
             root,
 
@@ -118,34 +109,31 @@ where
         if proposal.block_header.seq_num < root_seq_num {
             return None;
         }
-        let block_header = proposal.block_header.clone();
-        self.block_headers
-            .insert(proposal.block_header.get_id(), block_header.clone());
+        self.block_headers.insert(
+            proposal.block_header.get_id(),
+            proposal.block_header.clone(),
+        );
 
+        let proposal_block_header = proposal.block_header.clone();
         self.proposal_buffer.push_back((author, proposal));
+
         if self.proposal_buffer.len() > self.max_buffered_proposals {
             self.proposal_buffer.pop_front();
         }
 
-        if block_header.qc.is_commitable() {
-            let latest_seq_num =
-                if let Some(b) = self.block_headers.get(&block_header.get_parent_id()) {
-                    b.seq_num
-                } else {
-                    return None;
-                };
+        let proposal_parent_block = self
+            .block_headers
+            .get(&proposal_block_header.get_parent_id())?;
 
-            let committed_seq_num = latest_seq_num - self.commit_distance + SeqNum(1);
-            if committed_seq_num > root_seq_num + self.resync_threshold {
-                let target_blockid = block_header.qc.info.parent_id;
-                if let Some(target_block) = self.block_headers.get(&target_blockid) {
-                    assert_eq!(target_block.seq_num, committed_seq_num);
-                    return Some((target_block.clone(), block_header.qc.clone()));
-                };
-            }
+        let finalized_block_id = proposal_block_header
+            .qc
+            .check_committable(proposal_parent_block)?;
+        let finalized_block = self.block_headers.get(&finalized_block_id)?;
+        if finalized_block.seq_num <= root_seq_num + self.resync_threshold {
+            return None;
         }
 
-        None
+        Some((finalized_block.clone(), proposal_block_header.qc.clone()))
     }
 
     pub fn handle_blocksync(&mut self, block: ConsensusFullBlock<ST, SCT, EPT>) {

@@ -239,8 +239,6 @@ where
             id: block.get_id(),
             epoch: block.epoch,
             round: block.round,
-            parent_id: block.qc.get_block_id(),
-            parent_round: block.qc.get_round(),
         };
 
         let msg = HasherType::hash_object(&vote);

@@ -8,8 +8,6 @@ impl From<&Vote> for ProtoVote {
             id: Some((&vi.id).into()),
             epoch: Some((&vi.epoch).into()),
             round: Some((&vi.round).into()),
-            parent_id: Some((&vi.parent_id).into()),
-            parent_round: Some((&vi.parent_round).into()),
         }
     }
 }
@@ -28,18 +26,6 @@ impl TryFrom<ProtoVote> for Vote {
             round: proto_vi
                 .round
                 .ok_or(Self::Error::MissingRequiredField("Vote.round".to_owned()))?
-                .try_into()?,
-            parent_id: proto_vi
-                .parent_id
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Vote.parent_id".to_owned(),
-                ))?
-                .try_into()?,
-            parent_round: proto_vi
-                .parent_round
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Vote.parent_round".to_owned(),
-                ))?
                 .try_into()?,
         })
     }

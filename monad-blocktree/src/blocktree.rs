@@ -304,24 +304,57 @@ where
 
     /// Iterate the block tree and return highest QC that have path to block tree
     /// root and is committable, if exists
+    ///
+    /// TODO this does not take high_qc into account, which makes this more pessimistic than it
+    /// needs to be
     pub fn get_high_committable_qc(&self) -> Option<QuorumCertificate<SCT>> {
         let mut high_commit_qc: Option<QuorumCertificate<SCT>> = None;
         let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
         while let Some(bid) = iter.pop_front() {
             let block = self.tree.get(&bid).expect("block in tree");
-            let qc = block.validated_block.get_qc();
 
-            if qc.is_commitable()
-                && self.is_coherent(&qc.info.parent_id)
-                && high_commit_qc
-                    .as_ref()
-                    .map(|high_commit_qc| high_commit_qc.get_round() < qc.get_round())
-                    .unwrap_or(true)
+            // queue up children
+            iter.extend(block.children_blocks.iter().cloned());
+
+            let qc = block.validated_block.get_qc();
+            if high_commit_qc
+                .as_ref()
+                .is_some_and(|high_commit_qc| high_commit_qc.get_round() >= qc.get_round())
             {
-                high_commit_qc = Some(qc.clone());
+                // we already have observed a higher committable QC
+                //
+                // pretty sure this can never happen because we're BFS from root, so we could
+                // potentially panic here
+                continue;
             }
 
-            iter.extend(block.children_blocks.iter().cloned())
+            let Some(parent_block) = self.get_block(&qc.get_block_id()) else {
+                // parent isn't available, nothing to commit
+                assert_eq!(
+                    qc.get_block_id(),
+                    self.root.info.block_id,
+                    "missing parent must be root because BFS happens from root"
+                );
+                continue;
+            };
+
+            let Some(committable_block_id) = qc.check_committable(parent_block.header()) else {
+                // qc is not committable (not consecutive rounds)
+                continue;
+            };
+            if committable_block_id == self.root.info.block_id {
+                // nothing new to commit
+                continue;
+            }
+
+            if !self.is_coherent(&committable_block_id) {
+                // the committable block is not (yet) coherent, likely because execution is lagging
+                //
+                // TODO can we return out early here, because we're BFS?
+                continue;
+            }
+
+            high_commit_qc = Some(qc.clone());
         }
         high_commit_qc
     }

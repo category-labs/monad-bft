@@ -81,6 +81,10 @@ where
     pub fn get_parent_id(&self) -> BlockId {
         self.qc.get_block_id()
     }
+
+    pub fn get_parent_round(&self) -> Round {
+        self.qc.get_round()
+    }
 }
 
 impl<ST, SCT, EPT> PartialEq for ConsensusBlockHeader<ST, SCT, EPT>

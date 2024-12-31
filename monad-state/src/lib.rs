@@ -848,7 +848,6 @@ where
                     self.consensus_config.execution_delay,
                     self.forkpoint.root,
                     statesync_to_live_threshold,
-                    SeqNum(2),
                 ),
             ),
             block_sync: BlockSync::default(),

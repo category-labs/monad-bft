@@ -127,8 +127,6 @@ impl Safety {
                 id: block.get_id(),
                 epoch: block.get_epoch(),
                 round: block.get_round(),
-                parent_id: block.get_parent_id(),
-                parent_round: block.get_parent_round(),
             };
 
             return Some(vote);
