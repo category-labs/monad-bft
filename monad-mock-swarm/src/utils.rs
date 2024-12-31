@@ -16,7 +16,9 @@ pub mod test_tool {
             BlockRange, ConsensusBlockHeader, MockExecutionBody, MockExecutionProposedHeader,
             MockExecutionProtocol,
         },
-        payload::{ConsensusBlockBody, FullTransactionList, RoundSignature},
+        payload::{
+            ConsensusBlockBody, ConsensusBlockBodyInner, FullTransactionList, RoundSignature,
+        },
         quorum_certificate::QuorumCertificate,
         state_root_hash::StateRootHash,
         timeout::{Timeout, TimeoutInfo},
@@ -70,11 +72,11 @@ pub mod test_tool {
     }
 
     pub fn fake_block(round: Round) -> (ConsensusBlockHeader<ST, SC, EP>, ConsensusBlockBody<EP>) {
-        let body = ConsensusBlockBody {
+        let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: MockExecutionBody {
                 data: Bytes::default(),
             },
-        };
+        });
 
         (
             ConsensusBlockHeader::new(

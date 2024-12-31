@@ -10,7 +10,10 @@ use monad_consensus_types::{
         MockExecutionProposedHeader, MockExecutionProtocol,
     },
     ledger::CommitResult,
-    payload::{ConsensusBlockBody, FullTransactionList, ProposedEthHeader, RoundSignature},
+    payload::{
+        ConsensusBlockBody, ConsensusBlockBodyInner, FullTransactionList, ProposedEthHeader,
+        RoundSignature,
+    },
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
@@ -116,11 +119,11 @@ where
 
         let seq_num = self.last_seq_num + SeqNum(1);
         self.last_seq_num = seq_num;
-        let block_body = ConsensusBlockBody {
+        let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: MockExecutionBody {
                 data: Default::default(),
             },
-        };
+        });
         let block_header = ConsensusBlockHeader::new(
             NodeId::new(leader_key.pubkey()),
             self.epoch,

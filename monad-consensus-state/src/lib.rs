@@ -23,7 +23,7 @@ use monad_consensus_types::{
     checkpoint::{Checkpoint, RootInfo},
     ledger::OptimisticCommit,
     metrics::Metrics,
-    payload::{ConsensusBlockBody, RoundSignature},
+    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, RoundSignature},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -1296,9 +1296,9 @@ where
         // create proposal
 
         self.metrics.consensus_events.creating_proposal += 1;
-        let block_body = ConsensusBlockBody {
+        let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: proposed_execution_inputs.body,
-        };
+        });
         let b = ConsensusBlockHeader::new(
             node_id,
             epoch,

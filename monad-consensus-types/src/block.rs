@@ -369,7 +369,7 @@ pub trait ExecutionProtocol:
         + Unpin
         + Encodable
         + Decodable;
-    type Body: Debug + Clone + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable;
+    type Body: Debug + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable;
 
     /// output of execution
     type FinalizedHeader: FinalizedHeader;

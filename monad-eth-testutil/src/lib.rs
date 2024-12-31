@@ -4,7 +4,10 @@ use alloy_consensus::{transaction::Transaction as _, TxLegacy};
 use alloy_primitives::{keccak256, Address, FixedBytes, TxKind, U256};
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock},
-    payload::{ConsensusBlockBody, EthBlockBody, FullTransactionList, RoundSignature},
+    payload::{
+        ConsensusBlockBody, ConsensusBlockBodyInner, EthBlockBody, FullTransactionList,
+        RoundSignature,
+    },
     quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
@@ -54,13 +57,13 @@ pub fn generate_block_with_txs(
     seq_num: SeqNum,
     txs: Vec<TransactionSigned>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
-    let body = ConsensusBlockBody {
+    let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
             transactions: txs.clone(),
             ommers: Vec::default(),
             withdrawals: Vec::default(),
         },
-    };
+    });
 
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 

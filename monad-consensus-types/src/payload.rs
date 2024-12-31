@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
 use crate::block::{ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader};
 use alloy_primitives::Address;
@@ -155,15 +155,38 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
 
 /// Contents of a proposal that are part of the Monad protocol
 /// but not in the core bft consensus protocol
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct ConsensusBlockBody<EPT>
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
+pub struct ConsensusBlockBody<EPT>(Arc<ConsensusBlockBodyInner<EPT>>)
+where
+    EPT: ExecutionProtocol;
+impl<EPT> ConsensusBlockBody<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    pub fn new(body: ConsensusBlockBodyInner<EPT>) -> Self {
+        Self(body.into())
+    }
+}
+impl<EPT> Deref for ConsensusBlockBody<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    type Target = ConsensusBlockBodyInner<EPT>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct ConsensusBlockBodyInner<EPT>
 where
     EPT: ExecutionProtocol,
 {
     pub execution_body: EPT::Body,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TransactionSigned>,
@@ -171,9 +194,9 @@ pub struct EthBlockBody {
     pub withdrawals: Vec<Withdrawal>,
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Ommer {}
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Withdrawal {}
 
 impl std::fmt::Debug for EthBlockBody {

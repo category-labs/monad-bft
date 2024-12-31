@@ -23,7 +23,8 @@ use crate::{
         ProposedExecutionResult,
     },
     payload::{
-        Bloom, ConsensusBlockBody, ConsensusBlockBodyId, FullTransactionList, Gas, RoundSignature,
+        Bloom, ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner,
+        FullTransactionList, Gas, RoundSignature,
     },
     signature_collection::SignatureCollection,
 };
@@ -285,11 +286,11 @@ where
 {
     type Error = ProtoError;
     fn try_from(value: ProtoBlockBody) -> Result<Self, Self::Error> {
-        Ok(Self {
+        Ok(Self::new(ConsensusBlockBodyInner {
             execution_body: EPT::Body::decode(&mut value.execution_body.as_ref()).map_err(
                 |_err| Self::Error::DeserializeError("BlockBody.execution_body".to_owned()),
             )?,
-        })
+        }))
     }
 }
 
