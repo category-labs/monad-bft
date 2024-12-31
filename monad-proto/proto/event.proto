@@ -247,6 +247,20 @@ message ProtoStateSyncEvent {
   }
 }
 
+message PingRequestEvent {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message PingResponseEvent {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message PingTickEvent {
+
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -258,5 +272,8 @@ message ProtoMonadEvent{
     ProtoControlPanelEvent control_panel_event = 7;
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
+    PingRequestEvent ping_request = 10;
+    PingResponseEvent ping_response = 11;
+    PingTickEvent ping_tick = 12;
   }
 }

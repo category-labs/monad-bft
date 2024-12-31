@@ -247,7 +247,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
                     .ready()
                     .then_some((self.tick, ExecutorEventType::StateSync)),
             )
-            .min()
+            .min_by(|(a, _), (b, _)| a.cmp(b))
     }
 
     pub fn peek_tick(&self) -> Option<Duration> {

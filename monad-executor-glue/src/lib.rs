@@ -25,7 +25,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{Epoch, NodeId, PingSequence, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -62,6 +62,7 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
     SendVote,
+    Ping,
 }
 
 #[derive(Debug)]
@@ -548,6 +549,12 @@ pub enum StateSyncEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingEvent<SCT: SignatureCollection> {
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub sequence: PingSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
@@ -588,6 +595,9 @@ where
     TimestampUpdateEvent(u64),
     /// Events to statesync
     StateSyncEvent(StateSyncEvent<SCT>),
+    PingRequestEvent(PingEvent<SCT>),
+    PingResponseEvent(PingEvent<SCT>),
+    PingTickEvent,
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
@@ -653,6 +663,13 @@ where
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
+            MonadEvent::PingRequestEvent(e) => {
+                format!("PingRequestEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingResponseEvent(e) => {
+                format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
         };
 
         write!(f, "{}", s)

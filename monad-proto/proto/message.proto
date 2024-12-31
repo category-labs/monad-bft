@@ -103,6 +103,14 @@ message ProtoStateSyncNetworkMessage {
   }
 }
 
+message ProtoPingRequest {
+  uint64 sequence = 1;
+}
+
+message ProtoPingResponse {
+  uint64 sequence = 1;
+}
+
 message ProtoMonadMessage {
   oneof OneofMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
@@ -111,6 +119,8 @@ message ProtoMonadMessage {
     ProtoPeerStateRootMessage peer_state_root = 4;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
+    ProtoPingRequest ping_request = 7;
+    ProtoPingResponse ping_response = 8;
   }
 }
 message ProtoDiscoveryRequest {
