@@ -49,9 +49,8 @@ impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
 
 impl<SCT: SignatureCollection> VoteMessage<SCT> {
     pub fn new(vote: Vote, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
-        let vote_hash = HasherType::hash_object(&vote);
-
-        let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), key);
+        let vote_enc = alloy_rlp::encode(&vote);
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_enc.as_ref(), key);
 
         Self { vote, sig }
     }

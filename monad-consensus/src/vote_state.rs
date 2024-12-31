@@ -119,12 +119,13 @@ where
             .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
         {
             assert!(round >= self.earliest_round);
+            let vote_enc = alloy_rlp::encode(vote);
             match SCT::new(
                 round_pending_votes
                     .iter()
                     .map(|(node, signature)| (*node, *signature)),
                 validator_mapping,
-                vote_idx.as_ref(),
+                vote_enc.as_ref(),
             ) {
                 Ok(sigcol) => {
                     let qc = QuorumCertificate::<SCT>::new(vote, sigcol);

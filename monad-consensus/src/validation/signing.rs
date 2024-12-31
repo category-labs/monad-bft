@@ -537,7 +537,7 @@ where
             return Err(Error::InvalidSignature);
         }
     }
-    let qc_msg = HasherType::hash_object(&qc.info);
+    let qc_msg = alloy_rlp::encode(&qc.info);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
