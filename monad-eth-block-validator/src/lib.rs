@@ -22,6 +22,7 @@ use monad_eth_block_policy::{
 };
 use monad_eth_types::{EthAddress, Nonce, TxEnvelopeWithSigner};
 use monad_state_backend::StateBackend;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
 type NonceMap = BTreeMap<EthAddress, Nonce>;
@@ -88,7 +89,7 @@ where
 
         // recovering the signers verifies that these are valid signatures
         let signers: Vec<Address> = transactions
-            .iter()
+            .into_par_iter()
             .map(|tx| tx.recover_signer().map_err(|_| BlockValidationError::TxnError))
             .collect::<Result<Vec<_>, _>>()?;
 

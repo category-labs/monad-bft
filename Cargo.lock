@@ -4549,6 +4549,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-state-backend",
+ "rayon",
  "reth-primitives",
  "tracing",
 ]
