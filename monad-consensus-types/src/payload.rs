@@ -135,7 +135,8 @@ pub struct RoundSignature<CST: CertificateSignature>(pub CST);
 impl<CST: CertificateSignature> RoundSignature<CST> {
     /// TODO should this incorporate parent_block_id to increase "randomness"?
     pub fn new(round: Round, keypair: &CST::KeyPairType) -> Self {
-        Self(CST::sign(&round.0.to_le_bytes(), keypair))
+        let encoded_round = alloy_rlp::encode(&round);
+        Self(CST::sign(&encoded_round, keypair))
     }
 
     pub fn verify(
@@ -143,7 +144,8 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
         round: Round,
         pubkey: &CertificateSignaturePubKey<CST>,
     ) -> Result<(), CST::Error> {
-        self.0.verify(&round.0.to_le_bytes(), pubkey)
+        let encoded_round = alloy_rlp::encode(&round);
+        self.0.verify(&encoded_round, pubkey)
     }
 
     pub fn get_hash(&self) -> Hash {
