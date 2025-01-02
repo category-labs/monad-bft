@@ -54,8 +54,12 @@ impl AsRef<[u8]> for Round {
 impl Add for Round {
     type Output = Self;
 
-    fn add(self, other: Self) -> Self::Output {
-        Round(self.0 + other.0)
+    fn add(self, rhs: Self) -> Self::Output {
+        Round(
+            self.0
+                .checked_add(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} + {:?}", self.0, rhs.0)),
+        )
     }
 }
 
@@ -63,13 +67,17 @@ impl Sub for Round {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        Round(self.0 - rhs.0)
+        Round(
+            self.0
+                .checked_sub(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} - {:?}", self.0, rhs.0)),
+        )
     }
 }
 
 impl AddAssign for Round {
     fn add_assign(&mut self, other: Self) {
-        self.0 += other.0
+        *self = *self + other
     }
 }
 
@@ -110,7 +118,11 @@ impl Add for Epoch {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
+        Epoch(
+            self.0
+                .checked_add(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} + {:?}", self.0, rhs.0)),
+        )
     }
 }
 
@@ -377,8 +389,12 @@ pub struct Stake(pub i64);
 impl Add for Stake {
     type Output = Self;
 
-    fn add(self, other: Self) -> Self::Output {
-        Stake(self.0 + other.0)
+    fn add(self, rhs: Self) -> Self::Output {
+        Stake(
+            self.0
+                .checked_add(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} + {:?}", self.0, rhs.0)),
+        )
     }
 }
 
@@ -386,19 +402,23 @@ impl Sub for Stake {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        Stake(self.0 - rhs.0)
+        Stake(
+            self.0
+                .checked_sub(rhs.0)
+                .unwrap_or_else(|| panic!("{:?} - {:?}", self.0, rhs.0)),
+        )
     }
 }
 
 impl AddAssign for Stake {
     fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0
+        *self = *self + rhs
     }
 }
 
 impl SubAssign for Stake {
     fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0
+        *self = *self - rhs
     }
 }
 
