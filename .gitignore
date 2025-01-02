@@ -12,3 +12,4 @@ test-keys
 .vscode
 *.swp
 .idea
+.cargo/config.toml

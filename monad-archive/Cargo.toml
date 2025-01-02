@@ -32,10 +32,12 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
+base64 = { workspace = true } 
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
+enum_dispatch = "0.3.13"
 eyre = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
@@ -55,3 +57,6 @@ tokio = { workspace = true, features = [
 tokio-retry = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+reqwest = { workspace = true }
+rocksdb = "0.22.0"
+url = { workspace = true }

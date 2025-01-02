@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_archive::BlockDataReaderArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive-checker", about, long_about = None)]
@@ -8,13 +9,10 @@ pub struct Cli {
     #[arg(long)]
     pub checker_path: PathBuf,
 
-    #[arg(long, value_delimiter = ',')]
-    pub s3_buckets: Vec<String>,
+    #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(BlockDataReaderArgs))]
+    pub sources: Vec<BlockDataReaderArgs>,
 
-    #[arg(long, value_delimiter = ',')]
-    pub regions: Vec<String>,
-
-    /// Set start checking block number
+    /// Override block number to start at
     #[arg(long, default_value_t = 0)]
     pub start_block: u64,
 

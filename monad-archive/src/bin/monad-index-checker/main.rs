@@ -8,19 +8,18 @@ use std::{
 };
 
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_primitives::hex::ToHexExt;
 use archive_reader::{ArchiveReader, LatestKind::*};
 use chrono::{
     format::{DelayedFormat, StrftimeItems},
     prelude::*,
 };
 use clap::Parser;
-use dynamodb::{DynamoDBArchive, HeaderSubset, TxIndexedData};
 use eyre::{Context, Result};
 use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use metrics::Metrics;
 use monad_archive::*;
-use s3_archive::{get_aws_config, Block, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
@@ -46,14 +45,7 @@ async fn main() -> Result<()> {
     )?;
 
     // Construct s3 and dynamodb connections
-    let reader = ArchiveReader::new(
-        args.archive_bucket,
-        args.db_table,
-        args.region,
-        args.max_concurrent_connections,
-        metrics.clone(),
-    )
-    .await;
+    let reader = args.source.build_archive_reader(&metrics).await?;
 
     let mut latest_checked = args.start_block.unwrap_or(0);
 
@@ -94,9 +86,9 @@ async fn main() -> Result<()> {
             &reader,
             start_block_num,
             end_block_num,
-            args.max_concurrent_connections,
+            args.concurrent_blocks,
             &mut fault_writer,
-            metrics.clone(),
+            &metrics,
         )
         .await
         {
@@ -117,7 +109,7 @@ async fn handle_blocks(
     end_block_num: u64,
     concurrency: usize,
     fault_writer: &mut FaultWriter,
-    metrics: Metrics,
+    metrics: &Metrics,
 ) -> Result<()> {
     let faults: Vec<_> = stream::iter(start_block_num..=end_block_num)
         .map(|block_num| async move {
@@ -191,7 +183,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .body
         .transactions
         .iter()
-        .map(|tx| tx.tx_hash().to_string())
+        .map(|tx| *tx.tx_hash())
         .collect::<Vec<_>>();
 
     let gas_used_vec: Vec<_> = {
@@ -228,16 +220,15 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             trace,
         });
 
-    let fetched = reader.batch_get_txdata(&hashes).await?;
+    let fetched = reader.bulk_get(&hashes).await?;
     let mut faults = Vec::new();
 
     for expected in expected {
-        let key = expected.tx.tx_hash().to_string();
-        let key = key.trim_start_matches("0x");
+        let key = expected.tx.tx_hash();
         let fetched = fetched.get(key);
         let Some(fetched) = fetched else {
             faults.push(Fault::MissingTxhash {
-                txhash: key.to_owned(),
+                txhash: key.encode_hex(),
             });
             continue;
         };
@@ -292,19 +283,19 @@ async fn get_block_data(
             if let Err(e) = block {
                 warn!("Error fetching block: {e:?}");
                 check_result.faults.push(Fault::S3MissingBlock {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             if let Err(e) = traces {
                 warn!("Error fetching traces: {e:?}");
                 check_result.faults.push(Fault::S3MissingTraces {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             if let Err(e) = receipts {
                 warn!("Error fetching receipts: {e:?}");
                 check_result.faults.push(Fault::S3MissingReceipts {
-                    buckets: vec![reader.bucket().to_owned()],
+                    buckets: vec![reader.get_bucket().to_owned()],
                 });
             }
             Err(check_result)

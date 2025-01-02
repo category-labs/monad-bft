@@ -10,7 +10,7 @@ use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
-use monad_archive::{archive_reader::ArchiveReader, metrics::Metrics};
+use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use serde_json::Value;
@@ -38,6 +38,7 @@ use crate::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceCall,
     },
+    eth_json_types::ArchiveReaderType,
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -521,7 +522,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
-    archive_reader: Option<ArchiveReader>,
+    archive_reader: Option<ArchiveReaderType>,
     execution_ledger_path: ExecutionLedgerPath,
     chain_id: u64,
     batch_request_limit: u16,
@@ -543,7 +544,7 @@ impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
-        archive_reader: Option<ArchiveReader>,
+        archive_reader: Option<ArchiveReaderType>,
         execution_ledger_path: Option<PathBuf>,
         chain_id: u64,
         batch_request_limit: u16,
@@ -664,13 +665,29 @@ async fn main() -> std::io::Result<()> {
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
     // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
-    let archive_reader = match (args.s3_bucket, args.index_table, args.region) {
-        (Some(s3_bucket), Some(index_table), Some(region)) => Some(
-            async move {
-                ArchiveReader::new(s3_bucket, index_table, Some(region), 5, Metrics::none()).await
+    let archive_reader = match (
+        args.s3_bucket,
+        args.region,
+        args.archive_url,
+        args.archive_api_key,
+    ) {
+        (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
+            match ArchiveReader::<ArchiveReaderType>::initialize_reader(
+                s3_bucket,
+                Some(region),
+                &archive_url,
+                &archive_api_key,
+                5,
+            )
+            .await
+            {
+                Ok(reader) => Some(reader),
+                Err(e) => {
+                    warn!("Unable to initialize archive reader {e}");
+                    None
+                }
             }
-            .await,
-        ),
+        }
         _ => None,
     };
 

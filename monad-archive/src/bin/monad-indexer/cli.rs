@@ -1,38 +1,34 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
+use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
 pub struct Cli {
-    #[arg(long)]
-    pub s3_bucket: String,
+    /// Source to read block data that will be indexed
+    #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
+    pub block_data_source: BlockDataReaderArgs,
 
-    #[arg(long)]
-    pub region: Option<String>,
+    /// Sink to write index data
+    #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
+    pub archive_sink: ArchiveArgs,
 
-    #[arg(long)]
-    pub db_table: String,
-
-    /// Set the max response size in bytes (the same as monad-rpc)
-    #[arg(long, default_value_t = 25_000_000)]
-    pub max_response_size: u32,
-
-    /// Set the concurrent connections
-    #[arg(long, default_value_t = 5)]
-    pub max_concurrent_connections: usize,
-
-    /// Number of blocks to handle per loop iteration
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 50)]
     pub max_blocks_per_iteration: u64,
 
+    #[arg(long, default_value_t = 10)]
+    pub max_concurrent_blocks: usize,
+
+    /// Resets the latest indexed entry
     #[arg(long, default_value_t = false)]
     pub reset_index: bool,
 
-    /// Block number to start at
+    /// Override block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
 
+    /// Endpoint to push metrics to
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 }

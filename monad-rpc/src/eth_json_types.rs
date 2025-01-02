@@ -3,6 +3,10 @@ use std::str::FromStr;
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
+use monad_archive::{
+    archive_block_data::BlockDataArchive, archive_reader::ArchiveReader,
+    cloud_proxy::CloudProxyReader, storage::BlobStoreErased,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
@@ -11,6 +15,8 @@ use crate::{
     hex::{self, decode, decode_quantity, DecodeHexError},
     jsonrpc::JsonRpcError,
 };
+
+pub type ArchiveReaderType = ArchiveReader<BlockDataArchive<BlobStoreErased>, CloudProxyReader>;
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
