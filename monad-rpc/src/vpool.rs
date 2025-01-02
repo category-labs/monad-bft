@@ -80,7 +80,7 @@ pub struct VirtualPool {
 struct SubPool {
     // Mapping of sender to a transaction tree ordered by nonce
     pool: HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
-    evict: EvictionPolicy,
+    eviction_handler: EvictionPolicy,
     capacity: usize,
 }
 
@@ -88,7 +88,7 @@ impl SubPool {
     fn new(capacity: usize) -> Self {
         Self {
             pool: HashMap::new(),
-            evict: EvictionPolicy {
+            eviction_handler: EvictionPolicy {
                 lru: LruList::new(),
             },
             capacity,
@@ -118,14 +118,14 @@ impl SubPool {
             }
         };
 
-        self.evict.mark_used(txn.signer()).await;
+        self.eviction_handler.mark_used(txn.signer()).await;
     }
 
     async fn evict(&mut self) -> usize {
         let pool_len: usize = self.pool.len();
         let mut evicted: usize = 0;
         while (pool_len - evicted) > self.capacity {
-            if self.evict.evict_lru(&mut self.pool).await {
+            if self.eviction_handler.evict_lru(&mut self.pool).await {
                 evicted += 1;
             }
         }
@@ -275,17 +275,21 @@ impl LruList {
 
     async fn evict_front(&mut self) -> Option<Address> {
         let front_arc = self.head.take()?;
-        let addr = front_arc.lock().await.addr;
-        {
+
+        let addr;
+        let next_arc = {
             let mut front = front_arc.lock().await;
-            let next = front.next.take();
-            if let Some(next_arc) = next {
-                next_arc.lock().await.prev = Weak::new();
-                self.head = Some(next_arc);
-            } else {
-                self.tail = None;
-            }
+            addr = front.addr;
+            front.next.take()
+        };
+
+        if let Some(next_arc) = next_arc {
+            next_arc.lock().await.prev = Weak::new();
+            self.head = Some(next_arc);
+        } else {
+            self.tail = None;
         }
+
         self.map.remove(&addr);
         Some(addr)
     }
@@ -869,22 +873,22 @@ mod tests {
     }
 
     // Test behavior with fee replacement.
-    // `tx_pool.add_transaction` should replace a pending transaction with a higher fee.
+    // `vpool.add_transaction` should replace a pending transaction with a higher fee.
     #[tokio::test]
-    async fn txpool_fee_replace() {
+    async fn vpool_fee_replace() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100);
-        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
+        let mut vpool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
 
-        initialize_chain_cache_nonces(&mut tx_pool).await;
+        initialize_chain_cache_nonces(&mut vpool).await;
 
         // Add pending transaction with base fee of 1000
         let base = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0);
-        tx_pool
+        vpool
             .add_transaction(base.clone().into_ecrecovered().unwrap())
             .await;
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
+        assert_eq!(vpool.pending_pool.pool.len(), 1);
         assert_eq!(
-            tx_pool
+            vpool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
@@ -894,12 +898,12 @@ mod tests {
         );
 
         let replace = make_tx(accounts()[0].0, 2_000, 21_000, 0, 0);
-        tx_pool
+        vpool
             .add_transaction(replace.clone().try_into_ecrecovered().unwrap())
             .await;
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
+        assert_eq!(vpool.pending_pool.pool.len(), 1);
         assert_eq!(
-            tx_pool
+            vpool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
@@ -909,12 +913,12 @@ mod tests {
         );
 
         let underpriced = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0);
-        tx_pool
+        vpool
             .add_transaction(underpriced.clone().try_into_ecrecovered().unwrap())
             .await;
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
+        assert_eq!(vpool.pending_pool.pool.len(), 1);
         assert_eq!(
-            tx_pool
+            vpool
                 .pending_pool
                 .get(&accounts()[0].1, &0)
                 .unwrap()
@@ -923,28 +927,19 @@ mod tests {
             2000
         );
 
-        for i in 0..1 {
-            let res = ipc_receiver.recv_async().await.unwrap();
-            match i {
-                0 => {
-                    assert_eq!(res, base.clone());
-                }
-                1 => {
-                    assert_eq!(res, replace.clone());
-                }
-                _ => {
-                    panic!("unexpected txn");
-                }
-            }
-        }
+        let res = ipc_receiver.recv_async().await.unwrap();
+        assert_eq!(res, base.clone());
+
+        let res = ipc_receiver.recv_async().await.unwrap();
+        assert_eq!(res, replace.clone());
     }
 
     // Create 10_000 transactions from a single sender.
     #[tokio::test]
-    async fn txpool_stress() {
+    async fn vpool_stress() {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
-        initialize_chain_cache_nonces(&mut tx_pool).await;
+        let mut vpool = VirtualPool::new(ipc_sender.clone(), 20_000, None, None);
+        initialize_chain_cache_nonces(&mut vpool).await;
         let (sk, addr) = accounts()[0];
         let mut txs = Vec::new();
         for i in 0..10_000 {
@@ -953,16 +948,14 @@ mod tests {
 
         assert_eq!(txs.len(), 10_000);
         for tx in txs.clone() {
-            tx_pool
-                .add_transaction(tx.into_ecrecovered().unwrap())
-                .await;
+            vpool.add_transaction(tx.into_ecrecovered().unwrap()).await;
         }
-        assert_eq!(tx_pool.pending_pool.pool.len(), 1);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.pool.get(&addr).unwrap().len(), 10_000);
+        assert_eq!(vpool.pending_pool.pool.len(), 1);
+        assert_eq!(vpool.queued_pool.pool.len(), 0);
+        assert_eq!(vpool.pending_pool.pool.get(&addr).unwrap().len(), 10_000);
 
         let timer = std::time::Instant::now();
-        tx_pool
+        vpool
             .new_block(
                 BlockWithReceipts {
                     transactions: txs,
@@ -976,14 +969,14 @@ mod tests {
             let _ = ipc_receiver.recv_async().await;
         }
 
-        assert_eq!(tx_pool.pending_pool.pool.len(), 0);
+        assert_eq!(vpool.pending_pool.pool.len(), 0);
         let elapsed = timer.elapsed();
         println!("stress test took {:?}", elapsed);
     }
 
     // Create 10K transactions for each 100 unique senders.
     #[tokio::test]
-    async fn txpool_unique_accounts_stress() {
+    async fn vpool_unique_accounts_stress() {
         let mut senders = Vec::new();
         // create 100 unique senders
         for idx in 0..100u64 {
@@ -1007,15 +1000,15 @@ mod tests {
             }
         }
 
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
-        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
+        let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(100_000);
+        let mut vpool = VirtualPool::new(ipc_sender.clone(), 100, None, None);
 
         for sender in pending_txs
             .clone()
             .iter()
             .map(|tx| tx.recover_signer().unwrap())
         {
-            tx_pool
+            vpool
                 .chain_cache
                 .inner
                 .write()
@@ -1026,17 +1019,15 @@ mod tests {
 
         let timer = std::time::Instant::now();
         for tx in pending_txs.clone() {
-            tx_pool
-                .add_transaction(tx.into_ecrecovered().unwrap())
-                .await;
+            vpool.add_transaction(tx.into_ecrecovered().unwrap()).await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K transactions took {:?}", elapsed);
 
-        assert_eq!(tx_pool.pending_pool.pool.len(), 100);
+        assert_eq!(vpool.pending_pool.pool.len(), 100);
 
         // create blockw ith transactions
-        tx_pool
+        vpool
             .new_block(
                 BlockWithReceipts {
                     transactions: pending_txs,
@@ -1060,13 +1051,13 @@ mod tests {
 
         let timer = std::time::Instant::now();
         for tx in queued_txs {
-            tx_pool.add_transaction(tx.clone()).await;
+            vpool.add_transaction(tx.clone()).await;
         }
         let elapsed = timer.elapsed();
         println!("adding 10K queued transactions took {:?}", elapsed);
 
-        assert_eq!(tx_pool.pending_pool.pool.len(), 0);
-        assert_eq!(tx_pool.queued_pool.pool.len(), 100);
+        assert_eq!(vpool.pending_pool.pool.len(), 0);
+        assert_eq!(vpool.queued_pool.pool.len(), 100);
 
         let mut fix_nonce_gap_txs = Vec::new();
         for sk in senders.clone() {
@@ -1077,7 +1068,7 @@ mod tests {
             );
         }
 
-        tx_pool
+        vpool
             .new_block(
                 BlockWithReceipts {
                     block_header: BlockHeader {
@@ -1097,7 +1088,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(tx_pool.queued_pool.pool.len(), 0);
+        assert_eq!(vpool.queued_pool.pool.len(), 0);
     }
 
     #[tokio::test]
@@ -1169,13 +1160,13 @@ mod tests {
     #[tokio::test]
     async fn test_nonce_gap_resolution() {
         let (ipc_sender, _ipc_receiver) = flume::bounded::<TransactionSigned>(10_000);
-        let mut tx_pool = VirtualPool::new(ipc_sender.clone(), 2, None, None);
+        let mut vpool = VirtualPool::new(ipc_sender.clone(), 2, None, None);
         let tx = make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
             .into_ecrecovered()
             .unwrap();
-        tx_pool.add_transaction(tx.clone()).await;
+        vpool.add_transaction(tx.clone()).await;
 
-        tx_pool
+        vpool
             .new_block(
                 BlockWithReceipts {
                     block_header: BlockHeader {
@@ -1192,24 +1183,24 @@ mod tests {
             )
             .await;
 
-        tx_pool
+        vpool
             .add_transaction(
                 make_tx(accounts()[0].0, 1_000, 21_000, 2, 0)
                     .into_ecrecovered()
                     .unwrap(),
             )
             .await;
-        assert_eq!(tx_pool.queued_pool.len(), 1);
+        assert_eq!(vpool.queued_pool.len(), 1);
 
-        tx_pool
+        vpool
             .add_transaction(
                 make_tx(accounts()[0].0, 1_000, 21_000, 1, 0)
                     .into_ecrecovered()
                     .unwrap(),
             )
             .await;
-        assert_eq!(tx_pool.queued_pool.len(), 0);
-        assert_eq!(tx_pool.pending_pool.len(), 2);
+        assert_eq!(vpool.queued_pool.len(), 0);
+        assert_eq!(vpool.pending_pool.len(), 2);
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, info, warn};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -510,7 +510,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
-    tx_pool: Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
+    tx_pool: Arc<Mutex<vpool::VirtualPool>>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -531,7 +531,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
-        tx_pool: Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
+        tx_pool: Arc<Mutex<vpool::VirtualPool>>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -656,7 +656,7 @@ async fn main() -> std::io::Result<()> {
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
-    let tx_pool = Arc::new(tokio::sync::Mutex::new(vpool::VirtualPool::new(
+    let tx_pool = Arc::new(Mutex::new(vpool::VirtualPool::new(
         ipc_sender.clone(),
         args.vpool_capacity,
         vpool_metrics,
@@ -767,7 +767,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(tokio::sync::Mutex::new(vpool::VirtualPool::new(
+            tx_pool: Arc::new(Mutex::new(vpool::VirtualPool::new(
                 ipc_sender.clone(),
                 20_000,
                 None,
