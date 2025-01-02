@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::atomic::Ordering};
+use std::{collections::VecDeque, mem::size_of, sync::atomic::Ordering};
 
 use alloy_primitives::{Bloom, Bytes, B256, B64, U256, U64};
 use monad_exec_event::{event::monad_event_descriptor, event_reader::*, event_types};
@@ -23,7 +23,7 @@ pub struct TransactionInfo {
 }
 
 /// Notification sent when a block has been committed to the blockchain
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockUpdate {
     pub header: Header,
     pub txns: Vec<Option<TransactionInfo>>,
@@ -350,85 +350,85 @@ fn create_alloy_block_header(event_header: &event_types::block_exec_header) -> H
     }
 }
 
+// Declaration of public interface for the fake event test server, which
+// is a C library
+#[link(name = "monad_event_test_server")]
+extern "C" {
+    fn monad_event_test_server_create_from_bytes(
+        socket_path: *const libc::c_char,
+        output: *const libc::c_void,
+        capture_data: *const u8,
+        capture_len: usize,
+        unmap_on_close: u8,
+        server_p: *mut *const libc::c_void,
+    ) -> libc::c_int;
+
+    fn monad_event_server_destroy(queue: *const libc::c_void);
+
+    fn monad_event_test_server_accept_one(queue: *const libc::c_void) -> libc::c_int;
+}
+
+pub struct TestServer {
+    test_server: *const libc::c_void,
+    socket_file_path: PathBuf,
+}
+
+use std::{ffi::CString, os::unix::fs::FileTypeExt, path::PathBuf};
+
+use monad_exec_event::{event::EventRingType, event_client::*};
+
+impl TestServer {
+    pub fn create(socket_path: &str, capture_bytes: &'static [u8]) -> TestServer {
+        let socket_file_path = std::path::PathBuf::from(socket_path);
+
+        // If the socket path already exists and is definitely a socket,
+        // unlink it; we're trying to prevent EADDRINUSE with previous
+        // servers
+        if let Ok(metadata) = socket_file_path.metadata() {
+            if metadata.file_type().is_socket() {
+                _ = std::fs::remove_file(socket_file_path.as_path());
+            }
+        }
+
+        let socket_path_cstr =
+            CString::new(socket_path.as_bytes()).expect("embedded nul in socket_path?");
+        let output: *const libc::c_void = std::ptr::null();
+        let mut server: *const libc::c_void = std::ptr::null_mut();
+
+        let r = unsafe {
+            monad_event_test_server_create_from_bytes(
+                socket_path_cstr.as_ptr(),
+                std::ptr::null(),
+                capture_bytes.as_ptr(),
+                capture_bytes.len(),
+                /*unmap_on_close=*/ 0,
+                &mut server,
+            )
+        };
+        assert_eq!(r, 0);
+        TestServer {
+            test_server: server,
+            socket_file_path,
+        }
+    }
+
+    pub fn prepare_accept_one(&mut self) {
+        let r = unsafe { monad_event_test_server_accept_one(self.test_server) };
+        assert_eq!(r, 0);
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        unsafe { monad_event_server_destroy(self.test_server) };
+        // Cleanup the socket file, we don't care if it exists
+        _ = std::fs::remove_file(self.socket_file_path.as_path());
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-
-    // Declaration of public interface for the fake event test server, which
-    // is a C library
-    #[link(name = "monad_event_test_server")]
-    extern "C" {
-        fn monad_event_test_server_create_from_bytes(
-            socket_path: *const libc::c_char,
-            output: *const libc::c_void,
-            capture_data: *const u8,
-            capture_len: usize,
-            unmap_on_close: u8,
-            server_p: *mut *const libc::c_void,
-        ) -> libc::c_int;
-
-        fn monad_event_server_destroy(queue: *const libc::c_void);
-
-        fn monad_event_test_server_accept_one(queue: *const libc::c_void) -> libc::c_int;
-    }
-
-    struct TestServer {
-        test_server: *const libc::c_void,
-        socket_file_path: PathBuf,
-    }
-
-    use std::{ffi::CString, os::unix::fs::FileTypeExt, path::PathBuf};
-
-    use monad_exec_event::{event::EventRingType, event_client::*};
-
-    impl TestServer {
-        pub fn create(socket_path: &str, capture_bytes: &'static [u8]) -> TestServer {
-            let socket_file_path = std::path::PathBuf::from(socket_path);
-
-            // If the socket path already exists and is definitely a socket,
-            // unlink it; we're trying to prevent EADDRINUSE with previous
-            // servers
-            if let Ok(metadata) = socket_file_path.metadata() {
-                if metadata.file_type().is_socket() {
-                    _ = std::fs::remove_file(socket_file_path.as_path());
-                }
-            }
-
-            let socket_path_cstr =
-                CString::new(socket_path.as_bytes()).expect("embedded nul in socket_path?");
-            let output: *const libc::c_void = std::ptr::null();
-            let mut server: *const libc::c_void = std::ptr::null_mut();
-
-            let r = unsafe {
-                monad_event_test_server_create_from_bytes(
-                    socket_path_cstr.as_ptr(),
-                    std::ptr::null(),
-                    capture_bytes.as_ptr(),
-                    capture_bytes.len(),
-                    /*unmap_on_close=*/ 0,
-                    &mut server,
-                )
-            };
-            assert_eq!(r, 0);
-            TestServer {
-                test_server: server,
-                socket_file_path,
-            }
-        }
-
-        pub fn prepare_accept_one(&mut self) {
-            let r = unsafe { monad_event_test_server_accept_one(self.test_server) };
-            assert_eq!(r, 0);
-        }
-    }
-
-    impl Drop for TestServer {
-        fn drop(&mut self) {
-            unsafe { monad_event_server_destroy(self.test_server) };
-            // Cleanup the socket file, we don't care if it exists
-            _ = std::fs::remove_file(self.socket_file_path.as_path());
-        }
-    }
 
     #[test]
     fn basic_test() {
@@ -446,7 +446,7 @@ mod test {
             },
         };
         let mut event_proc = EventProc::connect(&options).unwrap();
-        let imported_ring = ImportedEventRing::import(event_proc,  EventRingType::Exec).unwrap();
+        let imported_ring = ImportedEventRing::import(event_proc, EventRingType::Exec).unwrap();
         let mut event_reader = EventReader::new(&imported_ring);
         event_reader.last_seqno = 0;
         let mut update_builder =

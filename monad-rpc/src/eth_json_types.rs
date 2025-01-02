@@ -338,7 +338,7 @@ impl<'de> Deserialize<'de> for Quantity {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct FixedData<const N: usize>(pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {

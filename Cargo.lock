@@ -4778,6 +4778,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project",
+ "rand",
  "reqwest 0.11.27",
  "reth-primitives",
  "reth-rpc-types",

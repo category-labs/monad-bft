@@ -8,7 +8,13 @@ use actix_web::{
 };
 use clap::Parser;
 use eth_json_types::serialize_result;
+use exec_update_builder::{BlockUpdate, ExecUpdateBuilder, PollResult};
 use futures::{SinkExt, StreamExt};
+use monad_exec_event::{
+    event::EventRingType,
+    event_client::{ConnectOptions, EventProc, ImportedEventRing},
+    event_reader::EventReader,
+};
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use reth_primitives::TransactionSigned;
@@ -68,9 +74,9 @@ mod call;
 mod cli;
 mod debug;
 pub mod docs;
-mod exec_update_builder;
 mod eth_json_types;
 mod eth_txn_handlers;
+mod exec_update_builder;
 mod gas_handlers;
 mod gas_oracle;
 mod hex;
@@ -564,6 +570,7 @@ pub fn create_app_with_metrics<S: 'static>(
         InitError = (),
     >,
 > {
+    // Add event stream to app_data
     App::new()
         .app_data(web::JsonConfig::default().limit(8192))
         .app_data(web::Data::new(app_data))
@@ -572,8 +579,9 @@ pub fn create_app_with_metrics<S: 'static>(
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
 
-pub fn create_app<S: 'static>(
+pub fn create_app<S: 'static, WS: 'static>(
     app_data: S,
+    websocket_data: WS,
 ) -> App<
     impl ServiceFactory<
         ServiceRequest,
@@ -586,6 +594,7 @@ pub fn create_app<S: 'static>(
     App::new()
         .app_data(web::JsonConfig::default().limit(8192))
         .app_data(web::Data::new(app_data))
+        .app_data(web::Data::new(websocket_data))
         .service(web::resource("/").route(web::post().to(rpc_handler)))
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
@@ -655,6 +664,45 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
+    // Create resource for websocket here
+    let (ws_tx, _ws_rx) = tokio::sync::broadcast::channel::<Box<BlockUpdate>>(10000);
+
+    // Connect to the monad execution event server.
+    let exec_event_connect_opts = ConnectOptions {
+        socket_path: args.exec_event_path,
+        timeout: libc::timeval {
+            tv_sec: 1,
+            tv_usec: 0,
+        },
+    };
+
+    let mut exec_event_builder = match EventProc::connect(&exec_event_connect_opts) {
+        Err(e) => {
+            panic!("fatal error during IPC connect: {e}");
+        }
+        Ok(exec_proc) => match ImportedEventRing::import(exec_proc, EventRingType::Exec) {
+            Err(e) => {
+                panic!("fatal error during event ring import: {e}");
+            }
+            Ok(imported_ring) => {
+                let mut event_reader = EventReader::new(&imported_ring);
+                event_reader.last_seqno = 0;
+                let update_builder =
+                    ExecUpdateBuilder::new(event_reader, imported_ring.parent.block_header_table);
+                update_builder
+            }
+        },
+    };
+
+    tokio::spawn({
+        loop {
+            if let PollResult::Update(update) = exec_event_builder.poll() {
+                ws_tx.send(update);
+            }
+        }
+        async {}
+    });
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         triedb_env,
@@ -691,7 +739,7 @@ async fn main() -> std::io::Result<()> {
                 .shutdown_timeout(1)
                 .run()
         }
-        None => HttpServer::new(move || create_app(resources.clone()))
+        None => HttpServer::new(move || create_app(resources.clone(), ws_tx.clone()))
             .bind((args.rpc_addr, args.rpc_port))?
             .shutdown_timeout(1)
             .run(),
@@ -751,17 +799,20 @@ mod tests {
     ) {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
-        let app = test::init_service(create_app(MonadRpcResources {
-            mempool_sender: ipc_sender.clone(),
-            triedb_reader: None,
-            execution_ledger_path: ExecutionLedgerPath(None),
-            chain_id: 1337,
-            batch_request_limit: 5,
-            max_response_size: 25_000_000,
-            allow_unprotected_txs: false,
-            rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
-        }))
+        let app = test::init_service(create_app(
+            MonadRpcResources {
+                mempool_sender: ipc_sender.clone(),
+                triedb_reader: None,
+                execution_ledger_path: ExecutionLedgerPath(None),
+                chain_id: 1337,
+                batch_request_limit: 5,
+                max_response_size: 25_000_000,
+                allow_unprotected_txs: false,
+                rate_limiter: Arc::new(Semaphore::new(1000)),
+                tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
+            },
+            0,
+        ))
         .await;
         (app, m)
     }

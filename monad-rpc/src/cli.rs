@@ -57,4 +57,8 @@ pub struct Cli {
     /// This capacity is set for each sub-pool, and entries are dropped once the capacity is reached.
     #[arg(long, default_value_t = 20_000)]
     pub vpool_capacity: usize,
+
+    /// Sets the socket path for the monad execution event server
+    #[arg(long, default_value = monad_exec_event::event::DEFAULT_SOCKET_PATH)]
+    pub exec_event_path: PathBuf,
 }
