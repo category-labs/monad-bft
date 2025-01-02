@@ -122,7 +122,7 @@ impl SubPool {
     }
 
     async fn evict(&mut self) -> usize {
-        let pool_len: usize = self.pool.len();
+        let pool_len: usize = self.len();
         let mut evicted: usize = 0;
         while (pool_len - evicted) > self.capacity {
             if self.eviction_handler.evict_lru(&mut self.pool).await {
@@ -294,6 +294,28 @@ impl LruList {
         Some(addr)
     }
 
+    async fn push_front(&mut self, addr: Address) {
+        let node: Arc<Mutex<Node>> = Arc::new(Mutex::new(Node {
+            addr,
+            prev: Weak::new(),
+            next: None,
+        }));
+
+        if let Some(head_arc) = self.head.take() {
+            {
+                let mut head = head_arc.lock().await;
+                let mut node_guard = node.lock().await;
+                node_guard.next = Some(head_arc.clone());
+                head.prev = Arc::downgrade(&node);
+            }
+        } else {
+            self.tail = Some(node.clone());
+        }
+
+        self.head = Some(node.clone());
+        self.map.insert(addr, node);
+    }
+
     async fn remove_node(&mut self, node_arc: &Arc<Mutex<Node>>) {
         let mut node = node_arc.lock().await;
         let prev = node.prev.upgrade();
@@ -344,7 +366,7 @@ impl EvictionPolicy {
         pool: &mut HashMap<Address, TreeIndex<u64, TransactionSignedEcRecovered>>,
     ) -> bool {
         if let Some(addr) = self.lru.evict_front().await {
-            if let Some(tree) = pool.get(&addr) {
+            let (is_evicted, is_empty) = if let Some(tree) = pool.get(&addr) {
                 let guard = Guard::new();
                 let max_nonce = tree
                     .iter(&guard)
@@ -352,8 +374,19 @@ impl EvictionPolicy {
                     .map(|(k, _)| *k)
                     .unwrap_or_default();
                 tree.remove_range(max_nonce..=max_nonce);
-                return true;
+
+                let is_empty = tree.is_empty();
+
+                (true, is_empty)
+            } else {
+                (false, true)
+            };
+
+            if !is_empty {
+                self.lru.push_front(addr).await;
             }
+
+            return is_evicted;
         }
         false
     }
@@ -1121,12 +1154,70 @@ mod tests {
             )
             .await;
 
-        assert_eq!(vpool.pending_pool.pool.len(), 3);
+        assert_eq!(vpool.pending_pool.len(), 3);
         let evicted = vpool.pending_pool.evict().await;
         assert_eq!(evicted, 1);
         assert_eq!(vpool.pending_pool.len(), 2);
+        assert_eq!(vpool.queued_pool.len(), 0);
 
-        // Add transaction from same sender, expect max nonce to be removed first.
+        // Add transactions from same sender, expect max nonce to be removed first.
+        vpool
+            .add_transaction(
+                make_tx(accounts()[1].0, 1_000, 21_000, 1, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
+            .await;
+        vpool
+            .add_transaction(
+                make_tx(accounts()[1].0, 1_000, 21_000, 2, 0)
+                    .into_ecrecovered()
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(vpool.pending_pool.len(), 4);
+        assert_eq!(vpool.queued_pool.len(), 0);
+        let evicted = vpool.pending_pool.evict().await;
+        assert_eq!(evicted, 2);
+        assert_eq!(vpool.pending_pool.len(), 2);
+        assert_eq!(
+            vpool.pending_pool.pool.get(&accounts()[1].1).unwrap().len(),
+            2
+        );
+
+        // Check that nonce '2' from sender 1 is evicted first.
+        assert_eq!(
+            vpool
+                .pending_pool
+                .pool
+                .get(&accounts()[1].1)
+                .unwrap()
+                .iter(&Guard::new())
+                .next()
+                .unwrap()
+                .1
+                .nonce(),
+            0
+        );
+        assert_eq!(
+            vpool
+                .pending_pool
+                .pool
+                .get(&accounts()[1].1)
+                .unwrap()
+                .iter(&Guard::new())
+                .last()
+                .unwrap()
+                .1
+                .nonce(),
+            1
+        );
+
+        let evicted = vpool.pending_pool.evict().await;
+        assert_eq!(evicted, 0);
+        assert_eq!(vpool.pending_pool.len(), 2);
+
+        // Add transaction from sender 0, expect nonce 1 from sender 1 to be evicted.
         vpool
             .add_transaction(
                 make_tx(accounts()[0].0, 1_000, 21_000, 0, 0)
@@ -1134,26 +1225,26 @@ mod tests {
                     .unwrap(),
             )
             .await;
-        assert_eq!(vpool.pending_pool.pool.len(), 3);
+        assert_eq!(vpool.pending_pool.len(), 3);
         let evicted = vpool.pending_pool.evict().await;
         assert_eq!(evicted, 1);
         assert_eq!(vpool.pending_pool.len(), 2);
         assert_eq!(
-            vpool.pending_pool.pool.get(&accounts()[0].1).unwrap().len(),
+            vpool.pending_pool.pool.get(&accounts()[1].1).unwrap().len(),
             1
         );
         assert_eq!(
             vpool
                 .pending_pool
                 .pool
-                .get(&accounts()[0].1)
+                .get(&accounts()[1].1)
                 .unwrap()
-                .get()
                 .iter(&Guard::new())
                 .last()
                 .unwrap()
-                .0,
-            &0
+                .1
+                .nonce(),
+            0
         );
     }
 
