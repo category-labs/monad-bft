@@ -15,6 +15,7 @@ ipc_tx_batch_size = 500
 ipc_max_queued_batches = 6
 # must be <= ipc_max_queued_batches
 ipc_queued_batches_watermark = 3
+num_leaders_forward = 3
 
 statesync_threshold = 600
 statesync_max_concurrent_requests = 5

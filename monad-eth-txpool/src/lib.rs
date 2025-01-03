@@ -37,22 +37,26 @@ pub struct EthTxPool {
     pool: Pool,
     garbage: Vec<Pool>,
     do_local_insert: bool,
+    num_leaders_forward: usize,
 }
 
+// default implementation is test only
 impl Default for EthTxPool {
     fn default() -> Self {
         Self {
             pool: Default::default(),
             garbage: Default::default(),
             do_local_insert: true,
+            num_leaders_forward: 3,
         }
     }
 }
 
 impl EthTxPool {
-    pub fn new(do_local_insert: bool) -> Self {
+    pub fn new(do_local_insert: bool, num_leaders_forward: usize) -> Self {
         Self {
             do_local_insert,
+            num_leaders_forward,
             ..Default::default()
         }
     }
@@ -377,5 +381,9 @@ where
 
     fn clear(&mut self) {
         self.garbage.clear();
+    }
+
+    fn num_leaders_forward(&self) -> usize {
+        self.num_leaders_forward
     }
 }

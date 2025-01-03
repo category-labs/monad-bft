@@ -21,9 +21,6 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-// TODO configurable
-const NUM_LEADERS_FORWARD: usize = 3;
-
 pub(super) struct MempoolChildState<'a, ST, SCT, BPT, SBT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
@@ -129,7 +126,7 @@ where
                 let round = consensus.get_current_round() + Round(1);
                 let next_k_leaders = (round.0..)
                     .map(|round| self.get_leader(Round(round)))
-                    .take(NUM_LEADERS_FORWARD)
+                    .take(self.txpool.num_leaders_forward())
                     .unique()
                     .filter(|leader| leader != self.nodeid)
                     .collect_vec();

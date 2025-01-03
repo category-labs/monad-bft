@@ -61,6 +61,9 @@ where
 
     /// Reclaims memory used by internal TxPool datastructures
     fn clear(&mut self);
+
+    /// Get the number of leaders to forward transaction to
+    fn num_leaders_forward(&self) -> usize;
 }
 
 use rand::RngCore;
@@ -122,5 +125,9 @@ where
         &mut self,
         _committed_block: &<PassthruBlockPolicy as BlockPolicy<SCT, InMemoryState>>::ValidatedBlock,
     ) {
+    }
+
+    fn num_leaders_forward(&self) -> usize {
+        0
     }
 }

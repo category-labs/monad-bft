@@ -39,6 +39,7 @@ pub struct NodeConfig {
     pub ipc_max_queued_batches: u8,
     // must be <= ipc_max_queued_batches
     pub ipc_queued_batches_watermark: u8,
+    pub num_leaders_forward: usize,
 
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,

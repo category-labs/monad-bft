@@ -272,9 +272,9 @@ async fn run(
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
-        transaction_pool: EthTxPool::new(false),
+        transaction_pool: EthTxPool::new(false, node_state.node_config.num_leaders_forward),
         #[cfg(not(feature = "full-node"))]
-        transaction_pool: EthTxPool::new(true),
+        transaction_pool: EthTxPool::new(true, node_state.node_config.num_leaders_forward),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,
