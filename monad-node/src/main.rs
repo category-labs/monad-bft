@@ -300,7 +300,7 @@ async fn run(
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
-        epoch_start_delay: Round(50),
+        epoch_start_delay: Round(5000),
         beneficiary: node_state.node_config.beneficiary,
         forkpoint: node_state.forkpoint_config.into(),
         consensus_config: ConsensusConfig {
