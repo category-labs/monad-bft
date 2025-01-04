@@ -4,7 +4,6 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{ConsensusFullBlock, ExecutionProtocol},
     signature_collection::SignatureCollection,
-    state_root_hash::StateRootHash,
     validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
@@ -13,7 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder};
-use monad_types::{Round, SeqNum, Stake};
+use monad_types::{Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
 

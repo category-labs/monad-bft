@@ -22,6 +22,5 @@ monad-validator = { path = "../monad-validator" }
 
 alloy-rlp = { workspace = true }
 reth-primitives = { workspace = true }
-zerocopy = { workspace = true }
 
 [dev-dependencies]

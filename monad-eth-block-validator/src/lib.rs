@@ -10,12 +10,14 @@ use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
     payload::{
-        ConsensusBlockBody, EthBlockBody, EthExecutionProtocol,
-        ProposedEthHeader, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT,
+        ConsensusBlockBody, EthBlockBody, EthExecutionProtocol, ProposedEthHeader,
+        BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT, PROPOSAL_SIZE_LIMIT,
     },
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{
     checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
     EthValidatedBlock,
@@ -90,7 +92,10 @@ where
         // recovering the signers verifies that these are valid signatures
         let signers: Vec<Address> = transactions
             .into_par_iter()
-            .map(|tx| tx.recover_signer().map_err(|_| BlockValidationError::TxnError))
+            .map(|tx| {
+                tx.recover_signer()
+                    .map_err(|_| BlockValidationError::TxnError)
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         // recover the account nonces and txn fee usage in this block
@@ -267,78 +272,93 @@ where
 #[cfg(test)]
 mod test {
     use alloy_primitives::B256;
-    use monad_consensus_types::payload::FullTransactionList;
+    use monad_consensus_types::payload::ConsensusBlockBodyInner;
+    use monad_crypto::NopSignature;
     use monad_eth_testutil::make_tx;
-    use monad_eth_tx::EthFullTransactionList;
+    use monad_state_backend::InMemoryState;
+    use monad_testutil::signing::MockSignatures;
 
     use super::*;
 
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
+    type StateBackendType = InMemoryState;
+
     #[test]
     fn test_invalid_block_with_nonce_gap() {
-        let block_validator = EthValidator::new(10, 100_000, 1337);
+        let block_validator =
+            EthValidator::<SignatureType, SignatureCollectionType, StateBackendType>::new(
+                10, 100_000, 1337,
+            );
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 3, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
-        let payload = Payload {
-            txns: full_txn_list,
+        let eth_block_body = EthBlockBody {
+            transactions: vec![txn1, txn2],
+            ommers: vec![],
+            withdrawals: vec![],
         };
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: eth_block_body,
+        });
 
         // block validation should return error
-        let result = block_validator.validate_payload(&payload);
+        let result = block_validator.validate_block_body(&payload);
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_block_over_gas_limit() {
-        let block_validator = EthValidator::new(10, 100_000, 1337);
+        let block_validator =
+            EthValidator::<SignatureType, SignatureCollectionType, StateBackendType>::new(
+                10, 100_000, 1337,
+            );
 
         // total gas used is 120_000 which is higher than block gas limit
         let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 1, 10);
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 60_000, 2, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
-        let payload = Payload {
-            txns: full_txn_list,
+        let eth_block_body = EthBlockBody {
+            transactions: vec![txn1, txn2],
+            ommers: vec![],
+            withdrawals: vec![],
         };
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: eth_block_body,
+        });
 
         // block validation should return error
-        let result = block_validator.validate_payload(&payload);
+        let result = block_validator.validate_block_body(&payload);
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
     #[test]
     fn test_invalid_block_over_tx_limit() {
-        let block_validator = EthValidator::new(1, 100_000, 1337);
+        let block_validator =
+            EthValidator::<SignatureType, SignatureCollectionType, StateBackendType>::new(
+                1, 100_000, 1337,
+            );
 
         // tx limit per block is 1
         let txn1 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 1, 10);
         let txn2 = make_tx(B256::repeat_byte(0xAu8), 1, 30_000, 2, 10);
 
         // create a block with the above transactions
-        let mut txs = Vec::new();
-        txs.push(txn1.try_into_ecrecovered().unwrap_or_default());
-        txs.push(txn2.try_into_ecrecovered().unwrap_or_default());
-        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
-        let full_txn_list = FullTransactionList::new(full_tx_list);
-        let payload = Payload {
-            txns: full_txn_list,
+        let eth_block_body = EthBlockBody {
+            transactions: vec![txn1, txn2],
+            ommers: vec![],
+            withdrawals: vec![],
         };
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: eth_block_body,
+        });
 
         // block validation should return error
-        let result = block_validator.validate_payload(&payload);
+        let result = block_validator.validate_block_body(&payload);
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 }

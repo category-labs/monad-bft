@@ -7,13 +7,15 @@ use itertools::{Either, Itertools};
 use monad_consensus_types::{
     block::ProposedExecutionInputs,
     payload::{
-        EthBlockBody, EthExecutionProtocol, ProposedEthHeader, RoundSignature,
-        BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT,
+        EthBlockBody, EthExecutionProtocol, ProposedEthHeader, RoundSignature, BASE_FEE_PER_GAS,
+        PROPOSAL_GAS_LIMIT,
     },
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
 };
-use monad_crypto::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_types::{Balance, EthAddress, TxEnvelopeWithSigner};
 use monad_state_backend::{StateBackend, StateBackendError};
@@ -72,6 +74,14 @@ where
             .num_txs()
             .checked_add(self.tracked.num_txs())
             .expect("pool size does not overflow")
+    }
+
+    pub fn num_pending_txns(&self) -> usize {
+        self.pending.num_txs()
+    }
+
+    pub fn num_tracked_txns(&self) -> usize {
+        self.tracked.num_txs()
     }
 
     pub fn promote_pending(
@@ -226,7 +236,10 @@ where
         )?;
 
         let body = EthBlockBody {
-            transactions: transactions.into_iter().map(|tx_with_signer| tx_with_signer.transaction).collect(),
+            transactions: transactions
+                .into_iter()
+                .map(|tx_with_signer| tx_with_signer.transaction)
+                .collect(),
             ommers: Vec::new(),
             withdrawals: Vec::new(),
         };

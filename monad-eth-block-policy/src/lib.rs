@@ -4,12 +4,9 @@ use alloy_consensus::{transaction::Transaction, TxEnvelope};
 use alloy_primitives::{TxHash, U256};
 use itertools::Itertools;
 use monad_consensus_types::{
-    block::{
-        BlockPolicy, BlockPolicyError, ConsensusFullBlock,
-    },
+    block::{BlockPolicy, BlockPolicyError, ConsensusFullBlock},
     checkpoint::RootInfo,
-    payload::{ConsensusBlockBodyId, EthExecutionProtocol},
-    quorum_certificate::QuorumCertificate,
+    payload::EthExecutionProtocol,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -114,10 +111,7 @@ pub enum TransactionError {
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
-pub fn static_validate_transaction(
-    tx: &TxEnvelope,
-    chain_id: u64,
-) -> Result<(), TransactionError> {
+pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
     // EIP-155
     // We allow legacy transactions without chain_id specified to pass through
     if let Some(tx_chain_id) = tx.chain_id() {
@@ -341,6 +335,7 @@ where
         maybe_account_nonce
     }
 
+    // calculates the total transaction fee for a given address over a range of blocks
     fn compute_txn_fee(
         &self,
         base_seq_num: SeqNum,
@@ -749,19 +744,24 @@ where
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{Address, FixedBytes, B256};
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use monad_crypto::NopSignature;
     use monad_eth_types::EthAddress;
-    use monad_types::SeqNum;
-    use reth_primitives::{
-        sign_message, AccessList, Transaction, TransactionKind, TxEip1559, TxLegacy,
-    };
+    use monad_testutil::signing::MockSignatures;
+    use monad_types::{Hash, SeqNum};
 
     use super::*;
 
-    fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> TransactionSigned {
-        let hash = tx.signature_hash();
-        let signature = sign_message(secret_key, hash).expect("signature should always succeed");
-        TransactionSigned::from_transaction_and_signature(tx, signature)
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MockSignatures<SignatureType>;
+
+    fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
+        let secret_key = B256::repeat_byte(0xAu8).to_string();
+        let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
+        signer.sign_hash_sync(signature_hash).unwrap()
     }
 
     #[test]
@@ -773,42 +773,48 @@ mod test {
         let address4 = EthAddress(Address(FixedBytes([0x44; 20])));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::new(3);
-        let block1 = (
-            BlockAccountNonce {
+        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
+        let block1 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(1),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(100)),
                     (address2, U256::from(200)),
                 ]),
             },
-        );
+        };
 
-        let block2 = (
-            BlockAccountNonce {
+        let block2 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(2),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(150)),
                     (address3, U256::from(300)),
                 ]),
             },
-        );
+        };
 
-        let block3 = (
-            BlockAccountNonce {
+        let block3 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(3),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address2, U256::from(250)),
                     (address3, U256::from(350)),
                 ]),
             },
-        );
+        };
 
         buffer.blocks.insert(SeqNum(1), block1);
         buffer.blocks.insert(SeqNum(2), block2);
@@ -816,30 +822,30 @@ mod test {
 
         // test compute_txn_fee for different addresses and base sequence numbers
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address1).txn_fee,
             U256::from(250)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(1), &None, &address1).txn_fee,
             U256::from(150)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(2), &None, &address1).txn_fee,
             U256::from(0)
         );
 
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address2).txn_fee,
             U256::from(450)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address3).txn_fee,
             U256::from(650)
         );
 
         // address that is not present in all blocks
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address4).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address4).txn_fee,
             U256::from(0)
         );
     }
@@ -852,42 +858,48 @@ mod test {
         let address3 = EthAddress(Address(FixedBytes([0x33; 20])));
 
         // add committed blocks to buffer
-        let mut buffer = CommittedBlkBuffer::new(3);
-        let block1 = (
-            BlockAccountNonce {
+        let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
+        let block1 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(1),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(u128::MAX - 1)),
                     (address2, U256::from(u128::MAX)),
                 ]),
             },
-        );
+        };
 
-        let block2 = (
-            BlockAccountNonce {
+        let block2 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(2),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(1)),
                     (address3, U256::from(u128::MAX / 2)),
                 ]),
             },
-        );
+        };
 
-        let block3 = (
-            BlockAccountNonce {
+        let block3 = CommittedBlock {
+            block_id: BlockId(Hash::default()),
+            round: Round(3),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address2, U256::from(u128::MAX)),
                     (address3, U256::from(u128::MAX / 2 + 1)),
                 ]),
             },
-        );
+        };
 
         buffer.blocks.insert(SeqNum(1), block1);
         buffer.blocks.insert(SeqNum(2), block2);
@@ -895,24 +907,24 @@ mod test {
 
         // test compute_txn_fee for different addresses and base sequence numbers
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address1).txn_fee,
             U256::from(u128::MAX)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(1), &None, &address1).txn_fee,
             U256::from(1)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(2), &address1).txn_fee,
+            buffer.compute_txn_fee(SeqNum(2), &None, &address1).txn_fee,
             U256::from(0)
         );
 
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address2).txn_fee,
             U256::from(u128::MAX)
         );
         assert_eq!(
-            buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
+            buffer.compute_txn_fee(SeqNum(0), &None, &address3).txn_fee,
             U256::from(u128::MAX)
         );
     }
@@ -922,78 +934,78 @@ mod test {
         const CHAIN_ID: u64 = 1337;
 
         // pre EIP-155 transaction with no chain id is allowed
-        let tx_no_chain_id = Transaction::Legacy(TxLegacy {
+        let tx_no_chain_id = TxLegacy {
             chain_id: None,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(Address::random()),
             gas_price: 1000,
             gas_limit: 1_000_000,
             input: vec![].into(),
-            value: 0.into(),
-        });
-        let txn = create_signed_tx(tx_no_chain_id, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_no_chain_id.signature_hash());
+        let txn = tx_no_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(result, Ok(())));
 
         // transaction with incorrect chain id
-        let tx_invalid_chain_id = Transaction::Eip1559(TxEip1559 {
+        let tx_invalid_chain_id = TxEip1559 {
             chain_id: CHAIN_ID - 1,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(Address::random()),
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 10,
             gas_limit: 1_000_000,
-            input: vec![].into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_invalid_chain_id, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
+        let txn = tx_invalid_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
         let input = vec![0; 2 * 0x6000 + 1];
-        let tx_over_initcode_limit = Transaction::Eip1559(TxEip1559 {
+        let tx_over_initcode_limit = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,
-            to: TransactionKind::Create,
+            to: TxKind::Create,
             max_fee_per_gas: 10000,
             max_priority_fee_per_gas: 10,
             gas_limit: 1_000_000,
             input: input.into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_over_initcode_limit, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
+        let txn = tx_over_initcode_limit.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(
             result,
             Err(TransactionError::InitCodeLimitExceeded)
         ));
 
         // transaction with larger max priority fee than max fee per gas
-        let tx_priority_fee_too_high = Transaction::Eip1559(TxEip1559 {
+        let tx_priority_fee_too_high = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(Address::random()),
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 10000,
             gas_limit: 1_000_000,
             input: vec![].into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_priority_fee_too_high, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
+        let txn = tx_priority_fee_too_high.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)
         ));
     }
 
-    // TODO: check accounts for previous transactions in the block
+    // TODO: add tests for check_coherency
 }

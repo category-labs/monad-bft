@@ -9,11 +9,7 @@ use monad_consensus_types::{
         ConsensusBlockHeader, MockExecutionBody, MockExecutionFinalizedHeader,
         MockExecutionProposedHeader, MockExecutionProtocol,
     },
-    ledger::CommitResult,
-    payload::{
-        ConsensusBlockBody, ConsensusBlockBodyInner, FullTransactionList, ProposedEthHeader,
-        RoundSignature,
-    },
+    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, FullTransactionList, RoundSignature},
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -26,7 +22,7 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_types::{Epoch, MonadVersion, NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,

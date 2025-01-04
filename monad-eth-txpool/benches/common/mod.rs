@@ -1,7 +1,19 @@
+use alloy_primitives::Address;
 use criterion::{black_box, BatchSize, Criterion};
-use monad_crypto::NopSignature;
+use monad_consensus_types::{
+    payload::{EthExecutionProtocol, RoundSignature},
+    txpool::TxPool,
+};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    NopSignature,
+};
+use monad_eth_block_policy::EthBlockPolicy;
+use monad_eth_types::EthAddress;
 use monad_perf_util::PerfController;
+use monad_state_backend::InMemoryState;
 use monad_testutil::signing::MockSignatures;
+use monad_types::Round;
 
 pub use self::controller::BenchController;
 use self::controller::BenchControllerConfig;
@@ -9,8 +21,21 @@ use self::controller::BenchControllerConfig;
 mod controller;
 
 pub const EXECUTION_DELAY: u64 = 4;
+pub const MOCK_TIMESTAMP: u128 = 100;
+pub const MOCK_BENEFICIARY: EthAddress = EthAddress(Address::ZERO);
 
-pub type SignatureCollectionType = MockSignatures<NopSignature>;
+pub type SignatureType = NopSignature;
+pub type SignatureCollectionType = MockSignatures<SignatureType>;
+pub type StateBackendType = InMemoryState;
+type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
+
+pub type Pool = dyn TxPool<
+    SignatureType,
+    SignatureCollectionType,
+    EthExecutionProtocol,
+    EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    StateBackendType,
+>;
 
 const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
     (
@@ -64,6 +89,12 @@ const BENCH_CONFIGS: [(&str, BenchControllerConfig); 5] = [
         },
     ),
 ];
+
+pub fn make_test_round_signature() -> RoundSignature<SignatureType> {
+    let mut s = [127_u8; 32];
+    let keypair = KeyPairType::from_bytes(s.as_mut_slice()).unwrap();
+    RoundSignature::new(Round(1), &keypair)
+}
 
 pub fn run_txpool_benches<T>(
     c: &mut Criterion,

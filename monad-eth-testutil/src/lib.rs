@@ -7,7 +7,7 @@ use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
     block::{ConsensusBlockHeader, ConsensusFullBlock},
     payload::{
-        ConsensusBlockBody, ConsensusBlockBodyInner, EthBlockBody, FullTransactionList,
+        ConsensusBlockBody, ConsensusBlockBodyInner, EthBlockBody, ProposedEthHeader,
         RoundSignature,
     },
     quorum_certificate::QuorumCertificate,
@@ -67,12 +67,13 @@ pub fn generate_block_with_txs(
 
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
+    let proposed_header = ProposedEthHeader::default();
     let header = ConsensusBlockHeader::new(
         NodeId::new(keypair.pubkey()),
         Epoch(1),
         round,
         Default::default(), // delayed_execution_results
-        todo!("execution_inputs"),
+        proposed_header,
         body.get_id(),
         QuorumCertificate::genesis_qc(),
         seq_num,
@@ -86,7 +87,7 @@ pub fn generate_block_with_txs(
             let signer = tx.recover_signer().expect("tx is recoverable");
             TxEnvelopeWithSigner {
                 signer,
-                transaction: tx
+                transaction: tx,
             }
         })
         .collect();
@@ -125,7 +126,7 @@ pub fn generate_block_with_txs(
 
 #[cfg(test)]
 mod test {
-    use reth_primitives::B256;
+    use alloy_primitives::B256;
 
     use super::*;
     #[test]

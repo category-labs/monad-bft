@@ -1,11 +1,12 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_state_backend::InMemoryState;
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 
-use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
+use self::common::{
+    make_test_round_signature, run_txpool_benches, BenchController, Pool, EXECUTION_DELAY,
+    MOCK_BENEFICIARY, MOCK_TIMESTAMP,
+};
 
 mod common;
 
@@ -20,12 +21,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         |controller_config| {
             let mut controller = BenchController::setup(&block_policy, controller_config.clone());
 
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
+            Pool::create_proposal(
                 &mut controller.pool,
                 controller.block_policy.get_last_commit()
                     + SeqNum(controller.pending_blocks.len() as u64),
                 controller.proposal_tx_limit,
-                controller.gas_limit,
+                &MOCK_BENEFICIARY,
+                MOCK_TIMESTAMP,
+                &make_test_round_signature(),
                 controller.block_policy,
                 controller.pending_blocks.iter().collect_vec(),
                 &controller.state_backend,
@@ -35,7 +38,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             controller.pool
         },
         |pool| {
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::clear(pool);
+            Pool::clear(pool);
         },
     );
 }

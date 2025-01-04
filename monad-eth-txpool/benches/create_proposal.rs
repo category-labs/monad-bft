@@ -1,11 +1,12 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_state_backend::InMemoryState;
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 
-use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
+use self::common::{
+    make_test_round_signature, run_txpool_benches, BenchController, Pool, EXECUTION_DELAY,
+    MOCK_BENEFICIARY, MOCK_TIMESTAMP,
+};
 
 mod common;
 
@@ -26,11 +27,13 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_tx_limit,
              gas_limit,
          }| {
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
+            Pool::create_proposal(
                 pool,
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
-                *gas_limit,
+                &MOCK_BENEFICIARY,
+                MOCK_TIMESTAMP,
+                &make_test_round_signature(),
                 block_policy,
                 pending_blocks.iter().collect_vec(),
                 state_backend,
@@ -47,7 +50,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             controller
                 .pool
-                .promote_pending::<SignatureCollectionType, _>(
+                .promote_pending(
                     controller.block_policy,
                     &controller.state_backend,
                     usize::MAX,
@@ -64,11 +67,13 @@ fn criterion_benchmark(c: &mut Criterion) {
              proposal_tx_limit,
              gas_limit,
          }| {
-            TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::create_proposal(
+            Pool::create_proposal(
                 pool,
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
-                *gas_limit,
+                &MOCK_BENEFICIARY,
+                MOCK_TIMESTAMP,
+                &make_test_round_signature(),
                 block_policy,
                 pending_blocks.iter().collect_vec(),
                 state_backend,

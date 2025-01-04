@@ -1,11 +1,12 @@
+use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::B256;
+use alloy_rlp::Encodable;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_tx};
-use monad_eth_tx::TransactionSigned;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -16,7 +17,13 @@ use rand_chacha::ChaCha8Rng;
 
 const TRANSACTION_SIZE_BYTES: usize = 400;
 
-pub type SignatureCollectionType = MockSignatures<NopSignature>;
+type SignatureType = NopSignature;
+type SignatureCollectionType = MockSignatures<SignatureType>;
+type StateBackendType = InMemoryState;
+
+type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
+type TxPoolType = EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>;
+type ValidatedBlockType = EthValidatedBlock<SignatureType, SignatureCollectionType>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BenchControllerConfig {
@@ -28,16 +35,16 @@ pub struct BenchControllerConfig {
 }
 
 pub struct BenchController<'a> {
-    pub block_policy: &'a EthBlockPolicy,
+    pub block_policy: &'a BlockPolicyType,
     pub state_backend: InMemoryState,
-    pub pool: EthTxPool,
-    pub pending_blocks: Vec<EthValidatedBlock<SignatureCollectionType>>,
+    pub pool: TxPoolType,
+    pub pending_blocks: Vec<ValidatedBlockType>,
     pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
 
 impl<'a> BenchController<'a> {
-    pub fn setup(block_policy: &'a EthBlockPolicy, config: BenchControllerConfig) -> Self {
+    pub fn setup(block_policy: &'a BlockPolicyType, config: BenchControllerConfig) -> Self {
         let BenchControllerConfig {
             accounts,
             txs,
@@ -66,7 +73,7 @@ impl<'a> BenchController<'a> {
             proposal_tx_limit,
             gas_limit: txs
                 .iter()
-                .map(|tx| tx.transaction.gas_limit())
+                .map(|tx| tx.gas_limit())
                 .sum::<u64>()
                 .checked_add(1)
                 .expect("proposal gas limit does not overflow"),
@@ -74,28 +81,30 @@ impl<'a> BenchController<'a> {
     }
 
     pub fn create_pool(
-        block_policy: &EthBlockPolicy,
+        block_policy: &BlockPolicyType,
         state_backend: &InMemoryState,
-        txs: &[TransactionSigned],
-    ) -> EthTxPool {
-        let mut pool = EthTxPool<Self::SignatureType, Self::SignatureCollectionType, Self::StateBackendType>::new(true);
+        txs: &[TxEnvelope],
+    ) -> TxPoolType {
+        let mut pool = TxPoolType::new(true);
 
-        assert!(
-            !TxPool::<SignatureCollectionType, EthBlockPolicy, InMemoryState>::insert_tx(
-                &mut pool,
-                txs.iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
-                    .collect(),
-                block_policy,
-                state_backend,
-            )
-            .is_empty()
-        );
+        assert!(!TxPoolType::insert_tx(
+            &mut pool,
+            txs.iter()
+                .map(|tx| {
+                    let mut rlp_tx = Vec::new();
+                    tx.encode(&mut rlp_tx);
+                    Bytes::from(rlp_tx)
+                })
+                .collect(),
+            block_policy,
+            state_backend,
+        )
+        .is_empty());
 
         pool
     }
 
-    pub fn generate_state_backend_for_txs(txs: &[TransactionSigned]) -> InMemoryState {
+    pub fn generate_state_backend_for_txs(txs: &[TxEnvelope]) -> InMemoryState {
         InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -103,7 +112,7 @@ impl<'a> BenchController<'a> {
                 txs.iter()
                     .map(|tx| {
                         (
-                            EthAddress(tx.recover_signer().expect("signer is recoverable")),
+                            EthAddress(tx.clone().recover_signer().expect("signer is recoverable")),
                             0,
                         )
                     })
@@ -117,7 +126,7 @@ impl<'a> BenchController<'a> {
         txs: usize,
         nonce_var: usize,
         pending_blocks: usize,
-    ) -> (Vec<Vec<TransactionSigned>>, Vec<TransactionSigned>) {
+    ) -> (Vec<Vec<TxEnvelope>>, Vec<TxEnvelope>) {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         let mut accounts = (0..accounts)

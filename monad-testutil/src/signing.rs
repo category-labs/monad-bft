@@ -10,12 +10,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_types::NodeId;
-use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockSignatures<ST: CertificateSignatureRecoverable> {

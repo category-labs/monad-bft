@@ -4525,11 +4525,14 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
  "monad-state-backend",
+ "monad-testutil",
  "monad-types",
  "reth-primitives",
  "sorted_vector_map",
@@ -4549,6 +4552,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-state-backend",
+ "monad-testutil",
  "rayon",
  "reth-primitives",
  "tracing",
@@ -5154,7 +5158,6 @@ dependencies = [
  "monad-updaters",
  "monad-validator",
  "reth-primitives",
- "zerocopy 0.6.5",
 ]
 
 [[package]]
