@@ -132,13 +132,11 @@ where
         let total_gas = validated_txns
             .iter()
             .fold(0, |acc, tx| acc + tx.gas_limit());
-        if total_gas > self.block_gas_limit {
+        if total_gas > PROPOSAL_GAS_LIMIT {
             return Err(BlockValidationError::TxnError);
         }
 
-        let proposal_size = validated_txns
-            .iter()
-            .fold(0, |acc, tx| acc + tx.length());
+        let proposal_size = validated_txns.iter().fold(0, |acc, tx| acc + tx.length());
         if proposal_size as u64 > PROPOSAL_SIZE_LIMIT {
             return Err(BlockValidationError::TxnError);
         }
