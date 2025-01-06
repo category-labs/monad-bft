@@ -362,7 +362,7 @@ where
 )]
 pub struct BlockId(pub Hash);
 
-pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0xAA; 32]));
+pub const GENESIS_BLOCK_ID: BlockId = BlockId(Hash([0_u8; 32]));
 
 impl std::fmt::Debug for BlockId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
