@@ -404,19 +404,19 @@ impl BlsSignature {
 
 impl Encodable for BlsSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let x: [u8; SIGNATURE_BYTE_LEN] = self
-            .serialize()
+        let x: [u8; SIGNATURE_COMPRESSED_LEN] = self
+            .compress()
             .try_into()
-            .expect("bls signature expected to be 192 bytes");
+            .expect("bls signature expected to be 96 bytes");
         x.encode(out);
     }
 }
 
 impl Decodable for BlsSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let raw_bytes = <[u8; SIGNATURE_BYTE_LEN]>::decode(buf)?;
+        let raw_bytes = <[u8; SIGNATURE_COMPRESSED_LEN]>::decode(buf)?;
 
-        match Self::deserialize(&raw_bytes) {
+        match Self::uncompress(&raw_bytes) {
             Ok(sig) => Ok(sig),
             Err(_) => Err(alloy_rlp::Error::Custom("invalid bls signature")),
         }
@@ -516,19 +516,19 @@ impl std::hash::Hash for BlsAggregateSignature {
 
 impl Encodable for BlsAggregateSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let x: [u8; SIGNATURE_BYTE_LEN] = self
-            .serialize()
+        let x: [u8; SIGNATURE_COMPRESSED_LEN] = self
+            .compress()
             .try_into()
-            .expect("bls aggregate signature expected to be 192 bytes");
+            .expect("bls aggregate signature expected to be 96 bytes");
         x.encode(out);
     }
 }
 
 impl Decodable for BlsAggregateSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let raw_bytes = <[u8; SIGNATURE_BYTE_LEN]>::decode(buf)?;
+        let raw_bytes = <[u8; SIGNATURE_COMPRESSED_LEN]>::decode(buf)?;
 
-        match Self::deserialize(&raw_bytes) {
+        match Self::uncompress(&raw_bytes) {
             Ok(sig) => Ok(sig),
             Err(_) => Err(alloy_rlp::Error::Custom("invalid bls aggregate signature")),
         }
