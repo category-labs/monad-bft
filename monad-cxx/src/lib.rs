@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
-use alloy_consensus::{Header, Transaction as _};
+use alloy_consensus::{Header, Transaction as _, TxEip1559};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
 use alloy_rlp::Encodable;
@@ -299,15 +299,15 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
         let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(41454),
+            reth_primitives::transaction::Transaction::Eip1559(TxEip1559 {
+                chain_id: 10143,
                 nonce: 0,
-                gas_price: 0,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
                 gas_limit: 1000000000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("9344b07175800259691961298ca11c824e65032d").into(),
-                ),
+                to: TxKind::Call(hex!("9344b07175800259691961298ca11c824e65032d").into()),
                 value: Default::default(),
+                access_list: Default::default(),
                 input: Default::default(),
             }),
             reth_primitives::Header {
@@ -330,7 +330,7 @@ mod tests {
                 panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000a1ee00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000279f00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
             }
         }
     }
@@ -346,15 +346,13 @@ mod tests {
         };
 
         let txn: reth_primitives::transaction::Transaction =
-            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(41454),
+            reth_primitives::Transaction::Legacy(TxLegacy {
+                chain_id: Some(10143),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 30000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("0000000000000000000002000000000000000000").into(),
-                ),
-                value: TxValue::from(10000),
+                to: TxKind::Call(hex!("0000000000000000000002000000000000000000").into()),
+                value: U256::from(10000),
                 input: Default::default(),
             });
 
@@ -442,14 +440,12 @@ mod tests {
         };
 
         let mut txn: reth_primitives::transaction::Transaction =
-            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(41454),
+            reth_primitives::Transaction::Legacy(TxLegacy {
+                chain_id: Some(10143),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 1000000000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into(),
-                ),
+                to: TxKind::Call(hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into()),
                 value: Default::default(),
                 input: hex!("ff01").into(),
             });
@@ -487,9 +483,8 @@ mod tests {
         // Code override: this should produce the same result as the above call
         {
             if let reth_primitives::Transaction::Legacy(ref mut legacy_tx) = txn {
-                legacy_tx.to = reth_primitives::TransactionKind::Call(
-                    hex!("000000000000000000000000000000000000000a").into(),
-                );
+                legacy_tx.to =
+                    TxKind::Call(hex!("000000000000000000000000000000000000000a").into());
             }
 
             let state_overrides_string = "{\"state_override_set\" : {\"0x000000000000000000000000000000000000000a\" : {

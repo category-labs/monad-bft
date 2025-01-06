@@ -15,9 +15,9 @@ struct TestDb
     mpt::Db db;
     TrieDb tdb;
 
-    TestDb(std::filesystem::path const &dir)
-        : path{dir}
-        , db{machine, mpt::OnDiskDbConfig{.dbname_paths = {dir / "test.db"}}}
+    TestDb(std::filesystem::path const &path)
+        : path{path}
+        , db{machine, mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}}
         , tdb{db}
     {
     }
@@ -25,10 +25,19 @@ struct TestDb
 
 TestDb *make_testdb()
 {
-    auto const dir =
-        std::filesystem::temp_directory_path() / std::to_string(rand());
-    std::filesystem::create_directory(dir);
-    return new TestDb{dir};
+    auto const path = [] {
+        std::filesystem::path dbname(
+            MONAD_ASYNC_NAMESPACE::working_temporary_directory() /
+            "monad_eth_call_test2_XXXXXX");
+        int const fd = ::mkstemp((char *)dbname.native().data());
+        MONAD_ASSERT(fd != -1);
+        MONAD_ASSERT(
+            -1 !=
+            ::ftruncate(fd, static_cast<off_t>(8ULL * 1024 * 1024 * 1024)));
+        ::close(fd);
+        return dbname;
+    }();
+    return new TestDb{path};
 }
 
 void testdb_load_callenv(TestDb *const db)
@@ -113,7 +122,5 @@ std::string testdb_path(TestDb const *const db)
 
 void destroy_testdb(TestDb *const db)
 {
-    MONAD_ASSERT(std::filesystem::is_directory(db->path));
-    std::filesystem::remove_all(db->path);
     delete db;
 }
