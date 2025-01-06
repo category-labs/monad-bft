@@ -40,12 +40,26 @@ pub struct Cli {
     pub bft_block_poll_freq_secs: u64,
 
     /// Path to wal for checkpoint'ing
-    /// If set, archiver will save a copy of this file every wal_checkpoint_interval seconds
+    /// If set, archiver will save a copy of this file every wal_checkpoint_freq_secs
     #[arg(long)]
     pub wal_path: Option<PathBuf>,
 
     #[arg(long, default_value_t = 3600)]
     pub wal_checkpoint_freq_secs: u64,
+
+    /// Path to forkpoint for checkpoint'ing
+    /// If set, archiver will save a copy of this file every forkpoint_checkpoint_freq_secs
+    #[arg(long)]
+    pub forkpoint_path: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 300)]
+    pub forkpoint_checkpoint_freq_secs: u64,
+
+    #[arg(long, value_delimiter = ',')]
+    pub additional_files_to_checkpoint: Vec<PathBuf>,
+
+    #[arg(long, default_value_t = 300)]
+    pub additional_checkpoint_freq_secs: u64,
 
     #[arg(long)]
     pub otel_endpoint: Option<String>,
