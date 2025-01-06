@@ -69,6 +69,7 @@ ignored = ["getrandom", "pbjson"]
 
 [workspace.dependencies]
 alloy-consensus = "0.8"
+alloy-eips = "0.8"
 alloy-json-rpc = "0.8"
 alloy-primitives = "0.8"
 alloy-rlp = "0.3"

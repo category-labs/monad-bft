@@ -3,6 +3,7 @@
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
 use alloy_consensus::{Header, Transaction as _};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
 use alloy_rlp::Encodable;
 use autocxx::{block, moveit::moveit, WithinBox};
@@ -87,7 +88,7 @@ pub fn eth_call(
     let default_signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
     let tx = TransactionSigned::new_unhashed(transaction, default_signature);
     let mut rlp_encoded_tx = Vec::new();
-    tx.encode(&mut rlp_encoded_tx);
+    tx.encode_2718(&mut rlp_encoded_tx);
 
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
     for byte in &rlp_encoded_tx {
