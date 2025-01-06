@@ -35,10 +35,10 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 pub struct Vote {
     /// id of the proposed block
     pub id: BlockId,
-    /// epoch of the proposed block
-    pub epoch: Epoch,
     /// round of the proposed block
     pub round: Round,
+    /// epoch of the proposed block
+    pub epoch: Epoch,
     /// parent block id of the proposed block
     pub parent_id: BlockId,
     /// parent round of the proposed block
