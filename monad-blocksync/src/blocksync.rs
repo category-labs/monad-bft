@@ -229,6 +229,8 @@ where
             if entry.get().requester == requester {
                 entry.remove();
             }
+            // NOTE: we don't remove the associated payload requests here since
+            // it might be required for a different range
         }
     }
 
@@ -1069,6 +1071,13 @@ mod test {
             self.wrapped_state().handle_peer_response(sender, response)
         }
 
+        fn handle_timeout(
+            &mut self,
+            request: BlockSyncRequestMessage,
+        ) -> Vec<BlockSyncCommand<SCT>> {
+            self.wrapped_state().handle_timeout(request)
+        }
+
         fn assert_empty_block_sync_state(&self) {
             assert!(self.block_sync.headers_requests.is_empty());
             assert!(self.block_sync.payload_requests.is_empty());
@@ -1105,12 +1114,6 @@ mod test {
                     .find(|(k, _)| k.pubkey() == leader)
                     .expect("key not in valset");
 
-                let (seq_num, block_kind) = match txns {
-                    TransactionPayload::List(_) => {
-                        (qc.get_seq_num() + SeqNum(1), BlockKind::Executable)
-                    }
-                    TransactionPayload::Null => (qc.get_seq_num(), BlockKind::Null),
-                };
                 let payload = Payload { txns };
                 let block = Block::new(
                     NodeId::new(leader_key.pubkey()),
@@ -1119,7 +1122,7 @@ mod test {
                     round,
                     &ExecutionProtocol {
                         state_root: StateRootHash::default(),
-                        seq_num,
+                        seq_num: qc.get_seq_num() + SeqNum(1),
                         beneficiary: EthAddress::default(),
                         randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
                             round,
@@ -1127,7 +1130,7 @@ mod test {
                         ),
                     },
                     payload.get_id(),
-                    block_kind,
+                    BlockKind::Executable,
                     &qc,
                 );
 
@@ -1302,6 +1305,8 @@ mod test {
 
     #[test]
     fn initiate_headers_request() {
+        // Handle self request should emit a fetch headers command
+        // If not available in ledger, request from peer with a timeout
         let mut context = setup();
 
         let requester = BlockSyncSelfRequester::Consensus;
@@ -1347,8 +1352,103 @@ mod test {
         }
     }
 
+    #[test_case(true; "cancel request after receiving headers")]
+    #[test_case(false; "cancel request before receiving headers")]
+    fn cancel_request(headers_received: bool) {
+        // Handle self request should emit a fetch headers command
+        // Handle self cancel request should remove existing requests (not in flight payload requests)
+        let mut context = setup();
+        let full_block = context.get_blocks(1).pop().unwrap();
+        let payload = full_block.payload.clone();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: full_block.get_id(),
+            root_seq_num: full_block.get_seq_num(),
+        };
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        if headers_received {
+            let headers = vec![full_block.block];
+
+            let _ = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+                block_range,
+                headers,
+            ));
+
+            // cancelling the request should remove the entry
+            context.handle_self_cancel_request(requester, block_range);
+            assert!(context
+                .block_sync
+                .self_completed_headers_requests
+                .is_empty());
+            assert!(context.block_sync.self_headers_requests.is_empty());
+
+            // receiving payload should remove entry but not emit anything
+            let cmds =
+                context.handle_ledger_response(BlockSyncResponseMessage::found_payload(payload));
+            assert!(find_emit_commands(&cmds).is_empty());
+        } else {
+            // cancelling the request should remove the entry
+            context.handle_self_cancel_request(requester, block_range);
+        }
+
+        context.assert_empty_block_sync_state();
+    }
+
+    #[test]
+    fn timeout_headers_request() {
+        // Handle self request should emit a fetch headers command
+        // If not available in ledger, request from peer with a timeout
+        // Re-request when timeout hits
+        let mut context = setup();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: BlockId(Hash([0x00_u8; 32])),
+            root_seq_num: SeqNum(1),
+        };
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        // headers not availabe in self ledger, should request from a peer
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::headers_not_available(block_range));
+        assert_eq!(cmds.len(), 2);
+
+        let cmds = context.handle_timeout(BlockSyncRequestMessage::Headers(block_range));
+        assert_eq!(cmds.len(), 2);
+
+        let request_cmds = find_send_request_commands(&cmds);
+        assert_eq!(request_cmds.len(), 1);
+        let expected_request = BlockSyncRequestMessage::Headers(block_range);
+        match request_cmds[0] {
+            BlockSyncCommand::SendRequest { request, .. } => {
+                assert_eq!(*request, expected_request);
+            }
+            _ => unreachable!(),
+        }
+
+        let timeout_cmds = find_schedule_timeout_commands(&cmds);
+        assert_eq!(timeout_cmds.len(), 1);
+        match timeout_cmds[0] {
+            BlockSyncCommand::ScheduleTimeout(request) => {
+                assert_eq!(*request, expected_request);
+            }
+            _ => unreachable!(),
+        }
+    }
+
     #[test]
     fn initiate_payload_requests() {
+        // Handle self request should fetch headers from ledger/peer
+        // After headers are received, emit fetch payload commands
+        // If payload is not available in ledger, request from peer with timeout
         let mut context = setup();
         let num_blocks = 5;
 
@@ -1434,7 +1534,65 @@ mod test {
     }
 
     #[test]
-    fn avoid_duplicate_payload_requests() {
+    fn timeout_payload_request() {
+        // If payload is not available in ledger, request from peer with a timeout
+        // Re-request when timeout hits
+        let mut context = setup();
+
+        let full_block = context.get_blocks(1).pop().unwrap();
+        let payload_id = full_block.get_payload_id();
+
+        let requester = BlockSyncSelfRequester::Consensus;
+        let block_range = BlockRange {
+            last_block_id: full_block.get_id(),
+            root_seq_num: full_block.get_seq_num(),
+        };
+
+        // requesting a block range should initiate a headers request
+        let cmds = context.handle_self_request(requester, block_range);
+        assert_eq!(cmds.len(), 1);
+
+        // headers available, should start payload fetch
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range,
+            vec![full_block.block],
+        ));
+        assert_eq!(cmds.len(), 1);
+
+        // payload not available, should request from peer
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::payload_not_available(payload_id));
+        assert_eq!(cmds.len(), 2);
+
+        // re-request payload from peer on timeout
+        let cmds = context.handle_timeout(BlockSyncRequestMessage::Payload(payload_id));
+        assert_eq!(cmds.len(), 2);
+
+        let request_cmds = find_send_request_commands(&cmds);
+        assert_eq!(request_cmds.len(), 1);
+        let expected_request = BlockSyncRequestMessage::Payload(payload_id);
+        match request_cmds[0] {
+            BlockSyncCommand::SendRequest { request, .. } => {
+                assert_eq!(*request, expected_request);
+            }
+            _ => unreachable!(),
+        }
+
+        let timeout_cmds = find_schedule_timeout_commands(&cmds);
+        assert_eq!(timeout_cmds.len(), 1);
+        match timeout_cmds[0] {
+            BlockSyncCommand::ScheduleTimeout(request) => {
+                assert_eq!(*request, expected_request);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn avoid_payload_requests_if_in_blocktree() {
+        // Handle self request should fetch headers from ledger/peer
+        // After headers are received, emit fetch payload commands only if
+        // the payload is not found in the blocktree
         let mut context = setup();
 
         let num_blocks = 5;
@@ -1483,7 +1641,159 @@ mod test {
     }
 
     #[test]
+    fn avoid_payload_requests_if_in_flight() {
+        // Handle self request should fetch headers from ledger/peer
+        // After headers are received, emit fetch payload commands only if
+        // the payload request isn't already in flight
+        let mut context = setup();
+
+        let num_blocks = 5;
+        let num_in_flight = 2;
+        let full_blocks = context.get_blocks(num_blocks);
+
+        // request for all num_blocks
+        let requester_1 = BlockSyncSelfRequester::Consensus;
+        let block_range_1 = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+
+        // request for only the first two blocks
+        let requester_2 = BlockSyncSelfRequester::Consensus;
+        let block_range_2 = BlockRange {
+            last_block_id: full_blocks[num_in_flight - 1].get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+        let full_blocks_2 = full_blocks.iter().take(2).cloned().collect_vec();
+
+        let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
+            .into_iter()
+            .map(|full_block| (full_block.block, full_block.payload))
+            .unzip();
+
+        // request all num_blocks
+        let cmds = context.handle_self_request(requester_1, block_range_1);
+        assert_eq!(cmds.len(), 1);
+
+        // found headers, should initiate payload requests for all blocks
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_1,
+            headers.clone(),
+        ));
+
+        let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
+        assert_eq!(fetch_payload_cmds.len(), num_blocks);
+
+        // request only the first two blocks
+        let cmds = context.handle_self_request(requester_2, block_range_2);
+        assert_eq!(cmds.len(), 1);
+
+        // found headers, should not emit any payload requests since both are already in flight
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_2,
+            headers.iter().take(num_in_flight).cloned().collect_vec(),
+        ));
+        assert_eq!(cmds.len(), 0);
+
+        // return the first two payloads, should emit the full blocks after second payload
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::found_payload(payloads[0].clone()));
+        assert!(cmds.is_empty());
+
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::found_payload(payloads[1].clone()));
+        assert_eq!(cmds.len(), 1);
+
+        let emit_cmds = find_emit_commands(&cmds);
+        assert_eq!(emit_cmds.len(), 1);
+        assert_eq!(
+            emit_cmds[0],
+            &BlockSyncCommand::Emit(requester_2, (block_range_2, full_blocks_2))
+        );
+    }
+
+    #[test]
+    fn avoid_payload_requests_if_already_received() {
+        // Handle self request should fetch headers from ledger/peer
+        // After headers are received, emit fetch payload commands only if
+        // the payload is not found in an already completed request range
+        let mut context = setup();
+
+        let num_blocks = 5;
+        let num_already_received = 2;
+        let full_blocks = context.get_blocks(num_blocks);
+
+        // request for all num_blocks
+        let requester_1 = BlockSyncSelfRequester::Consensus;
+        let block_range_1 = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+
+        // request for only the first two blocks
+        let requester_2 = BlockSyncSelfRequester::Consensus;
+        let block_range_2 = BlockRange {
+            last_block_id: full_blocks[num_already_received - 1].get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+        let full_blocks_2 = full_blocks.iter().take(2).cloned().collect_vec();
+
+        let (headers, payloads): (Vec<_>, Vec<_>) = full_blocks
+            .into_iter()
+            .map(|full_block| (full_block.block, full_block.payload))
+            .unzip();
+
+        // request all num_blocks
+        let cmds = context.handle_self_request(requester_1, block_range_1);
+        assert_eq!(cmds.len(), 1);
+
+        // found headers, should initiate payload requests for all blocks
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_1,
+            headers.clone(),
+        ));
+
+        let fetch_payload_cmds = find_fetch_payload_commands(&cmds);
+        assert_eq!(fetch_payload_cmds.len(), num_blocks);
+
+        // return the first two payloads
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::found_payload(payloads[0].clone()));
+        assert!(cmds.is_empty());
+        let cmds = context
+            .handle_ledger_response(BlockSyncResponseMessage::found_payload(payloads[1].clone()));
+        assert!(cmds.is_empty());
+
+        // request only the first two blocks
+        let cmds = context.handle_self_request(requester_2, block_range_2);
+        assert_eq!(cmds.len(), 1);
+
+        // found headers, should emit full blocks immediately since it was already received
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_2,
+            headers
+                .iter()
+                .take(num_already_received)
+                .cloned()
+                .collect_vec(),
+        ));
+        assert_eq!(cmds.len(), 1);
+
+        // should emit the full blocks
+        let emit_cmds = find_emit_commands(&cmds);
+        assert_eq!(emit_cmds.len(), 1);
+        assert_eq!(
+            emit_cmds[0],
+            &BlockSyncCommand::Emit(requester_2, (block_range_2, full_blocks_2))
+        );
+    }
+
+    #[test]
     fn throttle_payload_requests() {
+        // Handle self request should fetch headers from ledger/peer
+        // After headers are received, emit atmost BLOCKSYNC_MAX_PAYLOAD_REQUESTS
+        // fetch payload commands.
+        // For every payload received, emit another fetch payload command (if needed)
         let mut context = setup();
         let num_blocks = BLOCKSYNC_MAX_PAYLOAD_REQUESTS + 1;
 
@@ -1552,6 +1862,8 @@ mod test {
 
     #[test]
     fn emit_requested_blocks() {
+        // After receiving all payloads for the given range, emit the requested
+        // block range with full blocks
         let mut context = setup();
         let num_blocks = 5;
 
@@ -1634,9 +1946,12 @@ mod test {
         context.assert_empty_block_sync_state();
     }
 
-    #[test_case(true; "headers cached in blocktree")]
-    #[test_case(false; "headers received from ledger")]
+    #[test_case(true; "all headers cached in blocktree")]
+    #[test_case(false; "all headers received from ledger")]
     fn peer_headers_request(cached_in_blocktree: bool) {
+        // If a peer requests headers and
+        //      headers are in blocktree, respond with headers
+        //      headers are not in blocktree, fetch from ledger, and send response
         let mut context = setup();
         let mut block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
@@ -1703,8 +2018,100 @@ mod test {
         context.assert_empty_block_sync_state();
     }
 
+    #[test_case(true; "partial headers received from ledger")]
+    #[test_case(false; "partial headers not in ledger")]
+    fn peer_headers_request_partially_cached(headers_in_ledger: bool) {
+        // If a peer requests headers, retrieve as many as possible from blocktree
+        // and fetch rest from ledger
+        let mut context = setup();
+        let mut block_policy = PassthruBlockPolicy {};
+        let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
+
+        let num_blocks = 5;
+        let num_blocks_cached = 2;
+        let full_blocks = context.get_blocks(num_blocks);
+        let full_block_range = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+        let headers = full_blocks
+            .iter()
+            .map(|full_block| full_block.block.clone())
+            .collect_vec();
+
+        let headers_not_cached = headers
+            .iter()
+            .take(num_blocks - num_blocks_cached)
+            .cloned()
+            .collect_vec();
+        let ledger_fetch_range = BlockRange {
+            last_block_id: headers_not_cached.last().unwrap().get_id(),
+            root_seq_num: full_blocks.first().unwrap().get_seq_num(),
+        };
+
+        let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());
+
+        for full_block in full_blocks.iter().rev().take(num_blocks_cached).cloned() {
+            assert!(context
+                .blocktree
+                .add(full_block, &mut block_policy, &state_backend)
+                .is_ok());
+        }
+
+        // 2 headers are in blocktree, should fetch 3 from ledger
+        let cmds = context.handle_peer_request(
+            sender_nodeid,
+            BlockSyncRequestMessage::Headers(full_block_range),
+        );
+        assert_eq!(cmds.len(), 1);
+        let fetch_headers_cmds = find_fetch_headers_commands(&cmds);
+        assert_eq!(fetch_headers_cmds.len(), 1);
+        match fetch_headers_cmds[0] {
+            BlockSyncCommand::FetchHeaders(fetch_range) => {
+                assert_eq!(fetch_range, &ledger_fetch_range);
+            }
+            _ => unreachable!(),
+        }
+
+        let (cmds, expected_response) = if headers_in_ledger {
+            // ledger response should emit response with all the headers
+            let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+                ledger_fetch_range,
+                headers_not_cached,
+            ));
+
+            (
+                cmds,
+                BlockSyncResponseMessage::found_headers(full_block_range, headers),
+            )
+        } else {
+            // ledger response should emit response as not available
+            let cmds = context.handle_ledger_response(
+                BlockSyncResponseMessage::headers_not_available(ledger_fetch_range),
+            );
+            (
+                cmds,
+                BlockSyncResponseMessage::headers_not_available(full_block_range),
+            )
+        };
+        assert_eq!(cmds.len(), 1);
+
+        let response_cmds = find_send_response_commands(&cmds);
+        assert_eq!(response_cmds.len(), 1);
+        match response_cmds[0] {
+            BlockSyncCommand::SendResponse { to, response } => {
+                assert_eq!(to, &sender_nodeid);
+                assert_eq!(response, &expected_response)
+            }
+            _ => unreachable!(),
+        }
+
+        context.assert_empty_block_sync_state();
+    }
+
     #[test]
     fn peer_headers_request_not_available() {
+        // If a peer requests headers and headers aren't in blocktree or ledger, emit not available
         let mut context = setup();
 
         let num_blocks = 5;
@@ -1753,6 +2160,9 @@ mod test {
     #[test_case(true; "payload cached in blocktree")]
     #[test_case(false; "payload received from ledger")]
     fn peer_payload_request(cached_in_blocktree: bool) {
+        // If a peer requests a payload and
+        //      payload is in blocktree, respond with payload
+        //      payload is not in blocktree, fetch from ledger, and send response
         let mut context = setup();
         let mut block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
@@ -1807,6 +2217,7 @@ mod test {
 
     #[test]
     fn peer_payload_request_not_available() {
+        // If a peer requests payload and payload is not in blocktree or ledger, emit not available
         let mut context = setup();
 
         let num_blocks = 1;

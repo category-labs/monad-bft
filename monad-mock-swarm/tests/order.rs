@@ -131,7 +131,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                     vec![
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
                         GenericTransformer::Replay(ReplayTransformer::new(
-                            Duration::from_millis(500),
+                            Duration::from_millis(1000),
                             direction.clone(),
                         )),
                     ],
@@ -145,7 +145,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let mut swarm = swarm_config.build();
     // run the swarm to before the replay and record the longest ledger length
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(499)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(999)))
         .is_some()
     {}
 
@@ -197,7 +197,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     assert!(verifier_before_delayed_messages.verify(&swarm));
 
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(1000)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(2000)))
         .is_some()
     {}
 
@@ -205,7 +205,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     // after replay
     //
     // the reverse function of happy_path_tick_by_block
-    let expected_blocks = (Duration::from_millis(500).as_millis() / delta.as_millis() - 1) / 2 - 3;
+    let expected_blocks = (Duration::from_millis(1000).as_millis() / delta.as_millis() - 1) / 2 - 3;
     // reason for -3:
     // -2 because there are 2 uncommitted blocks in the blocktree
     // -1 because the blackout node can't propose blocks when there are unvalidated
