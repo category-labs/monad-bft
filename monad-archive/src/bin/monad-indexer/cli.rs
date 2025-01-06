@@ -10,7 +10,8 @@ pub struct Cli {
     #[arg(long, value_parser = clap::value_parser!(BlockDataReaderArgs))]
     pub block_data_source: BlockDataReaderArgs,
 
-    /// Sink to write index data
+    /// Where archive data is written to
+    /// For aws: 'aws <bucket_name> <concurrent_requests>'
     #[arg(long, value_parser = clap::value_parser!(ArchiveArgs))]
     pub archive_sink: ArchiveArgs,
 

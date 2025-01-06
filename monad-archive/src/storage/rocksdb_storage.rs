@@ -55,6 +55,24 @@ impl BlobStore for RocksDbClient {
     async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()> {
         self.db.put(key, data).map_err(Into::into)
     }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut objects = Vec::new();
+        let prefix_bytes = prefix.as_bytes();
+
+        // Create iterator with prefix seeking
+        let iter = self.db.prefix_iterator(prefix_bytes);
+
+        // Collect all matching keys
+        for item in iter {
+            let (key, _) = item?;
+            if let Ok(key_str) = String::from_utf8(key.to_vec()) {
+                objects.push(key_str);
+            }
+        }
+
+        Ok(objects)
+    }
 }
 
 impl IndexStoreReader for RocksDbClient {

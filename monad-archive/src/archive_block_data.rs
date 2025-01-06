@@ -13,7 +13,7 @@ use aws_sdk_s3::{
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 use eyre::{Context, Result};
-use futures::try_join;
+use futures::{try_join, Stream};
 use monad_triedb_utils::triedb_env::BlockHeader;
 use tokio::time::Duration;
 use tokio_retry::{
@@ -33,6 +33,8 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 #[enum_dispatch]
 pub trait BlobStore: BlobReader {
     async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()>;
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
     fn bucket_name(&self) -> &str;
 }
 
@@ -43,7 +45,7 @@ pub trait BlobReader: Clone {
 
 #[derive(Clone)]
 pub struct BlockDataArchive<Store = BlobStoreErased> {
-    pub bucket: Store,
+    pub store: Store,
 
     pub latest_uploaded_table_key: &'static str,
     pub latest_indexed_table_key: &'static str,
@@ -63,7 +65,7 @@ pub struct BlockDataArchive<Store = BlobStoreErased> {
 
 impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
     fn get_bucket(&self) -> &str {
-        self.bucket.bucket_name()
+        self.store.bucket_name()
     }
 
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
@@ -72,7 +74,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
             LatestKind::Indexed => &self.latest_indexed_table_key,
         };
 
-        let value = self.bucket.read(key).await?;
+        let value = self.store.read(key).await?;
 
         let value_str = String::from_utf8(value.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
 
@@ -89,7 +91,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
     async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         let receipts_key = self.receipts_key(block_number);
 
-        let rlp_receipts = self.bucket.read(&receipts_key).await?;
+        let rlp_receipts = self.store.read(&receipts_key).await?;
         let mut rlp_receipts_slice: &[u8] = &rlp_receipts;
 
         let receipts = Vec::decode(&mut rlp_receipts_slice).wrap_err("Cannot decode block")?;
@@ -100,7 +102,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
     async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
         let traces_key = self.traces_key(block_number);
 
-        let rlp_traces = self.bucket.read(&traces_key).await?;
+        let rlp_traces = self.store.read(&traces_key).await?;
         let mut rlp_traces_slice: &[u8] = &rlp_traces;
 
         let traces = Vec::decode(&mut rlp_traces_slice).wrap_err("Cannot decode block")?;
@@ -112,7 +114,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
         let block_hash_key_suffix = hex::encode(block_hash);
         let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
 
-        let block_num_bytes = self.bucket.read(&block_hash_key).await?;
+        let block_num_bytes = self.store.read(&block_hash_key).await?;
 
         let block_num_str =
             String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
@@ -128,7 +130,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
 impl<Store: BlobStore> BlockDataArchive<Store> {
     pub fn new(archive: Store) -> Self {
         BlockDataArchive {
-            bucket: archive,
+            store: archive,
             block_table_prefix: "block",
             block_hash_table_prefix: "block_hash",
             receipts_table_prefix: "receipts",
@@ -139,7 +141,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
     }
 
     pub async fn read_block(&self, block_num: u64) -> Result<Block> {
-        let bytes = self.bucket.read(&self.block_key(block_num)).await?;
+        let bytes = self.store.read(&self.block_key(block_num)).await?;
         let mut bytes: &[u8] = &bytes;
         let block = Block::decode(&mut bytes)?;
         Ok(block)
@@ -178,7 +180,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
             LatestKind::Indexed => &self.latest_indexed_table_key,
         };
         let latest_value = format!("{:0width$}", block_num, width = BLOCK_PADDING_WIDTH);
-        self.bucket
+        self.store
             .upload(key, latest_value.as_bytes().to_vec())
             .await
     }
@@ -199,8 +201,8 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
 
         // 3) Join futures
         try_join!(
-            self.bucket.upload(&block_key, rlp_block),
-            self.bucket
+            self.store.upload(&block_key, rlp_block),
+            self.store
                 .upload(&block_hash_key, block_hash_value.to_vec())
         )?;
         Ok(())
@@ -221,7 +223,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
 
         let mut rlp_receipts = Vec::new();
         receipts.encode(&mut rlp_receipts);
-        self.bucket.upload(&receipts_key, rlp_receipts).await
+        self.store.upload(&receipts_key, rlp_receipts).await
     }
 
     pub async fn archive_traces(&self, traces: Vec<Vec<u8>>, block_num: u64) -> Result<()> {
@@ -235,6 +237,6 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
         let mut rlp_traces = vec![];
         traces.encode(&mut rlp_traces);
 
-        self.bucket.upload(&traces_key, rlp_traces).await
+        self.store.upload(&traces_key, rlp_traces).await
     }
 }

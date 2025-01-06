@@ -16,6 +16,7 @@ use tokio_retry::{
 };
 use tracing::info;
 
+use super::retry_strategy;
 use crate::{metrics::Metrics, BlobReader, BlobStore, TxIndexedData};
 
 const AWS_S3_ERRORS: &str = "aws_s3_errors";
@@ -127,5 +128,40 @@ impl BlobStore for S3Bucket {
 
     fn bucket_name(&self) -> &str {
         &self.bucket
+    }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut objects = Vec::new();
+        let mut continuation_token = None;
+
+        loop {
+            let token = continuation_token.as_ref();
+            let response = Retry::spawn(retry_strategy(), || {
+                let mut request = self
+                    .client
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .prefix(prefix);
+
+                if let Some(token) = token {
+                    request = request.continuation_token(token);
+                }
+                request.send()
+            })
+            .await?;
+
+            // Process objects
+            if let Some(contents) = response.contents {
+                objects.extend(contents.into_iter().filter_map(|obj| obj.key));
+            }
+
+            // Check if we need to continue
+            if !response.is_truncated.unwrap_or(false) {
+                break;
+            }
+            continuation_token = response.next_continuation_token;
+        }
+
+        Ok(objects)
     }
 }
