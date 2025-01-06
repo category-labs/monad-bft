@@ -5,9 +5,8 @@ use alloy_primitives::BlockHash;
 use eyre::{eyre, OptionExt, Result};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb, TriedbEnv};
 
-use crate::{Block, LatestKind};
-
 use super::{BlockDataReader, TrieDbCliArgs};
+use crate::{Block, LatestKind};
 
 #[derive(Clone)]
 pub struct TriedbReader {

@@ -38,13 +38,11 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
     ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
         let url = url::Url::parse(url)?;
         let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
-        let block_data_reader = BlockDataArchive::new(BlobStoreErased::S3Bucket(
-            S3Bucket::new(
-                bucket,
-                &get_aws_config(region).await,
-                Metrics::none(),
-            )
-        ));
+        let block_data_reader = BlockDataArchive::new(BlobStoreErased::S3Bucket(S3Bucket::new(
+            bucket,
+            &get_aws_config(region).await,
+            Metrics::none(),
+        )));
 
         Ok(ArchiveReader::new(block_data_reader, cloud_proxy_reader))
     }

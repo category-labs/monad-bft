@@ -1,9 +1,5 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use crate::{
-    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
-    BlockDataReader, IndexStoreErased,
-};
 use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{BlockHash, TxHash};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
@@ -22,6 +18,11 @@ use tokio_retry::{
     Retry,
 };
 use tracing::error;
+
+use crate::{
+    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
+    BlockDataReader, IndexStoreErased,
+};
 
 #[enum_dispatch]
 pub trait IndexStore: IndexStoreReader {
