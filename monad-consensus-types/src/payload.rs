@@ -74,7 +74,7 @@ pub struct ProposedEthHeader {
     pub parent_beacon_block_root: [u8; 32],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct EthHeader(pub Header);
 
 impl FinalizedHeader for EthHeader {
