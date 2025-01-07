@@ -165,12 +165,6 @@ impl<PT: PubKey> OutboundRequests<PT> {
         self.pending_requests.is_empty() && self.in_flight_requests.is_empty()
     }
 
-    pub fn clear(&mut self) {
-        tracing::debug!("about to set new target, clearing outstanding requests");
-        self.pending_requests.clear();
-        self.in_flight_requests.clear();
-    }
-
     pub fn clear_prefix_peers(&mut self) {
         self.prefix_peers.clear();
     }

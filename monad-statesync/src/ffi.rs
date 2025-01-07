@@ -192,27 +192,31 @@ impl<PT: PubKey> StateSync<PT> {
                 Some(statesync_send_request),
             );
             let mut current_target = None;
+            let mut next_target = None;
 
             while let Ok(response) = response_rx.recv() {
                 match response {
                     SyncResponse::UpdateTarget(target) => {
-                        tracing::debug!(
-                            ?current_target,
-                            new_target =? target,
-                            "updating statesync target"
-                        );
-                        let mut buf = Vec::new();
-                        target.encode(&mut buf);
-                        unsafe {
-                            bindings::monad_statesync_client_handle_target(
-                                // handle_target can be called on an active or inactive SyncCtx
-                                sync_ctx.get_or_create_ctx(),
-                                buf.as_ptr(),
-                                buf.len() as u64,
-                            )
-                        };
-                        progress.lock().unwrap().update_target(&target);
-                        current_target = Some(target);
+                        if current_target.is_none() {
+                            tracing::debug!(
+                                new_target =? target,
+                                "updating statesync target"
+                            );
+                            let mut buf = Vec::new();
+                            target.encode(&mut buf);
+                            unsafe {
+                                bindings::monad_statesync_client_handle_target(
+                                    // handle_target can be called on an active or inactive SyncCtx
+                                    sync_ctx.get_or_create_ctx(),
+                                    buf.as_ptr(),
+                                    buf.len() as u64,
+                                )
+                            };
+                            progress.lock().unwrap().update_target(&target);
+                            current_target = Some(target);
+                        } else {
+                            next_target.replace(target);
+                        }
                     }
                     SyncResponse::Response((from, response)) => {
                         assert!(current_target.is_some());
@@ -283,14 +287,31 @@ impl<PT: PubKey> StateSync<PT> {
                     }
                 }
                 if sync_ctx.try_finalize() {
-                    let target = current_target
-                        .take()
-                        .expect("current_target must have been set");
-                    tracing::debug!(?target, "done statesync");
-                    progress.lock().unwrap().update_reached_target(&target);
-                    request_tx
-                        .send(SyncRequest::DoneSync(target))
-                        .expect("request_rx dropped mid DoneSync");
+                    let target = current_target.expect("target should be set").clone();
+                    current_target = next_target.take();
+                    if let Some(current_target) = &current_target {
+                        tracing::debug!(
+                            "statesync reached target {:?}, next target {:?}",
+                            target,
+                            current_target
+                        );
+                        let mut buf = Vec::new();
+                        current_target.encode(&mut buf);
+                        unsafe {
+                            bindings::monad_statesync_client_handle_target(
+                                sync_ctx.get_or_create_ctx(),
+                                buf.as_ptr(),
+                                buf.len() as u64,
+                            )
+                        };
+                        progress.lock().unwrap().update_target(current_target)
+                    } else {
+                        tracing::debug!(?target, "done statesync");
+                        progress.lock().unwrap().update_reached_target(&target);
+                        request_tx
+                            .send(SyncRequest::DoneSync(target))
+                            .expect("request_rx dropped mid DoneSync");
+                    }
                 }
             }
             // this loop exits when execution is about to start
@@ -318,7 +339,6 @@ impl<PT: PubKey> StateSync<PT> {
             assert!(old_target.number < target.number);
         }
         self.current_target = Some(target.clone());
-        self.outbound_requests.clear();
         self.response_tx
             .send(SyncResponse::UpdateTarget(target))
             .expect("response_rx dropped");
