@@ -15,21 +15,23 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
+
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 rand = { workspace = true }
-reth-primitives = { workspace = true }
 
 [dev-dependencies]
 alloy-json-rpc = { workspace = true }
-alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-client = { workspace = true }
+alloy-rpc-types = { workspace = true }
 alloy-transport = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 itertools = { workspace = true }
 rand = { workspace = true }
-reth-primitives = { workspace = true }
-reth-rpc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -1,13 +1,14 @@
 use std::time::Duration;
 
+use alloy_consensus::TxEnvelope;
+use alloy_primitives::{Address, Bytes, U256, U64};
 use alloy_rpc_client::ReqwestClient;
 use eyre::Result;
 use monad_types::DropTimer;
-use reth_primitives::{Address, Bytes, TransactionSigned, U256, U64};
 use tracing::trace;
 
 pub trait EthJsonRpc {
-    async fn send_raw_transaction_params(&self, tx: TransactionSigned) -> (&'static str, Bytes);
+    async fn send_raw_transaction_params(&self, tx: TxEnvelope) -> (&'static str, Bytes);
     async fn get_transaction_count(&self, addr: &Address) -> Result<u64>;
     async fn get_balance(&self, addr: &Address) -> Result<U256>;
     // async fn get_erc20_balance(&self, addr: &Address, erc20: ERC20) -> Result<U256>;
@@ -37,8 +38,8 @@ impl EthJsonRpc for ReqwestClient {
         Ok(nonce.to())
     }
 
-    async fn send_raw_transaction_params(&self, tx: TransactionSigned) -> (&'static str, Bytes) {
-        ("eth_sendRawTransaction", tx.envelope_encoded())
+    async fn send_raw_transaction_params(&self, tx: TxEnvelope) -> (&'static str, Bytes) {
+        ("eth_sendRawTransaction", alloy_rlp::encode(tx).into())
     }
 
     async fn get_code(&self, addr: &Address) -> Result<String> {

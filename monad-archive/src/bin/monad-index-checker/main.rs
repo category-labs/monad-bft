@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
 use archive_reader::{ArchiveReader, LatestKind::*};
 use chrono::{
     format::{DelayedFormat, StrftimeItems},
@@ -19,8 +20,7 @@ use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
 use futures::{executor::block_on, future::join_all, stream, StreamExt};
 use metrics::Metrics;
 use monad_archive::*;
-use reth_primitives::{Block, ReceiptWithBloom};
-use s3_archive::{get_aws_config, S3Archive, S3Bucket};
+use s3_archive::{get_aws_config, Block, S3Archive, S3Bucket};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::AsyncWriteExt,
@@ -180,17 +180,18 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         Ok(x) => x,
         Err(check_result) => return Ok(check_result),
     };
-    let num_txs = block.body.len();
+    let num_txs = block.body.transactions.len();
     info!(num_txs, block_num, "Handling block");
 
-    if block.body.is_empty() {
+    if block.body.transactions.is_empty() {
         return Ok(BlockCheckResult::valid(block_num));
     }
 
     let hashes = block
         .body
+        .transactions
         .iter()
-        .map(|tx| tx.hash().to_string())
+        .map(|tx| tx.tx_hash().to_string())
         .collect::<Vec<_>>();
 
     let gas_used_vec: Vec<_> = {
@@ -198,17 +199,18 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         receipts
             .iter()
             .map(|r| {
-                let gas_used = r.receipt.cumulative_gas_used - last;
-                last = r.receipt.cumulative_gas_used;
+                let gas_used = r.cumulative_gas_used() - last;
+                last = r.cumulative_gas_used();
                 gas_used
             })
             .collect()
     };
 
-    let block_hash = block.hash_slow();
-    let base_fee_per_gas = block.base_fee_per_gas;
+    let block_hash = block.header.hash_slow();
+    let base_fee_per_gas = block.header.base_fee_per_gas;
     let expected = block
         .body
+        .transactions
         .into_iter()
         .zip(traces.into_iter())
         .zip(receipts.into_iter())
@@ -230,7 +232,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
     let mut faults = Vec::new();
 
     for expected in expected {
-        let key = expected.tx.hash().to_string();
+        let key = expected.tx.tx_hash().to_string();
         let key = key.trim_start_matches("0x");
         let fetched = fetched.get(key);
         let Some(fetched) = fetched else {
@@ -276,7 +278,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
 async fn get_block_data(
     reader: &ArchiveReader,
     block_num: u64,
-) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptWithBloom>), BlockCheckResult> {
+) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptEnvelope>), BlockCheckResult> {
     let (block, traces, receipts) = join!(
         reader.get_block_by_number(block_num),
         reader.get_block_traces(block_num),

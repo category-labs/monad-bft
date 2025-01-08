@@ -1,3 +1,5 @@
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_primitives::TxKind;
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
 use few_to_many::CreateAccountsGenerator;
@@ -79,7 +81,7 @@ impl Generator for NullGen {
         &mut self,
         _accts: &mut [SimpleAccount],
         _ctx: &GenCtx,
-    ) -> Vec<(TransactionSigned, Address)> {
+    ) -> Vec<(TxEnvelope, Address)> {
         vec![]
     }
 }
@@ -89,7 +91,7 @@ pub fn native_transfer(
     to: Address,
     amt: U256,
     ctx: &GenCtx,
-) -> TransactionSigned {
+) -> TxEnvelope {
     native_transfer_priority_fee(from, to, amt, 0, ctx)
 }
 
@@ -99,19 +101,19 @@ pub fn native_transfer_priority_fee(
     amt: U256,
     priority_fee: u128,
     ctx: &GenCtx,
-) -> TransactionSigned {
+) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
-    let tx = reth_primitives::Transaction::Eip1559(reth_primitives::TxEip1559 {
+    let tx = TxEip1559 {
         chain_id: 41454,
         nonce: from.nonce,
         gas_limit: 21_000,
         max_fee_per_gas,
         max_priority_fee_per_gas: priority_fee,
-        to: reth_primitives::TransactionKind::Call(to),
-        value: amt.into(),
-        access_list: reth_primitives::AccessList::default(),
+        to: TxKind::Call(to),
+        value: amt,
+        access_list: Default::default(),
         input: Default::default(),
-    });
+    };
 
     // update from
     from.nonce += 1;
@@ -121,7 +123,7 @@ pub fn native_transfer_priority_fee(
         .unwrap_or(U256::ZERO);
 
     let sig = from.key.sign_transaction(&tx);
-    TransactionSigned::from_transaction_and_signature(tx, sig)
+    TxEnvelope::Eip1559(tx.into_signed(sig))
 }
 
 pub fn erc20_transfer(
@@ -130,7 +132,7 @@ pub fn erc20_transfer(
     amt: U256,
     erc20: &ERC20,
     ctx: &GenCtx,
-) -> TransactionSigned {
+) -> TxEnvelope {
     let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt, ctx.base_fee * 2);
 
     // update from
@@ -143,7 +145,7 @@ pub fn erc20_transfer(
     tx
 }
 
-pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TransactionSigned {
+pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
     let tx = erc20.construct_mint(&from.key, from.nonce, ctx.base_fee * 2);
 
     // update from

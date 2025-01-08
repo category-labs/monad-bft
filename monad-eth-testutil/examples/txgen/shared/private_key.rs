@@ -1,12 +1,15 @@
 use std::str::FromStr;
 
+use alloy_consensus::SignableTransaction;
+use alloy_primitives::{keccak256, Address, PrimitiveSignature, B256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use monad_secp::KeyPair;
 use rand::RngCore;
-use reth_primitives::{keccak256, sign_message, Address, Signature, Transaction, B256};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PrivateKey {
-    priv_key: B256,
+    priv_key: PrivateKeySigner,
 }
 
 impl PrivateKey {
@@ -32,10 +35,20 @@ impl PrivateKey {
 
         let address = Address::from_slice(&hash[12..]);
 
-        (address, Self { priv_key: pk })
+        (
+            address,
+            Self {
+                priv_key: PrivateKeySigner::from_bytes(&pk).expect("invalid pk"),
+            },
+        )
     }
 
-    pub fn sign_transaction(&self, transaction: &Transaction) -> Signature {
-        sign_message(self.priv_key, transaction.signature_hash()).expect("signature works")
+    pub fn sign_transaction(
+        &self,
+        transaction: &impl SignableTransaction<PrimitiveSignature>,
+    ) -> PrimitiveSignature {
+        self.priv_key
+            .sign_hash_sync(&transaction.signature_hash())
+            .expect("signature works")
     }
 }

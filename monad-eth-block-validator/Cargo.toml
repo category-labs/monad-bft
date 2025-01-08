@@ -13,9 +13,9 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-reth-primitives = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

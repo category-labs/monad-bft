@@ -12,11 +12,11 @@ monad-state-backend = { path = "../monad-state-backend" }
 monad-triedb = { path = "../monad-triedb" }
 monad-types = { path = "../monad-types" }
 
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-reth-primitives = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]

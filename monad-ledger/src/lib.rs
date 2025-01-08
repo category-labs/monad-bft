@@ -9,6 +9,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, TxEnvelope};
+use alloy_eips::eip4895::Withdrawals;
 use alloy_primitives::{Bloom, FixedBytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use futures::Stream;
@@ -30,8 +32,10 @@ use monad_eth_tx::EthSignedTransaction;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_types::{BlockId, Round, SeqNum};
-use reth_primitives::{Block as EthBlock, BlockBody, Header};
 use tracing::{info, trace};
+
+type EthBlock = AlloyBlock<TxEnvelope>;
+type EthBlockBody = BlockBody<TxEnvelope>;
 
 /// Protocol parameters that go into Eth block header
 pub struct EthHeaderParam {
@@ -160,7 +164,10 @@ where
             let mut header_bytes = Vec::default();
             header.encode(&mut header_bytes);
 
-            block_body.create_block(header)
+            EthBlock {
+                header,
+                body: block_body,
+            }
         } else {
             unreachable!()
         }
@@ -217,16 +224,17 @@ where
         for block in full_blocks {
             if let (_, Some(eth_block), _) = block {
                 self.metrics[GAUGE_EXECUTION_LEDGER_NUM_COMMITS] += 1;
-                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] += eth_block.body.len() as u64;
-                self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.number;
+                self.metrics[GAUGE_EXECUTION_LEDGER_NUM_TX_COMMITS] +=
+                    eth_block.body.transactions.len() as u64;
+                self.metrics[GAUGE_EXECUTION_LEDGER_BLOCK_NUM] = eth_block.header.number;
                 info!(
-                    num_tx = eth_block.body.len(),
-                    block_num = eth_block.number,
+                    num_tx = eth_block.body.transactions.len(),
+                    block_num = eth_block.header.number,
                     "committed block"
                 );
 
-                for t in &eth_block.body {
-                    trace!(txn_hash = ?t.hash(), "txn committed");
+                for t in &eth_block.body.transactions {
+                    trace!(txn_hash = ?t.tx_hash(), "txn committed");
                 }
             }
         }
@@ -364,14 +372,14 @@ fn encode_eth_block(block: &EthBlock) -> Vec<u8> {
 }
 
 /// Produce the body of an Ethereum Block from a list of full transactions
-fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
+fn generate_block_body(monad_full_txs: &FullTransactionList) -> EthBlockBody {
     let transactions =
         Vec::<EthSignedTransaction>::decode(&mut monad_full_txs.bytes().as_ref()).unwrap();
 
-    BlockBody {
+    EthBlockBody {
         transactions,
         ommers: Vec::default(),
-        withdrawals: Some(Vec::default()),
+        withdrawals: Some(Withdrawals(Vec::new())),
     }
 }
 
@@ -380,7 +388,7 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 fn generate_header<SCT: SignatureCollection>(
     header_param: &EthHeaderParam,
     monad_block: &MonadBlock<SCT>,
-    block_body: &BlockBody,
+    block_body: &EthBlockBody,
 ) -> Header {
     let ExecutionProtocol {
         state_root,
@@ -409,7 +417,7 @@ fn generate_header<SCT: SignatureCollection>(
         // but we commit the block in Unix seconds for integration compatibility
         timestamp: monad_block.get_timestamp().div(1000),
         mix_hash: randao_reveal_hasher.hash().0.into(),
-        nonce: 0,
+        nonce: FixedBytes::default(),
         // TODO: calculate base fee according to EIP1559
         // Remember to remove hardcoded value in monad-eth-block-validator
         // and in monad-eth-txpool
@@ -418,5 +426,8 @@ fn generate_header<SCT: SignatureCollection>(
         excess_blob_gas: None,
         parent_beacon_block_root: None,
         extra_data: monad_block.get_id().0 .0.into(),
+
+        requests_hash: None,
+        target_blobs_per_block: None,
     }
 }

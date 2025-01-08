@@ -70,15 +70,18 @@ panic = "abort"
 ignored = ["getrandom", "pbjson"]
 
 [workspace.dependencies]
-alloy-json-rpc = "0.3.1"
-alloy-primitives = "0.6"
+alloy-consensus = "0.8"
+alloy-eips = "0.8"
+alloy-json-rpc = "0.8"
+alloy-primitives = "0.8"
 alloy-rlp = "0.3"
-alloy-rpc-client = "0.3.1"
-alloy-sol-macro = "0.6"
-alloy-sol-types = "0.6"
-alloy-transport = "0.3.1"
-reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d1c5", default-features = false }
-reth-rpc-types = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d1c5", default-features = false }
+alloy-rpc-client = "0.8"
+alloy-rpc-types = "0.8"
+alloy-signer = "0.8"
+alloy-signer-local = "0.8"
+alloy-sol-macro = "0.8"
+alloy-sol-types = "0.8"
+alloy-transport = "0.8"
 
 actix = "0.13"
 actix-http = "3.6.0"

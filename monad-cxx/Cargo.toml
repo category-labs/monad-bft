@@ -10,17 +10,18 @@ bench = false
 
 [dependencies]
 autocxx = { workspace = true }
-alloy-primitives = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-rlp = { workspace = true }
 cxx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
-reth-primitives = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 monad-eth-tx = { path = "../monad-eth-tx" }
-
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,3 +1,5 @@
+use alloy_consensus::Transaction;
+use alloy_primitives::{Uint, B256};
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::txpool::TxPool;
@@ -12,7 +14,6 @@ use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum};
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use reth_primitives::B256;
 
 const TRANSACTION_SIZE_BYTES: usize = 400;
 
@@ -75,7 +76,7 @@ impl<'a> BenchController<'a> {
             proposal_tx_limit,
             gas_limit: txs
                 .iter()
-                .map(|tx| tx.transaction.gas_limit())
+                .map(|tx| tx.gas_limit())
                 .sum::<u64>()
                 .checked_add(1)
                 .expect("proposal gas limit does not overflow"),
@@ -92,7 +93,7 @@ impl<'a> BenchController<'a> {
         assert!(!Pool::insert_tx(
             &mut pool,
             txs.iter()
-                .map(|t| Bytes::from(t.envelope_encoded()))
+                .map(|t| Bytes::from(alloy_rlp::encode(t)))
                 .collect(),
             block_policy,
             state_backend,
@@ -128,7 +129,7 @@ impl<'a> BenchController<'a> {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         let mut accounts = (0..accounts)
-            .map(|_| (B256::random_with(&mut rng), 0u64))
+            .map(|_| (B256::from(Uint::from(rng.gen::<u64>())), 0u64))
             .collect_vec();
 
         let pending_block_txs = (0..pending_blocks)

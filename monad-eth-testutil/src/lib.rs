@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use alloy_consensus::{SignableTransaction, Transaction, TxEnvelope, TxLegacy};
+use alloy_primitives::{keccak256, Address, FixedBytes, TxKind, U256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
     block::{Block, BlockKind},
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
@@ -12,10 +16,6 @@ use monad_eth_types::EthAddress;
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
-use reth_primitives::{
-    keccak256, revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
-    TxLegacy, U256,
-};
 
 pub fn make_tx(
     sender: FixedBytes<32>,
@@ -23,24 +23,23 @@ pub fn make_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthSignedTransaction {
+) -> TxEnvelope {
     let input = vec![0; input_len];
-    let transaction = Transaction::Legacy(TxLegacy {
+    let transaction = TxLegacy {
         chain_id: Some(1337),
         nonce,
         gas_price,
         gas_limit,
-        to: TransactionKind::Call(Address::repeat_byte(0u8)),
-        value: 0.into(),
+        to: TxKind::Call(Address::repeat_byte(0u8)),
+        value: Default::default(),
         input: input.into(),
-    });
+    };
 
-    let hash = transaction.signature_hash();
-
-    let sender_secret_key = sender;
-    let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
-
-    EthSignedTransaction::from_transaction_and_signature(transaction, signature)
+    let signer = sender.to_string().parse::<PrivateKeySigner>().unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
 }
 
 pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> EthAddress {
@@ -62,7 +61,7 @@ pub fn generate_block_with_txs(
                 .into_iter()
                 .map(|signed_txn| {
                     let sender_address = signed_txn.recover_signer().unwrap();
-                    EthTransaction::from_signed_transaction(signed_txn, sender_address)
+                    EthTransaction::new_unchecked(signed_txn, sender_address)
                 })
                 .collect(),
         );
@@ -92,7 +91,10 @@ pub fn generate_block_with_txs(
 
     let validated_txns: Vec<_> = txs
         .into_iter()
-        .map(|tx| tx.into_ecrecovered().expect("tx is recoverable"))
+        .map(|tx| {
+            let signer = tx.recover_signer().expect("valid tx");
+            EthTransaction::new_unchecked(tx, signer)
+        })
         .collect();
 
     let nonces = validated_txns
@@ -130,12 +132,12 @@ pub fn generate_block_with_txs(
 
 #[cfg(test)]
 mod test {
-    use reth_primitives::B256;
+    use alloy_primitives::B256;
 
     use super::*;
     #[test]
     fn test_secret_to_eth_address() {
-        let secret = B256::random();
+        let secret = B256::repeat_byte(10);
 
         let eth_address_converted = secret_to_eth_address(secret);
 

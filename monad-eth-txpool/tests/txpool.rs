@@ -125,13 +125,13 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 for (tx, inserted) in txs {
                     let inserted_txs = Pool::insert_tx(
                         &mut pool,
-                        vec![Bytes::from(tx.envelope_encoded())],
+                        vec![Bytes::from(alloy_rlp::encode(tx))],
                         &eth_block_policy,
                         &state_backend,
                     );
 
                     if inserted {
-                        assert_eq!(inserted_txs, vec![Bytes::from(tx.envelope_encoded())]);
+                        assert_eq!(inserted_txs, vec![Bytes::from(alloy_rlp::encode(tx))]);
                     } else {
                         assert!(inserted_txs.is_empty());
                     }

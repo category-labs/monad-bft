@@ -133,6 +133,7 @@ pub struct MonadCallFrame {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_reason: Option<String>,
+    // FIXME why Rc<RefCell<_>> ?
     #[serde(skip_serializing_if = "Vec::is_empty")]
     calls: Vec<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>,
 }
@@ -205,7 +206,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
-            .map(|tx| tx.hash())
+            .map(|tx| *tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
             .get_call_frames(block_num)
@@ -234,7 +235,12 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             if let Ok(call_frames) = archive_reader.get_block_traces(block.header.number).await {
                 let mut resp = Vec::new();
 
-                let tx_ids = block.body.iter().map(|tx| tx.hash()).collect::<Vec<_>>();
+                let tx_ids = block
+                    .body
+                    .transactions
+                    .iter()
+                    .map(|tx| *tx.tx_hash())
+                    .collect::<Vec<_>>();
 
                 for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
                     let rlp_call_frame = &mut call_frame.as_slice();
@@ -299,7 +305,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
-            .map(|tx| tx.hash())
+            .map(|tx| *tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
             .get_call_frames(block_num)
@@ -326,7 +332,12 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     if let Some(archive_reader) = archive_reader {
         if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
             if let Ok(call_frames) = archive_reader.get_block_traces(block_num).await {
-                let tx_ids = block.body.iter().map(|tx| tx.hash()).collect::<Vec<_>>();
+                let tx_ids = block
+                    .body
+                    .transactions
+                    .iter()
+                    .map(|tx| *tx.tx_hash())
+                    .collect::<Vec<_>>();
 
                 for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
                     let rlp_call_frame = &mut call_frame.as_slice();
@@ -471,7 +482,12 @@ async fn include_code_output<T: Triedb>(
 
 async fn build_call_tree(
     nodes: Vec<CallFrame>,
-) -> JsonRpcResult<Option<std::rc::Rc<std::cell::RefCell<MonadCallFrame>>>> {
+) -> JsonRpcResult<
+    Option<
+        // FIXME why Rc<RefCell<_>> ?
+        std::rc::Rc<std::cell::RefCell<MonadCallFrame>>,
+    >,
+> {
     if nodes.is_empty() {
         return Ok(None);
     }

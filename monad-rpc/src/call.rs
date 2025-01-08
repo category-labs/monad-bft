@@ -1,10 +1,11 @@
 use std::{cmp::min, path::Path};
 
-use alloy_primitives::{Address, Uint, U256, U64, U8};
+use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
+use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
+use alloy_rpc_types::AccessList;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
-use reth_primitives::Header;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallRequest {
     pub from: Option<Address>,
@@ -142,7 +143,7 @@ pub struct CallInput {
     pub data: Option<alloy_primitives::Bytes>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum GasPriceDetails {
     Legacy {
@@ -165,7 +166,7 @@ impl Default for GasPriceDetails {
 
 /// Optimistically create a typed Ethereum transaction from a CallRequest based on provided fields.
 /// TODO: add support for other transaction types.
-impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
+impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
         match call_request {
@@ -174,37 +175,38 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                 ..
             } => {
                 // Legacy
-                Ok(reth_primitives::transaction::Transaction::Legacy(
-                    reth_primitives::TxLegacy {
-                        chain_id: call_request
-                            .chain_id
-                            .map(|id| id.try_into())
-                            .transpose()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        nonce: call_request
-                            .nonce
-                            .unwrap_or_default()
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        gas_price: gas_price
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        gas_limit: call_request
-                            .gas
-                            .unwrap_or(Uint::from(u64::MAX))
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        to: if let Some(to) = call_request.to {
-                            reth_primitives::TransactionKind::Call(to)
-                        } else {
-                            reth_primitives::TransactionKind::Create
-                        },
-                        value: reth_primitives::TxValue::from(
-                            call_request.value.unwrap_or_default(),
-                        ),
-                        input: call_request.input.input.unwrap_or_default(),
+
+                // default signature as eth_call doesn't require it
+                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let transaction = TxLegacy {
+                    chain_id: call_request
+                        .chain_id
+                        .map(|id| id.try_into())
+                        .transpose()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    nonce: call_request
+                        .nonce
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_price: gas_price
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_limit: call_request
+                        .gas
+                        .unwrap_or(Uint::from(u64::MAX))
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    to: if let Some(to) = call_request.to {
+                        TxKind::Call(to)
+                    } else {
+                        TxKind::Create
                     },
-                ))
+                    value: call_request.value.unwrap_or_default(),
+                    input: call_request.input.input.unwrap_or_default(),
+                };
+
+                Ok(transaction.into_signed(signature).into())
             }
             CallRequest {
                 gas_price_details:
@@ -215,50 +217,51 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                 ..
             } => {
                 // EIP-1559
-                Ok(reth_primitives::transaction::Transaction::Eip1559(
-                    reth_primitives::TxEip1559 {
-                        chain_id: call_request
-                            .chain_id
-                            .unwrap_or_default()
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        nonce: call_request
-                            .nonce
-                            .unwrap_or_default()
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        max_fee_per_gas: max_fee_per_gas
-                            .unwrap_or_default()
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        max_priority_fee_per_gas: max_priority_fee_per_gas
-                            .unwrap_or_default()
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        gas_limit: call_request
-                            .gas
-                            .unwrap_or(Uint::from(u64::MAX))
-                            .try_into()
-                            .map_err(|_| JsonRpcError::invalid_params())?,
-                        access_list: reth_primitives::AccessList::default(),
-                        to: if let Some(to) = call_request.to {
-                            reth_primitives::TransactionKind::Call(to)
-                        } else {
-                            // EIP-170
-                            if let Some(code) = call_request.input.data.as_ref() {
-                                if code.len() > 0x6000 {
-                                    return Err(JsonRpcError::code_size_too_large(code.len()));
-                                }
-                            }
 
-                            reth_primitives::TransactionKind::Create
-                        },
-                        value: reth_primitives::TxValue::from(
-                            call_request.value.unwrap_or_default(),
-                        ),
-                        input: call_request.input.input.unwrap_or_default(),
+                // default signature as eth_call doesn't require it
+                let signature = PrimitiveSignature::new(U256::from(0), U256::from(0), false);
+                let transaction = TxEip1559 {
+                    chain_id: call_request
+                        .chain_id
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    nonce: call_request
+                        .nonce
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_fee_per_gas: max_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    max_priority_fee_per_gas: max_priority_fee_per_gas
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    gas_limit: call_request
+                        .gas
+                        .unwrap_or(Uint::from(u64::MAX))
+                        .try_into()
+                        .map_err(|_| JsonRpcError::invalid_params())?,
+                    access_list: AccessList::default(),
+                    to: if let Some(to) = call_request.to {
+                        TxKind::Call(to)
+                    } else {
+                        // EIP-170
+                        if let Some(code) = call_request.input.data.as_ref() {
+                            if code.len() > 0x6000 {
+                                return Err(JsonRpcError::code_size_too_large(code.len()));
+                            }
+                        }
+
+                        TxKind::Create
                     },
-                ))
+                    value: call_request.value.unwrap_or_default(),
+                    input: call_request.input.input.unwrap_or_default(),
+                };
+
+                Ok(transaction.into_signed(signature).into())
             }
         }
     }
@@ -381,7 +384,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         params.transaction.chain_id = Some(U64::from(chain_id));
     }
 
-    let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
+    let txn: TxEnvelope = params.transaction.try_into()?;
     let block_number = header.header.number;
     match monad_cxx::eth_call(
         txn,
@@ -403,7 +406,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
 #[cfg(test)]
 mod tests {
-    use reth_primitives::U256;
+    use alloy_primitives::U256;
     use serde_json::json;
 
     use crate::{jsonrpc, tests::init_server};

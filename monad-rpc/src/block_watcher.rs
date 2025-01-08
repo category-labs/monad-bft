@@ -4,11 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
+use alloy_consensus::{Block, TxEnvelope};
+use alloy_rpc_types::TransactionReceipt;
 use futures::{FutureExt, Stream};
 use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};
 use pin_project::pin_project;
-use reth_primitives::{Block, TransactionSigned};
-use reth_rpc_types::TransactionReceipt;
 use tracing::error;
 
 use crate::{block_handlers::block_receipts, jsonrpc::JsonRpcError};
@@ -31,7 +31,7 @@ enum State {
         task: std::pin::Pin<
             Box<
                 dyn futures::Future<
-                        Output = Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError>,
+                        Output = Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError>,
                     > + Send
                     + Sync,
             >,
@@ -48,9 +48,7 @@ pub trait BlockState: Send {
         &self,
         header: BlockHeader,
         block_num: u64,
-    ) -> impl Future<Output = Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError>>
-           + Send
-           + Sync;
+    ) -> impl Future<Output = Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError>> + Send + Sync;
 }
 
 #[derive(Clone)]
@@ -76,7 +74,7 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
         &self,
         header: BlockHeader,
         block_num: u64,
-    ) -> Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError> {
+    ) -> Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError> {
         let transactions = self
             .inner
             .get_transactions(block_num)
@@ -90,15 +88,14 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
         let receipts =
             block_receipts(&transactions, bloom_receipts, &header.header, header.hash).await?;
 
-        let result: Vec<(TransactionSigned, TransactionReceipt)> =
-            transactions.into_iter().zip(receipts).collect();
+        let result: Vec<_> = transactions.into_iter().zip(receipts).collect();
         Ok(result)
     }
 }
 
 #[derive(Clone)]
 pub struct MockBlockState {
-    blocks: Vec<Block>,
+    blocks: Vec<Block<TxEnvelope>>,
 }
 
 impl MockBlockState {
@@ -106,7 +103,7 @@ impl MockBlockState {
         Self { blocks: Vec::new() }
     }
 
-    pub fn set_blocks(&mut self, blocks: Vec<Block>) {
+    pub fn set_blocks(&mut self, blocks: Vec<Block<TxEnvelope>>) {
         self.blocks = blocks;
     }
 }
@@ -115,7 +112,7 @@ impl BlockState for MockBlockState {
     async fn get_block(&self, block_num: u64) -> Result<Option<BlockHeader>, JsonRpcError> {
         match self.blocks.get(block_num as usize) {
             Some(b) => Ok(Some(BlockHeader {
-                hash: b.hash_slow(),
+                hash: b.header.hash_slow(),
                 header: b.header.clone(),
             })),
             None => Ok(None),
@@ -126,7 +123,7 @@ impl BlockState for MockBlockState {
         &self,
         _block_header: BlockHeader,
         _block_num: u64,
-    ) -> Result<Vec<(TransactionSigned, TransactionReceipt)>, JsonRpcError> {
+    ) -> Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError> {
         Ok(vec![])
     }
 }
@@ -152,7 +149,7 @@ impl<B: BlockState + Clone> BlockWatcher<B> {
 #[derive(Clone, Default)]
 pub struct BlockWithReceipts {
     pub block_header: BlockHeader,
-    pub transactions: Vec<TransactionSigned>,
+    pub transactions: Vec<TxEnvelope>,
     pub receipts: Vec<TransactionReceipt>,
 }
 
@@ -234,8 +231,8 @@ impl<B: BlockState + Clone + Send + Sync + 'static> Stream for BlockWatcher<B> {
 
 #[cfg(test)]
 mod test {
+    use alloy_consensus::Header;
     use futures::StreamExt;
-    use reth_primitives::Header;
 
     use super::*;
 

@@ -403,47 +403,26 @@ type StateRootValidatorType = NopStateRoot;
 type BlockPolicyType = EthBlockPolicy;
 type StateBackendType = InMemoryState;
 
+use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_primitives::{FixedBytes, U256};
+use alloy_rlp::Encodable;
 use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::{
     block::Block, payload::Payload, quorum_certificate::QuorumCertificate,
 };
 use monad_crypto::{certificate_signature::PubKey, hasher::Hash};
 use monad_eth_block_validator::EthValidator;
-use rand::{Rng, RngCore};
-use reth_primitives::{
-    alloy_primitives::private::alloy_rlp::Encodable, sign_message, Address, Transaction,
-    TransactionKind, TransactionSigned, TxLegacy, B256,
-};
 
-fn make_tx(input_len: usize) -> TransactionSigned {
-    let mut input = vec![0; input_len];
-    rand::thread_rng().fill_bytes(&mut input);
-    let transaction = Transaction::Legacy(TxLegacy {
-        chain_id: Some(1337),
-        nonce: rand::thread_rng().gen_range(10_000..50_000),
-        gas_price: 1000,
-        gas_limit: 21000,
-        to: TransactionKind::Call(Address::random()),
-        value: 0.into(),
-        input: input.into(),
-    });
-
-    let hash = transaction.signature_hash();
-
-    let sender_secret_key = B256::random();
-    let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
-
-    TransactionSigned::from_transaction_and_signature(transaction, signature)
+fn make_tx(input_len: usize) -> TxEnvelope {
+    let sender = FixedBytes::from(U256::from(rand::random::<u64>()));
+    let nonce = rand::random();
+    monad_eth_testutil::make_tx(sender, 1_000, 21_000, nonce, input_len)
 }
-fn make_txns() -> (Vec<TransactionSigned>, FullTransactionList) {
+fn make_txns() -> (Vec<TxEnvelope>, FullTransactionList) {
     let txns = (0..NUM_TRANSACTIONS)
         .map(|_| make_tx(TRANSACTION_SIZE_BYTES))
         .collect::<Vec<_>>();
-    let proposal_gas_limit: u64 = txns
-        .iter()
-        .map(|txn| txn.transaction.gas_limit())
-        .sum::<u64>()
-        + 1;
+    let proposal_gas_limit: u64 = txns.iter().map(|txn| txn.gas_limit()).sum::<u64>() + 1;
 
     let mut txns_encoded: Vec<u8> = vec![];
     txns.encode(&mut txns_encoded);
@@ -483,7 +462,7 @@ fn init(seed_mempool: bool) -> BenchTuple {
     if seed_mempool {
         let txns: Vec<Bytes> = raw_txns
             .iter()
-            .map(|t| Bytes::from(t.envelope_encoded()))
+            .map(|t| Bytes::from(alloy_rlp::encode(t)))
             .collect();
         EthTxPool::insert_tx(
             wrapped_state.tx_pool,
@@ -611,7 +590,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
                 let txns: Vec<Bytes> = raw_txns
                     .iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
                     .collect();
                 EthTxPool::insert_tx(
                     wrapped_state.tx_pool,
@@ -670,7 +649,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let (raw_txns, _) = make_txns();
                 let txns: Vec<Bytes> = raw_txns
                     .iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
                     .collect();
                 let ctx_3 = &mut ctx[3];
                 let _ = EthTxPool::insert_tx(

@@ -23,17 +23,17 @@ actix-http = { workspace = true }
 actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+alloy-rpc-types = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-reth-primitives = { workspace = true }
-reth-rpc-types = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
@@ -49,6 +49,8 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]
 alloy-rpc-client = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }

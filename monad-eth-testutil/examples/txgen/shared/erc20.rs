@@ -1,14 +1,12 @@
 use std::time::Duration;
 
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_primitives::{hex::FromHex, keccak256, Address, Bytes, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
 use eyre::Result;
-use reth_primitives::{
-    hex::FromHex, keccak256, AccessList, Address, Bytes, Transaction, TransactionKind,
-    TransactionSigned, TxEip1559, U256,
-};
 use serde::Deserialize;
 use tokio::time::sleep;
 use tracing::info;
@@ -62,7 +60,7 @@ impl ERC20 {
 
         // make compiler happy, actually parse string : (
         let _: String = client
-            .request("eth_sendRawTransaction", [tx.envelope_encoded()])
+            .request("eth_sendRawTransaction", [alloy_rlp::encode(tx)])
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
@@ -70,33 +68,29 @@ impl ERC20 {
         Ok(ERC20 { addr })
     }
 
-    pub fn deploy_tx(
-        nonce: u64,
-        deployer: &PrivateKey,
-        max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey, max_fee_per_gas: u128) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
-        let tx = Transaction::Eip1559(TxEip1559 {
+        let tx = TxEip1559 {
             chain_id: 41454,
             nonce,
             gas_limit: 800_000, // usually around 600k gas
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
-            to: TransactionKind::Create,
-            value: U256::ZERO.into(),
-            access_list: AccessList::default(),
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
             input,
-        });
+        };
 
         let sig = deployer.sign_transaction(&tx);
-        TransactionSigned::from_transaction_and_signature(tx, sig)
+        TxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     pub fn self_destruct_tx(
         &self,
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    ) -> TxEnvelope {
         self.construct_tx(sender, IERC20::destroySmartContractCall {}, max_fee_per_gas)
     }
 
@@ -105,7 +99,7 @@ impl ERC20 {
         sender: &mut SimpleAccount,
         input: T,
         max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    ) -> TxEnvelope {
         let input = input.abi_encode();
         let tx = make_tx(
             sender.nonce,
@@ -124,7 +118,7 @@ impl ERC20 {
         from: &PrivateKey,
         nonce: u64,
         max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    ) -> TxEnvelope {
         let input = IERC20::mintCall {}.abi_encode();
         make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
     }
@@ -136,7 +130,7 @@ impl ERC20 {
         nonce: u64,
         amount: U256,
         max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    ) -> TxEnvelope {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
         make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
     }
@@ -158,20 +152,20 @@ fn make_tx(
     value: U256,
     input: impl Into<Bytes>,
     max_fee_per_gas: u128,
-) -> TransactionSigned {
-    let tx = Transaction::Eip1559(TxEip1559 {
+) -> TxEnvelope {
+    let tx = TxEip1559 {
         chain_id: 41454,
         nonce,
         gas_limit: 200_000, // probably closer to 80k
         max_fee_per_gas,
         max_priority_fee_per_gas: 0,
-        to: TransactionKind::Call(contract_or_to),
-        value: value.into(),
-        access_list: AccessList::default(),
+        to: TxKind::Call(contract_or_to),
+        value,
+        access_list: Default::default(),
         input: input.into(),
-    });
+    };
     let sig = signer.sign_transaction(&tx);
-    TransactionSigned::from_transaction_and_signature(tx, sig)
+    TxEnvelope::Eip1559(tx.into_signed(sig))
 }
 
 pub fn calculate_contract_addr(deployer: &Address, nonce: u64) -> Address {

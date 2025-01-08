@@ -1,6 +1,6 @@
 use std::{error::Error, path::PathBuf};
 
-use alloy_primitives::B256;
+use alloy_primitives::{Uint, B256};
 use clap::Parser;
 use monad_eth_testutil::secret_to_eth_address;
 use monad_eth_types::EthAddress;
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let num_accounts = 1000;
     let eth_addresses: Vec<EthAddress> = (0..num_accounts)
-        .map(|_| secret_to_eth_address(B256::random()))
+        .map(|idx| secret_to_eth_address(B256::from(Uint::from(10000 + idx))))
         .collect();
     let results = reader
         .get_accounts_async(eth_addresses.iter(), block_id)

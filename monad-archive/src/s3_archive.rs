@@ -1,6 +1,10 @@
 use core::str;
 use std::sync::Arc;
 
+use alloy_consensus::{
+    constants::EMPTY_WITHDRAWALS, Block as AlloyBlock, BlockBody, BlockHeader, Header,
+    ReceiptEnvelope, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+};
 use alloy_rlp::{Decodable, Encodable};
 use aws_config::{meta::region::RegionProviderChain, SdkConfig};
 use aws_sdk_s3::{
@@ -11,14 +15,12 @@ use aws_sdk_s3::{
 use bytes::Bytes;
 use eyre::{Context, Result};
 use futures::try_join;
-use monad_triedb_utils::triedb_env::BlockHeader;
-use reth_primitives::{Block, ReceiptWithBloom, TransactionSigned};
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{archive_reader::LatestKind, metrics::Metrics};
 
@@ -27,6 +29,8 @@ const AWS_S3_READS: &str = "aws_s3_reads";
 const AWS_S3_WRITES: &str = "aws_s3_writes";
 
 const BLOCK_PADDING_WIDTH: usize = 12;
+
+pub type Block = AlloyBlock<TxEnvelope, Header>;
 
 #[derive(Clone)]
 pub struct S3Bucket {
@@ -205,8 +209,8 @@ impl S3Archive {
 
     pub async fn archive_block(
         &self,
-        block_header: BlockHeader,
-        transactions: Vec<TransactionSigned>,
+        block_header: monad_triedb_utils::triedb_env::BlockHeader,
+        transactions: Vec<TxEnvelope>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Insert into block table
@@ -233,7 +237,7 @@ impl S3Archive {
 
     pub async fn archive_receipts(
         &self,
-        receipts: Vec<ReceiptWithBloom>,
+        receipts: Vec<ReceiptEnvelope>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Prepare the receipts upload
@@ -299,7 +303,7 @@ impl S3Archive {
         self.get_block_by_number(block_num).await
     }
 
-    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithBloom>> {
+    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
         let receipts_key = self.receipts_key(block_number);
 
         let rlp_receipts = self.bucket.read(&receipts_key).await?;
@@ -322,10 +326,24 @@ impl S3Archive {
     }
 }
 
-pub fn make_block(block_header: BlockHeader, transactions: Vec<TransactionSigned>) -> Block {
+pub fn make_block(
+    triedb_header: monad_triedb_utils::triedb_env::BlockHeader,
+    transactions: Vec<TxEnvelope>,
+) -> Block {
+    let header = triedb_header.header;
+    if header.ommers_hash != EMPTY_OMMER_ROOT_HASH {
+        warn!(ommers_hash = ?header.ommers_hash, "Ommers hash non-empty");
+    }
+    if header.withdrawals_root != Some(EMPTY_WITHDRAWALS) {
+        warn!(withdrawals_root = ?header.withdrawals_root(),  "Withdrawals root not correct");
+    }
+
     Block {
-        header: block_header.header,
-        body: transactions,
-        ..Default::default()
+        header,
+        body: BlockBody {
+            transactions,
+            ommers: Vec::new(),
+            withdrawals: None,
+        },
     }
 }

@@ -36,7 +36,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             (
                 pool,
                 txs.iter()
-                    .map(|t| Bytes::from(t.envelope_encoded()))
+                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
                     .collect_vec(),
                 state_backend,
             )

@@ -1,12 +1,9 @@
-use alloy_primitives::{
-    aliases::{U256, U64},
-    FixedBytes,
-};
+use alloy_consensus::{Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
+use alloy_primitives::{FixedBytes, U256};
+use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
-use reth_primitives::{Header as RlpHeader, ReceiptWithBloom, TransactionSigned};
-use reth_rpc_types::{Block, BlockTransactions, Header, Transaction, TransactionReceipt};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -33,67 +30,42 @@ pub async fn get_block_num_from_tag<T: Triedb>(
 
 fn parse_block_content(
     block_hash: FixedBytes<32>,
-    rlp_header: RlpHeader,
-    transactions: Vec<TransactionSigned>,
+    header: RlpHeader,
+    transactions: Vec<TxEnvelope>,
     return_full_txns: bool,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
-    let size = rlp_header.size();
-
-    // parse block header
-    let header = Header {
-        hash: Some(block_hash),
-        parent_hash: rlp_header.parent_hash,
-        uncles_hash: rlp_header.ommers_hash,
-        miner: rlp_header.beneficiary,
-        state_root: rlp_header.state_root,
-        transactions_root: rlp_header.transactions_root,
-        receipts_root: rlp_header.receipts_root,
-        withdrawals_root: rlp_header.withdrawals_root,
-        number: Some(U256::from(rlp_header.number)),
-        gas_used: U256::from(rlp_header.gas_used),
-        gas_limit: U256::from(rlp_header.gas_limit),
-        extra_data: rlp_header.extra_data,
-        logs_bloom: rlp_header.logs_bloom,
-        timestamp: U256::from(rlp_header.timestamp),
-        difficulty: rlp_header.difficulty,
-        mix_hash: Some(rlp_header.mix_hash),
-        nonce: Some(rlp_header.nonce.to_be_bytes().into()),
-        base_fee_per_gas: rlp_header.base_fee_per_gas.map(U256::from),
-        blob_gas_used: rlp_header.blob_gas_used.map(U64::from),
-        excess_blob_gas: rlp_header.excess_blob_gas.map(U64::from),
-        parent_beacon_block_root: rlp_header.parent_beacon_block_root,
-    };
-
     // parse transactions
     let transactions = if return_full_txns {
-        BlockTransactions::Full(
-            transactions
-                .into_iter()
-                .enumerate()
-                .map(|(index, tx)| {
-                    parse_tx_content(
-                        block_hash,
-                        rlp_header.number,
-                        rlp_header.base_fee_per_gas,
-                        tx,
-                        index as u64,
-                    )
-                })
-                .collect::<Result<Vec<Transaction>, JsonRpcError>>()?,
-        )
+        let txs = transactions
+            .into_iter()
+            .enumerate()
+            .map(|(idx, tx)| {
+                parse_tx_content(
+                    block_hash,
+                    header.number,
+                    header.base_fee_per_gas,
+                    tx,
+                    idx as u64,
+                )
+            })
+            .collect::<Result<_, JsonRpcError>>()?;
+
+        BlockTransactions::Full(txs)
     } else {
-        BlockTransactions::Hashes(transactions.iter().map(TransactionSigned::hash).collect())
+        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx_hash()).collect())
     };
 
     // NOTE: no withdrawals currently in monad-bft
     let retval = Block {
-        header,
+        header: Header {
+            total_difficulty: Some(header.difficulty),
+            hash: block_hash,
+            size: Some(U256::from(header.size())),
+            inner: header,
+        },
         transactions,
         uncles: vec![],
-        total_difficulty: Some(rlp_header.difficulty),
         withdrawals: None,
-        size: Some(U256::from(size)),
-        other: Default::default(),
     };
 
     Ok(Some(MonadEthGetBlock {
@@ -175,7 +147,7 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
             return parse_block_content(
                 block.header.hash_slow(),
                 block.header,
-                block.body,
+                block.body.transactions,
                 params.return_full_txns,
             );
         }
@@ -226,7 +198,7 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
             return parse_block_content(
                 block.header.hash_slow(),
                 block.header,
-                block.body,
+                block.body.transactions,
                 params.return_full_txns,
             );
         }
@@ -267,7 +239,7 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
     // try archive if block hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
         if let Ok(block) = archive_reader.get_block_by_hash(&params.block_hash.0).await {
-            return Ok(Some(format!("0x{:x}", block.body.len())));
+            return Ok(Some(format!("0x{:x}", block.body.transactions.len())));
         }
     }
 
@@ -306,7 +278,7 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     // try archive if block number not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
         if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
-            return Ok(Some(format!("0x{:x}", block.body.len())));
+            return Ok(Some(format!("0x{:x}", block.body.transactions.len())));
         }
     }
 
@@ -314,8 +286,8 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
 }
 
 pub async fn map_block_receipts<R>(
-    transactions: &[TransactionSigned],
-    receipts: Vec<ReceiptWithBloom>,
+    transactions: &[TxEnvelope],
+    receipts: Vec<ReceiptEnvelope>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
     f: impl Fn(TransactionReceipt) -> R,
@@ -335,15 +307,16 @@ pub async fn map_block_receipts<R>(
         .zip(receipts.into_iter())
         .enumerate()
         .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
-            let prev_receipt = prev_receipt.replace(receipt.receipt.to_owned());
+            let prev_receipt = prev_receipt.replace(receipt.to_owned());
             let gas_used = if let Some(prev_receipt) = prev_receipt {
-                receipt.receipt.cumulative_gas_used - prev_receipt.cumulative_gas_used
+                receipt.cumulative_gas_used() - prev_receipt.cumulative_gas_used()
             } else {
-                receipt.receipt.cumulative_gas_used
+                receipt.cumulative_gas_used()
             };
 
             let parsed_receipt = parse_tx_receipt(
                 block_header.base_fee_per_gas,
+                Some(block_header.timestamp),
                 block_hash,
                 tx,
                 gas_used,
@@ -358,8 +331,8 @@ pub async fn map_block_receipts<R>(
 }
 
 pub async fn block_receipts(
-    transactions: &[TransactionSigned],
-    receipts: Vec<ReceiptWithBloom>,
+    transactions: &[TxEnvelope],
+    receipts: Vec<ReceiptEnvelope>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
@@ -437,10 +410,10 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
         if let Ok(bloom_receipts) = archive_reader.get_block_receipts(block_num).await {
             if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
                 let block_receipts = map_block_receipts(
-                    &block.body,
+                    &block.body.transactions,
                     bloom_receipts,
                     &block.header,
-                    block.hash_slow(),
+                    block.header.hash_slow(),
                     MonadTransactionReceipt,
                 )
                 .await?;

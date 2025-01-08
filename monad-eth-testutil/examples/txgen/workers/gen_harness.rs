@@ -7,7 +7,7 @@ pub trait Generator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TransactionSigned, Address)>;
+    ) -> Vec<(TxEnvelope, Address)>;
 }
 
 pub struct GenCtx {

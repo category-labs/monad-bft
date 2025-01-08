@@ -3,8 +3,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
+use alloy_consensus::TxEnvelope;
 use futures::{stream::FuturesUnordered, StreamExt};
-use reth_primitives::TransactionSigned;
 
 use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 
@@ -24,7 +24,6 @@ pub use rpc_sender::*;
 
 pub const BATCH_SIZE: usize = 500;
 
-#[derive(Default)]
 pub struct SimpleAccount {
     pub nonce: u64,
     pub native_bal: U256,
@@ -159,7 +158,7 @@ pub struct AddrsWithTime {
 
 pub struct AccountsWithTxs {
     pub accts: Accounts,
-    pub txs: Vec<(TransactionSigned, Address)>,
+    pub txs: Vec<(TxEnvelope, Address)>,
 }
 
 impl ExactSizeIterator for AccountsIter<'_> {}
@@ -183,7 +182,9 @@ impl From<(Address, PrivateKey)> for SimpleAccount {
         SimpleAccount {
             key,
             addr,
-            ..Default::default()
+            nonce: Default::default(),
+            native_bal: Default::default(),
+            erc20_bal: Default::default(),
         }
     }
 }

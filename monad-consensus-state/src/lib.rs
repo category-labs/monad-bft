@@ -1541,6 +1541,7 @@ where
 mod test {
     use std::{ops::Deref, time::Duration};
 
+    use alloy_primitives::B256;
     use itertools::Itertools;
     use monad_consensus::{
         messages::{
@@ -1601,7 +1602,6 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
-    use reth_primitives::B256;
     use test_case::test_case;
     use tracing_test::traced_test;
 
@@ -1962,7 +1962,7 @@ mod test {
                 .into_iter()
                 .map(|signed_txn| {
                     let sender_address = signed_txn.recover_signer().unwrap();
-                    EthTransaction::from_signed_transaction(signed_txn, sender_address)
+                    EthTransaction::new_unchecked(signed_txn, sender_address)
                 })
                 .collect(),
         );
@@ -4809,7 +4809,7 @@ mod test {
     #[test]
     fn test_coherent_block_zero_nonce() {
         let num_states = 2;
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
@@ -4870,7 +4870,7 @@ mod test {
     #[test]
     fn test_incoherent_block_invalid_nonce() {
         let num_states = 2;
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
@@ -4930,7 +4930,7 @@ mod test {
     #[test]
     fn test_incoherent_block_duplicate_nonce() {
         let num_states = 2;
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let txn_nonce_zero_prime = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
@@ -5013,7 +5013,7 @@ mod test {
     fn test_coherent_block_valid_nonce() {
         let num_states = 2;
 
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
@@ -5137,7 +5137,7 @@ mod test {
     fn test_branched_coherent_block_valid_nonce() {
         let num_states = 2;
 
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(5);
         let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let txn_1_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let txn_2_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 1000);

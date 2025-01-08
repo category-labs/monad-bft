@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use alloy_consensus::Transaction;
 use monad_consensus_types::txpool::TxPoolInsertionError;
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
@@ -76,7 +77,7 @@ impl ValidEthTransaction {
     }
 
     pub fn hash(&self) -> EthTxHash {
-        self.tx.hash()
+        *self.tx.tx_hash()
     }
 
     pub fn gas_limit(&self) -> u64 {

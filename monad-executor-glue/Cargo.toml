@@ -26,4 +26,4 @@ serde = { workspace = true, features = ["derive"] }
 [dev-dependencies]
 monad-multi-sig = { path = "../monad-multi-sig" }
 
-reth-primitives = { workspace = true }
+alloy-primitives = { workspace = true }

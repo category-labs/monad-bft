@@ -2,9 +2,10 @@
 
 use std::{collections::HashMap, ops::Deref, path::Path, pin::pin};
 
-use alloy_primitives::{
-    bytes::BytesMut, private::alloy_rlp::Encodable, Address, Bytes, B256, U256, U64,
-};
+use alloy_consensus::{Header, Transaction as _, TxEip1559, TxEnvelope};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
+use alloy_rlp::Encodable;
 use autocxx::{block, moveit::moveit, WithinBox};
 use futures::pin_mut;
 use serde::{Deserialize, Serialize};
@@ -67,9 +68,9 @@ pub struct StateOverrideObject {
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub fn eth_call(
-    transaction: reth_primitives::Transaction,
-    block_header: reth_primitives::Header,
-    sender: reth_primitives::Address,
+    transaction: TxEnvelope,
+    block_header: Header,
+    sender: Address,
     block_number: u64,
     triedb_path: &Path,
     blockdb_path: &Path,
@@ -84,11 +85,9 @@ pub fn eth_call(
     }
 
     // TODO: move the buffer copying into C++ for the reserve/push idiom
-    let rlp_encoded_tx: Bytes = {
-        let mut buf = BytesMut::new();
-        transaction.encode_with_signature(&reth_primitives::Signature::default(), &mut buf, false);
-        buf.freeze().into()
-    };
+    let mut rlp_encoded_tx = Vec::new();
+    transaction.encode_2718(&mut rlp_encoded_tx);
+
     let mut cxx_rlp_encoded_tx: cxx::UniquePtr<cxx::CxxVector<u8>> = cxx::CxxVector::new();
     for byte in &rlp_encoded_tx {
         cxx_rlp_encoded_tx.pin_mut().push(*byte);
@@ -276,11 +275,12 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::private::alloy_rlp::Encodable;
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
+    use alloy_primitives::{Bytes, TxKind, U256};
+    use alloy_rlp::Encodable;
     use hex::FromHex;
     use hex_literal::hex;
     use monad_eth_tx::EthTransaction;
-    use reth_primitives::{bytes::Bytes, hex::encode_to_slice, Address, TxValue};
 
     use super::*;
     use crate::eth_call;
@@ -300,18 +300,23 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
         let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(41454),
-                nonce: 0,
-                gas_price: 0,
-                gas_limit: 1000000000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("9344b07175800259691961298ca11c824e65032d").into(),
-                ),
-                value: Default::default(),
-                input: Default::default(),
-            }),
-            reth_primitives::Header {
+            TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(41454),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 1000000000,
+                    to: TxKind::Call(hex!("9344b07175800259691961298ca11c824e65032d").into()),
+                    value: Default::default(),
+                    input: Default::default(),
+                }
+                .into_signed(PrimitiveSignature::new(
+                    U256::from(0),
+                    U256::from(0),
+                    false,
+                )),
+            ),
+            Header {
                 number: 1,
                 beneficiary: hex!("0102030405010203040501020304050102030405").into(),
                 gas_limit: 10000000000,
@@ -347,20 +352,20 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
 
-        let txn: reth_primitives::transaction::Transaction =
-            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
+        let txn = TxEnvelope::Legacy(
+            TxLegacy {
                 chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 30000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("0000000000000000000002000000000000000000").into(),
-                ),
-                value: TxValue::from(10000),
+                to: TxKind::Call(hex!("0000000000000000000002000000000000000000").into()),
+                value: U256::from(10000),
                 input: Default::default(),
-            });
+            }
+            .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
+        );
 
-        let header: reth_primitives::Header = reth_primitives::Header {
+        let header = Header {
             number: 1,
             beneficiary: hex!("0102030405010203040501020304050102030405").into(),
             gas_limit: 100000,
@@ -446,20 +451,20 @@ mod tests {
             Path::new(&testdb_path).to_owned()
         };
 
-        let mut txn: reth_primitives::transaction::Transaction =
-            reth_primitives::Transaction::Legacy(reth_primitives::TxLegacy {
+        let mut txn = TxEnvelope::Legacy(
+            TxLegacy {
                 chain_id: Some(41454),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 1000000000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into(),
-                ),
+                to: TxKind::Call(hex!("17e7eedce4ac02ef114a7ed9fe6e2f33feba1667").into()),
                 value: Default::default(),
                 input: hex!("ff01").into(),
-            });
+            }
+            .into_signed(PrimitiveSignature::new(U256::from(0), U256::from(0), false)),
+        );
 
-        let header: reth_primitives::Header = reth_primitives::Header {
+        let header = Header {
             number: 0,
             beneficiary: hex!("0102030405010203040501020304050102030405").into(),
             gas_limit: 10000000000,
@@ -493,11 +498,23 @@ mod tests {
 
         // Code override: this should produce the same result as the above call
         {
-            if let reth_primitives::Transaction::Legacy(ref mut legacy_tx) = txn {
-                legacy_tx.to = reth_primitives::TransactionKind::Call(
-                    hex!("000000000000000000000000000000000000000a").into(),
-                );
-            }
+            let txn = TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(41454),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 1000000000,
+                    // note that this `to` is different
+                    to: TxKind::Call(hex!("000000000000000000000000000000000000000a").into()),
+                    value: Default::default(),
+                    input: hex!("ff01").into(),
+                }
+                .into_signed(PrimitiveSignature::new(
+                    U256::from(0),
+                    U256::from(0),
+                    false,
+                )),
+            );
 
             let state_overrides_string = "{\"state_override_set\" : {\"0x000000000000000000000000000000000000000a\" : {
                 \"code\" : \"0x366002146022577177726f6e672d63616c6c6461746173697a656000526012600efd5b60003560f01c61ff01146047576d77726f6e672d63616c6c64617461600052600e6012fd5b61ffee6000526002601ef3\"
@@ -540,18 +557,23 @@ mod tests {
     fn test_sha256_precompile() {
         let temp_blockdb_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
         let result = eth_call(
-            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-                chain_id: Some(1337),
-                nonce: 0,
-                gas_price: 0,
-                gas_limit: 100000,
-                to: reth_primitives::TransactionKind::Call(
-                    hex!("0000000000000000000000000000000000000002").into(),
-                ),
-                value: Default::default(),
-                input: hex!("deadbeef").into(),
-            }),
-            reth_primitives::Header::default(),
+            TxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1337),
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 100000,
+                    to: TxKind::Call(hex!("0000000000000000000000000000000000000002").into()),
+                    value: Default::default(),
+                    input: hex!("deadbeef").into(),
+                }
+                .into_signed(PrimitiveSignature::new(
+                    U256::from(0),
+                    U256::from(0),
+                    false,
+                )),
+            ),
+            Header::default(),
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
             0,
             Path::new("/home/rgarc/test.db"),

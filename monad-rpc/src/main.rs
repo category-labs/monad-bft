@@ -6,13 +6,13 @@ use actix_web::{
     dev::{ServiceFactory, ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
+use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
 use monad_archive::{archive_reader::ArchiveReader, metrics::Metrics};
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
-use reth_primitives::TransactionSigned;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
@@ -519,7 +519,7 @@ struct ExecutionLedgerPath(pub Option<PathBuf>);
 
 #[derive(Clone)]
 struct MonadRpcResources {
-    mempool_sender: flume::Sender<TransactionSigned>,
+    mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReader>,
     execution_ledger_path: ExecutionLedgerPath,
@@ -541,7 +541,7 @@ impl Handler<Disconnect> for MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        mempool_sender: flume::Sender<TransactionSigned>,
+        mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReader>,
         execution_ledger_path: Option<PathBuf>,
@@ -635,7 +635,7 @@ async fn main() -> std::io::Result<()> {
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
-    let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(
+    let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(
         // TODO configurable
         10_000,
     );
@@ -763,24 +763,25 @@ mod tests {
         dev::{Service, ServiceResponse},
         test, Error,
     };
-    use reth_primitives::{
-        sign_message, AccessList, Address, Transaction, TransactionKind, TransactionSigned,
-        TxEip1559, TxLegacy, B256,
-    };
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
+    use alloy_primitives::{Address, TxKind, B256, U256};
+    use alloy_rlp::Encodable;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use serde_json::{json, Number};
     use test_case::test_case;
 
     use super::*;
 
     pub struct MonadRpcResourcesState {
-        pub ipc_receiver: flume::Receiver<TransactionSigned>,
+        pub ipc_receiver: flume::Receiver<TxEnvelope>,
     }
 
     pub async fn init_server() -> (
         impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
         MonadRpcResourcesState,
     ) {
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TransactionSigned>(1_000);
+        let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
         let app = test::init_service(create_app(MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
@@ -800,48 +801,50 @@ mod tests {
 
     fn make_tx_legacy(nonce: u64) -> (B256, String) {
         let input = vec![0; 64];
-        let transaction = Transaction::Legacy(TxLegacy {
+        let transaction = TxLegacy {
             chain_id: Some(1337),
             nonce,
             gas_price: 1000,
             gas_limit: 30000,
-            to: TransactionKind::Call(Address::random()),
-            value: 0.into(),
+            to: TxKind::Call(Address::repeat_byte(3)),
+            value: U256::from(0),
             input: input.into(),
-        });
+        };
+        let sk = B256::repeat_byte(0xcc).to_string();
+        let signer = sk.parse::<PrivateKeySigner>().unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        let signed_tx: TxEnvelope = transaction.into_signed(signature).into();
 
-        let hash = transaction.signature_hash();
-
-        let sender_secret_key = B256::repeat_byte(0xcc);
-        let signature =
-            sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
-
-        (txn.recalculate_hash(), txn.envelope_encoded().to_string())
+        let mut rlp_tx = Vec::new();
+        signed_tx.encode(&mut rlp_tx);
+        (*signed_tx.tx_hash(), hex::encode(&rlp_tx))
     }
 
     fn make_tx_eip1559(nonce: u64) -> (B256, String) {
         let input = vec![0; 64];
-        let transaction = Transaction::Eip1559(TxEip1559 {
+        let transaction = TxEip1559 {
             chain_id: 1337,
             nonce,
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 123,
             gas_limit: 30000,
-            to: TransactionKind::Call(Address::random()),
-            value: 0.into(),
+            to: TxKind::Call(Address::repeat_byte(5)),
+            value: U256::from(0),
             input: input.into(),
-            access_list: AccessList::default(),
-        });
+            ..Default::default()
+        };
+        let sk = B256::repeat_byte(0xcc).to_string();
+        let signer = sk.parse::<PrivateKeySigner>().unwrap();
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        let signed_tx: TxEnvelope = transaction.into_signed(signature).into();
 
-        let hash = transaction.signature_hash();
-
-        let sender_secret_key = B256::repeat_byte(0xcc);
-        let signature =
-            sign_message(sender_secret_key, hash).expect("signature should always succeed");
-        let txn = TransactionSigned::from_transaction_and_signature(transaction, signature);
-
-        (txn.recalculate_hash(), txn.envelope_encoded().to_string())
+        let mut rlp_tx = Vec::new();
+        signed_tx.encode(&mut rlp_tx);
+        (*signed_tx.tx_hash(), hex::encode(&rlp_tx))
     }
 
     async fn recover_response_body(resp: ServiceResponse<impl MessageBody>) -> serde_json::Value {
@@ -849,7 +852,7 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("body to_bytes failed"));
         serde_json::from_slice(&b)
-            .inspect_err(|e| {
+            .inspect_err(|_| {
                 println!("failed to serialize {:?}", &b);
             })
             .unwrap()
@@ -917,7 +920,7 @@ mod tests {
                 .ipc_receiver
                 .try_recv()
                 .unwrap_or_else(|_| panic!("testcase {i}: nothing was sent on channel"));
-            assert_eq!(expected_hash, txn.hash());
+            assert_eq!(&expected_hash, txn.tx_hash());
         }
     }
 

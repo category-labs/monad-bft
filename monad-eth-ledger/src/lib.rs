@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_rlp::Decodable;
+use alloy_consensus::Transaction;
 use futures::Stream;
 use monad_blocksync::messages::message::{
     BlockSyncHeadersResponse, BlockSyncPayloadResponse, BlockSyncResponseMessage,
@@ -20,7 +20,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_tx::EthTransaction;
+use monad_eth_tx::EthFullTransactionList;
 use monad_eth_types::EthAddress;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
@@ -127,8 +127,9 @@ where
                         if let TransactionPayload::List(eth_txns_rlp) = &block.payload.txns {
                             // generate eth block and update the state backend with committed nonces
                             let new_account_nonces =
-                                Vec::<EthTransaction>::decode(&mut eth_txns_rlp.bytes().as_ref())
+                                EthFullTransactionList::rlp_decode(eth_txns_rlp.bytes().clone())
                                     .expect("invalid eth tx in block")
+                                    .0
                                     .into_iter()
                                     .map(|tx| (EthAddress(tx.signer()), tx.nonce() + 1))
                                     // collecting into a map will handle a sender sending multiple

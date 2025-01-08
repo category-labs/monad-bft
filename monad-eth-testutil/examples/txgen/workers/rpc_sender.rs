@@ -52,7 +52,7 @@ impl RpcSender {
         }
     }
 
-    fn spawn_send_batch(&self, batch: &[(TransactionSigned, Address)]) {
+    fn spawn_send_batch(&self, batch: &[(TxEnvelope, Address)]) {
         if batch.is_empty() {
             return; // unnecessary?
         }
@@ -68,9 +68,13 @@ impl RpcSender {
         tokio::spawn(async move {
             let now = Instant::now();
             for (tx, to) in &batch {
-                let _ = sent_txs.insert(tx.hash, now);
+                let _ = sent_txs.insert(*tx.tx_hash(), now);
                 if verbose {
-                    trace!(tx_hash = tx.hash.to_string(), to = to.to_string(), "Tx");
+                    trace!(
+                        tx_hash = tx.tx_hash().to_string(),
+                        to = to.to_string(),
+                        "Tx"
+                    );
                 }
             }
 
@@ -91,7 +95,7 @@ impl RpcSender {
 
 pub async fn send_batch(
     client: &ReqwestClient,
-    txs: impl Iterator<Item = &TransactionSigned>,
+    txs: impl Iterator<Item = &TxEnvelope>,
     metrics: &Metrics,
 ) {
     let now = Instant::now();
@@ -101,7 +105,7 @@ pub async fn send_batch(
     let mut futs = txs
         .filter_map(|tx| {
             batch_req
-                .add_call::<_, TxHash>("eth_sendRawTransaction", &[tx.envelope_encoded()])
+                .add_call::<_, TxHash>("eth_sendRawTransaction", &[alloy_rlp::encode(tx)])
                 .ok() // todo: handle better
         })
         .collect::<FuturesUnordered<_>>();

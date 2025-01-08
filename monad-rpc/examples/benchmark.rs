@@ -8,7 +8,7 @@ async fn run_benchmark(rpc_url: &str, num_requests: usize, batch_size: usize) {
     let url = reqwest::Url::parse(rpc_url).unwrap();
     let client = ClientBuilder::default().http(url);
 
-    let addresses: Vec<Address> = (0..num_requests).map(|_| Address::random()).collect();
+    let addresses: Vec<Address> = (0..num_requests).map(|_| Address::repeat_byte(3)).collect();
 
     let start = Instant::now();
 

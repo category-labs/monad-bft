@@ -12,7 +12,7 @@ impl Generator for DuplicateTxGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TransactionSigned, Address)> {
+    ) -> Vec<(TxEnvelope, Address)> {
         let mut rng = SmallRng::from_entropy();
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 

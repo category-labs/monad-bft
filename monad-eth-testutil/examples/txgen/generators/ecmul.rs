@@ -1,4 +1,4 @@
-use reth_primitives::hex;
+use alloy_primitives::hex;
 
 use super::*;
 use crate::shared::ecmul::ECMul;
@@ -13,13 +13,13 @@ impl Generator for ECMulGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TransactionSigned, Address)> {
+    ) -> Vec<(TxEnvelope, Address)> {
         let mut txs = Vec::with_capacity(self.tx_per_sender * accts.len());
 
         for sender in accts {
             for _ in 0..self.tx_per_sender {
                 let tx = self.ecmul.construct_tx(sender, ctx.base_fee * 2);
-                println!("tx: 0x{}", hex::encode(tx.envelope_encoded()));
+                println!("tx: 0x{}", hex::encode(alloy_rlp::encode(&tx)));
                 txs.push((tx, self.ecmul.addr));
             }
         }

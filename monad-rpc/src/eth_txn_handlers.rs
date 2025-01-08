@@ -1,18 +1,18 @@
 use std::cmp::min;
 
-use alloy_primitives::{
-    aliases::{U128, U256, U64},
-    FixedBytes,
+use alloy_consensus::{
+    transaction::Recovered, ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
+};
+use alloy_primitives::{FixedBytes, TxKind};
+use alloy_rlp::Decodable;
+use alloy_rpc_types::{
+    BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Receipt, Transaction,
+    TransactionReceipt,
 };
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
-use reth_primitives::{transaction::TransactionKind, ReceiptWithBloom, TransactionSigned};
-use reth_rpc_types::{
-    AccessListItem, BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Parity,
-    Signature, Transaction, TransactionReceipt,
-};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace};
 
@@ -30,80 +30,44 @@ pub fn parse_tx_content(
     block_hash: FixedBytes<32>,
     block_number: u64,
     base_fee: Option<u64>,
-    tx: TransactionSigned,
+    tx: TxEnvelope,
     tx_index: u64,
 ) -> Result<Transaction, JsonRpcError> {
     // recover transaction signer
-    let Some(tx) = tx.into_ecrecovered_unchecked() else {
+    let Ok(from) = tx.recover_signer() else {
         error!("transaction sender should exist");
         return Err(JsonRpcError::txn_decode_error());
     };
 
-    // parse fee parameters
-    let gas_price = base_fee
-        .and_then(|base_fee| {
-            tx.effective_tip_per_gas(Some(base_fee))
-                .map(|tip| tip + base_fee as u128)
-        })
-        .unwrap_or_else(|| tx.max_fee_per_gas());
+    // effective gas price is calculated according to eth json rpc specification
+    let base_fee: u128 = base_fee.unwrap_or_default().into();
+    let effective_gas_price = base_fee
+        + min(
+            tx.max_fee_per_gas() - base_fee,
+            tx.max_priority_fee_per_gas().unwrap_or_default(),
+        );
 
-    // parse signature
-    let signature = Signature {
-        r: tx.signature().r,
-        s: tx.signature().s,
-        v: U256::from(tx.signature().odd_y_parity as u8),
-        y_parity: Some(Parity(tx.signature().odd_y_parity)),
-    };
-
-    // parse access list
-    let access_list = tx.access_list().map(|list| {
-        list.0
-            .iter()
-            .map(|item| AccessListItem {
-                address: item.address.0.into(),
-                storage_keys: item.storage_keys.iter().map(|key| key.0.into()).collect(),
-            })
-            .collect()
-    });
-
-    let retval = Transaction {
-        hash: tx.hash(),
-        nonce: U64::from(tx.nonce()),
-        from: tx.signer(),
-        to: tx.to(),
-        value: tx.value().into(),
-        gas_price: Some(U128::from(gas_price)),
-        max_fee_per_gas: Some(U128::from(tx.max_fee_per_gas())),
-        max_priority_fee_per_gas: tx.max_priority_fee_per_gas().map(U128::from),
-        signature: Some(signature),
-        gas: U256::from(tx.gas_limit()),
-        input: tx.input().to_owned(),
-        chain_id: tx.chain_id().map(U64::from),
-        access_list,
-        transaction_type: Some(U64::from(tx.tx_type() as u8)),
+    Ok(Transaction {
+        inner: tx,
+        from,
         block_hash: Some(block_hash),
-        block_number: Some(U256::from(block_number)),
-        transaction_index: Some(U256::from(tx_index)),
-
-        // only relevant for EIP-4844 transactions
-        max_fee_per_blob_gas: None,
-        blob_versioned_hashes: vec![],
-        other: Default::default(),
-    };
-
-    Ok(retval)
+        block_number: Some(block_number),
+        effective_gas_price: Some(effective_gas_price),
+        transaction_index: Some(tx_index),
+    })
 }
 
 pub fn parse_tx_receipt(
     base_fee_per_gas: Option<u64>,
+    block_timestamp: Option<u64>,
     block_hash: FixedBytes<32>,
-    tx: &TransactionSigned,
-    gas_used: u64,
-    receipt: ReceiptWithBloom,
+    tx: &TxEnvelope,
+    gas_used: u128,
+    receipt: ReceiptEnvelope,
     block_num: u64,
     tx_index: u64,
 ) -> Result<TransactionReceipt, JsonRpcError> {
-    let Some(tx) = tx.clone().into_ecrecovered_unchecked() else {
+    let Ok(address) = tx.recover_signer() else {
         error!("transaction sender should exist");
         return Err(JsonRpcError::txn_decode_error());
     };
@@ -116,51 +80,54 @@ pub fn parse_tx_receipt(
         );
 
     let block_hash = Some(block_hash);
-    let block_number = Some(U256::from(block_num));
+    let block_number = Some(block_num);
 
-    let logs = receipt
-        .receipt
-        .logs
-        .into_iter()
+    let logs: Vec<Log> = receipt
+        .logs()
+        .iter()
         .enumerate()
         .map(|(log_index, log)| Log {
-            address: log.address,
-            topics: log.topics,
-            data: log.data,
+            inner: log.clone(),
             block_hash,
             block_number,
-            transaction_hash: Some(tx.hash()),
-            transaction_index: Some(U256::from(tx_index)),
-            log_index: Some(U256::from(log_index)),
+            block_timestamp,
+            transaction_hash: Some(*tx.tx_hash()),
+            transaction_index: Some(tx_index),
+            log_index: Some(log_index as u64),
             removed: Default::default(),
         })
         .collect();
 
     let contract_address = match tx.kind() {
-        TransactionKind::Create => Some(tx.signer().create(tx.nonce())),
+        TxKind::Create => Some(address.create(tx.nonce())),
         _ => None,
     };
 
+    // TODO: support other transaction types
+    let inner_receipt: ReceiptEnvelope<Log> = ReceiptEnvelope::Eip1559(ReceiptWithBloom {
+        receipt: Receipt {
+            status: receipt.status().into(),
+            cumulative_gas_used: receipt.cumulative_gas_used(),
+            logs,
+        },
+        logs_bloom: *receipt.logs_bloom(),
+    });
+
     let tx_receipt = TransactionReceipt {
-        transaction_type: receipt.receipt.tx_type.into(),
-        transaction_hash: Some(tx.hash()),
-        transaction_index: U64::from(tx_index),
+        inner: inner_receipt,
+        transaction_hash: *tx.tx_hash(),
+        transaction_index: Some(tx_index),
         block_hash,
         block_number,
-        from: tx.signer(),
+        from: address,
         to: tx.to(),
         contract_address,
-        gas_used: Some(U256::from(gas_used)),
-        effective_gas_price: U128::from(effective_gas_price),
-        cumulative_gas_used: U256::from(receipt.receipt.cumulative_gas_used),
-        status_code: Some(U64::from(receipt.receipt.success as u8)),
-        logs,
-        logs_bloom: receipt.bloom,
-        state_root: None,
+        gas_used,
+        effective_gas_price,
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-        ..Default::default()
+        authorization_list: None,
     };
     Ok(tx_receipt)
 }
@@ -307,10 +274,10 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                             JsonRpcError::internal_error("error getting block receipts".into())
                         })?;
                 block_receipts(
-                    &block.body,
+                    &block.body.transactions,
                     bloom_receipts,
                     &block.header,
-                    block.hash_slow(),
+                    block.header.hash_slow(),
                 )
                 .await?
             } else {
@@ -323,13 +290,15 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                 .into_iter()
                 .flat_map(|receipt| {
                     let logs: Vec<Log> = receipt
-                        .logs
-                        .into_iter()
-                        .filter(|log: &Log| {
+                        .inner
+                        .logs()
+                        .iter()
+                        .filter(|log: &&Log| {
                             !(filtered_params.filter.is_some()
-                                && (!filtered_params.filter_address(log)
-                                    || !filtered_params.filter_topics(log)))
+                                && (!filtered_params.filter_address(&log.address())
+                                    || !filtered_params.filter_topics(log.topics())))
                         })
+                        .cloned()
                         .collect();
                     logs
                 })
@@ -362,7 +331,7 @@ pub async fn monad_eth_sendRawTransaction(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
-    match TransactionSigned::decode_enveloped(&mut &params.hex_tx.0[..]) {
+    match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
             // drop transactions that will fail consensus check
             if let Err(err) = static_validate_transaction(&txn, chain_id) {
@@ -382,13 +351,15 @@ pub async fn monad_eth_sendRawTransaction(
                 ));
             }
 
-            let hash = txn.hash();
+            let hash = *txn.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            let txn = txn.try_into_ecrecovered().map_err(|_| {
+            let signer = txn.recover_signer().map_err(|_| {
                 JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
             })?;
-            tx_pool.add_transaction(txn).await;
+            tx_pool
+                .add_transaction(Recovered::new_unchecked(txn, signer))
+                .await;
             Ok(hash.to_string())
         }
         Err(e) => {
@@ -432,6 +403,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
         if let Ok(Some(tx_data)) = archive_reader.get_txdata(params.tx_hash.to_string()).await {
             let receipt = parse_tx_receipt(
                 tx_data.header_subset.base_fee_per_gas,
+                None, // FIXME block timestamp
                 tx_data.header_subset.block_hash,
                 &tx_data.tx,
                 tx_data.header_subset.gas_used,
@@ -524,7 +496,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
     // try archive if block hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
         if let Ok(block) = archive_reader.get_block_by_hash(&params.block_hash.0).await {
-            if let Some(tx) = block.body.get(params.index.0 as usize) {
+            if let Some(tx) = block.body.transactions.get(params.index.0 as usize) {
                 return parse_tx_content(
                     params.block_hash.0.into(),
                     block.header.number,
@@ -564,7 +536,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
     // try archive if block header not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
         if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
-            if let Some(tx) = block.body.get(params.index.0 as usize) {
+            if let Some(tx) = block.body.transactions.get(params.index.0 as usize) {
                 return parse_tx_content(
                     block.header.hash_slow(),
                     block.header.number,
@@ -616,19 +588,19 @@ async fn get_receipt_from_triedb<T: Triedb>(
                     .map_err(JsonRpcError::internal_error)?
                 {
                     Some(prev_receipt) => {
-                        receipt.receipt.cumulative_gas_used
-                            - prev_receipt.receipt.cumulative_gas_used
+                        receipt.cumulative_gas_used() - prev_receipt.cumulative_gas_used()
                     }
                     None => {
                         return Err(JsonRpcError::internal_error("error getting receipt".into()))
                     }
                 }
             } else {
-                receipt.receipt.cumulative_gas_used
+                receipt.cumulative_gas_used()
             };
 
             let receipt = parse_tx_receipt(
                 header.header.base_fee_per_gas,
+                Some(header.header.timestamp),
                 header.hash,
                 &tx,
                 gas_used,

@@ -4,14 +4,14 @@ use std::{
     task::Poll,
 };
 
+use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+use alloy_primitives::{Address, FixedBytes, TxKind, Uint};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use clap::{Parser, Subcommand};
 use futures::{Sink, SinkExt};
 use itertools::Itertools;
 use rand::RngCore;
-use reth_primitives::{
-    revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
-    TransactionSigned, TxLegacy,
-};
 use serde_json::json;
 use tokio::{net::UnixStream, time};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
@@ -36,7 +36,7 @@ impl MempoolTxIpcSender {
     }
 }
 
-impl Sink<TransactionSigned> for MempoolTxIpcSender {
+impl Sink<TxEnvelope> for MempoolTxIpcSender {
     type Error = std::io::Error;
 
     fn poll_ready(
@@ -46,11 +46,8 @@ impl Sink<TransactionSigned> for MempoolTxIpcSender {
         self.writer.poll_ready_unpin(cx)
     }
 
-    fn start_send(
-        mut self: std::pin::Pin<&mut Self>,
-        tx: TransactionSigned,
-    ) -> Result<(), Self::Error> {
-        let buf = tx.envelope_encoded();
+    fn start_send(mut self: std::pin::Pin<&mut Self>, tx: TxEnvelope) -> Result<(), Self::Error> {
+        let buf = alloy_rlp::encode(tx);
 
         self.writer.start_send_unpin(buf.into())
     }
@@ -109,7 +106,7 @@ struct Args {
     transport: Transport,
 }
 
-async fn send_requests<'a, C: Iterator<Item = &'a TransactionSigned>>(
+async fn send_requests<'a, C: Iterator<Item = &'a TxEnvelope>>(
     transaction_chunk: C,
     rpc_addr: &String,
     rpc_port: u16,
@@ -119,7 +116,7 @@ async fn send_requests<'a, C: Iterator<Item = &'a TransactionSigned>>(
     let payload = transaction_chunk
         .into_iter()
         .map(|tx| {
-            let encoded_tx = format!("0x{}", hex::encode(tx.envelope_encoded()));
+            let encoded_tx = format!("0x{}", hex::encode(alloy_rlp::encode(tx)));
             json!({
                 "jsonrpc": "2.0",
                 "method": "eth_sendRawTransaction",
@@ -224,24 +221,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn make_tx(input_len: usize) -> TransactionSigned {
+fn make_tx(input_len: usize) -> TxEnvelope {
     let mut input = vec![0; input_len];
     rand::thread_rng().fill_bytes(&mut input);
-    let transaction = Transaction::Legacy(TxLegacy {
+    let transaction = TxLegacy {
         chain_id: Some(41454),
         nonce: 0,
         gas_price: 1,
         gas_limit: 100_000,
-        to: TransactionKind::Call(Address::random()),
-        value: 1.into(),
+        to: TxKind::Call(Address::repeat_byte(8)),
+        value: Uint::default(),
         input: input.into(),
-    });
+    };
 
     let hash = transaction.signature_hash();
 
     // generate a random secret key everytime since transaction nonce is 0
-    let sender_secret_key = FixedBytes::random();
-    let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
+    let sender_secret_key: FixedBytes<32> = FixedBytes::repeat_byte(3);
+    let signer = sender_secret_key
+        .to_string()
+        .parse::<PrivateKeySigner>()
+        .unwrap();
+    let signature = signer.sign_hash_sync(&hash).unwrap();
 
-    TransactionSigned::from_transaction_and_signature(transaction, signature)
+    TxEnvelope::Legacy(transaction.into_signed(signature))
 }

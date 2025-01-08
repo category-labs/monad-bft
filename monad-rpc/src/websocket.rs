@@ -98,9 +98,9 @@ mod tests {
     use std::sync::Arc;
 
     use actix_http::{ws, ws::Frame};
+    use alloy_consensus::TxEnvelope;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
-    use reth_primitives::TransactionSigned;
     use tokio::sync::Semaphore;
 
     use crate::{
@@ -108,7 +108,7 @@ mod tests {
     };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
-        let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
+        let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,

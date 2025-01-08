@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
-use alloy_primitives::FixedBytes;
-use reth_primitives::{Address, Bloom, Bytes, U256};
-use reth_rpc_types::{
-    Block, BlockTransactions, FeeHistory, Header, Log, Transaction, TransactionReceipt,
-};
+use alloy_consensus::TxEnvelope;
+use alloy_primitives::{Address, FixedBytes, LogData, U256};
+use alloy_rpc_types::{Block, FeeHistory, Header, Log, Transaction, TransactionReceipt};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use tracing::debug;
@@ -42,7 +40,7 @@ impl<'de> Deserialize<'de> for MonadU256 {
 }
 
 #[derive(Debug, Serialize)]
-pub struct MonadLog(pub Log);
+pub struct MonadLog(pub Log<LogData>);
 
 impl schemars::JsonSchema for MonadLog {
     fn schema_name() -> String {
@@ -54,13 +52,13 @@ impl schemars::JsonSchema for MonadLog {
     }
 
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let schema = schemars::schema_for_value!(Log::default());
+        let schema = schemars::schema_for_value!(Log::<LogData>::default());
         schema.schema.into()
     }
 }
 
 #[derive(Debug, Serialize)]
-pub struct MonadTransaction(pub Transaction);
+pub struct MonadTransaction(pub Transaction<TxEnvelope>);
 
 impl schemars::JsonSchema for MonadTransaction {
     fn schema_name() -> String {
@@ -72,7 +70,9 @@ impl schemars::JsonSchema for MonadTransaction {
     }
 
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let schema = schemars::schema_for_value!(Transaction::default());
+        let rpc_tx = r#"{"blockHash":"0x883f974b17ca7b28cb970798d1c80f4d4bb427473dc6d39b2a7fe24edc02902d","blockNumber":"0xe26e6d","hash":"0x0e07d8b53ed3d91314c80e53cf25bcde02084939395845cbb625b029d568135c","accessList":[],"transactionIndex":"0xad","type":"0x2","nonce":"0x16d","input":"0x5ae401dc00000000000000000000000000000000000000000000000000000000628ced5b000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000e442712a6700000000000000000000000000000000000000000000b3ff1489674e11c40000000000000000000000000000000000000000000000000000004a6ed55bbcc18000000000000000000000000000000000000000000000000000000000000000800000000000000000000000003cf412d970474804623bb4e3a42de13f9bca54360000000000000000000000000000000000000000000000000000000000000002000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc20000000000000000000000003a75941763f31c930b19c041b709742b0b31ebb600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000412210e8a00000000000000000000000000000000000000000000000000000000","r":"0x7f2153019a74025d83a73effdd91503ceecefac7e35dd933adc1901c875539aa","s":"0x334ab2f714796d13c825fddf12aad01438db3a8152b2fe3ef7827707c25ecab3","chainId":"0x1","v":"0x0","gas":"0x46a02","maxPriorityFeePerGas":"0x59682f00","from":"0x3cf412d970474804623bb4e3a42de13f9bca5436","to":"0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45","maxFeePerGas":"0x7fc1a20a8","value":"0x4a6ed55bbcc180","gasPrice":"0x50101df3a"}"#;
+        let tx = serde_json::from_str::<Transaction<TxEnvelope>>(rpc_tx).unwrap();
+        let schema = schemars::schema_for_value!(tx);
         schema.schema.into()
     }
 }
@@ -90,13 +90,15 @@ impl schemars::JsonSchema for MonadTransactionReceipt {
     }
 
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let schema = schemars::schema_for_value!(TransactionReceipt::default());
+        let json_str = r#"{"transactionHash":"0x21f6554c28453a01e7276c1db2fc1695bb512b170818bfa98fa8136433100616","blockHash":"0x4acbdefb861ef4adedb135ca52865f6743451bfbfa35db78076f881a40401a5e","blockNumber":"0x129f4b9","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000200000000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000800000000000000000000000000000000004000000000000000000800000000100000020000000000000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000010000000000000000000000000000","gasUsed":"0xbde1","contractAddress":null,"cumulativeGasUsed":"0xa42aec","transactionIndex":"0x7f","from":"0x9a53bfba35269414f3b2d20b52ca01b15932c7b2","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","type":"0x2","effectiveGasPrice":"0xfb0f6e8c9","logs":[{"blockHash":"0x4acbdefb861ef4adedb135ca52865f6743451bfbfa35db78076f881a40401a5e","address":"0xdac17f958d2ee523a2206206994597c13d831ec7","logIndex":"0x118","data":"0x00000000000000000000000000000000000000000052b7d2dcc80cd2e4000000","removed":false,"topics":["0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925","0x0000000000000000000000009a53bfba35269414f3b2d20b52ca01b15932c7b2","0x00000000000000000000000039e5dbb9d2fead31234d7c647d6ce77d85826f76"],"blockNumber":"0x129f4b9","transactionIndex":"0x7f","transactionHash":"0x21f6554c28453a01e7276c1db2fc1695bb512b170818bfa98fa8136433100616"}],"status":"0x1"}"#;
+        let receipt: TransactionReceipt = serde_json::from_str(json_str).unwrap();
+        let schema = schemars::schema_for_value!(receipt);
         schema.schema.into()
     }
 }
 
 #[derive(Debug, Serialize)]
-pub struct MonadBlock(pub Block);
+pub struct MonadBlock(pub Block<Transaction<TxEnvelope>, Header>);
 
 impl schemars::JsonSchema for MonadBlock {
     fn schema_name() -> String {
@@ -108,37 +110,8 @@ impl schemars::JsonSchema for MonadBlock {
     }
 
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let schema = schemars::schema_for_value!(Block {
-            header: Header {
-                hash: Some(FixedBytes::<32>::default()),
-                uncles_hash: FixedBytes::<32>::default(),
-                miner: Address::default(),
-                difficulty: U256::default(),
-                number: None,
-                gas_limit: U256::default(),
-                gas_used: U256::default(),
-                timestamp: U256::default(),
-                excess_blob_gas: None,
-                base_fee_per_gas: None,
-                extra_data: Bytes::default(),
-                mix_hash: None,
-                nonce: None,
-                blob_gas_used: None,
-                parent_beacon_block_root: None,
-                withdrawals_root: None,
-                parent_hash: FixedBytes::<32>::default(),
-                state_root: FixedBytes::<32>::default(),
-                transactions_root: FixedBytes::<32>::default(),
-                receipts_root: FixedBytes::<32>::default(),
-                logs_bloom: Bloom::default(),
-            },
-            total_difficulty: None,
-            withdrawals: None,
-            size: None,
-            other: Default::default(),
-            uncles: Vec::new(),
-            transactions: BlockTransactions::Full(Vec::new()),
-        });
+        let schema =
+            schemars::schema_for_value!(Block::<Transaction<TxEnvelope>, Header>::default());
         schema.schema.into()
     }
 }
@@ -253,8 +226,8 @@ impl FromStr for UnformattedData {
         decode(s).map(UnformattedData)
     }
 }
-impl From<reth_primitives::Bytes> for UnformattedData {
-    fn from(data: reth_primitives::Bytes) -> Self {
+impl From<alloy_primitives::Bytes> for UnformattedData {
+    fn from(data: alloy_primitives::Bytes) -> Self {
         UnformattedData(data.to_vec())
     }
 }
@@ -466,7 +439,7 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
 
 #[cfg(test)]
 mod tests {
-    use reth_primitives::U256;
+    use alloy_primitives::U256;
     use serde::Deserialize;
     use serde_json::json;
 

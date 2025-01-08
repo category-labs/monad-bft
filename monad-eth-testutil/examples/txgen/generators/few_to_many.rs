@@ -13,7 +13,7 @@ impl Generator for CreateAccountsGenerator {
         &mut self,
         accts: &mut [SimpleAccount],
         ctx: &GenCtx,
-    ) -> Vec<(TransactionSigned, Address)> {
+    ) -> Vec<(TxEnvelope, Address)> {
         let mut txs = Vec::with_capacity(accts.len());
 
         for sender in accts {

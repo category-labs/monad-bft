@@ -15,13 +15,13 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 
+alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 rayon = { workspace = true }
-reth-primitives = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

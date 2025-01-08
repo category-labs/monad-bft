@@ -18,10 +18,11 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-types = { path = "../monad-types" }
 
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
-reth-primitives = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
@@ -29,14 +30,3 @@ tokio = { workspace = true, features = [
     "sync",
 ]}
 tracing = { workspace = true }
-
-[dev-dependencies]
-clap = { workspace = true, features = ["derive"] }
-futures = { workspace = true }
-notify = "6.1.1"
-
-[[example]]
-name = "ledgewatch"
-
-[[example]]
-name = "blockwatch"

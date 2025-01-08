@@ -29,15 +29,16 @@ monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-testutil = { path = "../monad-testutil" }
 monad-multi-sig = { path = "../monad-multi-sig" }
+
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
-
 itertools = { workspace = true }
-test-case = { workspace = true }
-tracing-test = { workspace = true }
-
 rand = { workspace = true }
 rayon = { workspace = true }
-reth-primitives = { workspace = true }
+test-case = { workspace = true }
+tracing-test = { workspace = true }
 
 [[bench]]
 name = "state_machine"

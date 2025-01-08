@@ -1,7 +1,7 @@
+use alloy_consensus::{Block, BlockBody};
 use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
-use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -45,9 +45,11 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 
     let block = Block {
         header: header.header,
-        body: transactions,
-        ommers: vec![],
-        withdrawals: None,
+        body: BlockBody {
+            transactions,
+            ommers: Vec::new(),
+            withdrawals: None,
+        },
     };
 
     let mut res = Vec::new();

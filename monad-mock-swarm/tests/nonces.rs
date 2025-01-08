@@ -5,6 +5,7 @@ mod test {
         time::Duration,
     };
 
+    use alloy_primitives::B256;
     use alloy_rlp::Decodable;
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
@@ -46,7 +47,6 @@ mod test {
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
-    use reth_primitives::B256;
     use tracing::info;
 
     pub struct EthSwarm;
@@ -170,7 +170,7 @@ mod test {
         node_ids: Vec<ID<NopPubKey>>,
         txns: Vec<EthSignedTransaction>,
     ) -> bool {
-        let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| t.hash()));
+        let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
@@ -183,7 +183,7 @@ mod test {
                 };
 
                 let decoded_txn_hashes: HashSet<_> =
-                    HashSet::from_iter(decoded_txns.iter().map(|t| t.hash()));
+                    HashSet::from_iter(decoded_txns.iter().map(|t| *t.tx_hash()));
                 for txn_hash in decoded_txn_hashes {
                     if txns_to_see.contains(&txn_hash) {
                         txns_to_see.remove(&txn_hash);
@@ -211,7 +211,7 @@ mod test {
 
     #[test]
     fn non_sequential_nonces() {
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(15);
         let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
         let node_ids = swarm.states().keys().copied().collect_vec();
         let node_1_id = node_ids[0];
@@ -226,7 +226,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -234,7 +234,7 @@ mod test {
         for nonce in 20..30 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
         }
 
         while swarm
@@ -260,7 +260,7 @@ mod test {
 
     #[test]
     fn duplicate_nonces_multi_nodes() {
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(15);
         let mut swarm = generate_eth_swarm(2, vec![secret_to_eth_address(sender_1_key)]);
 
         let node_ids = swarm.states().keys().copied().collect_vec();
@@ -278,7 +278,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -299,7 +299,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 1000);
 
-            swarm.send_transaction(node_2_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn).into());
         }
 
         while swarm
@@ -326,8 +326,8 @@ mod test {
 
     #[test]
     fn committed_nonces() {
-        let sender_1_key = B256::random();
-        let sender_2_key = B256::random();
+        let sender_1_key = B256::repeat_byte(15);
+        let sender_2_key = B256::repeat_byte(16);
         let mut swarm = generate_eth_swarm(
             2,
             vec![
@@ -352,8 +352,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_1_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn_sender_2).into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -386,8 +386,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_2_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_2).into());
         }
 
         // Send transactions with nonces 10..20 to Node 2
@@ -395,8 +395,8 @@ mod test {
             let eth_txn_sender_1 = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
             let eth_txn_sender_2 = make_tx(sender_2_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_2_id, eth_txn_sender_1.envelope_encoded().into());
-            swarm.send_transaction(node_2_id, eth_txn_sender_2.envelope_encoded().into());
+            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_1).into());
+            swarm.send_transaction(node_2_id, alloy_rlp::encode(&eth_txn_sender_2).into());
 
             expected_txns.push(eth_txn_sender_1);
             expected_txns.push(eth_txn_sender_2);
@@ -425,7 +425,7 @@ mod test {
 
     #[test]
     fn blocksync_missing_nonces() {
-        let sender_1_key = B256::random();
+        let sender_1_key = B256::repeat_byte(15);
 
         let mut swarm = generate_eth_swarm(4, vec![secret_to_eth_address(sender_1_key)]);
         let node_ids = swarm.states().keys().copied().collect_vec();
@@ -455,7 +455,7 @@ mod test {
         for nonce in 0..10 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(other_nodes[0], eth_txn.envelope_encoded().into());
+            swarm.send_transaction(other_nodes[0], alloy_rlp::encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }
@@ -495,7 +495,7 @@ mod test {
         for nonce in 10..20 {
             let eth_txn = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-            swarm.send_transaction(node_1_id, eth_txn.envelope_encoded().into());
+            swarm.send_transaction(node_1_id, alloy_rlp::encode(&eth_txn).into());
 
             expected_txns.push(eth_txn);
         }

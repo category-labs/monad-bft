@@ -1,12 +1,10 @@
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_primitives::{hex::FromHex, keccak256, Address, Bytes, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::SolCall;
 use eyre::Result;
-use reth_primitives::{
-    hex::FromHex, keccak256, AccessList, Address, Bytes, Transaction, TransactionKind,
-    TransactionSigned, TxEip1559, U256,
-};
 use serde::Deserialize;
 
 use super::{eth_json_rpc::EthJsonRpc, private_key::PrivateKey};
@@ -30,7 +28,7 @@ impl ECMul {
         let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
 
         let _: String = client
-            .request("eth_sendRawTransaction", [tx.envelope_encoded()])
+            .request("eth_sendRawTransaction", [alloy_rlp::encode(tx)])
             .await?;
 
         let addr = calculate_contract_addr(&deployer.0, nonce);
@@ -38,54 +36,46 @@ impl ECMul {
         Ok(Self { addr })
     }
 
-    pub fn deploy_tx(
-        nonce: u64,
-        deployer: &PrivateKey,
-        max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey, max_fee_per_gas: u128) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
-        let tx = Transaction::Eip1559(TxEip1559 {
+        let tx = TxEip1559 {
             chain_id: 41454,
             nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,
             max_priority_fee_per_gas: 10,
-            to: TransactionKind::Create,
-            value: U256::ZERO.into(),
-            access_list: AccessList::default(),
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
             input,
-        });
+        };
 
         let sig = deployer.sign_transaction(&tx);
-        TransactionSigned::from_transaction_and_signature(tx, sig)
+        TxEnvelope::Eip1559(tx.into_signed(sig))
     }
 
     // Helper function to construct an ECMul transaction
-    pub fn construct_tx(
-        &self,
-        sender: &mut SimpleAccount,
-        max_fee_per_gas: u128,
-    ) -> TransactionSigned {
+    pub fn construct_tx(&self, sender: &mut SimpleAccount, max_fee_per_gas: u128) -> TxEnvelope {
         let input = IECMul::performzksyncECMulsCall {
             iterations: U256::from(200),
         }
         .abi_encode();
 
-        let tx = Transaction::Eip1559(TxEip1559 {
+        let tx = TxEip1559 {
             chain_id: 41454,
             nonce: sender.nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,
             max_priority_fee_per_gas: 0,
-            to: TransactionKind::Call(self.addr),
-            value: U256::ZERO.into(),
-            access_list: AccessList::default(),
+            to: TxKind::Call(self.addr),
+            value: U256::ZERO,
+            access_list: Default::default(),
             input: input.into(),
-        });
+        };
 
         let sig = sender.key.sign_transaction(&tx);
         sender.nonce += 1;
-        TransactionSigned::from_transaction_and_signature(tx, sig)
+        TxEnvelope::Eip1559(tx.into_signed(sig))
     }
 }
 

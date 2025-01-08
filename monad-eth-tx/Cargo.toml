@@ -9,7 +9,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
-reth-primitives = { workspace = true }
+rayon = { workspace = true }

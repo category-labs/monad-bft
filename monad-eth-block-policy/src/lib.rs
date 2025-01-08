@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use alloy_consensus::transaction::Transaction;
+use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
@@ -13,7 +15,6 @@ use monad_eth_tx::{EthSignedTransaction, EthTransaction, EthTxHash};
 use monad_eth_types::{Balance, EthAddress, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
-use reth_primitives::U256;
 use sorted_vector_map::SortedVectorMap;
 use tracing::trace;
 
@@ -156,7 +157,7 @@ pub struct EthValidatedBlock<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> EthValidatedBlock<SCT> {
     pub fn get_validated_txn_hashes(&self) -> Vec<EthTxHash> {
-        self.validated_txns.iter().map(|t| t.hash()).collect()
+        self.validated_txns.iter().map(|t| *t.tx_hash()).collect()
     }
 
     /// Returns the highest tx nonce per account in the block
@@ -737,19 +738,19 @@ where
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{Address, FixedBytes, B256};
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
+    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use monad_eth_types::EthAddress;
     use monad_types::SeqNum;
-    use reth_primitives::{
-        sign_message, AccessList, Transaction, TransactionKind, TxEip1559, TxLegacy,
-    };
 
     use super::*;
 
-    fn create_signed_tx(tx: Transaction, secret_key: FixedBytes<32>) -> EthSignedTransaction {
-        let hash = tx.signature_hash();
-        let signature = sign_message(secret_key, hash).expect("signature should always succeed");
-        EthSignedTransaction::from_transaction_and_signature(tx, signature)
+    fn sign_tx(signature_hash: &FixedBytes<32>) -> PrimitiveSignature {
+        let secret_key = B256::repeat_byte(0xAu8).to_string();
+        let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
+        signer.sign_hash_sync(signature_hash).unwrap()
     }
 
     #[test]
@@ -907,76 +908,76 @@ mod test {
 
     #[test]
     fn test_static_validate_transaction() {
+        let address = Address(FixedBytes([0x11; 20]));
         const CHAIN_ID: u64 = 1337;
 
         // pre EIP-155 transaction with no chain id is allowed
-        let tx_no_chain_id = Transaction::Legacy(TxLegacy {
+        let tx_no_chain_id = TxLegacy {
             chain_id: None,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(address),
             gas_price: 1000,
             gas_limit: 1_000_000,
-            input: vec![].into(),
-            value: 0.into(),
-        });
-        let txn = create_signed_tx(tx_no_chain_id, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_no_chain_id.signature_hash());
+        let txn = tx_no_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(result, Ok(())));
 
         // transaction with incorrect chain id
-        let tx_invalid_chain_id = Transaction::Eip1559(TxEip1559 {
+        let tx_invalid_chain_id = TxEip1559 {
             chain_id: CHAIN_ID - 1,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(address),
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 10,
             gas_limit: 1_000_000,
-            input: vec![].into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_invalid_chain_id, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
+        let txn = tx_invalid_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
         let input = vec![0; 2 * 0x6000 + 1];
-        let tx_over_initcode_limit = Transaction::Eip1559(TxEip1559 {
+        let tx_over_initcode_limit = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,
-            to: TransactionKind::Create,
+            to: TxKind::Create,
             max_fee_per_gas: 10000,
             max_priority_fee_per_gas: 10,
             gas_limit: 1_000_000,
             input: input.into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_over_initcode_limit, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
+        let txn = tx_over_initcode_limit.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(
             result,
             Err(TransactionError::InitCodeLimitExceeded)
         ));
 
         // transaction with larger max priority fee than max fee per gas
-        let tx_priority_fee_too_high = Transaction::Eip1559(TxEip1559 {
+        let tx_priority_fee_too_high = TxEip1559 {
             chain_id: CHAIN_ID,
             nonce: 0,
-            to: TransactionKind::Call(Address::random()),
+            to: TxKind::Call(address),
             max_fee_per_gas: 1000,
             max_priority_fee_per_gas: 10000,
             gas_limit: 1_000_000,
             input: vec![].into(),
-            value: 0.into(),
-            access_list: AccessList::default(),
-        });
-        let txn = create_signed_tx(tx_priority_fee_too_high, B256::repeat_byte(0xAu8));
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
+        let txn = tx_priority_fee_too_high.into_signed(signature);
 
-        let result = static_validate_transaction(&txn, CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
         assert!(matches!(
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)

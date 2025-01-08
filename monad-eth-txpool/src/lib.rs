@@ -1,3 +1,4 @@
+use alloy_consensus::Transaction;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::{Either, Itertools};
@@ -7,7 +8,7 @@ use monad_consensus_types::{
     txpool::{TxPool, TxPoolInsertionError},
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_tx::EthTransaction;
+use monad_eth_tx::{EthSignedTransaction, EthTransaction};
 use monad_eth_types::{Balance, EthAddress};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -186,10 +187,10 @@ where
         // TODO(rene): sender recovery is done inline here
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
             .into_par_iter()
-            .filter_map(|b| {
-                EthTransaction::decode(&mut b.as_ref())
-                    .ok()
-                    .map(|valid_tx| (valid_tx, b))
+            .filter_map(|raw_tx| {
+                let tx = EthSignedTransaction::decode(&mut raw_tx.as_ref()).ok()?;
+                let signer = tx.recover_signer().ok()?;
+                Some((EthTransaction::new_unchecked(tx, signer), raw_tx))
             })
             .unzip();
 

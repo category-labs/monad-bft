@@ -3,12 +3,12 @@ pub use std::{
     sync::Arc,
 };
 
+pub use alloy_consensus::TxEnvelope;
 pub use alloy_primitives::{Address, TxHash, U128, U256, U64};
 pub use alloy_rpc_client::ReqwestClient;
 pub use dashmap::{DashMap, DashSet};
 pub use eyre::{Context, ContextCompat, Result};
 pub use rand::prelude::*;
-pub use reth_primitives::TransactionSigned;
 pub use tokio::{
     sync::mpsc,
     time::{Duration, Instant, Interval},

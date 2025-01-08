@@ -1,6 +1,7 @@
+use alloy_primitives::Uint;
 use alloy_rlp::Encodable;
+use alloy_rpc_types::{Block, FilterChanges, TransactionReceipt};
 use eyre::Context;
-use reth_rpc_types::{Block, FilterChanges, TransactionReceipt};
 use serde_json::json;
 
 use super::*;
@@ -56,7 +57,7 @@ impl CommittedTxWatcher {
 
             let mut ours = 0;
             for hash in block.transactions.hashes() {
-                if self.sent_txs.remove(hash).is_some() {
+                if self.sent_txs.remove(&hash).is_some() {
                     ours += 1;
                 }
             }
@@ -98,20 +99,17 @@ impl CommittedTxWatcher {
     async fn logs_for_block(
         client: ReqwestClient,
         metrics: Arc<Metrics>,
-        block: &reth_rpc_types::Block,
+        block: &Block,
     ) -> Result<()> {
         let mut num_logs = 0;
         // let mut erc20_transfers = 0;
         // let mut erc20_value_transfered = U256::ZERO;
 
-        let block_num = block
-            .header
-            .number
-            .context("block number not present in header")?;
+        let block_num = block.header.number;
 
         let params = json! {{
-            "toBlock": block_num.to::<u32>(),
-            "fromBlock": block_num.to::<u32>(),
+            "toBlock": block_num,
+            "fromBlock": block_num,
         }};
 
         metrics.logs_rpc_calls.fetch_add(1, SeqCst);
@@ -165,7 +163,7 @@ impl CommittedTxWatcher {
 
         let rxs: Vec<TransactionReceipt> = {
             let method = "eth_getBlockReceipts";
-            let block_num = block.header.number.context("block number not found")?;
+            let block_num = block.header.number;
             let mut block_num_bytes = [0u8; 32];
             block_num.encode(&mut (&mut block_num_bytes as &mut [u8]));
 
@@ -178,16 +176,12 @@ impl CommittedTxWatcher {
         };
 
         for rx in rxs {
-            match rx.status_code {
-                Some(status) if status.to::<u64>() == 1 => {
-                    tx_success += 1;
-                }
-                _ => tx_failure += 1,
-            }
+            match rx.status() {
+                true => tx_success += 1,
+                false => tx_failure += 1,
+            };
 
-            if let Some(gas_used) = rx.gas_used {
-                gas_consumed += gas_used;
-            }
+            gas_consumed += Uint::from(rx.gas_used);
 
             if let Some(contract_address) = rx.contract_address {
                 contract_addresses.push(contract_address);
@@ -226,16 +220,12 @@ impl CommittedTxWatcher {
                     }
                 };
 
-            match rx.status_code {
-                Some(status) if status.to::<u64>() == 1 => {
-                    tx_success += 1;
-                }
-                _ => tx_failure += 1,
-            }
+            match rx.status() {
+                true => tx_success += 1,
+                false => tx_failure += 1,
+            };
 
-            if let Some(gas_used) = rx.gas_used {
-                gas_consumed += gas_used;
-            }
+            gas_consumed += Uint::from(rx.gas_used);
 
             if let Some(contract_address) = rx.contract_address {
                 contract_addresses.push(contract_address);
