@@ -27,6 +27,11 @@ mod tx_heap;
 // tracked tx map then we still have 10k other addresses to use when creating the next block.
 const MAX_ADDRESSES: usize = 20 * 1024;
 
+// Tx batches from rpc can contain up to roughly 500 transactions. Since we don't evict based on how
+// many txs are in the pool, we need to ensure that after eviction there is always space for all 500
+// txs.
+const EVICT_ADDRESSES_WATERMARK: usize = MAX_ADDRESSES - 512;
+
 // TODO(andr-dev): This currently limits the number of unique addresses in a
 // proposal. This will be removed once we move the txpool into its own thread.
 const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
@@ -340,6 +345,14 @@ where
     }
 
     pub fn evict_expired_txs(&mut self) {
+        let num_txs = self.num_txs();
+
+        if num_txs < EVICT_ADDRESSES_WATERMARK {
+            return;
+        }
+
+        info!(?num_txs, "txpool hit evict expired txs watermark");
+
         let mut idx = 0;
 
         while let Some(entry) = self.txs.get_index_entry(idx) {
