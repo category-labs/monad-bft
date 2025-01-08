@@ -73,9 +73,7 @@ WORKDIR /usr/src/monad-bft
 
 # Builder
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --example txgen && \
+RUN cargo build --release --example txgen && \
     mv target/release/examples/txgen txgen
 
 # Runner

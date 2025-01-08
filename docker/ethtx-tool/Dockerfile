@@ -6,9 +6,7 @@ RUN apt install -y clang
 
 # Builder
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --example ethtx && \
+RUN cargo build --release --example ethtx && \
     mv target/release/examples/ethtx ethtx
 
 # Runner

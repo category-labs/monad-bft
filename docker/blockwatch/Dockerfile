@@ -6,9 +6,7 @@ RUN apt install -y clang
 
 # Builder
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --example blockwatch && \
+RUN cargo build --release --example blockwatch && \
     mv target/release/examples/blockwatch blockwatch
 
 # Runner

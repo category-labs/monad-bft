@@ -6,9 +6,7 @@ RUN apt install -y python3 clang
 
 # Builder
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --bin monad-testground && \
+RUN cargo build --release --bin monad-testground && \
     mv target/release/monad-testground testground
 RUN python3 docker/testground/topology-gen.py topo.json
 RUN python3 monad-scripts/tc/tc-gen.py topo.json tc.sh addresses
