@@ -7,9 +7,8 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::MockExecutionProtocol,
+    block::{MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol},
     payload::FullTransactionList,
-    state_root_hash::StateRootHash,
     voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
@@ -27,7 +26,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     simple_round_robin::SimpleRoundRobin,
@@ -112,7 +111,10 @@ fn test_consensus_message_event_proposal_bls() {
         &epoch_manager,
         &val_epoch_map,
         &election,
-        FullTransactionList::empty(),
+        MockExecutionProposedHeader {},
+        MockExecutionBody {
+            data: FullTransactionList::empty().bytes().clone(),
+        },
         Vec::new(),
     );
 

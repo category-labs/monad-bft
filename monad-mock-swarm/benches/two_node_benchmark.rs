@@ -40,14 +40,12 @@ fn two_nodes() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        
         SeqNum(4),                // state_root_delay
         Duration::from_millis(2), // delta
         Duration::from_millis(0), // vote pace
         5_000,                    // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
-        
         SeqNum(100),              // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

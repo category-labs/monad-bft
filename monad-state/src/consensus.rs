@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_consensus::{
     messages::{

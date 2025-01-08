@@ -4340,6 +4340,8 @@ dependencies = [
 name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
  "bytes",
  "criterion",
  "itertools 0.10.5",

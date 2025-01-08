@@ -73,10 +73,16 @@ impl SwarmRelation for BLSSwarm {
         Self::TransportMessage,
     >;
 
-    type StateRootHashExecutor =
-        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
-    type StateSyncExecutor =
-        MockStateSyncExecutor<Self::SignatureType, Self::SignatureCollectionType, Self::ExecutionProtocolType>;
+    type StateRootHashExecutor = MockStateRootHashNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
+    type StateSyncExecutor = MockStateSyncExecutor<
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        Self::ExecutionProtocolType,
+    >;
 }
 
 #[test]

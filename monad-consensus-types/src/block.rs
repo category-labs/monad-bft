@@ -239,23 +239,6 @@ where
         blocktree_root: RootInfo,
         _: &InMemoryState,
     ) -> Result<(), BlockPolicyError> {
-        // check coherency against the block being extended or against the root of the blocktree if
-        // there is no extending branch
-        let (extending_seq_num, extending_timestamp) =
-            if let Some(extended_block) = extending_blocks.last() {
-                (extended_block.get_seq_num(), extended_block.get_timestamp())
-            } else {
-                (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
-            };
-
-        if block.get_seq_num() != extending_seq_num + SeqNum(1) {
-            return Err(BlockPolicyError::BlockNotCoherent);
-        }
-
-        if block.get_timestamp() <= extending_timestamp {
-            // timestamps must be monotonically increasing
-            return Err(BlockPolicyError::TimestampError);
-        }
         Ok(())
     }
 
@@ -360,6 +343,7 @@ pub trait ExecutionProtocol:
 {
     /// inputs to execution
     type ProposedHeader: Debug
+        + Default
         + Clone
         + PartialEq
         + Eq
@@ -368,7 +352,7 @@ pub trait ExecutionProtocol:
         + Unpin
         + Encodable
         + Decodable;
-    type Body: Debug + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable;
+    type Body: Debug + Default + PartialEq + Eq + Send + Sync + Unpin + Encodable + Decodable;
 
     /// output of execution
     type FinalizedHeader: FinalizedHeader;
@@ -453,5 +437,13 @@ impl FinalizedHeader for MockExecutionFinalizedHeader {
 impl MockableFinalizedHeader for MockExecutionFinalizedHeader {
     fn from_seq_num(seq_num: SeqNum) -> Self {
         Self { number: seq_num }
+    }
+}
+
+impl Default for MockExecutionFinalizedHeader {
+    fn default() -> Self {
+        Self {
+            number: SeqNum(0)
+        }
     }
 }

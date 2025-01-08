@@ -5,7 +5,7 @@ mod test {
     };
 
     use itertools::Itertools;
-    
+
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
         txpool::MockTxPool,
@@ -53,14 +53,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            
             SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            
             SeqNum(1000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -180,14 +178,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            
             SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            
             SeqNum(100),        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -269,14 +265,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            
             SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            
             SeqNum(100),        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
@@ -413,14 +407,12 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-            
             SeqNum(10_000_000), // state_root_delay
             delta,              // delta
             vote_pace,          // vote pace
             0,                  // proposal_tx_limit
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
-            
             SeqNum(2000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs

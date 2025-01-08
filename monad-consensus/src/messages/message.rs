@@ -5,7 +5,6 @@ use monad_consensus_types::{
     block::{ConsensusBlockHeader, ExecutionProtocol},
     payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
@@ -13,9 +12,8 @@ use monad_crypto::{
     certificate_signature::{
         CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hashable, Hasher, HasherType},
+    hasher::{Hashable, Hasher},
 };
-use monad_types::NodeId;
 
 /// Consensus protocol vote message
 ///
@@ -109,7 +107,6 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 #[cfg(test)]
 mod tests {
     use monad_bls::{BlsSignature, BlsSignatureCollection};

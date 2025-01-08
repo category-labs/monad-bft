@@ -12,7 +12,7 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
 };
 use monad_eth_types::EMPTY_RLP_TX_LIST;
-use monad_types::{Round, SeqNum};
+use monad_types::{DontCare, Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
@@ -183,6 +183,17 @@ where
     }
 }
 
+impl<EPT> DontCare for ConsensusBlockBody<EPT>
+where 
+    EPT: ExecutionProtocol,
+{
+    fn dont_care() -> Self {
+        Self::new(ConsensusBlockBodyInner::<EPT> {
+            execution_body: EPT::Body::default(),
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct ConsensusBlockBodyInner<EPT>
 where
@@ -191,7 +202,7 @@ where
     pub execution_body: EPT::Body,
 }
 
-#[derive(PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(PartialEq, Eq, Default, RlpEncodable, RlpDecodable)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: Vec<TxEnvelope>,
@@ -227,6 +238,7 @@ where
 #[derive(
     Copy,
     Clone,
+    Default,
     PartialEq,
     Eq,
     PartialOrd,

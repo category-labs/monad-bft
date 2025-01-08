@@ -81,14 +81,12 @@ fn nodes_with_random_latency(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(10_000_000)),
-        
         SeqNum(10_000_000), // state_root_delay
         delta,              // delta
         vote_pace,          // vote pace
         0,                  // proposal_tx_limit
         SeqNum(3000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
-        
         SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs

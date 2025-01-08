@@ -6,8 +6,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{
-        ConsensusBlockHeader, MockExecutionBody, MockExecutionFinalizedHeader,
-        MockExecutionProposedHeader, MockExecutionProtocol,
+        ConsensusBlockHeader, ExecutionProtocol, MockExecutionBody, MockExecutionFinalizedHeader, MockExecutionProposedHeader, MockExecutionProtocol
     },
     payload::{ConsensusBlockBody, ConsensusBlockBodyInner, FullTransactionList, RoundSignature},
     quorum_certificate::QuorumCertificate,
@@ -32,8 +31,8 @@ use monad_validator::{
 
 #[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {
-    epoch: Epoch,
-    round: Round,
+    pub epoch: Epoch,
+    pub round: Round,
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
     last_tc: Option<TimeoutCertificate<SCT>>,
@@ -74,6 +73,7 @@ where
     pub fn next_proposal<
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        EPT: ExecutionProtocol,
     >(
         &mut self,
         keys: &[ST::KeyPairType],
@@ -81,15 +81,17 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        txns: FullTransactionList,
-        delayed_execution_results: Vec<MockExecutionFinalizedHeader>,
-    ) -> Verified<ST, ProposalMessage<ST, SCT, MockExecutionProtocol>> {
+        proposed_header: EPT::ProposedHeader,
+        execution_body: EPT::Body,
+        delayed_execution_results: Vec<EPT::FinalizedHeader>,
+    ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
             &self.high_qc
         } else {
             // entering new round from qc
             self.round += Round(1);
+            self.last_seq_num += SeqNum(1);
             self.epoch = epoch_manager.get_epoch(self.round).expect("epoch exists");
             &self.qc
         };
@@ -110,19 +112,16 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = self.last_seq_num + SeqNum(1);
-        self.last_seq_num = seq_num;
+        let seq_num = self.last_seq_num;
         let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
-            execution_body: MockExecutionBody {
-                data: Default::default(),
-            },
+            execution_body,
         });
         let block_header = ConsensusBlockHeader::new(
             NodeId::new(leader_key.pubkey()),
             self.epoch,
             self.round,
             delayed_execution_results,
-            MockExecutionProposedHeader {},
+            proposed_header,
             block_body.get_id(),
             qc.clone(),
             seq_num,
@@ -219,10 +218,10 @@ where
         tmo_msgs
     }
 
-    fn get_next_qc(
+    fn get_next_qc<EPT: ExecutionProtocol>(
         &self,
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        block: &ConsensusBlockHeader<ST, SCT, MockExecutionProtocol>,
+        block: &ConsensusBlockHeader<ST, SCT, EPT>,
         validator_mapping: &ValidatorMapping<
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
