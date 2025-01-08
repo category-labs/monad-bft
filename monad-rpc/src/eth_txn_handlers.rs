@@ -63,6 +63,7 @@ pub fn parse_tx_receipt(
     receipt: ReceiptEnvelope,
     block_num: u64,
     tx_index: u64,
+    num_prev_logs: usize,
 ) -> Result<TransactionReceipt, JsonRpcError> {
     let Ok(address) = tx.recover_signer() else {
         error!("transaction sender should exist");
@@ -88,9 +89,9 @@ pub fn parse_tx_receipt(
             block_hash,
             block_number,
             block_timestamp,
-            transaction_hash: Some((*tx.tx_hash()).into()),
-            transaction_index: Some(tx_index as u64),
-            log_index: Some(log_index as u64),
+            transaction_hash: Some(*tx.tx_hash()),
+            transaction_index: Some(tx_index),
+            log_index: Some((num_prev_logs + log_index) as u64),
             removed: Default::default(),
         })
         .collect();
@@ -395,6 +396,24 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
         if let Ok(Some(tx_data)) = archive_reader.get(&params.tx_hash.0.into()).await {
+            let num_prev_logs = if tx_data.header_subset.tx_index > 0 {
+                match archive_reader
+                    .get_block_receipts(tx_data.header_subset.block_number)
+                    .await
+                {
+                    Ok(prev_receipts) => {
+                        let prev_receipts = prev_receipts
+                            .iter()
+                            .take(tx_data.header_subset.tx_index as usize);
+
+                        prev_receipts.fold(0, |acc, receipt| acc + receipt.logs().len())
+                    }
+                    Err(_) => return Ok(None),
+                }
+            } else {
+                0
+            };
+
             let receipt = parse_tx_receipt(
                 tx_data.header_subset.base_fee_per_gas,
                 None, // FIXME block timestamp
@@ -404,6 +423,7 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
                 tx_data.receipt,
                 tx_data.header_subset.block_number,
                 tx_data.header_subset.tx_index,
+                num_prev_logs,
             )?;
 
             return Ok(Some(MonadTransactionReceipt(receipt)));
@@ -578,6 +598,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
     {
         Some(receipt) => {
+            // Get the previous receipt's cumulative gas used to calculate gas used
             let gas_used = if tx_index > 0 {
                 match triedb_env
                     .get_receipt(tx_index - 1, block_num)
@@ -595,6 +616,20 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 receipt.cumulative_gas_used()
             };
 
+            // Get the the number of previous logs in the block
+            let num_prev_logs = if tx_index > 0 {
+                let receipts = triedb_env
+                    .get_receipts(block_num)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                receipts
+                    .iter()
+                    .take(tx_index as usize)
+                    .fold(0, |acc, receipt| acc + receipt.logs().len())
+            } else {
+                0
+            };
+
             let receipt = parse_tx_receipt(
                 header.header.base_fee_per_gas,
                 Some(header.header.timestamp),
@@ -604,6 +639,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 receipt,
                 block_num,
                 tx_index,
+                num_prev_logs,
             )?;
 
             Ok(Some(MonadTransactionReceipt(receipt)))

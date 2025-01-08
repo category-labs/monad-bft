@@ -308,6 +308,7 @@ pub async fn map_block_receipts<R>(
     }
 
     let mut prev_receipt = None;
+    let mut num_prev_logs = 0;
 
     transactions
         .iter()
@@ -315,11 +316,13 @@ pub async fn map_block_receipts<R>(
         .enumerate()
         .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
             let prev_receipt = prev_receipt.replace(receipt.to_owned());
-            let gas_used = if let Some(prev_receipt) = prev_receipt {
+            let gas_used = if let Some(prev_receipt) = &prev_receipt {
                 receipt.cumulative_gas_used() - prev_receipt.cumulative_gas_used()
             } else {
                 receipt.cumulative_gas_used()
             };
+
+            num_prev_logs += prev_receipt.map_or(0, |r| r.logs().len());
 
             let parsed_receipt = parse_tx_receipt(
                 block_header.base_fee_per_gas,
@@ -330,6 +333,7 @@ pub async fn map_block_receipts<R>(
                 receipt,
                 block_num,
                 tx_index as u64,
+                num_prev_logs,
             )?;
 
             Ok(f(parsed_receipt))
