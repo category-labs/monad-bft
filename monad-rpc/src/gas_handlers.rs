@@ -85,6 +85,11 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     }
 
     let sender = params.tx.from.unwrap_or_default();
+    let tx_chain_id = params
+        .tx
+        .chain_id
+        .expect("chain id must be populated")
+        .to::<u64>();
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
 
     if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
@@ -92,6 +97,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     }
 
     let (gas_used, gas_refund) = match monad_cxx::eth_call(
+        tx_chain_id,
         txn.clone(),
         header.header.clone(),
         sender,
@@ -115,6 +121,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
             match monad_cxx::eth_call(
+                tx_chain_id,
                 txn.clone(),
                 header.header.clone(),
                 sender,
@@ -147,6 +154,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         txn.set_gas_limit(mid);
 
         match monad_cxx::eth_call(
+            tx_chain_id,
             txn.clone(),
             header.header.clone(),
             sender,

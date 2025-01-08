@@ -6,6 +6,13 @@
 #include <string>
 #include <vector>
 
+enum monad_chain_config
+{
+    CHAIN_CONFIG_ETHEREUM_MAINNET = 0,
+    CHAIN_CONFIG_MONAD_DEVNET = 1,
+    CHAIN_CONFIG_MONAD_TESTNET = 2,
+};
+
 struct monad_evmc_result
 {
     int status_code;
@@ -49,7 +56,8 @@ struct monad_state_override_set
 };
 
 monad_evmc_result eth_call(
-    std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
+    monad_chain_config const chain_config, std::vector<uint8_t> const &rlp_txn,
+    std::vector<uint8_t> const &rlp_header,
     std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
     std::string const &triedb_path,
     monad_state_override_set const &state_overrides);

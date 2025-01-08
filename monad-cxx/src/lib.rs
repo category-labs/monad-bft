@@ -7,6 +7,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{bytes::BytesMut, Address, Bytes, PrimitiveSignature, B256, U256, U64};
 use alloy_rlp::Encodable;
 use autocxx::{block, moveit::moveit, WithinBox};
+use ffi::monad_chain_config;
 use futures::pin_mut;
 use reth_primitives::{Transaction, TransactionSigned};
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,7 @@ pub struct StateOverrideObject {
 pub type StateOverrideSet = HashMap<Address, StateOverrideObject>;
 
 pub fn eth_call(
+    chain_id: u64,
     transaction: Transaction,
     block_header: Header,
     sender: Address,
@@ -201,8 +203,22 @@ pub fn eth_call(
         }
     }
 
+    // TODO: lift magic numbers into global configs
+    let cxx_monad_chain_config = match chain_id {
+        1 => monad_chain_config::CHAIN_CONFIG_ETHEREUM_MAINNET,
+        20143 => monad_chain_config::CHAIN_CONFIG_MONAD_DEVNET,
+        10143 => monad_chain_config::CHAIN_CONFIG_MONAD_TESTNET,
+        _ => {
+            return CallResult::Failure(FailureCallResult {
+                message: "unsupported chain id".to_string(),
+                data: Some(chain_id.to_string()),
+            });
+        }
+    };
+
     moveit! {
         let result = ffi::eth_call(
+            cxx_monad_chain_config,
         &cxx_rlp_encoded_tx,
         &cxx_rlp_encoded_block_header,
         &cxx_rlp_encoded_sender,

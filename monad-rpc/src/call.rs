@@ -374,9 +374,15 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         params.transaction.chain_id = Some(U64::from(chain_id));
     }
 
+    let tx_chain_id = params
+        .transaction
+        .chain_id
+        .expect("chain id must be populated")
+        .to::<u64>();
     let txn: Transaction = params.transaction.try_into()?;
     let block_number = header.header.number;
     match monad_cxx::eth_call(
+        tx_chain_id,
         txn,
         header.header,
         sender,
