@@ -545,6 +545,7 @@ dependencies = [
  "derive_arbitrary",
  "derive_more 1.0.0",
  "foldhash",
+ "getrandom 0.2.16",
  "hashbrown 0.15.4",
  "indexmap 2.9.0",
  "itoa",
@@ -5711,12 +5712,15 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "as-any",
  "auto_impl",
  "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
  "monad-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "test-case",
  "tracing",
 ]
@@ -7192,6 +7196,9 @@ name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+dependencies = [
+ "rand 0.8.5",
+]
 
 [[package]]
 name = "rustc-hex"

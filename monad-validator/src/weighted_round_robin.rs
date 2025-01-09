@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, marker::PhantomData};
 
-use monad_crypto::{
-    certificate_signature::PubKey,
-    hasher::{Hasher, HasherType},
-};
+use alloy_primitives::U256;
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Round, Stake};
+use rand::Rng;
+use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
 use crate::leader_election::LeaderElection;
 
@@ -22,14 +22,19 @@ impl<PT: PubKey> Default for WeightedRoundRobin<PT> {
 }
 
 fn randomize(x: u64, m: u64) -> u64 {
-    let mut hasher = HasherType::new();
-    hasher.update(x.to_le_bytes());
-    let hash = hasher.hash().0;
-    (u64::from_le_bytes(hash[0..8].try_into().unwrap())
-        ^ u64::from_le_bytes(hash[8..16].try_into().unwrap())
-        ^ u64::from_le_bytes(hash[16..24].try_into().unwrap())
-        ^ u64::from_le_bytes(hash[24..32].try_into().unwrap()))
-        % m
+    let mut gen = ChaCha20Rng::seed_from_u64(x);
+    gen.gen_range(0..m)
+}
+
+fn randomize_256(x: U256, m: U256) -> U256 {
+    let mut gen = ChaCha20Rng::from_seed(x.to_be_bytes());
+    let max = U256::MAX - (U256::MAX - m + U256::from(1)) % m;
+    loop {
+        let r: U256 = gen.gen();
+        if r <= max {
+            return r % m;
+        }
+    }
 }
 
 impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {

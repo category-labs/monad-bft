@@ -15,7 +15,10 @@ monad-types = { workspace = true }
 
 as-any = { workspace = true }
 auto_impl = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 tracing = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rand"] }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
