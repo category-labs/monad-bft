@@ -84,28 +84,30 @@ class BftLog:
     def create_proposal_df(self):
         df = self.df[
             (
-                (self.df['target'] == 'monad_consensus_state') & 
+                (self.df['target'] == 'monad_consensus_state') &
                 (self.df['message'] == 'Creating Proposal')
             ) | (
-                (self.df['target'] == 'monad_eth_txpool') & 
+                (self.df['target'].str.startswith('monad_eth_txpool')) &
                 (self.df['message'] == 'created proposal')
             )
         ]
-        df = df[['timestamp', 'fields']]
-        df['seq_num'] = df['fields'].apply(lambda x: x.get('proposed_seq_num')).astype(int)
-        df = df.drop('fields', axis=1)
+        df = df[['timestamp', 'fields', 'target']]
+        df['seq_num'] = df.apply(lambda row: row['fields']['try_propose_seq_num'] if row['target'] == 'monad_consensus_state' else row['fields']['proposed_seq_num'], axis=1).astype(int)
+        df['num_tx'] = df.apply(lambda row: 0 if row['target'] == 'monad_consensus_state' else row['fields']['proposal_num_tx'], axis=1).astype(int)
+        df = df.drop(['fields', 'target'], axis=1)
 
         # group by round and aggregate
         df_grouped = df.groupby('seq_num').agg({
-            'timestamp': ['min', 'max']
+            'num_tx': ['max'],
+            'timestamp': ['min', 'max'],
         }).reset_index()
-        df_grouped.columns = ['seq_num', 'min_timestamp', 'max_timestamp']
+        df_grouped.columns = ['seq_num', 'num_tx', 'min_timestamp', 'max_timestamp']
 
         # calculate duration to create proposal
         df_grouped['timestamp_diff'] = df_grouped['max_timestamp'] - df_grouped['min_timestamp']
 
         # only keep selected columns
-        df = df_grouped[['seq_num', 'timestamp_diff']]
+        df = df_grouped[['seq_num', 'num_tx', 'timestamp_diff']]
 
         # convert duration to milliseconds
         df = df.copy()
