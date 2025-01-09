@@ -25,16 +25,18 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-criterion = { workspace = true, features = ["html_reports"] }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
-tracing-test = { workspace = true }
-
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-testutil = { path = "../monad-eth-testutil" }
 monad-perf-util = { path = "../monad-perf-util" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
+
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+criterion = { workspace = true, features = ["html_reports"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tracing-test = { workspace = true }
 
 [[bench]]
 name = "insert"

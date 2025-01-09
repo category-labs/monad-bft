@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use alloy_consensus::{SignableTransaction, Transaction, TxEnvelope, TxLegacy};
+use alloy_consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_primitives::{keccak256, Address, FixedBytes, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -17,14 +17,13 @@ use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum};
 
-pub fn make_tx(
+pub fn make_legacy_tx(
     sender: FixedBytes<32>,
     gas_price: u128,
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
 ) -> TxEnvelope {
-    let input = vec![0; input_len];
     let transaction = TxLegacy {
         chain_id: Some(1337),
         nonce,
@@ -32,10 +31,37 @@ pub fn make_tx(
         gas_limit,
         to: TxKind::Call(Address::repeat_byte(0u8)),
         value: Default::default(),
-        input: input.into(),
+        input: vec![0; input_len].into(),
     };
 
-    let signer = sender.to_string().parse::<PrivateKeySigner>().unwrap();
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    transaction.into_signed(signature).into()
+}
+
+pub fn make_eip1559_tx(
+    sender: FixedBytes<32>,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    gas_limit: u64,
+    nonce: u64,
+    input_len: usize,
+) -> TxEnvelope {
+    let transaction = TxEip1559 {
+        chain_id: 1337,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        to: TxKind::Call(Address::repeat_byte(0u8)),
+        value: Default::default(),
+        access_list: Default::default(),
+        input: vec![0; input_len].into(),
+    };
+
+    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
     let signature = signer
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
@@ -141,7 +167,7 @@ mod test {
 
         let eth_address_converted = secret_to_eth_address(secret);
 
-        let tx = make_tx(secret, 0, 0, 0, 0);
+        let tx = make_legacy_tx(secret, 0, 0, 0, 0);
         let eth_address_recovered = EthAddress(tx.recover_signer().unwrap());
 
         assert_eq!(eth_address_converted, eth_address_recovered);

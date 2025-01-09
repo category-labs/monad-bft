@@ -5,7 +5,7 @@ use itertools::Itertools;
 use monad_consensus_types::{payload::BASE_FEE_PER_GAS, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_testutil::{generate_block_with_txs, make_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
 use monad_eth_tx::EthSignedTransaction;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
@@ -142,7 +142,7 @@ impl<'a> BenchController<'a> {
                             .get_mut(idx % accounts_len)
                             .expect("account idx is in range");
 
-                        let tx = make_tx(
+                        let tx = make_legacy_tx(
                             *account,
                             rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
                                 .into(),
@@ -169,7 +169,7 @@ impl<'a> BenchController<'a> {
                     .get(idx % accounts.len())
                     .expect("account idx is in range");
 
-                make_tx(
+                make_legacy_tx(
                     *account,
                     rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
                         .into(),

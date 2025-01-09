@@ -11,7 +11,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
 use monad_eth_tx::EthSignedTransaction;
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::{Balance, EthAddress};
@@ -244,7 +244,7 @@ fn run_eth_txpool_test<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
 #[test]
 #[traced_test]
 fn test_create_proposal_with_insufficient_tx_limit() {
-    let tx = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -266,7 +266,7 @@ fn test_create_proposal_with_insufficient_tx_limit() {
 #[test]
 #[traced_test]
 fn test_create_proposal_with_insufficient_gas_limit() {
-    let tx = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
+    let tx = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -288,9 +288,9 @@ fn test_create_proposal_with_insufficient_gas_limit() {
 #[test]
 #[traced_test]
 fn test_create_partial_proposal_with_insufficient_gas_limit() {
-    let tx1 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 2, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 2, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -312,8 +312,8 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
 #[test]
 #[traced_test]
 fn test_basic_price_priority() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -335,8 +335,8 @@ fn test_basic_price_priority() {
 #[test]
 #[traced_test]
 fn test_resubmit_with_better_price() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -355,15 +355,15 @@ fn test_resubmit_with_better_price() {
 #[test]
 #[traced_test]
 fn nontrivial_example() {
-    let tx1 = make_tx(S1, 10 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, 5 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, 3 * BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx4 = make_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx5 = make_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx7 = make_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx8 = make_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx9 = make_tx(S3, 10 * BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx1 = make_legacy_tx(S1, 10 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, 5 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, 3 * BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx4 = make_legacy_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx5 = make_legacy_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx6 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx7 = make_legacy_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx8 = make_legacy_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx9 = make_legacy_tx(S3, 10 * BASE_FEE, GAS_LIMIT, 2, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -385,12 +385,12 @@ fn nontrivial_example() {
 #[test]
 #[traced_test]
 fn another_non_trivial_example() {
-    let tx1 = make_tx(S1, 10 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, 5 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx4 = make_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx5 = make_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx6 = make_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx1 = make_legacy_tx(S1, 10 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, 5 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S2, 5 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx4 = make_legacy_tx(S2, 3 * BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx5 = make_legacy_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx6 = make_legacy_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -412,17 +412,17 @@ fn another_non_trivial_example() {
 #[test]
 #[traced_test]
 fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_creation_early() {
-    let tx1 = make_tx(S1, 10 * BASE_FEE, 2 * PROPOSAL_GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx5 = make_tx(S2, BASE_FEE, GAS_LIMIT, 3, 10);
-    let tx6 = make_tx(S2, BASE_FEE, GAS_LIMIT, 4, 10);
-    let tx7 = make_tx(S2, BASE_FEE, GAS_LIMIT, 5, 10);
-    let tx8 = make_tx(S2, BASE_FEE, GAS_LIMIT, 6, 10);
-    let tx9 = make_tx(S2, BASE_FEE, GAS_LIMIT, 7, 10);
-    let tx10 = make_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
-    let tx11 = make_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
+    let tx1 = make_legacy_tx(S1, 10 * BASE_FEE, 2 * PROPOSAL_GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx3 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx4 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx5 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 3, 10);
+    let tx6 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 4, 10);
+    let tx7 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 5, 10);
+    let tx8 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 6, 10);
+    let tx9 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 7, 10);
+    let tx10 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
+    let tx11 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -446,17 +446,17 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
 #[test]
 #[traced_test]
 fn suboptimal_block() {
-    let tx1 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 0, 10);
-    let tx2 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 1, 10);
-    let tx3 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 2, 10);
-    let tx4 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 3, 10);
-    let tx5 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 4, 10);
-    let tx6 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 5, 10);
-    let tx7 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 6, 10);
-    let tx8 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 7, 10);
-    let tx9 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 8, 10);
-    let tx10 = make_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 9, 10);
-    let tx11 = make_tx(S1, 2 * BASE_FEE, PROPOSAL_GAS_LIMIT, 0, 10);
+    let tx1 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 0, 10);
+    let tx2 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 1, 10);
+    let tx3 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 2, 10);
+    let tx4 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 3, 10);
+    let tx5 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 4, 10);
+    let tx6 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 5, 10);
+    let tx7 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 6, 10);
+    let tx8 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 7, 10);
+    let tx9 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 8, 10);
+    let tx10 = make_legacy_tx(S2, BASE_FEE, PROPOSAL_GAS_LIMIT / 10, 9, 10);
+    let tx11 = make_legacy_tx(S1, 2 * BASE_FEE, PROPOSAL_GAS_LIMIT, 0, 10);
 
     for reverse in [false, true] {
         let mut txs = vec![
@@ -485,7 +485,7 @@ fn suboptimal_block() {
 #[test]
 #[traced_test]
 fn zero_gas_limit() {
-    let tx1 = make_tx(S1, BASE_FEE, 0, 0, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, 0, 0, 10);
 
     run_eth_txpool_test([TxPoolTestEvent::InsertTxs {
         txs: vec![(&tx1, false)],
@@ -496,16 +496,16 @@ fn zero_gas_limit() {
 #[test]
 #[traced_test]
 fn nondeterminism() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx4 = make_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx5 = make_tx(S3, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx6 = make_tx(S3, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx7 = make_tx(S4, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx8 = make_tx(S4, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx9 = make_tx(S5, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx10 = make_tx(S5, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx4 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx5 = make_legacy_tx(S3, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx6 = make_legacy_tx(S3, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx7 = make_legacy_tx(S4, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx8 = make_legacy_tx(S4, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx9 = make_legacy_tx(S5, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx10 = make_legacy_tx(S5, BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -529,7 +529,7 @@ fn nondeterminism() {
 fn test_zero_nonce_included_in_block() {
     // The first transaction from an account with 0 nonce should be including in the block
 
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -550,7 +550,7 @@ fn test_zero_nonce_included_in_block() {
 fn test_nonce_gap() {
     // A transaction with nonce 1 should not be included in the block if a tx with nonce 0 is missing
 
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -571,9 +571,9 @@ fn test_nonce_gap() {
 fn test_intermediary_nonce_gap() {
     // A transaction with nonce 3 should not be included in the block if a tx with nonce 2 is missing
 
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -594,8 +594,8 @@ fn test_intermediary_nonce_gap() {
 fn test_nonce_exists_in_committed_block() {
     // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
     let nonces = [(
         EthAddress(tx1.recover_signer().expect("signer is recoverable")),
@@ -628,10 +628,10 @@ fn test_nonce_exists_in_pending_block() {
     // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
     // generate two transactions, both with nonce = 0
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 1000);
 
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -663,9 +663,9 @@ fn test_nonce_exists_in_pending_block() {
 fn test_combine_nonces_of_blocks() {
     // TxPool should combine the nonces of commited block and pending blocks to check nonce
 
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -710,10 +710,10 @@ fn test_combine_nonces_of_blocks() {
 #[test]
 #[traced_test]
 fn test_nonce_gap_maintained_across_proposals() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx4 = make_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx4 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -755,10 +755,10 @@ fn test_nonce_gap_maintained_across_proposals() {
 #[test]
 #[traced_test]
 fn test_nonce_gap_maintained_across_commit() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
-    let tx2 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-    let tx3 = make_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
-    let tx4 = make_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+    let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
+    let tx4 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
     run_eth_txpool_test([
         TxPoolTestEvent::InsertTxs {
@@ -802,24 +802,86 @@ fn test_nonce_gap_maintained_across_commit() {
 }
 
 #[test]
-#[traced_test]
-fn test_invalid_chain_id() {
-    let tx1 = make_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+#[should_panic]
+fn test_tx_invalid_chain_id() {
+    let tx1 = {
+        let transaction = alloy_consensus::TxLegacy {
+            chain_id: Some(999),
+            nonce: 0,
+            gas_price: BASE_FEE,
+            gas_limit: GAS_LIMIT,
+            to: alloy_primitives::TxKind::Call(alloy_primitives::Address::repeat_byte(0u8)),
+            value: Default::default(),
+            input: vec![0; 10].into(),
+        };
+
+        let signer = S1
+            .to_string()
+            .parse::<alloy_signer_local::PrivateKeySigner>()
+            .unwrap();
+
+        use alloy_consensus::SignableTransaction;
+        use alloy_signer::SignerSync;
+
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+
+        transaction.into_signed(signature).into()
+    };
 
     run_custom_eth_txpool_test(
         EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
         None,
-        [
+        [TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true)],
+            expected_pool_size_change: 0,
+        }],
+    );
+}
+
+#[test]
+fn test_same_account_priority_fee_ordering() {
+    let tx_higher = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
+    let tx_lower = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+
+    for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
+        run_eth_txpool_test([
             TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, false)],
-                expected_pool_size_change: 0,
+                txs: vec![(tx1, true), (tx2, tx2 == &tx_higher)],
+                expected_pool_size_change: 1,
             },
             TxPoolTestEvent::CreateProposal {
-                tx_limit: 128,
-                gas_limit: 10 * GAS_LIMIT,
-                expected_txs: vec![],
-                add_to_blocktree: true,
+                tx_limit: 2,
+                gas_limit: GAS_LIMIT * 2,
+                expected_txs: vec![&tx_higher],
+                add_to_blocktree: false,
             },
-        ],
-    );
+        ]);
+    }
+}
+
+#[test]
+fn test_different_account_priority_fee_ordering() {
+    for (addr1, addr2) in [(S1, S2), (S2, S1)] {
+        let tx_higher =
+            make_eip1559_tx(addr1, (BASE_FEE_PER_GAS + 50).into(), 20, GAS_LIMIT, 0, 10);
+        let tx_lower =
+            make_eip1559_tx(addr2, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
+
+        for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
+            run_eth_txpool_test([
+                TxPoolTestEvent::InsertTxs {
+                    txs: vec![(tx1, true), (tx2, true)],
+                    expected_pool_size_change: 2,
+                },
+                TxPoolTestEvent::CreateProposal {
+                    tx_limit: 2,
+                    gas_limit: GAS_LIMIT * 2,
+                    expected_txs: vec![&tx_higher, &tx_lower],
+                    add_to_blocktree: false,
+                },
+            ]);
+        }
+    }
 }

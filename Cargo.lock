@@ -4521,6 +4521,8 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "bytes",
  "criterion",
  "indexmap 2.7.0",

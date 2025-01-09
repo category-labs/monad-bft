@@ -268,7 +268,7 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             };
 
-            match tx.apply_txn_fee(account_balance) {
+            match tx.apply_max_value(account_balance) {
                 Ok(new_account_balance) => {
                     *account_balance = new_account_balance;
 

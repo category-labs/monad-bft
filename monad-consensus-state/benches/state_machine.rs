@@ -417,7 +417,7 @@ use monad_eth_block_validator::EthValidator;
 fn make_tx(input_len: usize) -> TxEnvelope {
     let sender = FixedBytes::from(U256::from(rand::random::<u64>()));
     let nonce = rand::random();
-    monad_eth_testutil::make_tx(sender, 1_000, 21_000, nonce, input_len)
+    monad_eth_testutil::make_legacy_tx(sender, 1_000, 21_000, nonce, input_len)
 }
 fn make_txns() -> (Vec<TxEnvelope>, FullTransactionList) {
     let txns = (0..NUM_TRANSACTIONS)

@@ -194,7 +194,7 @@ where
 mod test {
     use alloy_primitives::B256;
     use monad_consensus_types::payload::FullTransactionList;
-    use monad_eth_testutil::make_tx;
+    use monad_eth_testutil::make_legacy_tx;
 
     use super::*;
 
@@ -205,8 +205,8 @@ mod test {
         let block_validator = EthValidator::new(10, 1337);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 3, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
@@ -226,8 +226,8 @@ mod test {
         let block_validator = EthValidator::new(10, 1337);
 
         // total gas used is 400_000_000 which is higher than block gas limit
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 2, 10);
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 2, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
@@ -247,8 +247,8 @@ mod test {
         let block_validator = EthValidator::new(1, 1337);
 
         // tx limit per block is 1
-        let txn1 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
-        let txn2 = make_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 2, 10);
+        let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+        let txn2 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 2, 10);
 
         // create a block with the above transactions
         let txs = vec![txn1, txn2];
@@ -268,7 +268,7 @@ mod test {
         let block_validator = EthValidator::new(10, 1337);
 
         // proposal limit is 4MB
-        let txn1 = make_tx(
+        let txn1 = make_legacy_tx(
             B256::repeat_byte(0xAu8),
             BASE_FEE,
             300_000_000,

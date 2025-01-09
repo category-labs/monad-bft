@@ -103,7 +103,7 @@ where
         }
 
         let tx = ValidEthTransaction::validate(tx, block_policy)?;
-        tx.apply_txn_fee(account_balance)?;
+        tx.apply_max_value(account_balance)?;
 
         // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
 

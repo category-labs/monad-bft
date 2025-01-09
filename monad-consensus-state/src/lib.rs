@@ -1579,7 +1579,7 @@ mod test {
     };
     use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_testutil::make_tx;
+    use monad_eth_testutil::make_legacy_tx;
     use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction};
     use monad_eth_txpool::EthTxPool;
     use monad_eth_types::EthAddress;
@@ -4810,7 +4810,7 @@ mod test {
     fn test_coherent_block_zero_nonce() {
         let num_states = 2;
         let sender_1_key = B256::repeat_byte(5);
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<
@@ -4871,7 +4871,7 @@ mod test {
     fn test_incoherent_block_invalid_nonce() {
         let num_states = 2;
         let sender_1_key = B256::repeat_byte(5);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_one = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
         let sender_1_address = EthAddress(txn_nonce_one.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<
@@ -4931,8 +4931,8 @@ mod test {
     fn test_incoherent_block_duplicate_nonce() {
         let num_states = 2;
         let sender_1_key = B256::repeat_byte(5);
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        let txn_nonce_zero_prime = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
+        let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_zero_prime = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 1000);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
         let (mut env, mut ctx) = setup::<
             SignatureType,
@@ -5014,10 +5014,10 @@ mod test {
         let num_states = 2;
 
         let sender_1_key = B256::repeat_byte(5);
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        let txn_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
-        let txn_nonce_two = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
-        let txn_nonce_three = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
+        let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_nonce_one = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_nonce_two = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 2, 10);
+        let txn_nonce_three = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 3, 10);
 
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
@@ -5138,9 +5138,9 @@ mod test {
         let num_states = 2;
 
         let sender_1_key = B256::repeat_byte(5);
-        let txn_nonce_zero = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
-        let txn_1_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
-        let txn_2_nonce_one = make_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 1000);
+        let txn_nonce_zero = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 0, 10);
+        let txn_1_nonce_one = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 10);
+        let txn_2_nonce_one = make_legacy_tx(sender_1_key, BASE_FEE, GAS_LIMIT, 1, 1000);
         let sender_1_address = EthAddress(txn_nonce_zero.recover_signer().unwrap());
 
         let (mut env, mut ctx) = setup::<

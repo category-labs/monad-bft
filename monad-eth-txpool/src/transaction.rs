@@ -13,8 +13,8 @@ use tracing::trace;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
     tx: EthTransaction,
-    gas_per_gas_limit: u64,
-    txn_fee: u128,
+    max_value: u128,
+    effective_tip_per_gas: u128,
 }
 
 impl ValidEthTransaction {
@@ -32,34 +32,29 @@ impl ValidEthTransaction {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
 
-        let Some(gas_per_gas_limit) = tx
-            .priority_fee_or_price()
-            .checked_div(tx.gas_limit().into())
-            .and_then(|ratio| TryInto::<u64>::try_into(ratio).ok())
-        else {
-            return Err(TxPoolInsertionError::NotWellFormed);
-        };
-
-        let txn_fee = compute_txn_max_value_to_u128(&tx);
+        let max_value = compute_txn_max_value_to_u128(&tx);
+        let effective_tip_per_gas = tx
+            .effective_tip_per_gas(BASE_FEE_PER_GAS)
+            .unwrap_or_default();
 
         Ok(Self {
             tx,
-            gas_per_gas_limit,
-            txn_fee,
+            max_value,
+            effective_tip_per_gas,
         })
     }
 
-    pub fn apply_txn_fee(
+    pub fn apply_max_value(
         &self,
         account_balance: &Balance,
     ) -> Result<Balance, TxPoolInsertionError> {
-        let Some(new_account_balance) = account_balance.checked_sub(self.txn_fee) else {
+        let Some(new_account_balance) = account_balance.checked_sub(self.max_value) else {
             trace!(
                 "AccountBalance insert_tx 2 \
                             do not add txn to the pool. insufficient balance: {account_balance:?} \
-                            txn_fee: {fee:?} \
+                            max_value: {max_value:?} \
                             for address: {address:?}",
-                fee = self.txn_fee,
+                max_value = self.max_value,
                 address = self.tx.signer()
             );
 
@@ -102,15 +97,13 @@ impl PartialOrd for ValidEthTransaction {
 
 impl Ord for ValidEthTransaction {
     fn cmp(&self, other: &Self) -> Ordering {
-        (
-            self.tx.max_fee_per_gas(),
-            self.gas_per_gas_limit,
-            self.tx.gas_limit(),
-        )
-            .cmp(&(
-                other.tx.max_fee_per_gas(),
-                other.gas_per_gas_limit,
-                other.tx.gas_limit(),
-            ))
+        // Since the base fee is currently hard-coded, we can easily and deterministically compute
+        // the effective tip per gas the proposer receives for a given tx. Proposers want to
+        // maximize the total effective tip in a block so we order txs based on their effective tip
+        // per gas since we do not know at proposal time how much gas the tx will use. Additionally,
+        // txs with higher gas limits _typically_ have higher gas usages so we use this as a
+        // heuristic tie breaker when the effective tip per gas is equal.
+        (self.effective_tip_per_gas, self.tx.gas_limit())
+            .cmp(&(other.effective_tip_per_gas, other.tx.gas_limit()))
     }
 }
