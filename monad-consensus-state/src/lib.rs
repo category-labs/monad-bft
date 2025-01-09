@@ -4836,7 +4836,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 
@@ -4897,7 +4897,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 
@@ -4957,7 +4957,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 
@@ -5044,7 +5044,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 
@@ -5166,7 +5166,7 @@ mod test {
                 )
             },
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 
@@ -5275,7 +5275,7 @@ mod test {
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, NopStateRoot {}.get_delay().0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
             || EthValidator::new(10000, u64::MAX, 1337),
-            EthTxPool::default(),
+            EthTxPool::default_testing(),
             || NopStateRoot,
         );
 

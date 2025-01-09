@@ -102,7 +102,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
         InMemoryStateInner::new(Balance::MAX, SeqNum(4), InMemoryBlockState::genesis(nonces))
     };
 
-    let mut pool = EthTxPool::default();
+    let mut pool = EthTxPool::default_testing();
 
     pool.update_committed_block(&generate_block_with_txs(
         Round(0),

@@ -163,7 +163,7 @@ fn forkpoint_restart_f(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        Default::default,
+        EthTxPool::default_testing,
         Default::default,
         || {
             EthBlockPolicy::new(
@@ -198,7 +198,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            EthTxPool::default_testing,
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -222,7 +222,7 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            EthTxPool::default_testing,
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -482,7 +482,7 @@ fn forkpoint_restart_below_all(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        Default::default,
+        EthTxPool::default_testing,
         Default::default,
         || {
             EthBlockPolicy::new(
@@ -527,7 +527,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            EthTxPool::default_testing,
             Default::default,
             || {
                 EthBlockPolicy::new(
@@ -551,7 +551,7 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            Default::default,
+            EthTxPool::default_testing,
             Default::default,
             || {
                 EthBlockPolicy::new(

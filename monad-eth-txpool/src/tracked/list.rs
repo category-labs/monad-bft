@@ -9,8 +9,6 @@ use tracing::error;
 
 use crate::{pending::PendingTxList, transaction::ValidEthTransaction};
 
-const TX_EXPIRY_MS: u64 = 5_000;
-
 /// Stores byte-validated transactions alongside the an account_nonce to enforce at the type level
 /// that all the transactions in the txs map have a nonce at least account_nonce. Similar to
 /// PendingTxList, this struct also enforces non-emptyness in the txs map to guarantee that
@@ -70,6 +68,7 @@ impl TrackedTxList {
     pub(crate) fn try_add_tx(
         &mut self,
         tx: ValidEthTransaction,
+        tx_expiry: Duration,
     ) -> Result<(), TxPoolInsertionError> {
         if tx.nonce() < self.account_nonce {
             return Err(TxPoolInsertionError::NonceTooLow);
@@ -84,7 +83,7 @@ impl TrackedTxList {
             btree_map::Entry::Occupied(mut entry) => {
                 let (existing_tx, existing_tx_insert_time) = entry.get();
 
-                if !tx_expired(existing_tx_insert_time, &now) && &tx < existing_tx {
+                if !tx_expired(existing_tx_insert_time, tx_expiry, &now) && &tx < existing_tx {
                     return Err(TxPoolInsertionError::ExistingHigherPriority);
                 }
 
@@ -124,12 +123,13 @@ impl TrackedTxList {
 
     pub fn evict_expired_txs(
         mut this: indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>,
+        tx_expiry: Duration,
     ) -> Option<indexmap::map::IndexedEntry<'_, EthAddress, TrackedTxList>> {
         let now = Instant::now();
 
         this.get_mut()
             .txs
-            .retain(|_, (_, tx_insert)| !tx_expired(tx_insert, &now));
+            .retain(|_, (_, tx_insert)| !tx_expired(tx_insert, tx_expiry, &now));
 
         if this.get().txs.is_empty() {
             this.swap_remove();
@@ -140,9 +140,9 @@ impl TrackedTxList {
     }
 }
 
-fn tx_expired(tx_insert: &Instant, now: &Instant) -> bool {
+fn tx_expired(tx_insert: &Instant, expiry: Duration, now: &Instant) -> bool {
     &tx_insert
-        .checked_add(Duration::from_millis(TX_EXPIRY_MS))
+        .checked_add(expiry)
         .expect("time does not overflow")
         < now
 }

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use alloy_consensus::Transaction;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
@@ -36,27 +38,21 @@ pub struct EthTxPool<SCT, SBT> {
     tracked: TrackedTxMap<SCT, SBT>,
 }
 
-impl<SCT, SBT> Default for EthTxPool<SCT, SBT>
-where
-    SCT: SignatureCollection,
-    SBT: StateBackend,
-{
-    fn default() -> Self {
-        Self::new(true)
-    }
-}
-
 impl<SCT, SBT> EthTxPool<SCT, SBT>
 where
     SCT: SignatureCollection,
     SBT: StateBackend,
 {
-    pub fn new(do_local_insert: bool) -> Self {
+    pub fn new(do_local_insert: bool, tx_expiry: Duration) -> Self {
         Self {
             do_local_insert,
             pending: PendingTxMap::default(),
-            tracked: TrackedTxMap::default(),
+            tracked: TrackedTxMap::new(tx_expiry),
         }
+    }
+
+    pub fn default_testing() -> Self {
+        Self::new(true, Duration::from_secs(60))
     }
 
     pub fn is_empty(&self) -> bool {

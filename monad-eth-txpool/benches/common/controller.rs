@@ -88,7 +88,7 @@ impl<'a> BenchController<'a> {
         state_backend: &StateBackendType,
         txs: &[EthSignedTransaction],
     ) -> Pool {
-        let mut pool = Pool::new(true);
+        let mut pool = Pool::default_testing();
 
         assert!(!Pool::insert_tx(
             &mut pool,

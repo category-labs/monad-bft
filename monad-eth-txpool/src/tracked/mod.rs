@@ -35,6 +35,7 @@ const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 #[derive(Clone, Debug)]
 pub struct TrackedTxMap<SCT, SBT> {
     last_commit_seq_num: Option<SeqNum>,
+    tx_expiry: Duration,
 
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
@@ -43,22 +44,21 @@ pub struct TrackedTxMap<SCT, SBT> {
     _phantom: PhantomData<(SCT, SBT)>,
 }
 
-impl<SCT, SBT> Default for TrackedTxMap<SCT, SBT> {
-    fn default() -> Self {
-        Self {
-            last_commit_seq_num: None,
-            txs: IndexMap::with_capacity(MAX_ADDRESSES),
-
-            _phantom: PhantomData,
-        }
-    }
-}
-
 impl<SCT, SBT> TrackedTxMap<SCT, SBT>
 where
     SCT: SignatureCollection,
     SBT: StateBackend,
 {
+    pub fn new(tx_expiry: Duration) -> Self {
+        Self {
+            last_commit_seq_num: None,
+            tx_expiry,
+
+            txs: IndexMap::with_capacity(MAX_ADDRESSES),
+
+            _phantom: PhantomData,
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.txs.is_empty()
     }
@@ -77,7 +77,9 @@ where
 
         match self.txs.entry(tx.sender()) {
             IndexMapEntry::Vacant(_) => Either::Left(tx),
-            IndexMapEntry::Occupied(mut o) => Either::Right(o.get_mut().try_add_tx(tx)),
+            IndexMapEntry::Occupied(mut o) => {
+                Either::Right(o.get_mut().try_add_tx(tx, self.tx_expiry))
+            }
         }
     }
 
@@ -330,7 +332,7 @@ where
         let mut idx = 0;
 
         while let Some(entry) = self.txs.get_index_entry(idx) {
-            let Some(_) = TrackedTxList::evict_expired_txs(entry) else {
+            let Some(_) = TrackedTxList::evict_expired_txs(entry, self.tx_expiry) else {
                 continue;
             };
 

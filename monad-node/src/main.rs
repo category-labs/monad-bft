@@ -272,9 +272,10 @@ async fn run(
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
-        transaction_pool: EthTxPool::new(false),
+        transaction_pool: EthTxPool::new(false, Duration::from_secs(0)),
+        // TODO(andr-dev): Add tx_expiry to node config
         #[cfg(not(feature = "full-node"))]
-        transaction_pool: EthTxPool::new(true),
+        transaction_pool: EthTxPool::new(true, Duration::from_secs(5)),
         block_validator: EthValidator {
             tx_limit: node_state.node_config.consensus.block_txn_limit,
             block_gas_limit: node_state.node_config.consensus.block_gas_limit,

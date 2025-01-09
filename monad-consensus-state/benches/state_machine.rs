@@ -176,7 +176,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, InMemoryState>,
 {
     consensus_state: ConsensusState<SCT, EthBlockPolicy, InMemoryState>,
 
@@ -208,7 +208,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, InMemoryState>,
     // BPT: BlockPolicy<SCT, ValidatedBlock = EthValidatedBlock<SCT>>,
 {
     fn wrapped_state(
@@ -280,12 +280,13 @@ fn setup<
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     SVT: StateRootValidator,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
-    TT: TxPool<SCT, EthBlockPolicy, InMemoryState> + Default,
+    TT: TxPool<SCT, EthBlockPolicy, InMemoryState>,
 >(
     num_states: u32,
     valset_factory: VTF,
     election: LT,
     state_root: impl Fn() -> SVT,
+    txpool: impl Fn() -> TT,
 ) -> (
     EnvContext<ST, SCT, VTF, LT>,
     Vec<NodeContext<ST, SCT, VTF, SVT, LT, TT>>,
@@ -351,7 +352,7 @@ fn setup<
                 consensus_state: cs,
 
                 metrics: Metrics::default(),
-                txpool: TT::default(),
+                txpool: txpool(),
                 epoch_manager,
 
                 val_epoch_map,
@@ -433,18 +434,12 @@ fn make_txns() -> (Vec<TxEnvelope>, FullTransactionList) {
     )
 }
 fn init(seed_mempool: bool) -> BenchTuple {
-    let (mut env, mut ctx) = setup::<
-        SignatureType,
-        SignatureCollectionType,
-        _,
-        _,
-        _,
-        EthTxPool<MultiSig<SignatureType>, InMemoryState>,
-    >(
+    let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, _, _, _>(
         4u32,
         ValidatorSetFactory::default(),
         SimpleRoundRobin::default(),
         || NopStateRoot,
+        EthTxPool::default_testing,
     );
 
     // this guy is the leader
@@ -569,11 +564,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 Vec<(NodeId<NopPubKey>, VoteMessage<SignatureCollectionType>)>,
             ) {
                 let (mut env, mut ctx) =
-                    setup::<SignatureType, SignatureCollectionType, _, _, _, EthTxPool<MultiSig<SignatureType>, InMemoryState>>(
+                    setup::<SignatureType, SignatureCollectionType, _, _, _, _>(
                         4u32,
                         ValidatorSetFactory::default(),
                         SimpleRoundRobin::default(),
                         || NopStateRoot,
+                        EthTxPool::default_testing,
                     );
 
                 // this guy is the leader
@@ -638,12 +634,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     _,
                     _,
                     _,
-                    EthTxPool<MultiSig<SignatureType>, InMemoryState>,
+                    _
                 >(
                     4u32,
                     ValidatorSetFactory::default(),
                     SimpleRoundRobin::default(),
                     || NopStateRoot,
+                    EthTxPool::default_testing
                 );
 
                 let (raw_txns, _) = make_txns();
