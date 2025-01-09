@@ -16,6 +16,7 @@ monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-rpc-docs = { path = "./monad-rpc-docs" }
+monad-eth-vpool = { path = "../monad-eth-vpool" }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
@@ -53,10 +54,6 @@ reqwest = { workspace = true }
 test-case = { workspace = true }
 tempfile = { workspace = true }
 monad-eth-txpool = { path = "../monad-eth-txpool"}
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-state-backend = { path = "../monad-state-backend" }
 monad-eth-types = { path = "../monad-eth-types"}
 monad-eth-testutil = { path = "../monad-eth-testutil" }
-itertools = { workspace = true }
 monad-testutil = { path = "../monad-testutil" }
-rand = { workspace = true }

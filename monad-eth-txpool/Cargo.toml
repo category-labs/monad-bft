@@ -28,11 +28,14 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
+flume = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing-test = { workspace = true }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-vpool = { path = "../monad-eth-vpool" }
 monad-perf-util = { path = "../monad-perf-util" }
 monad-types = { path = "../monad-types" }
 

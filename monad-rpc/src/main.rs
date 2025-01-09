@@ -510,7 +510,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
-    tx_pool: Arc<Mutex<vpool::VirtualPool>>,
+    tx_pool: Arc<Mutex<monad_eth_vpool::VirtualPool>>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -531,7 +531,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
-        tx_pool: Arc<Mutex<vpool::VirtualPool>>,
+        tx_pool: Arc<Mutex<monad_eth_vpool::VirtualPool>>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -645,7 +645,7 @@ async fn main() -> std::io::Result<()> {
     });
 
     let vpool_metrics = meter_provider.as_ref().map(|provider| {
-        Arc::new(metrics::VirtualPoolMetrics::new(
+        Arc::new(monad_eth_vpool::metrics::VirtualPoolMetrics::new(
             provider.clone().meter("opentelemetry"),
         ))
     });
@@ -656,7 +656,7 @@ async fn main() -> std::io::Result<()> {
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
-    let tx_pool = Arc::new(Mutex::new(vpool::VirtualPool::new(
+    let tx_pool = Arc::new(Mutex::new(monad_eth_vpool::VirtualPool::new(
         ipc_sender.clone(),
         args.vpool_capacity,
         vpool_metrics,
@@ -670,7 +670,7 @@ async fn main() -> std::io::Result<()> {
         let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
         let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
         while let Some(block) = watcher.next().await {
-            tx_pool2.lock().await.new_block(block, 1_000).await;
+            tx_pool2.lock().await.new_block(block.into(), 1_000).await;
         }
     });
 
@@ -767,7 +767,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(Mutex::new(vpool::VirtualPool::new(
+            tx_pool: Arc::new(Mutex::new(monad_eth_vpool::VirtualPool::new(
                 ipc_sender.clone(),
                 20_000,
                 None,

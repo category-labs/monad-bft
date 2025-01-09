@@ -321,7 +321,7 @@ pub struct MonadEthSendRawTransactionParams {
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
-    tx_pool: std::sync::Arc<tokio::sync::Mutex<vpool::VirtualPool>>,
+    tx_pool: std::sync::Arc<tokio::sync::Mutex<monad_eth_vpool::VirtualPool>>,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,

@@ -4392,6 +4392,7 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "criterion",
+ "flume",
  "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
@@ -4399,6 +4400,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-tx",
  "monad-eth-types",
+ "monad-eth-vpool",
  "monad-perf-util",
  "monad-state-backend",
  "monad-testutil",
@@ -4408,6 +4410,7 @@ dependencies = [
  "rayon",
  "reth-primitives",
  "sorted_vector_map",
+ "tokio",
  "tracing",
  "tracing-test",
 ]
@@ -4418,6 +4421,22 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives 0.6.0",
  "serde",
+]
+
+[[package]]
+name = "monad-eth-vpool"
+version = "0.1.0"
+dependencies = [
+ "flume",
+ "monad-eth-testutil",
+ "monad-triedb-utils",
+ "opentelemetry",
+ "rayon",
+ "reth-primitives",
+ "reth-rpc-types",
+ "scc",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4747,15 +4766,13 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
- "itertools 0.10.5",
- "monad-consensus-types",
  "monad-cxx",
  "monad-eth-block-policy",
  "monad-eth-testutil",
  "monad-eth-txpool",
  "monad-eth-types",
+ "monad-eth-vpool",
  "monad-rpc-docs",
- "monad-state-backend",
  "monad-testutil",
  "monad-triedb-utils",
  "monad-types",
@@ -4764,7 +4781,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project",
- "rand",
  "rayon",
  "reqwest 0.11.27",
  "reth-primitives",

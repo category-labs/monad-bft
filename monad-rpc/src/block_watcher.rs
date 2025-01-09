@@ -150,6 +150,16 @@ pub struct BlockWithReceipts {
     pub receipts: Vec<TransactionReceipt>,
 }
 
+impl Into<monad_eth_vpool::BlockWithReceipts> for BlockWithReceipts {
+    fn into(self) -> monad_eth_vpool::BlockWithReceipts {
+        monad_eth_vpool::BlockWithReceipts {
+            block_header: self.block_header.header,
+            transactions: self.transactions,
+            receipts: self.receipts,
+        }
+    }
+} 
+
 impl<B: BlockState + Clone + Send + Sync + 'static> Stream for BlockWatcher<B> {
     type Item = BlockWithReceipts;
 

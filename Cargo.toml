@@ -55,7 +55,7 @@ members = [
     "monad-types",
     "monad-updaters",
     "monad-validator",
-    "monad-wal",
+    "monad-wal", "monad-eth-vpool",
 ]
 resolver = "2"
 

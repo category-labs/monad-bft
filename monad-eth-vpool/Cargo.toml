@@ -1,0 +1,17 @@
+[package]
+name = "monad-eth-vpool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-eth-testutil = { path = "../monad-eth-testutil" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
+
+rayon = { workspace = true }
+reth-primitives = { workspace = true }
+reth-rpc-types = { workspace = true }
+scc = { workspace = true }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs", "sync"] }
+tracing = { workspace = true, features = ["log"] }
+flume = { workspace = true }
+opentelemetry = { workspace = true, features = ["metrics"] }
