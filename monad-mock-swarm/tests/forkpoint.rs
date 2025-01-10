@@ -77,6 +77,7 @@ fn test_forkpoint_restart_f_simple_blocksync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        false,
     );
 }
 
@@ -94,6 +95,7 @@ fn test_forkpoint_restart_f_simple_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        true,
     );
 }
 
@@ -115,6 +117,7 @@ fn test_forkpoint_restart_f_target_reset_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        false,
     );
 }
 
@@ -132,6 +135,7 @@ fn test_forkpoint_restart_f_epoch_boundary_statesync() {
         epoch_length,
         statesync_threshold,
         statesync_service_window,
+        true,
     );
 }
 
@@ -160,6 +164,7 @@ fn test_forkpoint_restart_f() {
                     epoch_length,
                     statesync_threshold,
                     statesync_service_window,
+                    false,
                 );
             })
         });
@@ -176,6 +181,7 @@ fn forkpoint_restart_f(
     epoch_length: SeqNum,
     statesync_threshold: SeqNum,
     statesync_service_window: SeqNum,
+    fresh_forkpoint: bool,
 ) {
     let delta = Duration::from_millis(100);
     let vote_pace = Duration::from_millis(0);
@@ -323,8 +329,19 @@ fn forkpoint_restart_f(
             .is_some()
         {}
 
-        // Restart node from old forkpoint and join network
-        let forkpoint = failed_node.get_forkpoint();
+        let forkpoint = if fresh_forkpoint {
+            // Restart node from fresh forkpoint
+            swarm
+                .states()
+                .first_key_value()
+                .unwrap()
+                .1
+                .get_forkpoint()
+                .clone()
+        } else {
+            // Restart node from old forkpoint
+            failed_node.get_forkpoint()
+        };
         assert_eq!(
             forkpoint.validate(
                 state_root_delay,

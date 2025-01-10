@@ -23,8 +23,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncCommand,
-    StateSyncEvent, TimeoutVariant, TimerCommand, TimestampCommand,
+    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
+    TimerCommand, TimestampCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum};
@@ -409,9 +409,6 @@ where
                 parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
                     MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
                 )));
-            }
-            ConsensusCommand::StartExecution => {
-                parent_cmds.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
             }
             ConsensusCommand::LedgerCommit(blocks) => {
                 let last_block = blocks.iter().last().expect("LedgerCommit no blocks");

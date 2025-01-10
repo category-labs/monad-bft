@@ -57,8 +57,6 @@ where
         root: RootInfo,
         high_qc: QuorumCertificate<SCT>,
     },
-    /// Can only be called *once*
-    StartExecution,
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),

@@ -69,13 +69,6 @@ where
     last_proposed_round: Round,
 
     finalized_execution_results: BTreeMap<SeqNum, StateRootHashInfo>,
-
-    /// Set to true once consensus has kicked off execution
-    started_execution: bool,
-    /// Set to true once consensus has kicked off stastesync
-    /// This is a bit janky; because initiating statesync is asynchronous (via loopback executor)
-    /// Ideally we can delete this and initiate statesync synchronously... needs some thought
-    started_statesync: bool,
 }
 
 impl<SCT, BPT, SBT> PartialEq for ConsensusState<SCT, BPT, SBT>
@@ -274,9 +267,6 @@ where
             last_proposed_round: Round(0),
 
             finalized_execution_results: Default::default(),
-
-            started_execution: false,
-            started_statesync: false,
         }
     }
 
@@ -785,11 +775,8 @@ where
             cmds.push(ConsensusCommand::CancelSync(block_range));
         }
 
-        // statesync if too far from tip && have close enough committed block to statesync to
+        // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
-
-        // start execution if close enough to tip
-        cmds.extend(self.maybe_start_execution());
 
         // any time high_qc is updated, we generate a new checkpoint
         cmds.push(ConsensusCommand::CheckpointSave(self.checkpoint()));
@@ -1011,109 +998,24 @@ where
             cmds.extend(self.try_propose());
         }
 
-        // statesync if too far from tip && have close enough committed block to statesync to
+        // statesync if too far from tip
         cmds.extend(self.maybe_statesync());
 
         Ok(cmds)
     }
 
     #[must_use]
-    fn maybe_start_execution(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
-        let mut cmds = Vec::new();
-        if !self.consensus.started_execution
-            && self.consensus.pending_block_tree.get_root_seq_num()
-                + self.config.start_execution_threshold
-                > self.consensus.high_qc.get_seq_num()
-        {
-            tracing::info!(
-                root =? self.consensus.pending_block_tree.root(),
-                high_qc =? self.consensus.high_qc,
-                start_execution_threshold =? self.config.start_execution_threshold,
-                "starting execution - close enough to tip",
-            );
-            cmds.push(ConsensusCommand::StartExecution);
-            self.consensus.started_execution = true;
-        }
-        cmds
-    }
-
-    #[must_use]
     fn maybe_statesync(&mut self) -> Vec<ConsensusCommand<ST, SCT>> {
-        if self.consensus.started_statesync {
-            return Vec::new();
-        }
-
         let high_qc_seq_num = self.consensus.high_qc.get_seq_num();
+
         if self.consensus.pending_block_tree.get_root_seq_num()
             + self.config.live_to_statesync_threshold
             > high_qc_seq_num
         {
-            return Vec::new();
+            Vec::new()
+        } else {
+            panic!("high qc too far ahead of block tree root, restart client and statesync. highqc: {:?}, block-tree root {:?}", high_qc_seq_num, self.consensus.pending_block_tree.get_root_seq_num());
         }
-
-        let connected_blocks = self
-            .consensus
-            .pending_block_tree
-            .get_parent_block_chain(&self.consensus.high_qc.get_block_id());
-
-        // set consensus_root N-delay
-        // set high_qc to N
-        // execution will sync to N-2*delay using state_root in consensus_root
-
-        assert!(self.config.live_to_statesync_threshold > self.config.execution_delay);
-        let max_committed_seq_num = high_qc_seq_num - self.config.execution_delay;
-
-        let earliest_block_exists_and_is_not_empty = connected_blocks
-            .first()
-            .is_some_and(|block| !block.is_empty_block());
-        if connected_blocks
-            .first()
-            .map(|block| block.get_seq_num())
-            .unwrap_or(SeqNum::MAX)
-            > max_committed_seq_num
-            || !earliest_block_exists_and_is_not_empty
-        {
-            info!(
-                branch_len = connected_blocks.len(),
-                live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
-                ?high_qc_seq_num,
-                "waiting for enough blocks to trigger statesync",
-            );
-            return Vec::new();
-        }
-
-        info!(
-            branch_len = connected_blocks.len(),
-            live_to_statesync_threshold =? self.config.live_to_statesync_threshold,
-            ?high_qc_seq_num,
-            "triggering statesync",
-        );
-        self.metrics.consensus_events.trigger_state_sync += 1;
-
-        // Execution doesn't support resyncing upon falling behind
-        assert!(
-            !self.consensus.started_execution,
-            "can't statesync after execution has been started, root={:?}, high_qc={:?}",
-            self.consensus.pending_block_tree.root(),
-            self.consensus.high_qc
-        );
-
-        let root_block = connected_blocks
-            .iter()
-            .find(|block| block.get_seq_num() == max_committed_seq_num)
-            .expect("statesync block should exist");
-
-        self.consensus.started_statesync = true;
-        vec![ConsensusCommand::RequestStateSync {
-            root: RootInfo {
-                round: root_block.get_round(),
-                seq_num: root_block.get_seq_num(),
-                epoch: root_block.get_epoch(),
-                block_id: root_block.get_id(),
-                state_root: root_block.get_state_root(),
-            },
-            high_qc: self.consensus.high_qc.clone(),
-        }]
     }
 
     #[must_use]
@@ -1432,10 +1334,6 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        if self.consensus.started_statesync {
-            // stop consensus blocksync after statesync is initiated
-            return Vec::new();
-        }
         let Some(qc) = self.consensus.pending_block_tree.get_missing_ancestor(qc) else {
             return Vec::new();
         };
@@ -2918,16 +2816,15 @@ mod test {
 
         // the proposal still gets processed: the node enters a new round, and
         // issues a request for the block it skipped over
-        assert_eq!(cmds.len(), 6);
-        assert!(matches!(cmds[0], ConsensusCommand::StartExecution));
-        assert!(matches!(cmds[1], ConsensusCommand::CheckpointSave(_)));
-        assert!(matches!(cmds[2], ConsensusCommand::EnterRound(_, _)));
+        assert_eq!(cmds.len(), 5);
+        assert!(matches!(cmds[0], ConsensusCommand::CheckpointSave(_)));
+        assert!(matches!(cmds[1], ConsensusCommand::EnterRound(_, _)));
         assert!(matches!(
-            cmds[3],
+            cmds[2],
             ConsensusCommand::Schedule { duration: _ }
         ));
-        assert!(matches!(cmds[4], ConsensusCommand::RequestSync { .. }));
-        assert!(matches!(cmds[5], ConsensusCommand::TimestampUpdate(_)));
+        assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(cmds[4], ConsensusCommand::TimestampUpdate(_)));
         assert_eq!(
             wrapped_state.metrics.consensus_events.rx_execution_lagging,
             1

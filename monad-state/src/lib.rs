@@ -1224,6 +1224,7 @@ where
         );
         tracing::info!(?root, ?high_qc, "done syncing, initializing consensus");
         self.consensus = ConsensusMode::Live(consensus);
+        commands.push(Command::StateSyncCommand(StateSyncCommand::StartExecution));
         commands.extend(self.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout)));
         for (sender, proposal) in cached_proposals {
             // handle proposals in reverse order because later blocks are more likely to pass
