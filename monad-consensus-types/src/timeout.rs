@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_types::*;
-use zerocopy::AsBytes;
 
 use super::quorum_certificate::QuorumCertificate;
 use crate::{
@@ -13,7 +12,8 @@ use crate::{
 };
 
 /// Timeout message to broadcast to other nodes after a local timeout
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[rlp(trailing)]
 pub struct Timeout<SCT: SignatureCollection> {
     pub tminfo: TimeoutInfo<SCT>,
     /// if the high qc round != tminfo.round-1, then this must be the
@@ -21,15 +21,8 @@ pub struct Timeout<SCT: SignatureCollection> {
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
-impl<SCT: SignatureCollection> Hashable for Timeout<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        // similar to ProposalMessage, not hashing over last_round_tc
-        self.tminfo.hash(state);
-    }
-}
-
 /// Data to include in a timeout
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct TimeoutInfo<SCT> {
     /// Epoch where the timeout happens
     pub epoch: Epoch,
@@ -39,37 +32,29 @@ pub struct TimeoutInfo<SCT> {
     pub high_qc: QuorumCertificate<SCT>,
 }
 
-impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.epoch);
-        state.update(self.round);
-        state.update(self.high_qc.get_block_id().0.as_bytes());
-        state.update(self.high_qc.get_hash());
-    }
+#[derive(Copy, Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct TimeoutDigest {
+    pub epoch: Epoch,
+    pub round: Round,
+    pub high_qc_round: Round,
 }
 
 impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
-    pub fn timeout_digest(&self) -> Hash {
-        let mut hasher = HasherType::new();
-        hasher.update(self.epoch.as_bytes());
-        hasher.update(self.round.as_bytes());
-        hasher.update(self.high_qc.get_round().as_bytes());
-        hasher.hash()
+    pub fn timeout_digest(&self) -> TimeoutDigest {
+        TimeoutDigest {
+            epoch: self.epoch,
+            round: self.round,
+            high_qc_round: self.high_qc.get_round(),
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct HighQcRound {
     pub qc_round: Round,
 }
 
-impl Hashable for HighQcRound {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.qc_round.as_bytes());
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct HighQcRoundSigColTuple<SCT> {
     pub high_qc_round: HighQcRound,
     pub sigs: SCT,
@@ -78,7 +63,7 @@ pub struct HighQcRoundSigColTuple<SCT> {
 /// TimeoutCertificate is used to advance rounds when a QC is unable to
 /// form for a round
 /// A collection of Timeout messages is the basis for building a TC
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct TimeoutCertificate<SCT> {
     /// The epoch where the TC is created
     pub epoch: Epoch,
@@ -119,7 +104,8 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
         }
         let mut high_qc_rounds = Vec::new();
         for (high_qc_round, (tminfo_digest, sigs)) in sigs.into_iter() {
-            let sct = SCT::new(sigs, validator_mapping, tminfo_digest.as_ref())?;
+            let tminfo_digest_enc = alloy_rlp::encode(tminfo_digest);
+            let sct = SCT::new(sigs, validator_mapping, tminfo_digest_enc.as_ref())?;
             high_qc_rounds.push(HighQcRoundSigColTuple::<SCT> {
                 high_qc_round,
                 sigs: sct,

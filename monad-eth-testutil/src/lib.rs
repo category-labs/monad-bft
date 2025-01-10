@@ -103,7 +103,6 @@ pub fn generate_block_with_txs(
         seq_num,
         0,
         RoundSignature::new(Round(1), &keypair),
-        false, // is_null
     );
 
     let validated_txns: Vec<_> = txs

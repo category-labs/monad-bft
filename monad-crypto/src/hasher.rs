@@ -17,8 +17,8 @@ use zerocopy::AsBytes;
     Default,
     Serialize,
     Deserialize,
-    RlpDecodableWrapper,
     RlpEncodableWrapper,
+    RlpDecodableWrapper,
 )]
 pub struct Hash(
     #[serde(serialize_with = "serialize_hash")]

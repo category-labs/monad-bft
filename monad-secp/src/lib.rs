@@ -1,21 +1,10 @@
 mod secp;
-use monad_crypto::{
-    certificate_signature::{
-        self, CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable,
-    },
-    hasher::{Hashable, Hasher},
+use alloy_rlp::{Decodable, Encodable};
+use monad_crypto::certificate_signature::{
+    self, CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 pub use secp::{Error, KeyPair, PubKey, SecpSignature};
-
-/// Faster to use the transmuted memory values, but might not be stable across
-/// library versions
-impl Hashable for SecpSignature {
-    fn hash(&self, state: &mut impl Hasher) {
-        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
-        state.update(slice)
-    }
-}
 
 impl std::fmt::Display for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -43,7 +32,24 @@ impl certificate_signature::PubKey for PubKey {
     }
 
     fn bytes(&self) -> Vec<u8> {
-        Self::bytes_compressed(self)
+        Self::bytes_compressed(self).to_vec()
+    }
+}
+
+impl Encodable for PubKey {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.bytes_compressed().encode(out);
+    }
+}
+
+impl Decodable for PubKey {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let b = <[u8; secp256k1::constants::PUBLIC_KEY_SIZE]>::decode(buf)?;
+
+        match <Self as certificate_signature::PubKey>::from_bytes(&b) {
+            Ok(pk) => Ok(pk),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid pubkey")),
+        }
     }
 }
 

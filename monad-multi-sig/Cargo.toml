@@ -16,6 +16,7 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
+alloy-rlp = { workspace = true }
 prost = { workspace = true }
 tracing = { workspace = true }
 

@@ -117,7 +117,7 @@ where
                             return;
                         }
                         let state = self.state_backend.lock().unwrap();
-                        let latest_finalized = state.raw_read_latest_block();
+                        let latest_finalized = state.raw_read_latest_finalized_block();
                         if latest_finalized.is_some_and(|latest_finalized| {
                             request.target.saturating_add(self.max_service_window.0)
                                 < latest_finalized.0
@@ -125,7 +125,7 @@ where
                             return;
                         }
 
-                        let Some(state) = state.block_state(&SeqNum(request.target)) else {
+                        let Some(state) = state.committed_state(&SeqNum(request.target)) else {
                             return;
                         };
 

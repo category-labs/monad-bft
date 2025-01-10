@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_consensus::{
     messages::{
@@ -10,7 +8,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
-    block::{BlockPolicy, ExecutionResult},
+    block::{BlockPolicy, ExecutionResult, OptimisticCommit},
     block_validator::BlockValidator,
     metrics::Metrics,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -69,8 +67,6 @@ where
 
     keypair: &'a ST::KeyPairType,
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
-
-    _phantom: PhantomData<()>,
 }
 
 impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, TT, BVT>
@@ -110,7 +106,6 @@ where
 
             keypair: &monad_state.keypair,
             cert_keypair: &monad_state.cert_keypair,
-            _phantom: PhantomData,
         }
     }
 
@@ -415,29 +410,40 @@ where
                     MonadEvent::StateSyncEvent(StateSyncEvent::RequestSync { root, high_qc }),
                 )));
             }
-            ConsensusCommand::LedgerCommit(blocks) => {
-                let last_block = blocks.iter().last().expect("LedgerCommit no blocks");
-                parent_cmds.extend(blocks.iter().filter_map(|block| {
-                    if !block.header().is_empty_block() {
-                        Some(Command::StateRootHashCommand(
-                            StateRootHashCommand::Request(block.get_seq_num()),
-                        ))
-                    } else {
-                        None
+            ConsensusCommand::LedgerCommit(cmd) => {
+                match cmd {
+                    OptimisticCommit::Proposed(block) => {
+                        let block_id = block.get_id();
+                        let round = block.get_round();
+                        let seq_num = block.get_seq_num();
+                        parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                            OptimisticCommit::Proposed(block),
+                        )));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            StateRootHashCommand::RequestProposed(block_id, seq_num, round),
+                        ));
                     }
-                }));
-                parent_cmds.push(Command::StateRootHashCommand(
-                    // upon committing block N, we no longer need state_root_N-delay
-                    // therefore, we cancel below state_root_N-delay+1
-                    //
-                    // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
-                    // exactly `delay` number of roots
-                    StateRootHashCommand::CancelBelow(
-                        (last_block.get_seq_num() + SeqNum(1)).max(wrapped.state_root_delay)
-                            - wrapped.state_root_delay,
-                    ),
-                ));
-                parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(blocks)));
+                    OptimisticCommit::Finalized(block) => {
+                        let finalized_seq_num = block.get_seq_num();
+                        parent_cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                            OptimisticCommit::Finalized(block),
+                        )));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            StateRootHashCommand::RequestFinalized(finalized_seq_num),
+                        ));
+                        parent_cmds.push(Command::StateRootHashCommand(
+                            // upon committing block N, we no longer need state_root_N-delay
+                            // therefore, we cancel below state_root_N-delay+1
+                            //
+                            // we'll be left with (state_root_N-delay, state_root_N] queued up, which is
+                            // exactly `delay` number of roots
+                            StateRootHashCommand::CancelBelow(
+                                (finalized_seq_num + SeqNum(1)).max(wrapped.state_root_delay)
+                                    - wrapped.state_root_delay,
+                            ),
+                        ));
+                    }
+                }
             }
             ConsensusCommand::CheckpointSave {
                 root_seq_num,

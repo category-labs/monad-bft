@@ -6,13 +6,13 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::Transaction;
+use alloy_consensus::Transaction as _;
 use futures::Stream;
 use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusFullBlock},
+    block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::ConsensusBlockBodyId,
     signature_collection::SignatureCollection,
 };
@@ -23,7 +23,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 
 /// A ledger for commited Monad Blocks
@@ -36,6 +36,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
+    finalized: BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>>,
     block_ids: HashMap<BlockId, Round>,
     events: VecDeque<BlockSyncEvent<ST, SCT, EthExecutionProtocol>>,
 
@@ -53,6 +54,7 @@ where
     pub fn new(state: InMemoryState) -> Self {
         MockEthLedger {
             blocks: Default::default(),
+            finalized: Default::default(),
             block_ids: Default::default(),
             events: Default::default(),
 
@@ -116,42 +118,50 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(blocks) => {
-                    for block in blocks {
-                        // generate eth block and update the state backend with committed nonces
-                        let new_account_nonces = block
-                            .body()
-                            .execution_body
-                            .transactions
-                            .iter()
-                            .map(|tx| {
-                                (
-                                    tx.recover_signer().expect("invalid eth tx in block"),
-                                    tx.nonce() + 1,
-                                )
-                            })
-                            // collecting into a map will handle a sender sending multiple
-                            // transactions gracefully
-                            //
-                            // this is because nonces are always increasing per account
-                            .collect();
-                        let mut state = self.state.lock().unwrap();
-                        if !block.header().is_empty_block() {
-                            state.ledger_commit(block.get_seq_num(), new_account_nonces);
-                        }
+                LedgerCommand::LedgerClearWal => {}
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    // generate eth block and update the state backend with committed nonces
+                    let new_account_nonces = block
+                        .body()
+                        .execution_body
+                        .transactions
+                        .iter()
+                        .map(|tx| {
+                            (
+                                tx.recover_signer().expect("invalid eth tx in block"),
+                                tx.nonce() + 1,
+                            )
+                        })
+                        // collecting into a map will handle a sender sending multiple
+                        // transactions gracefully
+                        //
+                        // this is because nonces are always increasing per account
+                        .collect();
+                    let mut state = self.state.lock().unwrap();
+                    state.ledger_propose(
+                        block.get_id(),
+                        block.get_seq_num(),
+                        block.get_round(),
+                        block.get_parent_round(),
+                        new_account_nonces,
+                    );
 
-                        match self.blocks.entry(block.get_round()) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
-                                let block_id = block.get_id();
-                                let round = block.get_round();
-                                entry.insert(block);
-                                self.block_ids.insert(block_id, round);
-                            }
-                            std::collections::btree_map::Entry::Occupied(entry) => {
-                                assert_eq!(entry.get(), &block, "two conflicting blocks committed")
-                            }
+                    match self.blocks.entry(block.get_round()) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            let block_id = block.get_id();
+                            let round = block.get_round();
+                            entry.insert(block);
+                            self.block_ids.insert(block_id, round);
+                        }
+                        std::collections::btree_map::Entry::Occupied(entry) => {
+                            assert_eq!(entry.get(), &block, "two conflicting blocks committed")
                         }
                     }
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
+                    self.finalized.insert(block.get_seq_num(), block.clone());
+                    let mut state = self.state.lock().unwrap();
+                    state.ledger_commit(&block.get_id());
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
@@ -212,7 +222,7 @@ where
 
     fn get_finalized_blocks(
         &self,
-    ) -> &BTreeMap<Round, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>> {
-        &self.blocks
+    ) -> &BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EthExecutionProtocol>> {
+        &self.finalized
     }
 }

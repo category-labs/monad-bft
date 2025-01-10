@@ -9,7 +9,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_types::{ExecutionProtocol, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::validator_set::ValidatorSetType;
@@ -69,7 +69,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     keys.into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadStateBuilder {
-            version: MonadVersion::new("MOCK_SWARM"),
             validator_set_factory: validator_set_factory(),
             leader_election: leader_election(),
             transaction_pool: transaction_pool(),
@@ -89,7 +88,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             consensus_config: ConsensusConfig {
                 execution_delay,
                 proposal_txn_limit,
-                proposal_gas_limit: 30_000_000,
                 delta,
                 // StateSync -> Live transition happens here
                 statesync_to_live_threshold: statesync_threshold,
@@ -116,7 +114,7 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
 }
 
 pub fn ledger_verification<ST, SCT, EPT>(
-    ledgers: &Vec<BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>>>,
+    ledgers: &Vec<BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EPT>>>,
     min_ledger_len: usize,
 ) where
     ST: CertificateSignatureRecoverable,

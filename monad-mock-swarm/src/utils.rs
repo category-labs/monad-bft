@@ -86,7 +86,6 @@ pub mod test_tool {
                 SeqNum(0),
                 0,
                 RoundSignature::new(round, &NopKeyPair::from_bytes(&mut [127; 32]).unwrap()),
-                false,
             ),
             body,
         )
@@ -103,7 +102,7 @@ pub mod test_tool {
             last_round_tc: None,
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Proposal(internal_msg),
         }
         .sign(kp)
@@ -120,7 +119,7 @@ pub mod test_tool {
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Vote(internal_msg),
         }
         .sign(kp)
@@ -141,7 +140,7 @@ pub mod test_tool {
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {
-            version: "TEST".into(),
+            version: 1,
             message: ProtocolMessage::Timeout(internal_msg),
         }
         .sign(kp)

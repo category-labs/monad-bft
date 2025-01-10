@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
 
-use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, PubKey},
-    hasher::{Hashable, Hasher},
-};
+use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_crypto::certificate_signature::{CertificateKeyPair, PubKey};
 use monad_types::*;
 use serde::{Deserialize, Serialize};
-use zerocopy::AsBytes;
 
 /// Map validator NodeId to its Certificate PubKey
 pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
@@ -31,14 +28,14 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 }
 
 /// Vote for consensus proposals
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, RlpDecodable, RlpEncodable)]
 pub struct Vote {
     /// id of the proposed block
     pub id: BlockId,
-    /// epoch of the proposed block
-    pub epoch: Epoch,
     /// round of the proposed block
     pub round: Round,
+    /// epoch of the proposed block
+    pub epoch: Epoch,
     /// parent block id of the proposed block
     pub parent_id: BlockId,
     /// parent round of the proposed block
@@ -57,16 +54,6 @@ impl std::fmt::Debug for Vote {
     }
 }
 
-impl Hashable for Vote {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.id.hash(state);
-        state.update(self.epoch.as_bytes());
-        state.update(self.round.as_bytes());
-        self.parent_id.hash(state);
-        state.update(self.parent_round.as_bytes());
-    }
-}
-
 impl DontCare for Vote {
     fn dont_care() -> Self {
         Self {
@@ -76,36 +63,5 @@ impl DontCare for Vote {
             parent_id: BlockId(Hash([0x0_u8; 32])),
             parent_round: Round(0),
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use monad_crypto::hasher::{Hash, Hasher, HasherType};
-    use monad_types::{BlockId, Epoch, Round};
-
-    use super::Vote;
-
-    #[test]
-    fn vote_hash() {
-        let vi = Vote {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-        };
-
-        let mut hasher = HasherType::new();
-        hasher.update(vi.id.0);
-        hasher.update(vi.epoch);
-        hasher.update(vi.round);
-        hasher.update(vi.parent_id.0);
-        hasher.update(vi.parent_round);
-
-        let h1 = hasher.hash();
-        let h2 = HasherType::hash_object(&vi);
-
-        assert_eq!(h1, h2);
     }
 }

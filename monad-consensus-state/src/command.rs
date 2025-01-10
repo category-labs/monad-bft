@@ -10,7 +10,7 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
+    block::{BlockRange, ConsensusBlockHeader, OptimisticCommit},
     checkpoint::Checkpoint,
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -43,7 +43,7 @@ where
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset,
     /// Commit blocks to ledger
-    LedgerCommit(Vec<ConsensusFullBlock<ST, SCT, EPT>>),
+    LedgerCommit(OptimisticCommit<ST, SCT, EPT>),
     /// Requests BlockSync
     /// Serviced by block_sync in MonadState
     RequestSync(BlockRange),
@@ -83,7 +83,7 @@ where
     pub fn from_pacemaker_command(
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
-        version: &str,
+        version: u32,
         cmd: PacemakerCommand<SCT>,
     ) -> Self {
         match cmd {
@@ -94,7 +94,7 @@ where
                 // TODO should this be sent to epoch of next round?
                 target: RouterTarget::Broadcast(tmo.tminfo.epoch),
                 message: ConsensusMessage {
-                    version: version.into(),
+                    version,
                     message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
                 }
                 .sign(keypair),

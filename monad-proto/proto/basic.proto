@@ -37,3 +37,11 @@ message ProtoStake {
 message ProtoBlockBodyId {
   ProtoHash pid = 1;
 }
+
+message ProtoMonadVersion {
+  uint32 protocol_version = 1;
+  uint32 client_version_maj = 2;
+  uint32 client_version_min = 3;
+  uint32 hash_version = 4;
+  uint32 serialize_version = 5;
+}

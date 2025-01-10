@@ -184,17 +184,12 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             .metric_exact(node_ids, fetch_metric!(consensus_events.created_tc), 1)
             .metric_exact(
                 node_ids,
-                fetch_metric!(consensus_events.creating_empty_block_proposal),
-                0,
-            )
-            .metric_exact(
-                node_ids,
                 fetch_metric!(consensus_events.rx_execution_lagging),
                 0,
             )
             .metric_exact(
                 node_ids,
-                fetch_metric!(consensus_events.rx_missing_state_root),
+                fetch_metric!(consensus_events.rx_no_path_to_root),
                 0,
             )
             // first proposal in Round 2 with TC

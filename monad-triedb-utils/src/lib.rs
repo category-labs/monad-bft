@@ -11,11 +11,18 @@ use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
-use monad_eth_types::{EthAccount, EthHeader};
+use monad_bls::BlsSignatureCollection;
+use monad_consensus_types::block::ConsensusBlockHeader;
+use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
+    hasher::{Hasher, HasherType},
+};
+use monad_eth_types::{EthAccount, EthExecutionProtocol, EthHeader};
+use monad_secp::SecpSignature;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
-use monad_types::SeqNum;
-use tracing::{debug, warn};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use tracing::{debug, trace, warn};
 
 use crate::{
     decode::rlp_decode_account,
@@ -34,6 +41,12 @@ pub struct TriedbReader {
 }
 
 impl TriedbReader {
+    /// for debug only
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn handle(&self) -> &TriedbHandle {
+        &self.handle
+    }
+
     pub fn try_new(triedb_path: &Path) -> Option<Self> {
         TriedbHandle::try_new(triedb_path).map(|handle| Self { handle })
     }
@@ -58,7 +71,7 @@ impl TriedbReader {
 
     pub fn get_finalized_eth_header(&self, seq_num: &SeqNum) -> Option<EthHeader> {
         if self
-            .raw_read_latest_block()
+            .raw_read_latest_finalized_block()
             .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
         {
             let (triedb_key, key_len_nibbles) =
@@ -73,6 +86,86 @@ impl TriedbReader {
         }
     }
 
+    pub fn get_proposed_eth_header(
+        &self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+    ) -> Option<EthHeader> {
+        let bft_id = self.get_bft_block_id(seq_num, round)?;
+        if block_id != &bft_id {
+            return None;
+        }
+
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Proposal(*round), KeyInput::BlockHeader);
+        let eth_header_bytes = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+
+        // We need to re-check the block id to make sure that this block was not overwritten.
+        // This can only happen in the case of equivocation, where there can be 2 proposals for the
+        // same round.
+        let bft_id = self.get_bft_block_id(seq_num, round)?;
+        if block_id != &bft_id {
+            return None;
+        }
+
+        let mut rlp_buf = eth_header_bytes.as_slice();
+        let block_header = Header::decode(&mut rlp_buf).expect("invalid rlp eth header");
+
+        Some(EthHeader(block_header))
+    }
+
+    // only guaranteed to work for proposals
+    pub fn get_bft_block(
+        &self,
+        seq_num: &SeqNum,
+        round: &Round,
+    ) -> Option<
+        ConsensusBlockHeader<
+            SecpSignature,
+            BlsSignatureCollection<CertificateSignaturePubKey<SecpSignature>>,
+            EthExecutionProtocol,
+        >,
+    > {
+        if seq_num == &GENESIS_SEQ_NUM || round == &GENESIS_ROUND {
+            // execution populates a garbage genesis consensus block
+            return None;
+        }
+
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(Version::Proposal(*round), KeyInput::BftBlock);
+        let bft_block = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)?;
+
+        let block: ConsensusBlockHeader<_, _, _> = alloy_rlp::decode_exact(&bft_block)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to decode rlp ConsensusBlockHeader, err={:?}, seq_num={:?}, round={:?}, hex_hash={}, hex={}",
+                    err,
+                    seq_num,
+                    round,
+                    {
+                        let mut hasher = HasherType::new();
+                        hasher.update(&bft_block);
+                        hex::encode(hasher.hash().0)
+                    },
+                    hex::encode(bft_block),
+                )
+            });
+
+        Some(block)
+    }
+
+    // only guaranteed to work for proposals
+    pub fn get_bft_block_id(&self, seq_num: &SeqNum, round: &Round) -> Option<BlockId> {
+        if round == &GENESIS_ROUND && seq_num == &GENESIS_SEQ_NUM {
+            return Some(GENESIS_BLOCK_ID);
+        }
+
+        let bft_block = self.get_bft_block(seq_num, round)?;
+        Some(bft_block.get_id())
+    }
+
+    // for accessing Version::Proposed, bft_id MUST BE VERIFIED
     pub fn get_account(
         &self,
         seq_num: &SeqNum,
@@ -146,45 +239,72 @@ impl TriedbReader {
 impl StateBackend for TriedbReader {
     fn get_account_statuses<'a>(
         &self,
-        block: SeqNum,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        round: &Round,
+        is_finalized: bool,
         eth_addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        let Some(latest) = self.raw_read_latest_block() else {
-            return Err(StateBackendError::NotAvailableYet);
-        };
-        if latest < block {
-            // latest < block
-            return Err(StateBackendError::NotAvailableYet);
+        if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
+        {
+            trace!(?seq_num, "triedb read finalized");
+            // check finalized
+
+            // block <= latest
+            let Some(statuses) =
+                self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
+            else {
+                // TODO: Use a more descriptive error
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            let earliest = self
+                .raw_read_earliest_finalized_block()
+                .expect("earliest must exist if latest does");
+            if seq_num < &earliest {
+                // block < earliest
+                return Err(StateBackendError::NeverAvailable);
+            }
+            // block >= earliest
+            Ok(statuses)
+        } else {
+            // check proposed, validate block_id
+            trace!(?seq_num, ?round, "triedb read proposed");
+
+            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+            if &bft_block_id != block_id {
+                return Err(StateBackendError::NotAvailableYet);
+            }
+
+            let Some(statuses) =
+                self.get_accounts_async(seq_num, Version::Proposal(*round), eth_addresses)
+            else {
+                // TODO: Use a more descriptive error
+                return Err(StateBackendError::NotAvailableYet);
+            };
+
+            // check that block wasn't overrwritten
+            let Some(bft_block_id) = self.get_bft_block_id(seq_num, round) else {
+                return Err(StateBackendError::NotAvailableYet);
+            };
+            if &bft_block_id != block_id {
+                return Err(StateBackendError::NotAvailableYet);
+            }
+
+            Ok(statuses)
         }
-        // block <= latest
-
-        let Some(statuses) = self.get_accounts_async(&block, Version::Finalized, eth_addresses)
-        else {
-            // TODO: Use a more descriptive error
-            return Err(StateBackendError::NotAvailableYet);
-        };
-
-        let earliest = self
-            .raw_read_earliest_block()
-            .expect("earliest must exist if latest does");
-        if block < earliest {
-            // block < earliest
-            return Err(StateBackendError::NeverAvailable);
-        }
-
-        // all accounts are now guaranteed to be fully consistent and correct
-        Ok(statuses)
     }
 
-    fn raw_read_account(&self, block: SeqNum, address: &Address) -> Option<EthAccount> {
-        self.get_account_finalized(&block, address.as_ref())
-    }
-
-    fn raw_read_earliest_block(&self) -> Option<SeqNum> {
+    fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
         self.get_earliest_finalized_block()
     }
 
-    fn raw_read_latest_block(&self) -> Option<SeqNum> {
+    fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.get_latest_finalized_block()
     }
 }

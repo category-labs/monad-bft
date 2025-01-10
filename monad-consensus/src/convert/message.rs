@@ -137,7 +137,7 @@ where
             }
         };
         Self {
-            version: value.version.clone(),
+            version: value.version,
             oneof_message: Some(oneof_message),
             author_signature: Some(certificate_signature_to_proto(value.author_signature())),
         }

@@ -2,6 +2,7 @@ pub mod convert;
 
 use std::{fmt::Debug, net::SocketAddr};
 
+use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use monad_blocksync::{
@@ -13,7 +14,9 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult},
+    block::{
+        BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult, OptimisticCommit,
+    },
     checkpoint::Checkpoint,
     metrics::Metrics,
     payload::ConsensusBlockBodyId,
@@ -24,8 +27,10 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
 use serde::{Deserialize, Serialize};
+
+const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
 #[derive(Clone, Debug)]
 pub enum RouterCommand<PT: PubKey, OM> {
@@ -82,7 +87,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    LedgerCommit(Vec<ConsensusFullBlock<ST, SCT, EPT>>),
+    LedgerClearWal,
+    LedgerCommit(OptimisticCommit<ST, SCT, EPT>),
     LedgerFetchHeaders(BlockRange),
     LedgerFetchPayload(ConsensusBlockBodyId),
 }
@@ -95,9 +101,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LedgerCommand::LedgerCommit(blocks) => {
-                f.debug_tuple("LedgerCommit").field(blocks).finish()
-            }
+            LedgerCommand::LedgerClearWal => f.debug_tuple("LedgerClearWal").finish(),
+            LedgerCommand::LedgerCommit(x) => f.debug_tuple("LedgerCommit").field(x).finish(),
             LedgerCommand::LedgerFetchHeaders(block_range) => f
                 .debug_tuple("LedgerFetchHeaders")
                 .field(block_range)
@@ -121,7 +126,8 @@ pub enum StateRootHashCommand<SCT>
 where
     SCT: SignatureCollection,
 {
-    Request(SeqNum),
+    RequestProposed(BlockId, SeqNum, Round),
+    RequestFinalized(SeqNum),
     CancelBelow(SeqNum),
     UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
@@ -506,7 +512,7 @@ impl<PT: PubKey> Debug for MempoolEvent<PT> {
 
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncVersion {
     major: u16,
     minor: u16,
@@ -529,7 +535,7 @@ impl StateSyncVersion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
 
@@ -551,7 +557,7 @@ pub enum StateSyncUpsertType {
     Header,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StateSyncUpsert {
     pub upsert_type: StateSyncUpsertType,
     pub data: Vec<u8>,
@@ -563,7 +569,56 @@ impl StateSyncUpsert {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+impl Encodable for StateSyncUpsertType {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Code => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Account => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Storage => {
+                let enc: [&dyn Encodable; 1] = [&3u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::AccountDelete => {
+                let enc: [&dyn Encodable; 1] = [&4u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::StorageDelete => {
+                let enc: [&dyn Encodable; 1] = [&5u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Header => {
+                let enc: [&dyn Encodable; 1] = [&6u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for StateSyncUpsertType {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Code),
+            2 => Ok(Self::Account),
+            3 => Ok(Self::Storage),
+            4 => Ok(Self::AccountDelete),
+            5 => Ok(Self::StorageDelete),
+            6 => Ok(Self::Header),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncUpsertType",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
     pub nonce: u64,
@@ -592,6 +647,42 @@ impl Debug for StateSyncResponse {
 pub enum StateSyncNetworkMessage {
     Request(StateSyncRequest),
     Response(StateSyncResponse),
+}
+
+impl Encodable for StateSyncNetworkMessage {
+    fn encode(&self, out: &mut dyn BufMut) {
+        let name = STATESYNC_NETWORK_MESSAGE_NAME;
+        match self {
+            Self::Request(req) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &req];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Response(resp) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for StateSyncNetworkMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != STATESYNC_NETWORK_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type StateSyncNetworkMessage",
+            ));
+        }
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
+            2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncNetworkMessage",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

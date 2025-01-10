@@ -279,6 +279,16 @@ impl TriedbHandle {
         }
     }
 
+    pub fn latest_verified_block(&self) -> Option<u64> {
+        let maybe_latest_verified_block =
+            unsafe { bindings::triedb_latest_verified_block(self.db_ptr) };
+        if maybe_latest_verified_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_verified_block)
+        }
+    }
+
     pub fn earliest_finalized_block(&self) -> Option<u64> {
         let maybe_earliest_finalized_block =
             unsafe { bindings::triedb_earliest_finalized_block(self.db_ptr) };

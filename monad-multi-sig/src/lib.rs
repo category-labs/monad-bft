@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -7,10 +8,7 @@ use monad_consensus_types::{
     },
     voting::ValidatorMapping,
 };
-use monad_crypto::{
-    certificate_signature::CertificateSignatureRecoverable,
-    hasher::{Hash, Hashable, Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::NodeId;
 use prost::Message;
@@ -18,7 +16,7 @@ use tracing::{error, warn};
 
 mod convert;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct MultiSig<S> {
     pub sigs: Vec<S>,
 }
@@ -26,14 +24,6 @@ pub struct MultiSig<S> {
 impl<S: CertificateSignatureRecoverable> Default for MultiSig<S> {
     fn default() -> Self {
         Self { sigs: Vec::new() }
-    }
-}
-
-impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
-    fn hash(&self, state: &mut impl Hasher) {
-        for s in self.sigs.iter() {
-            Hashable::hash(s, state);
-        }
     }
 }
 
@@ -113,10 +103,6 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         })
     }
 
-    fn get_hash(&self) -> Hash {
-        HasherType::hash_object(self)
-    }
-
     fn num_signatures(&self) -> usize {
         self.sigs.len()
     }
@@ -165,32 +151,6 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
             return Err(SignatureCollectionError::InvalidSignaturesVerify);
         }
         Ok(node_ids)
-    }
-
-    fn get_participants(
-        &self,
-        validator_mapping: &ValidatorMapping<
-            Self::NodeIdPubKey,
-            SignatureCollectionKeyPairType<Self>,
-        >,
-        msg: &[u8],
-    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-        let mut node_ids = HashSet::new();
-        let mut pub_keys = HashSet::new();
-
-        for sig in self.sigs.iter() {
-            if let Ok(pubkey) = sig.recover_pubkey(msg) {
-                pub_keys.insert(pubkey);
-            }
-        }
-
-        for (node_id, pk) in validator_mapping.map.iter() {
-            if pub_keys.contains(pk) {
-                node_ids.insert(*node_id);
-            }
-        }
-
-        node_ids
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -455,33 +415,6 @@ mod test {
         let signers_set = signers.iter().collect::<HashSet<_>>();
         let expected_set = valmap.map.keys().collect::<HashSet<_>>();
         assert_eq!(signers_set, expected_set);
-    }
-
-    #[test_case(1; "1 sig")]
-    #[test_case(5; "5 sigs")]
-    #[test_case(100; "100 sigs")]
-    fn test_get_participants(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
-            SignatureType,
-            SignatureCollectionType,
-            _,
-        >(num_keys, ValidatorSetFactory::default());
-        let voting_keys: Vec<_> = keys
-            .iter()
-            .map(CertificateKeyPair::pubkey)
-            .map(NodeId::new)
-            .zip(voting_keys)
-            .collect();
-
-        let msg_hash = Hash([129_u8; 32]);
-
-        let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
-
-        let signers = sigcol.get_participants(&valmap, msg_hash.as_ref());
-
-        let expected_set = valmap.map.into_keys().collect::<HashSet<_>>();
-        assert_eq!(signers, expected_set);
     }
 
     #[test_case(1; "1 sig")]

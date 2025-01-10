@@ -91,7 +91,6 @@ fn setup_block(
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
-            false, // is_null
         ),
         payload,
     )
@@ -286,7 +285,7 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
@@ -343,7 +342,7 @@ fn test_verify_author_not_sender() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
@@ -420,11 +419,11 @@ fn test_verify_invalid_signature() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let other_msg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: other_proposal,
     };
     // this causes error
@@ -478,7 +477,7 @@ fn test_verify_proposal_happy() {
     });
 
     let conmsg = ConsensusMessage {
-        version: "TEST".into(),
+        version: 1,
         message: proposal,
     };
     let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
@@ -1100,7 +1099,7 @@ fn test_validate_tc_invalid_tc_signature() {
         high_qc: QuorumCertificate::genesis_qc(),
     };
 
-    let tmo_digest = tmo_info.timeout_digest();
+    let tmo_digest = alloy_rlp::encode(tmo_info.timeout_digest());
 
     let (keys, certkeys, epoch_manager, val_epoch_map) =
         setup_val_state(known_epoch, known_round, val_epoch);
@@ -1152,7 +1151,6 @@ fn test_validate_tc_invalid_tc_signature() {
                 block_round,
                 &NopKeyPair::from_bytes(&mut [1_u8; 32]).unwrap(),
             ),
-            false, // is_null
         );
 
     let proposal = ProposalMessage {

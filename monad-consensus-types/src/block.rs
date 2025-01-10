@@ -5,14 +5,13 @@ use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hashable, Hasher, HasherType},
+    hasher::{Hasher, HasherType},
 };
 use monad_state_backend::{InMemoryState, StateBackend, StateBackendError};
 use monad_types::{
     BlockId, Epoch, ExecutionProtocol, FinalizedHeader, MockableFinalizedHeader, NodeId, Round,
     SeqNum,
 };
-use zerocopy::AsBytes;
 
 use crate::{
     block_validator::BlockValidationError,
@@ -25,23 +24,16 @@ use crate::{
 pub const GENESIS_TIMESTAMP: u128 = 0;
 
 /// Represent a range of blocks the last of which is `last_block_id` and includes `num_blocks`.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct BlockRange {
     pub last_block_id: BlockId,
     pub num_blocks: SeqNum,
 }
 
-impl Hashable for BlockRange {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.last_block_id.hash(state);
-        state.update(self.num_blocks.as_bytes());
-    }
-}
-
 /// structure of the consensus block
 /// the payload field is used to carry the data of the block
 /// which is agnostic to the actual protocol of consensus
-#[derive(Clone)]
+#[derive(Clone, RlpDecodable, RlpEncodable)]
 pub struct ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -67,9 +59,6 @@ where
     pub execution_inputs: EPT::ProposedHeader,
     /// identifier for the transaction payload of this block
     pub block_body_id: ConsensusBlockBodyId,
-
-    // TODO delete once null blocks are gone
-    pub is_null: bool,
 }
 
 impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
@@ -80,7 +69,7 @@ where
 {
     pub fn get_id(&self) -> BlockId {
         let mut hasher = HasherType::new();
-        self.hash(&mut hasher);
+        hasher.update(alloy_rlp::encode(self));
         BlockId(hasher.hash())
     }
 
@@ -127,33 +116,6 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Hashable for ConsensusBlockHeader<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.round.as_bytes());
-        state.update(self.epoch.as_bytes());
-        state.update(self.qc.get_block_id().0.as_bytes());
-        state.update(self.qc.get_hash().as_bytes());
-        self.author.hash(state);
-        state.update(self.seq_num.as_bytes());
-        state.update(self.timestamp_ns.as_bytes());
-        state.update(self.round_signature.get_hash());
-
-        let delayed_execution_results = alloy_rlp::encode(&self.delayed_execution_results);
-        state.update(&delayed_execution_results);
-
-        let execution_inputs = alloy_rlp::encode(&self.delayed_execution_results);
-        state.update(&execution_inputs);
-
-        state.update(self.block_body_id.0.as_bytes());
-        state.update(self.is_null.as_bytes());
-    }
-}
-
 impl<ST, SCT, EPT> ConsensusBlockHeader<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -172,7 +134,6 @@ where
         seq_num: SeqNum,
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
-        is_null: bool,
     ) -> Self {
         Self {
             author,
@@ -185,13 +146,7 @@ where
             seq_num,
             timestamp_ns,
             round_signature,
-            is_null,
         }
-    }
-
-    // TODO delete once null blocks are gone
-    pub fn is_empty_block(&self) -> bool {
-        self.is_null
     }
 }
 
@@ -239,7 +194,7 @@ where
 
     // TODO delete this function, pass recently committed blocks to check_coherency instead
     // This way, BlockPolicy doesn't need to be mutated
-    fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>);
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>);
 }
 
 /// A block policy which does not validate the inner contents of the block
@@ -299,17 +254,11 @@ where
             } else {
                 (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
-        if block.header().is_empty_block() {
-            // Empty block doesn't occupy a sequence number
-            if block.get_seq_num() != extending_seq_num {
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-        } else {
-            // Non-empty blocks must extend their parent QC by 1
-            if block.get_seq_num() != extending_seq_num + SeqNum(1) {
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
+
+        if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+            return Err(BlockPolicyError::BlockNotCoherent);
         }
+
         if block.get_timestamp() <= extending_timestamp {
             // timestamps must be monotonically increasing
             return Err(BlockPolicyError::TimestampError);
@@ -348,17 +297,6 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-}
-
-impl<ST, SCT, EPT> Hashable for ConsensusFullBlock<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        self.header().get_id().hash(state);
-    }
 }
 
 impl<ST, SCT, EPT> ConsensusFullBlock<ST, SCT, EPT>
@@ -440,6 +378,7 @@ pub enum ExecutionResult<EPT>
 where
     EPT: ExecutionProtocol,
 {
+    Proposed(ProposedExecutionResult<EPT>),
     Finalized(SeqNum, EPT::FinalizedHeader),
 }
 
@@ -449,6 +388,7 @@ where
 {
     pub fn seq_num(&self) -> SeqNum {
         match self {
+            Self::Proposed(proposed) => proposed.seq_num,
             Self::Finalized(seq_num, _) => *seq_num,
         }
     }
@@ -492,4 +432,15 @@ impl MockableFinalizedHeader for MockExecutionFinalizedHeader {
     fn from_seq_num(seq_num: SeqNum) -> Self {
         Self { number: seq_num }
     }
+}
+
+#[derive(Debug)]
+pub enum OptimisticCommit<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Proposed(ConsensusFullBlock<ST, SCT, EPT>),
+    Finalized(ConsensusFullBlock<ST, SCT, EPT>),
 }

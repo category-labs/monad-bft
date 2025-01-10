@@ -9,14 +9,20 @@ use monad_proto::{
         basic::ProtoBlockBodyId,
         block::*,
         blocksync::ProtoBlockRange,
-        event::{proto_execution_result, ProtoExecutionResult, ProtoFinalizedExecutionResult},
+        event::{
+            proto_execution_result, ProtoExecutionResult, ProtoFinalizedExecutionResult,
+            ProtoProposedExecutionResult,
+        },
     },
 };
 use monad_types::ExecutionProtocol;
 
 use super::signing::{certificate_signature_to_proto, proto_to_certificate_signature};
 use crate::{
-    block::{BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult},
+    block::{
+        BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
+        ProposedExecutionResult,
+    },
     payload::{ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
     signature_collection::SignatureCollection,
 };
@@ -108,7 +114,6 @@ where
             // removed
             timestamp: value.timestamp_ns as u64,
             round_signature: Some(certificate_signature_to_proto(&value.round_signature.0)),
-            is_null: value.is_null,
         }
     }
 }
@@ -183,7 +188,6 @@ where
                         "BlockHeader.round_signature".to_owned(),
                     ))?,
             )?),
-            value.is_null,
         ))
     }
 }
@@ -264,6 +268,9 @@ where
 {
     fn from(value: &ExecutionResult<EPT>) -> Self {
         let event = match value {
+            ExecutionResult::Proposed(proposed) => {
+                proto_execution_result::Event::Proposed(proposed.into())
+            }
             ExecutionResult::Finalized(seq_num, result) => {
                 proto_execution_result::Event::Finalized(ProtoFinalizedExecutionResult {
                     seq_num: Some(seq_num.into()),
@@ -287,6 +294,9 @@ where
 
     fn try_from(value: ProtoExecutionResult) -> Result<Self, Self::Error> {
         let event = match value.event {
+            Some(proto_execution_result::Event::Proposed(proposed)) => {
+                Self::Proposed(proposed.try_into()?)
+            }
             Some(proto_execution_result::Event::Finalized(finalized)) => Self::Finalized(
                 finalized
                     .seq_num
@@ -306,5 +316,60 @@ where
         };
 
         Ok(event)
+    }
+}
+
+impl<EPT> From<&ProposedExecutionResult<EPT>> for ProtoProposedExecutionResult
+where
+    EPT: ExecutionProtocol,
+{
+    fn from(event: &ProposedExecutionResult<EPT>) -> Self {
+        Self {
+            block_id: Some((&event.block_id).into()),
+            seq_num: Some((&event.seq_num).into()),
+            round: Some((&event.round).into()),
+            result: {
+                let mut buf = BytesMut::new();
+                event.result.encode(&mut buf);
+                buf.into()
+            },
+        }
+    }
+}
+
+impl<EPT> TryFrom<ProtoProposedExecutionResult> for ProposedExecutionResult<EPT>
+where
+    EPT: ExecutionProtocol,
+{
+    type Error = ProtoError;
+
+    fn try_from(event: ProtoProposedExecutionResult) -> Result<Self, Self::Error> {
+        let block_id = event
+            .block_id
+            .ok_or(ProtoError::MissingRequiredField(
+                "ExecutionResultEvent.block_id".to_owned(),
+            ))?
+            .try_into()?;
+        let seq_num = event
+            .seq_num
+            .ok_or(ProtoError::MissingRequiredField(
+                "ExecutionResultEvent.seq_num".to_owned(),
+            ))?
+            .try_into()?;
+        let round = event
+            .round
+            .ok_or(ProtoError::MissingRequiredField(
+                "ExecutionResultEvent.round".to_owned(),
+            ))?
+            .try_into()?;
+        let result = EPT::FinalizedHeader::decode(&mut event.result.as_ref()).map_err(|_err| {
+            Self::Error::DeserializeError("ExecutionResultEvent.result".to_owned())
+        })?;
+        Ok(Self {
+            block_id,
+            seq_num,
+            round,
+            result,
+        })
     }
 }

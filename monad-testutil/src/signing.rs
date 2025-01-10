@@ -1,5 +1,6 @@
-use std::{collections::HashSet, marker::PhantomData};
+use std::marker::PhantomData;
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
     signature_collection::{
@@ -11,11 +12,11 @@ use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
     },
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    hasher::{Hashable, Hasher, HasherType},
 };
 use monad_types::NodeId;
 
-#[derive(Clone, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
     pubkey: Vec<CertificateSignaturePubKey<ST>>,
 }
@@ -26,10 +27,6 @@ impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
             pubkey: pubkeys.to_vec(),
         }
     }
-}
-
-impl<ST: CertificateSignatureRecoverable> Hashable for MockSignatures<ST> {
-    fn hash(&self, _state: &mut impl Hasher) {}
 }
 
 impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures<ST> {
@@ -45,10 +42,6 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
         _msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         Ok(Self { pubkey: Vec::new() })
-    }
-
-    fn get_hash(&self) -> Hash {
-        Default::default()
     }
 
     fn verify(
@@ -67,17 +60,6 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
             .iter()
             .map(|pubkey| NodeId::new(*pubkey))
             .collect())
-    }
-
-    fn get_participants(
-        &self,
-        _validator_mapping: &ValidatorMapping<
-            Self::NodeIdPubKey,
-            SignatureCollectionKeyPairType<Self>,
-        >,
-        _msg: &[u8],
-    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
-        HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId::new(*pubkey)))
     }
 
     fn num_signatures(&self) -> usize {

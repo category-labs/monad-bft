@@ -300,7 +300,6 @@ where
                     consensus_config: ConsensusConfig {
                         execution_delay: SeqNum::MAX,
                         proposal_txn_limit: args.proposal_size,
-                        proposal_gas_limit: 800_000_000,
                         delta: Duration::from_millis(args.delta_ms),
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),

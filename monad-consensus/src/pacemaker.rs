@@ -355,10 +355,13 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus_types::{timeout::TimeoutInfo, voting::Vote};
+    use monad_consensus_types::{
+        timeout::{TimeoutDigest, TimeoutInfo},
+        voting::Vote,
+    };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
-        hasher::{Hash, Hasher, HasherType},
+        hasher::Hash,
         NopSignature,
     };
     use monad_multi_sig::MultiSig;
@@ -368,7 +371,6 @@ mod test {
     };
     use monad_types::{BlockId, Epoch, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
-    use zerocopy::AsBytes;
 
     use super::*;
 
@@ -390,7 +392,7 @@ mod test {
             parent_round: Round(0),
         };
 
-        let vote_hash = HasherType::hash_object(&vote);
+        let vote_hash = alloy_rlp::encode(vote);
 
         let mut sigs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
@@ -737,11 +739,12 @@ mod test {
         assert!(tc.is_some());
 
         // assert the TC is created over the two valid timeouts
-        let mut hasher = HasherType::new();
-        hasher.update(Epoch(1).as_bytes());
-        hasher.update(Round(1).as_bytes());
-        hasher.update(Round(0).as_bytes());
-        let timeout_hash = hasher.hash();
+        let td = TimeoutDigest {
+            epoch: Epoch(1),
+            round: Round(1),
+            high_qc_round: Round(0),
+        };
+        let timeout_hash = alloy_rlp::encode(td);
         let tc = tc.unwrap();
         assert_eq!(tc.high_qc_rounds.len(), 1);
         let sc = tc.high_qc_rounds.first().unwrap().sigs.clone();

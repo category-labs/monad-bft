@@ -11,7 +11,7 @@ use monad_blocksync::messages::message::{
     BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncResponseMessage,
 };
 use monad_consensus_types::{
-    block::{BlockRange, ConsensusFullBlock},
+    block::{BlockRange, ConsensusFullBlock, OptimisticCommit},
     payload::ConsensusBlockBodyId,
     signature_collection::SignatureCollection,
 };
@@ -21,7 +21,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
 use monad_state_backend::InMemoryState;
-use monad_types::{BlockId, ExecutionProtocol, Round};
+use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
 
 pub trait MockableLedger:
     Executor<
@@ -45,7 +45,7 @@ pub trait MockableLedger:
     fn get_finalized_blocks(
         &self,
     ) -> &BTreeMap<
-        Round,
+        SeqNum,
         ConsensusFullBlock<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
     >;
 }
@@ -64,7 +64,7 @@ impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
     fn get_finalized_blocks(
         &self,
     ) -> &BTreeMap<
-        Round,
+        SeqNum,
         ConsensusFullBlock<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>,
     > {
         (**self).get_finalized_blocks()
@@ -79,6 +79,7 @@ where
 {
     blocks: BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>>,
     block_ids: HashMap<BlockId, Round>,
+    committed_blocks: BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EPT>>,
 
     events: VecDeque<BlockSyncEvent<ST, SCT, EPT>>,
 
@@ -98,6 +99,7 @@ where
         Self {
             blocks: Default::default(),
             block_ids: Default::default(),
+            committed_blocks: Default::default(),
             events: Default::default(),
 
             state_backend,
@@ -154,28 +156,41 @@ where
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
             match cmd {
-                LedgerCommand::LedgerCommit(blocks) => {
-                    for block in blocks {
-                        if !block.header().is_empty_block() {
-                            // mock ledger isn't used with real txs
-                            self.state_backend
-                                .lock()
-                                .unwrap()
-                                .ledger_commit(block.get_seq_num(), BTreeMap::default());
+                LedgerCommand::LedgerClearWal => {}
+                LedgerCommand::LedgerCommit(OptimisticCommit::Proposed(block)) => {
+                    self.state_backend.lock().unwrap().ledger_propose(
+                        block.get_id(),
+                        block.get_seq_num(),
+                        block.get_round(),
+                        block.get_parent_round(),
+                        BTreeMap::default(), // TODO parse out txs
+                    );
+                    match self.blocks.entry(block.get_round()) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            let block_id = block.get_id();
+                            let round = block.get_round();
+                            entry.insert(block);
+                            self.block_ids.insert(block_id, round);
                         }
+                        std::collections::btree_map::Entry::Occupied(mut entry) => {
+                            if entry.get() != &block {
+                                self.block_ids.remove(&entry.get().get_id());
 
-                        match self.blocks.entry(block.get_round()) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
                                 let block_id = block.get_id();
                                 let round = block.get_round();
                                 entry.insert(block);
                                 self.block_ids.insert(block_id, round);
                             }
-                            std::collections::btree_map::Entry::Occupied(entry) => {
-                                assert_eq!(entry.get(), &block, "two conflicting blocks committed")
-                            }
                         }
                     }
+                }
+                LedgerCommand::LedgerCommit(OptimisticCommit::Finalized(block)) => {
+                    self.committed_blocks
+                        .insert(block.get_seq_num(), block.clone());
+                    self.state_backend
+                        .lock()
+                        .unwrap()
+                        .ledger_commit(&block.get_id());
                 }
                 LedgerCommand::LedgerFetchHeaders(block_range) => {
                     self.events.push_back(BlockSyncEvent::SelfResponse {
@@ -234,7 +249,7 @@ where
         !self.events.is_empty()
     }
 
-    fn get_finalized_blocks(&self) -> &BTreeMap<Round, ConsensusFullBlock<ST, SCT, EPT>> {
-        &self.blocks
+    fn get_finalized_blocks(&self) -> &BTreeMap<SeqNum, ConsensusFullBlock<ST, SCT, EPT>> {
+        &self.committed_blocks
     }
 }

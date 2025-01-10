@@ -8,7 +8,6 @@ import "blocksync.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
-import "execution.proto";
 import "timeout.proto";
 import "validator_data.proto";
 
@@ -41,6 +40,13 @@ message ProtoScheduleTimeout {
 message ProtoUpdateValidatorsEvent {
   monad_proto.validator_data.ProtoValidatorSetData validator_set_data = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
+}
+
+message ProtoProposedExecutionResult {
+  monad_proto.basic.ProtoBlockId block_id = 2;
+  monad_proto.basic.ProtoSeqNum seq_num = 3;
+  monad_proto.basic.ProtoRound round = 4;
+  bytes result = 5;
 }
 
 message ProtoFinalizedExecutionResult {
@@ -113,6 +119,7 @@ message ProtoMempoolEvent {
 
 message ProtoExecutionResult {
   oneof event {
+    ProtoProposedExecutionResult proposed = 1;
     ProtoFinalizedExecutionResult finalized = 2;
   }
 }

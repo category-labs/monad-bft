@@ -19,7 +19,6 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_types::{
     Balance, EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS,
-    PROPOSAL_GAS_LIMIT,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -277,7 +276,7 @@ where
             beneficiary: beneficiary.into(),
             difficulty: 0,
             number: proposed_seq_num.0,
-            gas_limit: PROPOSAL_GAS_LIMIT,
+            gas_limit: proposal_gas_limit,
             timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],

@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display};
 
-use hasher::{Hashable, Hasher};
+use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 
 pub mod convert;
 pub mod hasher;
@@ -11,7 +11,9 @@ pub struct NopKeyPair {
     pubkey: NopPubKey,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, RlpDecodableWrapper, RlpEncodableWrapper,
+)]
 pub struct NopPubKey([u8; 32]);
 
 impl Debug for NopPubKey {
@@ -31,15 +33,8 @@ impl Display for NopPubKey {
 }
 
 /// NopSignature is an implementation of CertificateSignature that's not cryptographically secure
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 pub struct NopSignature {
     pub pubkey: NopPubKey,
     pub id: u64,
-}
-
-impl Hashable for NopSignature {
-    fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.pubkey.0);
-        state.update(self.id.to_le_bytes());
-    }
 }

@@ -1,9 +1,9 @@
 use std::{
-    ffi::OsStr,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{Read, Write},
     marker::PhantomData,
     path::PathBuf,
+    time::SystemTime,
 };
 
 use monad_consensus_types::{
@@ -14,9 +14,10 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_proto::proto::block::{ProtoBlockBody, ProtoBlockHeader};
-use monad_types::{BlockId, ExecutionProtocol};
-use prost::Message;
+use monad_types::{BlockId, ExecutionProtocol, Hash};
+
+pub const BLOCKDB_HEADER_EXTENSION: &str = ".header";
+pub const BLOCKDB_BODY_EXTENSION: &str = ".body";
 
 pub trait BlockPersist<ST, SCT, EPT>
 where
@@ -37,6 +38,10 @@ where
     ) -> std::io::Result<ConsensusBlockBody<EPT>>;
 }
 
+fn block_id_to_hex_prefix(hash: &Hash) -> String {
+    hex::encode(hash.0)
+}
+
 #[derive(Clone)]
 pub struct FileBlockPersist<ST, SCT, EPT>
 where
@@ -44,16 +49,9 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    block_dir_path: PathBuf,
-    payload_dir_path: PathBuf,
+    ledger_path: PathBuf,
 
     _pd: PhantomData<(ST, SCT, EPT)>,
-}
-
-pub fn is_valid_bft_block_header_path(filepath: &OsStr) -> bool {
-    filepath
-        .to_str()
-        .is_some_and(|filename| filename.ends_with(BLOCKDB_HEADER_EXTENSION))
 }
 
 impl<ST, SCT, EPT> FileBlockPersist<ST, SCT, EPT>
@@ -62,39 +60,34 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(block_dir_path: PathBuf, payload_dir_path: PathBuf) -> Self {
+    pub fn new(ledger_path: PathBuf) -> Self {
         Self {
-            block_dir_path,
-            payload_dir_path,
+            ledger_path,
 
             _pd: PhantomData,
         }
     }
 
-    pub fn read_bft_header_from_filepath(
-        &self,
-        filepath: &OsStr,
-    ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
-        assert!(is_valid_bft_block_header_path(filepath));
-        let mut file = File::open(filepath)?;
+    fn header_path(&self, block_id: &BlockId) -> PathBuf {
+        let mut file_path = PathBuf::from(&self.ledger_path);
+        file_path.push(format!(
+            "{}{}",
+            block_id_to_hex_prefix(&block_id.0),
+            BLOCKDB_HEADER_EXTENSION
+        ));
+        file_path
+    }
 
-        let size = file.metadata()?.len();
-        let mut buf = vec![0; size as usize];
-        file.read_exact(&mut buf)?;
-
-        // TODO maybe expect is too strict
-        let proto_block =
-            ProtoBlockHeader::decode(buf.as_slice()).expect("local protoblock decode");
-        let block: ConsensusBlockHeader<ST, SCT, EPT> = proto_block
-            .try_into()
-            .expect("proto_block to block should not be invalid");
-
-        Ok(block)
+    fn body_path(&self, body_id: &ConsensusBlockBodyId) -> PathBuf {
+        let mut file_path = PathBuf::from(&self.ledger_path);
+        file_path.push(format!(
+            "{}{}",
+            block_id_to_hex_prefix(&body_id.0),
+            BLOCKDB_BODY_EXTENSION
+        ));
+        file_path
     }
 }
-
-pub const BLOCKDB_HEADER_EXTENSION: &str = ".header";
-pub const BLOCKDB_PAYLOAD_EXTENSION: &str = ".body";
 
 impl<ST, SCT, EPT> BlockPersist<ST, SCT, EPT> for FileBlockPersist<ST, SCT, EPT>
 where
@@ -103,31 +96,31 @@ where
     EPT: ExecutionProtocol,
 {
     fn write_bft_header(&self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> std::io::Result<()> {
-        let proto_block: ProtoBlockHeader = block.into();
-        let encoded = proto_block.encode_to_vec();
+        let file_path = self.header_path(&block.get_id());
 
-        let filename = block.get_id().0.to_string();
-        let mut file_path = PathBuf::from(&self.block_dir_path);
-        file_path.push(format!("{}{}", filename, BLOCKDB_HEADER_EXTENSION));
-
-        // FIXME if already exists, don't recreate + update timestamp meta
+        if let Ok(existing_header) = OpenOptions::new().write(true).open(&file_path) {
+            existing_header
+                .set_modified(SystemTime::now())
+                .expect("failed to update timestamp meta of existing block header");
+            return Ok(());
+        }
         let mut f = File::create(file_path).unwrap();
-        f.write_all(&encoded).unwrap();
+        f.write_all(&alloy_rlp::encode(block)).unwrap();
 
         Ok(())
     }
 
-    fn write_bft_body(&self, payload: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
-        let proto_payload: ProtoBlockBody = payload.into();
-        let encoded = proto_payload.encode_to_vec();
+    fn write_bft_body(&self, body: &ConsensusBlockBody<EPT>) -> std::io::Result<()> {
+        let file_path = self.body_path(&body.get_id());
 
-        let filename = payload.get_id().0.to_string();
-        let mut file_path = PathBuf::from(&self.payload_dir_path);
-        file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
-
-        // FIXME if already exists, don't recreate + update timestamp meta
+        if let Ok(existing_body) = OpenOptions::new().write(true).open(&file_path) {
+            existing_body
+                .set_modified(SystemTime::now())
+                .expect("failed to update timestamp meta of existing block body");
+            return Ok(());
+        }
         let mut f = File::create(file_path).unwrap();
-        f.write_all(&encoded).unwrap();
+        f.write_all(&alloy_rlp::encode(body)).unwrap();
 
         Ok(())
     }
@@ -136,30 +129,33 @@ where
         &self,
         block_id: &BlockId,
     ) -> std::io::Result<ConsensusBlockHeader<ST, SCT, EPT>> {
-        let filename = block_id.0.to_string();
-        let mut file_path = PathBuf::from(&self.block_dir_path);
-        file_path.push(format!("{}{}", filename, BLOCKDB_HEADER_EXTENSION));
-        self.read_bft_header_from_filepath(file_path.as_os_str())
-    }
+        let file_path = self.header_path(block_id);
 
-    fn read_bft_body(
-        &self,
-        payload_id: &ConsensusBlockBodyId,
-    ) -> std::io::Result<ConsensusBlockBody<EPT>> {
-        let filename = payload_id.0.to_string();
-        let mut file_path = PathBuf::from(&self.payload_dir_path);
-        file_path.push(format!("{}{}", filename, BLOCKDB_PAYLOAD_EXTENSION));
         let mut file = File::open(file_path)?;
         let size = file.metadata()?.len();
         let mut buf = vec![0; size as usize];
         file.read_exact(&mut buf)?;
 
         // TODO maybe expect is too strict
-        let proto_body =
-            ProtoBlockBody::decode(buf.as_slice()).expect("local protoblockbody decode");
-        let body: ConsensusBlockBody<EPT> = proto_body
-            .try_into()
-            .expect("proto_body to body should not be invalid");
+        let block =
+            alloy_rlp::decode_exact(&buf).expect("local ledger consensus header decode failed");
+
+        Ok(block)
+    }
+
+    fn read_bft_body(
+        &self,
+        body_id: &ConsensusBlockBodyId,
+    ) -> std::io::Result<ConsensusBlockBody<EPT>> {
+        let file_path = self.body_path(body_id);
+        let mut file = File::open(file_path)?;
+        let size = file.metadata()?.len();
+        let mut buf = vec![0; size as usize];
+        file.read_exact(&mut buf)?;
+
+        // TODO maybe expect is too strict
+        let body =
+            alloy_rlp::decode_exact(&buf).expect("local ledger consensus body decode failed");
 
         Ok(body)
     }

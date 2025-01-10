@@ -7,7 +7,11 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-bls = { path = "../monad-bls" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
+monad-secp = { path = "../monad-secp" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-triedb = { path = "../monad-triedb" }
 monad-types = { path = "../monad-types" }
@@ -23,3 +27,4 @@ tracing = { workspace = true, features = ["log"] }
 monad-eth-testutil = { path = "../monad-eth-testutil" }
 
 clap = { workspace = true, features = ["derive"] }
+hex = { workspace = true }

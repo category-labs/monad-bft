@@ -4,10 +4,24 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::{hasher::Hashable, NopKeyPair, NopPubKey, NopSignature};
+use alloy_rlp::{Decodable, Encodable};
+
+use crate::{NopKeyPair, NopPubKey, NopSignature};
 
 pub trait PubKey:
-    Debug + Display + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
+    Debug
+    + Display
+    + Eq
+    + Hash
+    + Ord
+    + PartialOrd
+    + Copy
+    + Send
+    + Sync
+    + Unpin
+    + Encodable
+    + Decodable
+    + 'static
 {
     type Error: Display + Debug + Send + Sync;
     fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error>;
@@ -26,7 +40,7 @@ pub type CertificateSignaturePubKey<T> =
     <<T as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType;
 
 pub trait CertificateSignature:
-    Copy + Clone + Eq + Hashable + Debug + Hash + Send + Sync + Unpin + 'static
+    Copy + Clone + Eq + Debug + Hash + Send + Sync + Unpin + Encodable + Decodable + 'static
 {
     type KeyPairType: CertificateKeyPair;
     type Error: Display + Debug + Send + Sync;

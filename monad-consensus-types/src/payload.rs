@@ -7,20 +7,19 @@ use monad_crypto::{
 };
 use monad_types::{ExecutionProtocol, Round};
 use serde::{Deserialize, Serialize};
-use zerocopy::AsBytes;
 
 /// Max proposal size in bytes (average transactions ~400 bytes)
 pub const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
 
 /// randao_reveal uses a proposer's public key to contribute randomness
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct RoundSignature<CST: CertificateSignature>(pub CST);
 
 impl<CST: CertificateSignature> RoundSignature<CST> {
     /// TODO should this incorporate parent_block_id to increase "randomness"?
     pub fn new(round: Round, keypair: &CST::KeyPairType) -> Self {
-        let encoded_round = round.as_bytes();
-        Self(CST::sign(encoded_round, keypair))
+        let encoded_round = alloy_rlp::encode(round);
+        Self(CST::sign(&encoded_round, keypair))
     }
 
     pub fn verify(
@@ -28,13 +27,13 @@ impl<CST: CertificateSignature> RoundSignature<CST> {
         round: Round,
         pubkey: &CertificateSignaturePubKey<CST>,
     ) -> Result<(), CST::Error> {
-        let encoded_round = round.as_bytes();
-        self.0.verify(encoded_round, pubkey)
+        let encoded_round = alloy_rlp::encode(round);
+        self.0.verify(&encoded_round, pubkey)
     }
 
     pub fn get_hash(&self) -> Hash {
         let mut hasher = HasherType::new();
-        hasher.update(self.0.serialize());
+        hasher.update(alloy_rlp::encode(self));
         hasher.hash()
     }
 }

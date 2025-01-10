@@ -4,8 +4,7 @@ const BFT_BLOCK_PREFIX: &str = "bft_block/";
 
 pub async fn bft_block_archive_worker(
     store: BlobStoreErased,
-    header_path: PathBuf,
-    body_path: PathBuf,
+    block_path: PathBuf,
     poll_frequency: Duration,
     metrics: Metrics,
 ) -> Result<()> {
@@ -18,13 +17,12 @@ pub async fn bft_block_archive_worker(
         sleep(poll_frequency).await;
         info!("Checking for bft blocks to upload...");
 
-        let to_upload = match find_unuploaded_blocks(&uploaded, &header_path, &body_path).await {
+        let to_upload = match find_unuploaded_blocks(&uploaded, &block_path).await {
             Ok(x) => x,
             Err(e) => {
                 error!(
                     ?e,
-                    ?header_path,
-                    ?body_path,
+                    ?block_path,
                     "Failed to scan directory for bft blocks, sleeping..."
                 );
                 continue;
@@ -100,11 +98,10 @@ async fn upload(store: BlobStoreErased, path: PathBuf) -> Option<futures::future
 
 async fn find_unuploaded_blocks(
     uploaded: &HashSet<OsString>,
-    header_path: &Path,
-    body_path: &Path,
+    block_path: &Path,
 ) -> Result<Vec<PathBuf>> {
     let mut to_upload = Vec::new();
-    let mut read_dir = tokio::fs::read_dir(header_path).await?;
+    let mut read_dir = tokio::fs::read_dir(block_path).await?;
     while let Some(entry) = read_dir.next_entry().await? {
         let meta = entry.metadata().await?;
         let fname = entry.file_name();
@@ -113,20 +110,6 @@ async fn find_unuploaded_blocks(
             to_upload.push(entry.path());
         } else {
             debug!(?fname, "Found file, won't upload");
-        }
-    }
-
-    if body_path != header_path {
-        let mut read_dir = tokio::fs::read_dir(body_path).await?;
-        while let Some(entry) = read_dir.next_entry().await? {
-            let meta = entry.metadata().await?;
-            let fname = entry.file_name();
-            if meta.is_file() && fname != "wal" && !uploaded.contains(&fname) {
-                debug!(?fname, "Found file to upload");
-                to_upload.push(entry.path());
-            } else {
-                debug!(?fname, "Found file, won't upload");
-            }
         }
     }
 
@@ -157,8 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bft_block_archive_worker() {
-        let header_dir = tempdir().unwrap();
-        let body_dir = tempdir().unwrap();
+        let block_dir = tempdir().unwrap();
         let store: BlobStoreErased = MemoryStorage::new("test").into();
         let metrics = Metrics::none();
 
@@ -169,14 +151,14 @@ mod tests {
 
         // Write header files
         for fname in &header_files {
-            fs::write(header_dir.path().join(fname), &test_content)
+            fs::write(block_dir.path().join(fname), &test_content)
                 .await
                 .unwrap();
         }
 
         // Write body files
         for fname in &body_files {
-            fs::write(body_dir.path().join(fname), &test_content)
+            fs::write(block_dir.path().join(fname), &test_content)
                 .await
                 .unwrap();
         }
@@ -186,8 +168,7 @@ mod tests {
         let worker_handle = tokio::spawn(async move {
             let _ = bft_block_archive_worker(
                 store_clone,
-                header_dir.path().to_owned(),
-                body_dir.path().to_owned(),
+                block_dir.path().to_owned(),
                 Duration::from_millis(100),
                 metrics,
             )
@@ -232,7 +213,6 @@ mod tests {
 
         let output = find_unuploaded_blocks(
             &HashSet::from_iter(uploaded.iter().map(|s| OsString::from_str(s).unwrap())),
-            dir.path(),
             dir.path(),
         )
         .await

@@ -235,6 +235,12 @@ uint64_t triedb_latest_finalized_block(triedb *db)
     return latest_block_id;
 }
 
+uint64_t triedb_latest_verified_block(triedb *db)
+{
+    uint64_t latest_block_id = db->db_.get_latest_verified_block_id();
+    return latest_block_id;
+}
+
 uint64_t triedb_earliest_finalized_block(triedb *db)
 {
     uint64_t earliest_block_id = db->db_.get_earliest_block_id();

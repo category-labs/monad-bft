@@ -12,12 +12,9 @@ use monad_consensus_types::{
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote},
 };
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable,
-    },
-    hasher::{Hasher, HasherType},
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 use monad_types::{Epoch, ExecutionProtocol, MockableProposedHeader, NodeId, Round, SeqNum};
 use monad_validator::{
@@ -73,6 +70,10 @@ where
             phantom: PhantomData,
         }
     }
+    pub fn with_timestamp(mut self, timestamp: u128) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
 
     pub fn next_proposal<
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -84,7 +85,6 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
-        is_null: bool,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
     ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
@@ -113,12 +113,7 @@ where
             })
             .expect("key not in valset");
 
-        let seq_num = if is_null {
-            last_seq_num
-        } else {
-            last_seq_num + SeqNum(1)
-        };
-
+        let seq_num = last_seq_num + SeqNum(1);
         let round_signature = RoundSignature::new(self.round, leader_certkey);
         let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
             execution_body: EPT::Body::default(),
@@ -128,17 +123,12 @@ where
             self.epoch,
             self.round,
             delayed_execution_results,
-            if is_null {
-                EPT::ProposedHeader::default()
-            } else {
-                EPT::ProposedHeader::create(seq_num, self.timestamp, round_signature.get_hash().0)
-            },
+            EPT::ProposedHeader::create(seq_num, self.timestamp, round_signature.get_hash().0),
             block_body.get_id(),
             qc.clone(),
             seq_num,
             self.timestamp,
             round_signature,
-            is_null,
         );
 
         let validator_cert_pubkeys = val_epoch_map
@@ -192,7 +182,7 @@ where
             high_qc: self.high_qc.clone(),
         };
 
-        let tmo_digest = tminfo.timeout_digest();
+        let tmo_digest = alloy_rlp::encode(tminfo.timeout_digest());
         // aggregate all tmo signatures into one collection because all nodes share a global state
         // in reality we don't have this configuration because timeout messages
         // can't all contain TC carrying signatures from all validators. It's fine
@@ -249,7 +239,7 @@ where
             parent_round: block.qc.get_round(),
         };
 
-        let msg = HasherType::hash_object(&vote);
+        let msg = alloy_rlp::encode(vote);
 
         let mut sigs = Vec::new();
         for ck in certkeys {

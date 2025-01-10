@@ -11,15 +11,14 @@ use monad_consensus_types::{
     checkpoint::RootInfo,
     signature_collection::SignatureCollection,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    hasher::{Hashable, Hasher},
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce, PROPOSAL_GAS_LIMIT};
 use monad_state_backend::{StateBackend, StateBackendError};
-use monad_types::{SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -216,16 +215,6 @@ where
 {
 }
 
-impl<ST, SCT> Hashable for EthValidatedBlock<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    fn hash(&self, state: &mut impl Hasher) {
-        self.block.get_id().hash(state);
-    }
-}
-
 impl<ST, SCT> AccountNonceRetrievable for EthValidatedBlock<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -284,8 +273,17 @@ impl BlockTxnFees {
 }
 
 #[derive(Debug)]
+struct CommittedBlock {
+    block_id: BlockId,
+    round: Round,
+
+    nonces: BlockAccountNonce,
+    fees: BlockTxnFees,
+}
+
+#[derive(Debug)]
 struct CommittedBlkBuffer<ST, SCT> {
-    blocks: SortedVectorMap<SeqNum, (BlockAccountNonce, BlockTxnFees)>,
+    blocks: SortedVectorMap<SeqNum, CommittedBlock>,
     size: usize, // should be execution delay
 
     _phantom: PhantomData<(ST, SCT)>,
@@ -313,8 +311,8 @@ where
     fn get_nonce(&self, eth_address: &Address) -> Option<Nonce> {
         let mut maybe_account_nonce = None;
 
-        for (_, (account_nonces, _)) in self.blocks.iter() {
-            if let Some(nonce) = account_nonces.get(eth_address) {
+        for block in self.blocks.values() {
+            if let Some(nonce) = block.nonces.get(eth_address) {
                 if let Some(old_account_nonce) = maybe_account_nonce {
                     assert!(nonce > old_account_nonce);
                 }
@@ -333,9 +331,9 @@ where
         let mut next_validate = base_seq_num + SeqNum(1);
 
         // start iteration from base_seq_num (non inclusive)
-        for (&cache_seq_num, (_nonce, block_txn_fees)) in self.blocks.range(next_validate..) {
+        for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
             assert_eq!(next_validate, cache_seq_num);
-            if let Some(account_txn_fee) = block_txn_fees.get(eth_address) {
+            if let Some(account_txn_fee) = block.fees.get(eth_address) {
                 txn_fee = checked_sum(txn_fee, account_txn_fee);
             }
             next_validate += SeqNum(1);
@@ -370,14 +368,16 @@ where
             .blocks
             .insert(
                 block_number,
-                (
-                    BlockAccountNonce {
+                CommittedBlock {
+                    block_id: block.get_id(),
+                    round: block.get_round(),
+                    nonces: BlockAccountNonce {
                         nonces: block.get_account_nonces(),
                     },
-                    BlockTxnFees {
+                    fees: BlockTxnFees {
                         txn_fees: block.txn_fees.clone()
                     }
-                ),
+                },
             )
             .is_none());
     }
@@ -392,7 +392,7 @@ where
     /// SeqNum of last committed block
     last_commit: SeqNum,
 
-    // last execution-delay committed transactions
+    // last execution-delay committed blocks
     committed_cache: CommittedBlkBuffer<ST, SCT>,
 
     /// Cost for including transaction in the consensus
@@ -407,7 +407,11 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(last_commit: SeqNum, execution_delay: u64, chain_id: u64) -> Self {
+    pub fn new(
+        last_commit: SeqNum, // TODO deprecate
+        execution_delay: u64,
+        chain_id: u64,
+    ) -> Self {
         Self {
             committed_cache: CommittedBlkBuffer::new(execution_delay as usize),
             last_commit,
@@ -453,8 +457,12 @@ where
         // when purging, we never purge nonces newer than last_commit - delay
 
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
-        let cache_miss_statuses =
-            state_backend.get_account_statuses(base_seq_num, cache_misses.iter().copied())?;
+        let cache_miss_statuses = self.get_account_statuses(
+            state_backend,
+            &Some(extending_blocks),
+            cache_misses.iter().copied(),
+            &base_seq_num,
+        )?;
         account_nonces.extend(
             cache_misses
                 .into_iter()
@@ -469,6 +477,50 @@ where
         self.last_commit
     }
 
+    fn get_account_statuses<'a>(
+        &self,
+        state_backend: &impl StateBackend,
+        extending_blocks: &Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
+        addresses: impl Iterator<Item = &'a Address>,
+        base_seq_num: &SeqNum,
+    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+        let (base_block_id, base_block_round, base_block_is_finalized) = if base_seq_num
+            <= &self.last_commit
+        {
+            debug!(
+                ?base_seq_num,
+                last_commit = self.last_commit.0,
+                "base seq num committed"
+            );
+            if base_seq_num == &GENESIS_SEQ_NUM {
+                (GENESIS_BLOCK_ID, GENESIS_ROUND, true)
+            } else {
+                let committed_block = &self
+                    .committed_cache
+                    .blocks
+                    .get(base_seq_num)
+                    .unwrap_or_else(|| panic!("queried recently committed block that doesn't exist, base_seq_num={:?}, last_commit={:?}", base_seq_num, self.last_commit));
+                (committed_block.block_id, committed_block.round, true)
+            }
+        } else if let Some(extending_blocks) = extending_blocks {
+            debug!(?base_seq_num, "base seq num proposed");
+            let proposed_block = extending_blocks
+                .iter()
+                .find(|block| &block.get_seq_num() == base_seq_num)
+                .expect("extending block doesn't exist");
+            (proposed_block.get_id(), proposed_block.get_round(), false)
+        } else {
+            return Err(StateBackendError::NotAvailableYet);
+        };
+        state_backend.get_account_statuses(
+            &base_block_id,
+            base_seq_num,
+            &base_block_round,
+            base_block_is_finalized,
+            addresses,
+        )
+    }
+
     // Computes account balance available for the account
     pub fn compute_account_base_balances<'a>(
         &self,
@@ -480,15 +532,6 @@ where
     where
         SCT: SignatureCollection,
     {
-        // TODO this is error-prone, easy to forget
-        // TODO write tests that fail if this doesn't exist
-        let extending_blocks = extending_blocks.map(|extending_blocks| {
-            extending_blocks
-                .iter()
-                .filter(|block| !block.header().is_empty_block())
-                .collect_vec()
-        });
-
         trace!(block = consensus_block_seq_num.0, "compute_base_balance");
 
         // calculation correct only if GENESIS_SEQ_NUM == 0
@@ -496,8 +539,13 @@ where
         let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
 
         let addresses = addresses.unique().collect_vec();
-        let account_balances = state_backend
-            .get_account_statuses(base_seq_num, addresses.iter().copied())?
+        let account_balances = self
+            .get_account_statuses(
+                state_backend,
+                &extending_blocks,
+                addresses.iter().copied(),
+                &base_seq_num,
+            )?
             .into_iter()
             .map(|maybe_status| maybe_status.map_or(0, |status| status.balance))
             .collect_vec();
@@ -509,7 +557,7 @@ where
                 // Apply Txn Fees for the txns from committed blocks
                 let CommittedTxnFeeResult {
                     txn_fee: txn_fee_committed,
-                    next_validate,
+                    mut next_validate,
                 } = self.committed_cache.compute_txn_fee(base_seq_num, address);
 
                 let txn_fee_committed_u128 = checked_from(txn_fee_committed);
@@ -540,22 +588,17 @@ where
 
                 // Apply Txn Fees for txns in extending blocks
                 let mut txn_fee_pending: U256 = U256::ZERO;
-                if let Some(blocks) = &extending_blocks {
-                    if let Some(first_block) = blocks.first() {
-                        assert_eq!(
-                            first_block.get_seq_num(),
-                            next_validate,
-                            "consensus sq {:?}\n first block {:?}\n committed_cache {:?}\n",
-                            consensus_block_seq_num,
-                            first_block,
-                            self.committed_cache
-                        );
-                    }
-
-                    for extending_block in blocks {
+                if let Some(blocks) = extending_blocks {
+                    // handle the case where base_seq_num is a pending block
+                    let next_blocks = blocks
+                        .iter()
+                        .skip_while(move |block| block.get_seq_num() < next_validate);
+                    for extending_block in next_blocks {
+                        assert_eq!(next_validate, extending_block.get_seq_num());
                         if let Some(txn_fee) = extending_block.txn_fees.get(address) {
                             txn_fee_pending = checked_sum(txn_fee_pending, *txn_fee);
                         }
+                        next_validate += SeqNum(1);
                     }
                 }
 
@@ -574,10 +617,10 @@ where
                     account_balance -= txn_fee_pending_u128;
                     trace!(
                         "AccountBalance compute 6: \
-                    updated balance to: {:?} \
-                    Txn Fees Pending: {:?} \
-                    consensus block:seq num {:?} \
-                    for address: {:?}",
+                            updated balance to: {:?} \
+                            Txn Fees Pending: {:?} \
+                            consensus block:seq num {:?} \
+                            for address: {:?}",
                         account_balance,
                         txn_fee_pending_u128,
                         consensus_block_seq_num,
@@ -612,17 +655,12 @@ where
         state_backend: &SBT,
     ) -> Result<(), BlockPolicyError> {
         trace!(?block, "check_coherency");
-        // TODO: short circuit check_coherency for null blocks
         let first_block = extending_blocks
             .iter()
             .chain(std::iter::once(&block))
             .next()
             .unwrap();
-        if first_block.header().is_empty_block() {
-            assert_eq!(first_block.get_seq_num(), self.last_commit);
-        } else {
-            assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
-        }
+        assert_eq!(first_block.get_seq_num(), self.last_commit + SeqNum(1));
 
         // check coherency against the block being extended or against the root of the blocktree if
         // there is no extending branch
@@ -632,25 +670,14 @@ where
             } else {
                 (blocktree_root.seq_num, 0) //TODO: add timestamp to RootInfo
             };
-        if block.header().is_empty_block() {
-            // Empty block doesn't occupy a sequence number
-            if block.get_seq_num() != extending_seq_num {
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
-        } else {
-            // Non-empty blocks must extend their parent QC by 1
-            if block.get_seq_num() != extending_seq_num + SeqNum(1) {
-                return Err(BlockPolicyError::BlockNotCoherent);
-            }
+
+        if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+            return Err(BlockPolicyError::BlockNotCoherent);
         }
+
         if block.get_timestamp() <= extending_timestamp {
             // timestamps must be monotonically increasing
             return Err(BlockPolicyError::TimestampError);
-        }
-
-        // TODO delete once null blocks are gone
-        if block.header().is_empty_block() {
-            return Ok(());
         }
 
         // TODO fix this unnecessary copy into a new vec to generate an owned Address
@@ -725,24 +752,14 @@ where
     }
 
     fn update_committed_block(&mut self, block: &Self::ValidatedBlock) {
-        if block.header().is_empty_block() {
-            // TODO this is error-prone, easy to forget
-            // TODO write tests that fail if this doesn't exist
-            return;
-        }
         assert_eq!(block.get_seq_num(), self.last_commit + SeqNum(1));
         self.last_commit = block.get_seq_num();
         self.committed_cache.update_committed_block(block);
     }
 
-    fn reset(&mut self, last_delay_non_null_committed_blocks: Vec<&Self::ValidatedBlock>) {
+    fn reset(&mut self, last_delay_committed_blocks: Vec<&Self::ValidatedBlock>) {
         self.committed_cache = CommittedBlkBuffer::new(self.committed_cache.size);
-        // TODO this is error-prone, easy to forget
-        // TODO write tests that fail if this doesn't exist
-        let blocks = last_delay_non_null_committed_blocks
-            .into_iter()
-            .filter(|block| !block.header().is_empty_block());
-        for block in blocks {
+        for block in last_delay_committed_blocks {
             self.last_commit = block.get_seq_num();
             self.committed_cache.update_committed_block(block);
         }
@@ -757,7 +774,7 @@ mod test {
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::SeqNum;
+    use monad_types::{Hash, SeqNum};
 
     use super::*;
 
@@ -780,41 +797,47 @@ mod test {
 
         // add committed blocks to buffer
         let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
-        let block1 = (
-            BlockAccountNonce {
+        let block1 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(100)),
                     (address2, U256::from(200)),
                 ]),
             },
-        );
+        };
 
-        let block2 = (
-            BlockAccountNonce {
+        let block2 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(150)),
                     (address3, U256::from(300)),
                 ]),
             },
-        );
+        };
 
-        let block3 = (
-            BlockAccountNonce {
+        let block3 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address2, U256::from(250)),
                     (address3, U256::from(350)),
                 ]),
             },
-        );
+        };
 
         buffer.blocks.insert(SeqNum(1), block1);
         buffer.blocks.insert(SeqNum(2), block2);
@@ -859,41 +882,47 @@ mod test {
 
         // add committed blocks to buffer
         let mut buffer = CommittedBlkBuffer::<SignatureType, SignatureCollectionType>::new(3);
-        let block1 = (
-            BlockAccountNonce {
+        let block1 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 1), (address2, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(u128::MAX - 1)),
                     (address2, U256::from(u128::MAX)),
                 ]),
             },
-        );
+        };
 
-        let block2 = (
-            BlockAccountNonce {
+        let block2 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address1, 2), (address3, 1)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(1)),
                     (address3, U256::from(u128::MAX / 2)),
                 ]),
             },
-        );
+        };
 
-        let block3 = (
-            BlockAccountNonce {
+        let block3 = CommittedBlock {
+            block_id: BlockId(Hash(Default::default())),
+            round: Round(0),
+            nonces: BlockAccountNonce {
                 nonces: BTreeMap::from([(address2, 2), (address3, 2)]),
             },
-            BlockTxnFees {
+            fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address2, U256::from(u128::MAX)),
                     (address3, U256::from(u128::MAX / 2 + 1)),
                 ]),
             },
-        );
+        };
 
         buffer.blocks.insert(SeqNum(1), block1);
         buffer.blocks.insert(SeqNum(2), block2);

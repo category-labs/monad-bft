@@ -29,11 +29,10 @@ async fn main() -> Result<()> {
     let block_data_source = args.block_data_source.build(&metrics).await?;
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
 
-    if let Some(path) = args.bft_block_body_path {
+    if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
         tokio::spawn(bft_block_archive_worker(
             archive_writer.store.clone(),
-            args.bft_block_header_path.unwrap_or(path.clone()),
             path,
             Duration::from_secs(args.bft_block_poll_freq_secs),
             metrics.clone(),

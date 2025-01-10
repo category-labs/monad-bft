@@ -4176,11 +4176,11 @@ dependencies = [
 name = "monad-block-persist"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
+ "hex",
  "monad-consensus-types",
  "monad-crypto",
- "monad-proto",
  "monad-types",
- "prost 0.12.6",
 ]
 
 [[package]]
@@ -4204,7 +4204,6 @@ dependencies = [
  "rand_chacha",
  "test-case",
  "tracing",
- "zerocopy 0.6.5",
 ]
 
 [[package]]
@@ -4217,13 +4216,13 @@ dependencies = [
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
- "tracing",
 ]
 
 [[package]]
 name = "monad-bls"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bitvec",
  "blst",
  "criterion",
@@ -4266,6 +4265,8 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
+ "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
@@ -4276,7 +4277,6 @@ dependencies = [
  "monad-validator",
  "test-case",
  "tracing",
- "zerocopy 0.6.5",
 ]
 
 [[package]]
@@ -4319,7 +4319,6 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
- "zerocopy 0.6.5",
 ]
 
 [[package]]
@@ -4592,6 +4591,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bincode",
  "bytes",
  "chrono",
@@ -4661,10 +4661,6 @@ dependencies = [
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-rlp",
  "futures",
  "monad-block-persist",
  "monad-blocksync",
@@ -4733,6 +4729,7 @@ dependencies = [
 name = "monad-multi-sig"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
  "monad-proto",
@@ -4967,6 +4964,7 @@ dependencies = [
 name = "monad-secp"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "criterion",
  "hex",
  "monad-crypto",
@@ -4981,6 +4979,7 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "itertools 0.10.5",
  "monad-blocksync",
@@ -4990,6 +4989,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor-glue",
  "monad-proto",
  "monad-secp",
@@ -5069,6 +5069,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -5125,8 +5126,12 @@ dependencies = [
  "clap 4.4.10",
  "futures",
  "hex",
+ "monad-bls",
+ "monad-consensus-types",
+ "monad-crypto",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-secp",
  "monad-state-backend",
  "monad-triedb",
  "monad-types",

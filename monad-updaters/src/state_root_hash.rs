@@ -8,7 +8,8 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::ExecutionResult, signature_collection::SignatureCollection,
+    block::{ExecutionResult, ProposedExecutionResult},
+    signature_collection::SignatureCollection,
     validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
@@ -17,7 +18,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, ExecutionProtocol, MockableFinalizedHeader, SeqNum, Stake};
-use tracing::{debug, error};
+use tracing::error;
 
 pub trait MockableStateRootHash:
     Executor<Command = StateRootHashCommand<Self::SignatureCollection>>
@@ -107,6 +108,23 @@ where
         self.enable_updates = on;
         self
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval) {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = Some(ValidatorSetUpdate {
+                epoch: locked_epoch,
+                validator_data: self.genesis_validator_data.clone(),
+            });
+        }
+    }
 }
 
 impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashNop<ST, SCT, EPT>
@@ -154,28 +172,23 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
-                    debug!("commit block {:?}", seq_num);
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
+                    self.state_root_update.push_back(ExecutionResult::Proposed(
+                        ProposedExecutionResult {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
+                        },
+                    ));
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
                     self.state_root_update.push_back(ExecutionResult::Finalized(
                         seq_num,
                         EPT::FinalizedHeader::from_seq_num(seq_num),
                     ));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: self.genesis_validator_data.clone(),
-                        });
-                    }
-
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {
@@ -302,6 +315,30 @@ where
             phantom: PhantomData,
         }
     }
+
+    fn jank_update_valset(&mut self, seq_num: SeqNum) {
+        if seq_num.is_epoch_end(self.val_set_update_interval) {
+            if self.next_val_data.is_some() {
+                error!("Validator set data is not consumed");
+            }
+            let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
+            assert_eq!(
+                locked_epoch,
+                seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+            );
+            self.next_val_data = if locked_epoch.0 % 2 == 0 {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_1.clone(),
+                })
+            } else {
+                Some(ValidatorSetUpdate {
+                    epoch: locked_epoch,
+                    validator_data: self.val_data_2.clone(),
+                })
+            };
+        }
+    }
 }
 
 impl<ST, SCT, EPT> MockableStateRootHash for MockStateRootHashSwap<ST, SCT, EPT>
@@ -363,33 +400,23 @@ where
                         self.state_root_update.pop_front().unwrap();
                     }
                 }
-                StateRootHashCommand::Request(seq_num) => {
+                StateRootHashCommand::RequestProposed(block_id, seq_num, round) => {
+                    self.state_root_update.push_back(ExecutionResult::Proposed(
+                        ProposedExecutionResult {
+                            block_id,
+                            seq_num,
+                            round,
+                            result: EPT::FinalizedHeader::from_seq_num(seq_num),
+                        },
+                    ));
+                    wake = true;
+                }
+                StateRootHashCommand::RequestFinalized(seq_num) => {
                     self.state_root_update.push_back(ExecutionResult::Finalized(
                         seq_num,
                         EPT::FinalizedHeader::from_seq_num(seq_num),
                     ));
-
-                    if seq_num.is_epoch_end(self.val_set_update_interval) {
-                        if self.next_val_data.is_some() {
-                            error!("Validator set data is not consumed");
-                        }
-                        let locked_epoch = seq_num.get_locked_epoch(self.val_set_update_interval);
-                        assert_eq!(
-                            locked_epoch,
-                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
-                        );
-                        self.next_val_data = if locked_epoch.0 % 2 == 0 {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_1.clone(),
-                            })
-                        } else {
-                            Some(ValidatorSetUpdate {
-                                epoch: locked_epoch,
-                                validator_data: self.val_data_2.clone(),
-                            })
-                        };
-                    }
+                    self.jank_update_valset(seq_num);
                     wake = true;
                 }
                 StateRootHashCommand::UpdateValidators(_) => {

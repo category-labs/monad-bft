@@ -5,12 +5,9 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    voting::ValidatorMapping,
+    voting::{ValidatorMapping, Vote},
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignature, PubKey},
-    hasher::{Hash, Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::{CertificateSignature, PubKey};
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{debug, error, info, warn};
@@ -31,9 +28,9 @@ pub struct VoteState<SCT: SignatureCollection> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct RoundVoteState<PT: PubKey, ST: CertificateSignature> {
-    /// Pending votes, keyed by vote hash
+    /// Pending votes, keyed by vote
     /// It's possible for a Node to have pending votes in multiple buckets if they're malicious
-    pending_votes: HashMap<Hash, BTreeMap<NodeId<PT>, ST>>,
+    pending_votes: HashMap<Vote, BTreeMap<NodeId<PT>, ST>>,
     // All vote hashes each node has voted on; multiple vote hashes for a given node implies
     // they're malicious
     node_votes: HashMap<NodeId<PT>, HashSet<ST>>,
@@ -92,8 +89,6 @@ where
             return (None, ret_commands);
         }
 
-        let vote_idx = HasherType::hash_object(&vote);
-
         // pending votes for a given round + vote hash
         let round_state = self.pending_votes.entry(round).or_default();
         let node_votes = round_state.node_votes.entry(*author).or_default();
@@ -103,7 +98,7 @@ where
         }
 
         // pending votes for a given round + vote hash
-        let round_pending_votes = round_state.pending_votes.entry(vote_idx).or_default();
+        let round_pending_votes = round_state.pending_votes.entry(vote).or_default();
         round_pending_votes.insert(*author, vote_msg.sig);
 
         debug!(
@@ -119,12 +114,13 @@ where
             .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
         {
             assert!(round >= self.earliest_round);
+            let vote_enc = alloy_rlp::encode(vote);
             match SCT::new(
                 round_pending_votes
                     .iter()
                     .map(|(node, signature)| (*node, *signature)),
                 validator_mapping,
-                vote_idx.as_ref(),
+                vote_enc.as_ref(),
             ) {
                 Ok(sigcol) => {
                     let qc = QuorumCertificate::<SCT>::new(vote, sigcol);
@@ -194,7 +190,7 @@ mod test {
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
-        hasher::{Hash, Hasher, HasherType},
+        hasher::Hash,
         NopSignature,
     };
     use monad_multi_sig::MultiSig;
@@ -356,7 +352,7 @@ mod test {
         let v1_valid = create_vote_message(&certkeys[1], vote_round, true);
         let v2_invalid = create_vote_message(&certkeys[2], vote_round, false);
 
-        let vote_idx = HasherType::hash_object(&v0_valid.vote);
+        let vote = v0_valid.vote;
 
         let (qc, _) =
             votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
@@ -367,7 +363,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 1
@@ -382,7 +378,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 2
@@ -399,7 +395,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 2
@@ -439,7 +435,7 @@ mod test {
         let v1_invalid = create_vote_message(&certkeys[1], vote_round, false);
         let v2_valid = create_vote_message(&certkeys[2], vote_round, true);
 
-        let vote_idx = HasherType::hash_object(&v0_valid.vote);
+        let vote = v0_valid.vote;
 
         let (qc, _) =
             votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
@@ -450,7 +446,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 1
@@ -467,7 +463,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 2
@@ -482,7 +478,7 @@ mod test {
         assert_eq!(
             qc.unwrap()
                 .signatures
-                .verify(&vmap, vote_idx.as_ref())
+                .verify(&vmap, &alloy_rlp::encode(vote))
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>(),
@@ -497,7 +493,7 @@ mod test {
                 .get(&vote_round)
                 .unwrap()
                 .pending_votes
-                .get(&vote_idx)
+                .get(&vote)
                 .unwrap()
                 .len()
                 == 2

@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     marker::PhantomData,
 };
 
+use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bitvec::prelude::*;
 use monad_consensus_types::{
     signature_collection::{
@@ -10,10 +11,7 @@ use monad_consensus_types::{
     },
     voting::ValidatorMapping,
 };
-use monad_crypto::{
-    certificate_signature::PubKey,
-    hasher::{Hash, Hashable, Hasher, HasherType},
-};
+use monad_crypto::certificate_signature::PubKey;
 use monad_proto::proto::signing::ProtoBlsSignatureCollection;
 use monad_types::NodeId;
 use prost::Message;
@@ -48,7 +46,7 @@ impl<PT: PubKey> AggregationTree<PT> {
         // copy all the signature as leaves
         for (i, (node_id, sig)) in sigs.iter().enumerate() {
             let cert = nodes.get_mut(n + i - 1).expect("node in range");
-            cert.signers.set(
+            cert.signers.0.set(
                 *validator_index.get(node_id).expect("validator index"),
                 true,
             );
@@ -87,6 +85,7 @@ impl<PT: PubKey> AggregationTree<PT> {
                     if 2 * cert_idx + 1 >= self.nodes.len() {
                         let signer_idx = cert
                             .signers
+                            .0
                             .first_one()
                             .expect("signer should be one-hot encoded");
                         let (node_id, _) = validator_mapping
@@ -116,13 +115,13 @@ fn merge_nodes<PT: PubKey>(
     n1: &BlsSignatureCollection<PT>,
     n2: &BlsSignatureCollection<PT>,
 ) -> BlsSignatureCollection<PT> {
-    assert_eq!(n1.signers.len(), n2.signers.len());
+    assert_eq!(n1.signers.0.len(), n2.signers.0.len());
 
-    let signers = n1.signers.clone() | n2.signers.clone();
+    let signers = n1.signers.0.clone() | n2.signers.0.clone();
     let mut sig = n1.sig;
     sig.add_assign_aggregate(&n2.sig);
     let cert = BlsSignatureCollection {
-        signers,
+        signers: SignerMap(signers),
         sig,
         _phantom: PhantomData,
     };
@@ -135,9 +134,13 @@ fn merge_nodes<PT: PubKey>(
     cert
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerMap(pub BitVec<u8, Lsb0>);
+
+#[derive(Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct BlsSignatureCollection<PT: PubKey> {
-    pub signers: BitVec<usize, Lsb0>,
+    pub signers: SignerMap,
+
     pub sig: BlsAggregateSignature,
 
     pub(crate) _phantom: PhantomData<PT>,
@@ -146,34 +149,69 @@ pub struct BlsSignatureCollection<PT: PubKey> {
 impl<PT: PubKey> std::fmt::Debug for BlsSignatureCollection<PT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlsSignatureCollection")
-            .field("signers", &format_args!("{}", &self.signers))
+            .field("signers", &format_args!("{:?}", &self.signers))
             .field("sig", &self.sig)
             .finish()
     }
 }
 
-impl<PT: PubKey> Hashable for BlsSignatureCollection<PT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        let bitvec_slice = self.signers.as_raw_slice();
-        let mut u8_slice = Vec::new();
-        for elem in bitvec_slice {
-            let bytes = elem.to_le_bytes();
-            u8_slice.extend_from_slice(&bytes);
-        }
-        state.update(u8_slice.as_slice());
-        self.sig.hash(state);
-    }
-}
-
 impl<PT: PubKey> BlsSignatureCollection<PT> {
     fn with_capacity(n: usize) -> Self {
-        let signers = bitvec![usize, Lsb0; 0; n];
+        let signers = SignerMap(bitvec![u8, Lsb0; 0; n]);
         let sig = BlsAggregateSignature::infinity();
         Self {
             signers,
             sig,
             _phantom: PhantomData,
         }
+    }
+}
+
+impl Encodable for SignerMap {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let num_bits: u32 = self.0.len() as u32;
+        let num_bytes = self.0.len().div_ceil(8);
+
+        let mut buf = vec![0_u8; num_bytes];
+
+        for (bit_idx_from_back, _set_bit) in
+            self.0.iter().rev().enumerate().filter(|(_, bit)| **bit)
+        {
+            let byte_idx_from_back = bit_idx_from_back / 8;
+            let bit_idx_from_back = bit_idx_from_back % 8;
+
+            buf[num_bytes - 1 - byte_idx_from_back] |= 1 << bit_idx_from_back;
+        }
+        assert_eq!(buf.len(), num_bytes);
+
+        let enc: [&dyn Encodable; 2] = [&&num_bits, &buf.as_slice()];
+        encode_list::<_, dyn Encodable>(&enc, out)
+    }
+}
+
+impl Decodable for SignerMap {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let num_bits: usize = <u32 as Decodable>::decode(&mut payload)? as usize;
+        let num_bytes = num_bits.div_ceil(8);
+
+        let decoded_bytes = alloy_rlp::Header::decode_bytes(&mut payload, false)?;
+        if decoded_bytes.len() != num_bytes {
+            return Err(alloy_rlp::Error::Custom("wrong number of bytes in bitvec"));
+        }
+
+        let mut bitvec = BitVec::with_capacity(num_bits);
+        while bitvec.len() < num_bits {
+            let byte_idx_from_back = bitvec.len() / 8;
+            let bit_idx_from_back = bitvec.len() % 8;
+
+            let byte = decoded_bytes[decoded_bytes.len() - 1 - byte_idx_from_back];
+            let bit = (byte >> bit_idx_from_back) & 1 == 1;
+            bitvec.push(bit);
+        }
+        bitvec.reverse();
+
+        Ok(SignerMap(bitvec))
     }
 }
 
@@ -220,22 +258,18 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
             .map_err(SignatureCollectionError::InvalidSignaturesCreate)
     }
 
-    fn get_hash(&self) -> Hash {
-        HasherType::hash_object(self)
-    }
-
     fn verify(
         &self,
         validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, Self::SignatureType>> {
-        if self.signers.len() != validator_mapping.map.len() {
+        if self.signers.0.len() != validator_mapping.map.len() {
             return Err(SignatureCollectionError::InvalidSignaturesVerify);
         }
 
         let mut aggpk = BlsAggregatePubKey::infinity();
         let mut signers = Vec::new();
-        for (bit, (node_id, pubkey)) in self.signers.iter().zip(validator_mapping.map.iter()) {
+        for (bit, (node_id, pubkey)) in self.signers.0.iter().zip(validator_mapping.map.iter()) {
             if *bit {
                 aggpk.add_assign(pubkey).expect("pubkey aggregation");
                 signers.push(*node_id);
@@ -253,24 +287,8 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
         Ok(signers)
     }
 
-    fn get_participants(
-        &self,
-        validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
-    ) -> HashSet<NodeId<PT>> {
-        assert_eq!(self.signers.len(), validator_mapping.map.len());
-
-        let mut signers = HashSet::new();
-        for (bit, (node_id, _)) in self.signers.iter().zip(validator_mapping.map.iter()) {
-            if *bit {
-                signers.insert(*node_id);
-            }
-        }
-        signers
-    }
-
     fn num_signatures(&self) -> usize {
-        self.signers.count_ones()
+        self.signers.0.count_ones()
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -290,6 +308,8 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
 mod test {
     use std::collections::{HashMap, HashSet};
 
+    use alloy_rlp::Decodable;
+    use bitvec::prelude::*;
     use monad_consensus_types::signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     };
@@ -309,7 +329,7 @@ mod test {
     use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
     use test_case::test_case;
 
-    use super::{merge_nodes, AggregationTree, BlsSignatureCollection};
+    use super::{merge_nodes, AggregationTree, BlsSignatureCollection, SignerMap};
 
     type SignatureType = NopSignature;
     type PubKey = CertificateSignaturePubKey<SignatureType>;
@@ -530,33 +550,6 @@ mod test {
         let signers_set = signers.iter().collect::<HashSet<_>>();
         let expected_set = valmap.map.keys().collect::<HashSet<_>>();
         assert_eq!(signers_set, expected_set);
-    }
-
-    #[test_case(1; "1 sig")]
-    #[test_case(5; "5 sigs")]
-    #[test_case(100; "100 sigs")]
-    fn test_get_participants(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
-            SignatureType,
-            SignatureCollectionType,
-            _,
-        >(num_keys, ValidatorSetFactory::default());
-        let voting_keys: Vec<_> = keys
-            .iter()
-            .map(CertificateKeyPair::pubkey)
-            .map(NodeId::new)
-            .zip(voting_keys)
-            .collect();
-
-        let msg_hash = Hash([129_u8; 32]);
-
-        let sigs = get_sigs(msg_hash.as_ref(), voting_keys.iter());
-        let sigcol = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
-
-        let signers = sigcol.get_participants(&valmap, msg_hash.as_ref());
-
-        let expected_set = valmap.map.into_keys().collect::<HashSet<_>>();
-        assert_eq!(signers, expected_set);
     }
 
     #[test_case(1; "1 sig")]
@@ -834,11 +827,68 @@ mod test {
             ValidatorSetFactory::default(),
         );
 
-        assert_ne!(sigcol.signers.len(), valmap.map.len());
+        assert_ne!(sigcol.signers.0.len(), valmap.map.len());
 
         assert!(matches!(
             sigcol.verify(&valmap, msg_hash.as_ref()),
             Err(SignatureCollectionError::InvalidSignaturesVerify)
         ));
+    }
+
+    #[test]
+    fn test_signer_map_rlp() {
+        let mut a = SignerMap(bitvec![u8, Lsb0; 0; 8]);
+        let mut b = SignerMap(bitvec![u8, Lsb0; 0; 4]);
+
+        a.0.set(0, true);
+        a.0.set(1, false);
+        a.0.set(2, true);
+        a.0.set(3, false);
+        a.0.set(4, false);
+        a.0.set(5, true);
+        a.0.set(6, false);
+        a.0.set(7, true);
+
+        b.0.set(0, true);
+        b.0.set(1, false);
+        b.0.set(2, true);
+        b.0.set(3, false);
+
+        let x = alloy_rlp::encode(a.clone());
+        let y = alloy_rlp::encode(b.clone());
+
+        let j = <SignerMap>::decode(&mut x.as_slice()).unwrap();
+        let k = <SignerMap>::decode(&mut y.as_slice()).unwrap();
+        assert_eq!(a, j);
+        assert_eq!(b, k);
+    }
+
+    #[test]
+    fn test_signer_map_rlp_2() {
+        let mut a = SignerMap(bitvec![u8, Lsb0; 0; 9]);
+        let mut b = SignerMap(bitvec![u8, Lsb0; 0; 4]);
+
+        a.0.set(0, false);
+        a.0.set(1, false);
+        a.0.set(2, false);
+        a.0.set(3, false);
+        a.0.set(4, false);
+        a.0.set(5, false);
+        a.0.set(6, false);
+        a.0.set(7, false);
+        a.0.set(8, true);
+
+        b.0.set(0, true);
+        b.0.set(1, true);
+        b.0.set(2, false);
+        b.0.set(3, false);
+
+        let x = alloy_rlp::encode(a.clone());
+        let y = alloy_rlp::encode(b.clone());
+
+        let j = <SignerMap>::decode(&mut x.as_slice()).unwrap();
+        let k = <SignerMap>::decode(&mut y.as_slice()).unwrap();
+        assert_eq!(a, j);
+        assert_eq!(b, k);
     }
 }

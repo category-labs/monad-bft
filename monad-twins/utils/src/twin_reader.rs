@@ -24,7 +24,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
-use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder};
 use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
@@ -111,7 +111,6 @@ where
         Self {
             id: self.id,
             state_config: MonadStateBuilder {
-                version: MonadVersion::new("TWINS_TEST"),
                 validator_set_factory: self.state_config.validator_set_factory.clone(),
                 leader_election: self.state_config.leader_election.clone(),
                 transaction_pool: TT::default(),
@@ -327,7 +326,6 @@ where
             S::TxPool,
             S::BlockValidator,
         > {
-            version: MonadVersion::new("TWINS_TEST"),
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
             transaction_pool: S::TxPool::default(),
@@ -350,7 +348,6 @@ where
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),
                 proposal_txn_limit: 10,
-                proposal_gas_limit: 30_000_000,
                 delta: Duration::from_millis(delta_ms),
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),

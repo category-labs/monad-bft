@@ -18,7 +18,6 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
-use monad_eth_types::PROPOSAL_GAS_LIMIT;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ipc::IpcReceiver;
@@ -26,7 +25,7 @@ use monad_ledger::MonadBlockFileLedger;
 use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
 use monad_node_config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
-use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
@@ -192,11 +191,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        ledger: MonadBlockFileLedger::new(
-            node_state.execution_ledger_path,
-            node_state.bft_block_header_path,
-            node_state.bft_block_payload_path,
-        ),
+        ledger: MonadBlockFileLedger::new(node_state.ledger_path),
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
@@ -269,7 +264,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .unwrap_or(SeqNum(0));
 
     let builder = MonadStateBuilder {
-        version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
         #[cfg(feature = "full-node")]
@@ -302,7 +296,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
-            proposal_gas_limit: PROPOSAL_GAS_LIMIT,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
             // StateSync -> Live transition happens here
             statesync_to_live_threshold: SeqNum(statesync_threshold as u64),

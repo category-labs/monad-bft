@@ -2,16 +2,17 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_proto::{
     error::ProtoError,
     proto::basic::{
-        ProtoBlockId, ProtoEpoch, ProtoNodeId, ProtoPubkey, ProtoRound, ProtoSeqNum, ProtoStake,
+        ProtoBlockId, ProtoEpoch, ProtoMonadVersion, ProtoNodeId, ProtoPubkey, ProtoRound,
+        ProtoSeqNum, ProtoStake,
     },
 };
 
-use crate::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+use crate::{BlockId, Epoch, MonadVersion, NodeId, Round, SeqNum, Stake};
 
 impl<P: PubKey> From<&NodeId<P>> for ProtoNodeId {
     fn from(nodeid: &NodeId<P>) -> Self {
         Self {
-            pubkey: Some(pubkey_to_proto(&nodeid.pubkey)),
+            pubkey: Some(pubkey_to_proto(&nodeid.0)),
         }
     }
 }
@@ -107,5 +108,44 @@ impl TryFrom<ProtoSeqNum> for SeqNum {
     type Error = ProtoError;
     fn try_from(value: ProtoSeqNum) -> Result<Self, Self::Error> {
         Ok(Self(value.seq_num))
+    }
+}
+
+impl From<&MonadVersion> for ProtoMonadVersion {
+    fn from(value: &MonadVersion) -> Self {
+        ProtoMonadVersion {
+            protocol_version: value.protocol_version,
+            client_version_maj: value.client_version_maj.into(),
+            client_version_min: value.client_version_min.into(),
+            hash_version: value.hash_version.into(),
+            serialize_version: value.serialize_version.into(),
+        }
+    }
+}
+
+impl TryFrom<ProtoMonadVersion> for MonadVersion {
+    type Error = ProtoError;
+    fn try_from(value: ProtoMonadVersion) -> Result<Self, Self::Error> {
+        let client_version_maj = value.client_version_maj.try_into().map_err(|_| {
+            Self::Error::DeserializeError("client version exceeds max value".to_string())
+        })?;
+        let client_version_min = value.client_version_min.try_into().map_err(|_| {
+            Self::Error::DeserializeError("client version exceeds max value".to_string())
+        })?;
+
+        let serialize_version = value.serialize_version.try_into().map_err(|_| {
+            Self::Error::DeserializeError("serialize version exceeds max value".to_string())
+        })?;
+        let hash_version = value.hash_version.try_into().map_err(|_| {
+            Self::Error::DeserializeError("hash version exceeds max value".to_string())
+        })?;
+
+        Ok(Self {
+            protocol_version: value.protocol_version,
+            client_version_maj,
+            client_version_min,
+            serialize_version,
+            hash_version,
+        })
     }
 }

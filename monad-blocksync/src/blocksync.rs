@@ -1003,7 +1003,6 @@ mod test {
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
             CertificateSignatureRecoverable, PubKey,
         },
-        hasher::{Hasher, HasherType},
         NopPubKey, NopSignature,
     };
     use monad_eth_types::Balance;
@@ -1022,7 +1021,6 @@ mod test {
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
-    use zerocopy::AsBytes;
 
     use super::{
         BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
@@ -1180,7 +1178,7 @@ mod test {
 
             for i in 0..num_blocks {
                 let execution_body = MockExecutionBody {
-                    data: Bytes::copy_from_slice(i.as_bytes()),
+                    data: Bytes::copy_from_slice(&i.to_le_bytes()),
                 };
 
                 let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
@@ -1210,7 +1208,6 @@ mod test {
                     seq_num,
                     timestamp,
                     RoundSignature::new(round, leader_certkey),
-                    false, // is_null
                 );
 
                 let validator_cert_pubkeys = self
@@ -1251,7 +1248,7 @@ mod test {
                 parent_round: block.qc.get_round(),
             };
 
-            let msg = HasherType::hash_object(&vote);
+            let msg = alloy_rlp::encode(vote);
 
             let mut sigs = Vec::new();
             for ck in certkeys {
@@ -1527,14 +1524,9 @@ mod test {
         let mut block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
         for full_block in full_blocks.iter().take(num_in_blocktree) {
-            assert!(context
+            context
                 .blocktree
-                .add(
-                    PassthruWrappedBlock(full_block.clone()),
-                    &mut block_policy,
-                    &state_backend
-                )
-                .is_ok());
+                .add(PassthruWrappedBlock(full_block.clone()));
         }
 
         // request all num_blocks
@@ -1744,14 +1736,7 @@ mod test {
 
         let cmds = if cached_in_blocktree {
             for full_block in full_blocks {
-                assert!(context
-                    .blocktree
-                    .add(
-                        PassthruWrappedBlock(full_block),
-                        &mut block_policy,
-                        &state_backend
-                    )
-                    .is_ok());
+                context.blocktree.add(PassthruWrappedBlock(full_block));
             }
             // headers are in blocktree, should emit response command with all the headers
             context
@@ -1857,14 +1842,9 @@ mod test {
         let sender_nodeid = NodeId::new(NopPubKey::from_bytes(&[0x00_u8; 32]).unwrap());
 
         let cmds = if cached_in_blocktree {
-            assert!(context
+            context
                 .blocktree
-                .add(
-                    PassthruWrappedBlock(full_blocks[0].clone()),
-                    &mut block_policy,
-                    &state_backend
-                )
-                .is_ok());
+                .add(PassthruWrappedBlock(full_blocks[0].clone()));
 
             // payload in blocktree, should emit response command with the requested payload
             context.handle_peer_request(sender_nodeid, BlockSyncRequestMessage::Payload(payload_id))

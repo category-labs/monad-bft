@@ -1,9 +1,7 @@
-use std::{collections::HashSet, fmt::Debug};
+use std::fmt::Debug;
 
-use monad_crypto::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey},
-    hasher::{Hash, Hashable},
-};
+use alloy_rlp::{Decodable, Encodable};
+use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey};
 use monad_types::NodeId;
 
 use crate::voting::ValidatorMapping;
@@ -51,7 +49,7 @@ impl<PT: PubKey, S: CertificateSignature> std::fmt::Display for SignatureCollect
 impl<PT: PubKey, S: CertificateSignature> std::error::Error for SignatureCollectionError<PT, S> {}
 
 pub trait SignatureCollection:
-    Clone + Hashable + Eq + Debug + Send + Sync + Unpin + 'static
+    Clone + Eq + Debug + Send + Sync + Unpin + Encodable + Decodable + 'static
 {
     type NodeIdPubKey: PubKey;
     type SignatureType: CertificateSignature + Unpin;
@@ -65,9 +63,6 @@ pub trait SignatureCollection:
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>>;
 
-    // hash of all the signatures
-    fn get_hash(&self) -> Hash;
-
     fn verify(
         &self,
         validator_mapping: &ValidatorMapping<
@@ -80,18 +75,6 @@ pub trait SignatureCollection:
         SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
     >;
 
-    /**
-     * Get participants doesn't verify the validity of the certificate,
-     * but retrieve any valid nodeId participated given a validator mapping.
-     */
-    fn get_participants(
-        &self,
-        validator_mapping: &ValidatorMapping<
-            Self::NodeIdPubKey,
-            SignatureCollectionKeyPairType<Self>,
-        >,
-        msg: &[u8],
-    ) -> HashSet<NodeId<Self::NodeIdPubKey>>;
     // TODO-4: deprecate this function: only used by tests
     fn num_signatures(&self) -> usize;
 

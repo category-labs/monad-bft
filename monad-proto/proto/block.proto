@@ -21,8 +21,6 @@ message ProtoBlockHeader {
   monad_proto.basic.ProtoSeqNum seq_num = 8;
   uint64 timestamp = 7;
   monad_proto.signing.ProtoSignature round_signature = 9;
-
-  bool is_null = 11;
 }
 
 message ProtoFullBlock {

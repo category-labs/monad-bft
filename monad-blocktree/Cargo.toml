@@ -13,7 +13,6 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
-tracing = { workspace = true }
 
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }

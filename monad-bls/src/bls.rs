@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use monad_crypto::hasher::{Hashable, Hasher};
+use alloy_rlp::{Decodable, Encodable};
 use zeroize::Zeroize;
 
 /// The cipher suite
@@ -40,7 +40,7 @@ macro_rules! set_curve_constants {
 
         const DST: &[u8] = MIN_PK_DST;
 
-        const SIGNATURE_BYTE_LEN: usize = G2_BYTE_LEN;
+        pub const SIGNATURE_BYTE_LEN: usize = G2_BYTE_LEN;
         const SIGNATURE_COMPRESSED_LEN: usize = G2_COMPRESSED_LEN;
         const INFINITY_SIGNATURE: [u8; SIGNATURE_COMPRESSED_LEN] = G2_INFINITY;
 
@@ -53,7 +53,7 @@ macro_rules! set_curve_constants {
 
         const DST: &[u8] = MIN_SIG_DST;
 
-        const SIGNATURE_BYTE_LEN: usize = G1_BYTE_LEN;
+        pub const SIGNATURE_BYTE_LEN: usize = G1_BYTE_LEN;
         const SIGNATURE_COMPRESSED_LEN: usize = G1_COMPRESSED_LEN;
         const INFINITY_SIGNATURE: [u8; SIGNATURE_COMPRESSED_LEN] = G1_INFINITY;
 
@@ -157,8 +157,8 @@ impl BlsPubKey {
             .map_err(BlsError)
     }
 
-    pub fn compress(&self) -> Vec<u8> {
-        self.0.compress().to_vec()
+    pub fn compress(&self) -> [u8; PUBKEY_COMPRESSED_LEN] {
+        self.0.compress()
     }
 
     pub fn uncompress(msg: &[u8]) -> Result<Self, BlsError> {
@@ -230,7 +230,7 @@ impl BlsAggregatePubKey {
         Ok(Self::from_pubkey(&pubkey))
     }
 
-    pub fn compress(&self) -> Vec<u8> {
+    pub fn compress(&self) -> [u8; PUBKEY_COMPRESSED_LEN] {
         self.as_pubkey().compress()
     }
 
@@ -324,14 +324,6 @@ impl std::hash::Hash for BlsSignature {
     }
 }
 
-impl Hashable for BlsSignature {
-    fn hash(&self, state: &mut impl Hasher) {
-        let slice =
-            unsafe { std::mem::transmute::<Self, [u8; std::mem::size_of::<Self>()]>(*self) };
-        state.update(slice);
-    }
-}
-
 impl PartialEq for BlsSignature {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
@@ -400,6 +392,27 @@ impl BlsSignature {
         blst_core::Signature::uncompress(message)
             .map(Self)
             .map_err(BlsError)
+    }
+}
+
+impl Encodable for BlsSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let x: [u8; SIGNATURE_COMPRESSED_LEN] = self
+            .compress()
+            .try_into()
+            .expect("bls signature expected to be 96 bytes");
+        x.encode(out);
+    }
+}
+
+impl Decodable for BlsSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let raw_bytes = <[u8; SIGNATURE_COMPRESSED_LEN]>::decode(buf)?;
+
+        match Self::uncompress(&raw_bytes) {
+            Ok(sig) => Ok(sig),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid bls signature")),
+        }
     }
 }
 
@@ -491,6 +504,27 @@ impl Eq for BlsAggregateSignature {}
 impl std::hash::Hash for BlsAggregateSignature {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&self.as_signature(), state)
+    }
+}
+
+impl Encodable for BlsAggregateSignature {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let x: [u8; SIGNATURE_COMPRESSED_LEN] = self
+            .compress()
+            .try_into()
+            .expect("bls aggregate signature expected to be 96 bytes");
+        x.encode(out);
+    }
+}
+
+impl Decodable for BlsAggregateSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let raw_bytes = <[u8; SIGNATURE_COMPRESSED_LEN]>::decode(buf)?;
+
+        match Self::uncompress(&raw_bytes) {
+            Ok(sig) => Ok(sig),
+            Err(_) => Err(alloy_rlp::Error::Custom("invalid bls aggregate signature")),
+        }
     }
 }
 
@@ -596,6 +630,18 @@ mod test {
     }
 
     #[test]
+    fn test_signature_serdes_roundtrip() {
+        let keypair = keygen(7);
+        let msg = keypair.pubkey().serialize();
+        let sig = BlsSignature::sign(msg.as_ref(), &keypair);
+
+        let sig_rlp = alloy_rlp::encode(sig);
+        let x: BlsSignature = alloy_rlp::decode_exact(sig_rlp).unwrap();
+
+        assert_eq!(sig, x);
+    }
+
+    #[test]
     fn test_aggregate_pubkey_roundtrip() {
         let keypair = keygen(7);
         let pubkey = keypair.pubkey();
@@ -674,6 +720,21 @@ mod test {
                 .unwrap()
                 .serialize()
         )
+    }
+
+    #[test]
+    fn test_aggregate_signature_serdes_roundtrip() {
+        let keypairs = gen_keypairs(2);
+        let msg = b"hello world";
+        let mut aggsig = BlsAggregateSignature::infinity();
+        for kp in keypairs.iter() {
+            aggsig.add_assign(&kp.sign(msg)).unwrap();
+        }
+
+        let aggsig_rlp = alloy_rlp::encode(aggsig);
+        let x: BlsAggregateSignature = alloy_rlp::decode_exact(aggsig_rlp).unwrap();
+
+        assert_eq!(aggsig, x);
     }
 
     #[test]

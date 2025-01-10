@@ -14,9 +14,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
-use monad_state::{
-    Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
-};
+use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
@@ -189,7 +187,6 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateBuilder {
-        version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: MockTxPool::default(),

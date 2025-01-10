@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
 
+alloy-rlp = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 zeroize = { workspace = true }
 

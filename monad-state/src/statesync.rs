@@ -12,7 +12,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::{
-    BlockId, Epoch, ExecutionProtocol, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_SEQ_NUM,
+    BlockId, Epoch, ExecutionProtocol, NodeId, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND,
+    GENESIS_SEQ_NUM,
 };
 
 /// BlockBuffer is responsible for tracking pending blocks mid-statesync
@@ -75,7 +76,7 @@ where
         if self.root == GENESIS_BLOCK_ID {
             return Some(RootInfo {
                 seq_num: GENESIS_SEQ_NUM,
-                round: Round(0),
+                round: GENESIS_ROUND,
                 epoch: Epoch(1),
                 block_id: GENESIS_BLOCK_ID,
                 timestamp_ns: GENESIS_TIMESTAMP,
@@ -93,10 +94,7 @@ where
     }
 
     pub fn root_delayed_execution_result(&self) -> Option<&Vec<EPT::FinalizedHeader>> {
-        let mut root = self.full_blocks.get(&self.root)?;
-        while root.header().is_empty_block() {
-            root = self.full_blocks.get(&root.get_parent_id())?;
-        }
+        let root = self.full_blocks.get(&self.root)?;
 
         Some(root.get_execution_results())
     }
@@ -128,10 +126,6 @@ where
 
         let finalized_block_id = proposal_qc.get_committable_id()?;
         let finalized_block = self.block_headers.get(&finalized_block_id)?;
-
-        if finalized_block.is_empty_block() {
-            return None;
-        }
 
         if finalized_block.seq_num <= root_seq_num + self.resync_threshold {
             return None;
@@ -215,15 +209,12 @@ where
             return Some(request_range);
         };
 
-        if chain
-            .iter()
-            .filter(|block| !block.header().is_empty_block())
-            .count()
-            < self.state_root_delay.0 as usize
-        {
+        let block_parent_id = last.get_parent_id();
+
+        if chain.len() < self.state_root_delay.0 as usize {
             let request_range = BlockRange {
-                last_block_id: last.get_parent_id(),
-                num_blocks: SeqNum(1), // TODO make this more optimal once we remove null blocks
+                last_block_id: block_parent_id,
+                num_blocks: self.state_root_delay - SeqNum(chain.len() as u64),
             };
             tracing::debug!(?request_range, "statesync blocksyncing blocks");
             return Some(request_range);

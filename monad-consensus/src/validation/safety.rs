@@ -22,8 +22,8 @@ pub struct Safety {
 impl Default for Safety {
     fn default() -> Self {
         Self {
-            highest_vote_round: Round(0),
-            highest_qc_round: Round(0),
+            highest_vote_round: GENESIS_ROUND,
+            highest_qc_round: GENESIS_ROUND,
         }
     }
 }

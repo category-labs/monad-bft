@@ -17,7 +17,6 @@ itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tracing = { workspace = true }
-zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-eth-types = { path = "../monad-eth-types" }

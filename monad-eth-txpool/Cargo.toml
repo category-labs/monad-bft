@@ -14,7 +14,7 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
@@ -30,7 +30,6 @@ monad-perf-util = { path = "../monad-perf-util" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 
-alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }

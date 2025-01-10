@@ -11,7 +11,7 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
-prost = { workspace = true }
+alloy-rlp = {workspace = true }
+hex = { workspace = true }

@@ -18,9 +18,6 @@ pub struct RootInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint<SCT: SignatureCollection> {
-    // TODO when we have a consensus genesis block, we only need root_id.
-    // We need the full RootInfo right now because GENESIS_BLOCK_ID doesn't have an associated
-    // block.
     pub root: BlockId,
     // TODO high_round?
     #[serde(bound(

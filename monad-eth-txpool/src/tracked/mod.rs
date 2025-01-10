@@ -12,7 +12,6 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_types::PROPOSAL_GAS_LIMIT;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
@@ -262,7 +261,7 @@ where
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
                 .checked_add(tx.gas_limit())
-                .map_or(true, |new_total_gas| new_total_gas > PROPOSAL_GAS_LIMIT)
+                .map_or(true, |new_total_gas| new_total_gas > proposal_gas_limit)
             {
                 return TrackedTxHeapDrainAction::Skip;
             }
@@ -311,12 +310,6 @@ where
         pending: &mut PendingTxMap,
         metrics: &mut TxPoolEvents,
     ) {
-        if committed_block.header().is_empty_block() {
-            // TODO this is error-prone, easy to forget
-            // TODO write tests that fail if this doesn't exist
-            return;
-        }
-
         {
             let seqnum = committed_block.get_seq_num();
             debug!(?seqnum, "txpool updating committed block");

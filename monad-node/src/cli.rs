@@ -29,17 +29,9 @@ pub struct Cli {
     #[arg(long)]
     pub wal_path: PathBuf,
 
-    /// Set the path where the execution ledger will be stored
+    /// Set the path where consensus blocks will be stored
     #[arg(long)]
-    pub execution_ledger_path: PathBuf,
-
-    /// Set the path where the bft block headers will be stored
-    #[arg(long)]
-    pub bft_block_header_path: PathBuf,
-
-    /// Set the path where the bft block payloads will be stored
-    #[arg(long)]
-    pub bft_block_payload_path: PathBuf,
+    pub ledger_path: PathBuf,
 
     /// Set a custom monad mempool ipc path
     #[arg(long)]

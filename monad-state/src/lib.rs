@@ -1,7 +1,8 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Deref};
 
+use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use blocksync::BlockSyncChildState;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use consensus::ConsensusChildState;
 use epoch::EpochChildState;
 use itertools::Itertools;
@@ -17,7 +18,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::BlockPolicy,
+    block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
     checkpoint::Checkpoint,
     metrics::Metrics,
@@ -40,7 +41,8 @@ use monad_executor_glue::{
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
+    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
+    GENESIS_ROUND,
 };
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -56,9 +58,6 @@ pub mod convert;
 mod epoch;
 mod mempool;
 mod statesync;
-
-const CLIENT_MAJOR_VERSION: u16 = 0;
-const CLIENT_MINOR_VERSION: u16 = 1;
 
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
@@ -103,22 +102,6 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
     };
 }
 
-pub struct MonadVersion {
-    pub protocol_version: &'static str,
-    client_version_maj: u16,
-    client_version_min: u16,
-}
-
-impl MonadVersion {
-    pub fn new(protocol_version: &'static str) -> Self {
-        Self {
-            protocol_version,
-            client_version_maj: CLIENT_MAJOR_VERSION,
-            client_version_min: CLIENT_MINOR_VERSION,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForkpointValidationError {
     TooFewValidatorSets,
@@ -155,7 +138,7 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
             validator_sets: vec![
                 ValidatorSetDataWithEpoch {
                     epoch: Epoch(1),
-                    round: Some(Round(0)),
+                    round: Some(GENESIS_ROUND),
                     validators: validator_set.clone(),
                 },
                 ValidatorSetDataWithEpoch {
@@ -430,6 +413,43 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Encodable for VerifiedMonadMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let monad_version = MonadVersion::version();
+
+        match self {
+            Self::Consensus(m) => {
+                let wire: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>> =
+                    m.clone().into();
+                let enc: [&dyn Encodable; 3] = [&monad_version, &1u8, &wire];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSyncRequest(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &2u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSyncResponse(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &3u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ForwardedTx(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &4u8, &m];
+                // TODO does tx bytes need a prefix?
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::StateSyncMessage(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &5u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadMessage<ST, SCT, EPT>
 where
@@ -452,6 +472,38 @@ where
     StateSyncMessage(StateSyncNetworkMessage),
 }
 
+impl<ST, SCT, EPT> Decodable for MonadMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let monad_version = MonadVersion::decode(&mut payload)?;
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Consensus(Unverified::<
+                ST,
+                Unvalidated<ConsensusMessage<ST, SCT, EPT>>,
+            >::decode(&mut payload)?)),
+            2 => Ok(Self::BlockSyncRequest(BlockSyncRequestMessage::decode(
+                &mut payload,
+            )?)),
+            3 => Ok(Self::BlockSyncResponse(BlockSyncResponseMessage::decode(
+                &mut payload,
+            )?)),
+            4 => Ok(Self::ForwardedTx(Vec::<Bytes>::decode(&mut payload)?)),
+            5 => Ok(Self::StateSyncMessage(StateSyncNetworkMessage::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown MonadMessage",
+            )),
+        }
+    }
+}
+
 impl<ST, SCT, EPT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -459,8 +511,22 @@ where
     EPT: ExecutionProtocol,
 {
     fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_verified_monad_message(self)
+        rlp_serialize_verified_monad_message(self)
     }
+}
+
+fn rlp_serialize_verified_monad_message<ST, SCT, EPT>(
+    msg: &VerifiedMonadMessage<ST, SCT, EPT>,
+) -> Bytes
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    let mut _encode_span = tracing::trace_span!("encode_span").entered();
+    let mut buf = BytesMut::new();
+    msg.encode(&mut buf);
+    buf.into()
 }
 
 impl<ST, SCT, EPT> monad_types::Serializable<MonadMessage<ST, SCT, EPT>>
@@ -487,11 +553,25 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type ReadError = monad_proto::error::ProtoError;
+    type ReadError = alloy_rlp::Error;
 
     fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_monad_message(message.clone())
+        rlp_deserialize_monad_message(message.clone())
     }
+}
+
+fn rlp_deserialize_monad_message<ST, SCT, EPT>(
+    data: Bytes,
+) -> Result<MonadMessage<ST, SCT, EPT>, alloy_rlp::Error>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    let message_len = data.len();
+    let mut _decode_span = tracing::trace_span!("decode_span", ?message_len).entered();
+
+    MonadMessage::<ST, SCT, EPT>::decode(&mut data.as_ref())
 }
 
 impl<ST, SCT, EPT> From<VerifiedMonadMessage<ST, SCT, EPT>> for MonadMessage<ST, SCT, EPT>
@@ -569,8 +649,6 @@ where
     TT: TxPool<ST, SCT, EPT, BPT, SBT>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
 {
-    pub version: MonadVersion,
-
     pub validator_set_factory: VTF,
     pub leader_election: LT,
     pub transaction_pool: TT,
@@ -656,7 +734,7 @@ where
             beneficiary: self.beneficiary,
 
             metrics: Metrics::default(),
-            version: self.version,
+            version: MonadVersion::version(),
         };
 
         let mut init_cmds = Vec::new();
@@ -743,7 +821,6 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
-
             MonadEvent::StateSyncEvent(state_sync_event) => match state_sync_event {
                 StateSyncEvent::Inbound(sender, message) => {
                     // TODO we need to add some sort of throttling to who we service... right now
@@ -799,13 +876,13 @@ where
                             assert_eq!(n, target);
                             assert!(
                                 self.state_backend
-                                    .raw_read_earliest_block()
+                                    .raw_read_earliest_finalized_block()
                                     .expect("earliest_finalized doesn't exist")
                                     <= n
                             );
                             assert!(
                                 self.state_backend
-                                    .raw_read_latest_block()
+                                    .raw_read_latest_finalized_block()
                                     .expect("latest_finalized doesn't exist")
                                     >= n
                             );
@@ -1017,8 +1094,8 @@ where
 
         let root_parent_chain = block_buffer.root_parent_chain();
         // check:
-        // 1. done_db_sync
-        // 2. earliest_block is early enough to start consensus (execution_delay)
+        // 1. earliest_block is early enough to start consensus
+        // 2. db_status == Done
 
         // 1. committed-block-sync
         if let Some(block_range) = block_buffer.needs_blocksync() {
@@ -1044,7 +1121,7 @@ where
             let delay = self.consensus_config.execution_delay;
             let state_root_seq_num = root_seq_num.max(delay) - delay;
 
-            let latest_block = self.state_backend.raw_read_latest_block();
+            let latest_block = self.state_backend.raw_read_latest_finalized_block();
             assert!(
                 latest_block.unwrap_or(SeqNum(0)) <= root_seq_num,
                 "tried to statesync backwards: {latest_block:?} <= {root_seq_num:?}"
@@ -1061,19 +1138,22 @@ where
                     1,
                     "always 1 execution result after first k-1 blocks for now"
                 );
-                return vec![Command::StateSyncCommand(StateSyncCommand::RequestSync(
-                    delayed_execution_result
-                        .first()
-                        .expect("asserted 1 execution result")
-                        .clone(),
-                ))];
+                return vec![
+                    Command::LedgerCommand(LedgerCommand::LedgerClearWal),
+                    Command::StateSyncCommand(StateSyncCommand::RequestSync(
+                        delayed_execution_result
+                            .first()
+                            .expect("asserted 1 execution result")
+                            .clone(),
+                    )),
+                ];
             } else {
                 // if latest_block > state_root_seq_num, we can't RequestSync because we
                 // would be trying to sync backwards.
 
                 assert!(
                     self.state_backend
-                        .raw_read_earliest_block()
+                        .raw_read_earliest_finalized_block()
                         .expect("latest_finalized_block exists")
                         <= state_root_seq_num
                 );
@@ -1096,9 +1176,8 @@ where
         let mut commands = Vec::new();
 
         let delay = self.consensus_config.execution_delay;
-        let delay_non_null_validated_blocks_from_root: Vec<_> = root_parent_chain
+        let delay_validated_blocks_from_root: Vec<_> = root_parent_chain
             .iter()
-            .filter(|block| !block.header().is_empty_block())
             .map(|full_block| {
                 self.block_validator
                     .validate(
@@ -1112,37 +1191,32 @@ where
             })
             .take(delay.0 as usize)
             .collect();
-        let blocks_to_commit: Vec<_> = root_parent_chain.into_iter().cloned().rev().collect();
         // reset block_policy
-        self.block_policy.reset(
-            delay_non_null_validated_blocks_from_root
-                .iter()
-                .rev()
-                .collect(),
-        );
+        self.block_policy
+            .reset(delay_validated_blocks_from_root.iter().rev().collect());
         self.txpool.reset(
-            delay_non_null_validated_blocks_from_root
-                .iter()
-                .rev()
-                .collect(),
+            delay_validated_blocks_from_root.iter().rev().collect(),
             &mut self.metrics.txpool_events,
         );
         // commit blocks
-        commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-            blocks_to_commit,
-        )));
+        for block in delay_validated_blocks_from_root.iter().rev() {
+            commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                OptimisticCommit::Proposed(block.deref().clone()),
+            )));
+            commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                OptimisticCommit::Finalized(block.deref().clone()),
+            )));
+            commands.push(Command::StateRootHashCommand(
+                StateRootHashCommand::RequestFinalized(block.get_seq_num()),
+            ));
+        }
 
         // this is necessary for genesis, because we'll never request root otherwise
         commands.push(Command::StateRootHashCommand(
-            StateRootHashCommand::Request(root_seq_num),
+            StateRootHashCommand::RequestFinalized(root_info.seq_num),
         ));
 
-        // if root is N, we need to request the roots from (N-delay, N]
-        let first_root_to_request = (root_seq_num + SeqNum(1)).max(delay) - delay;
-        let state_root_queue_range = (first_root_to_request.0..=root_seq_num.0).map(SeqNum);
-        commands.extend(state_root_queue_range.map(|committed_seq_num| {
-            Command::StateRootHashCommand(StateRootHashCommand::Request(committed_seq_num))
-        }));
+        let first_root_to_request = (root_info.seq_num + SeqNum(1)).max(delay) - delay;
         commands.push(Command::StateRootHashCommand(
             // upon committing block N, we no longer need state_root_N-delay
             // therefore, we cancel below state_root_N-delay+1
@@ -1194,13 +1268,11 @@ mod test {
         quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
         validator_data::ValidatorSetData, voting::Vote,
     };
-    use monad_crypto::{
-        certificate_signature::CertificateSignaturePubKey,
-        hasher::{Hash, Hasher, HasherType},
-    };
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+    use monad_eth_types::EthExecutionProtocol;
     use monad_secp::SecpSignature;
     use monad_testutil::validators::create_keys_w_validators;
-    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
+    use monad_types::{BlockId, Hash, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::ValidatorSetFactory;
 
     use super::*;
@@ -1208,6 +1280,7 @@ mod test {
     type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+    type ExecutionProtocolType = EthExecutionProtocol;
 
     const EPOCH_LENGTH: SeqNum = SeqNum(1000);
     const STATE_ROOT_DELAY: SeqNum = SeqNum(10);
@@ -1228,18 +1301,18 @@ mod test {
         };
         let qc_seq_num = SeqNum(2998); // one block before boundary block
 
-        let vote_hash = HasherType::hash_object(&vote);
+        let encoded_vote = alloy_rlp::encode(vote);
 
         let mut sigs = Vec::new();
 
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());
-            let sig = cert_key.sign(vote_hash.as_ref());
+            let sig = cert_key.sign(encoded_vote.as_ref());
             sigs.push((node_id, sig));
         }
 
         let sigcol: BlsSignatureCollection<monad_secp::PubKey> =
-            SignatureCollectionType::new(sigs, &valmap, vote_hash.as_ref()).unwrap();
+            SignatureCollectionType::new(sigs, &valmap, encoded_vote.as_ref()).unwrap();
 
         let qc = QuorumCertificate::new(vote, sigcol);
 
@@ -1341,4 +1414,38 @@ mod test {
             Err(ForkpointValidationError::InvalidQC)
         );
     }
+
+    // Confirm that version values greather than 2^16 for version fields don't cause deser issue
+    // and are ignored correctly.
+    #[test]
+    fn monad_message_encoding_version_test() {
+        // 0xcb -> 11 bytes
+        // 0xc8 -> list of 8 bytes for version
+        // [0x83, 0x01, 0xff, 0xff] -> 131071 in decimal, larger than 2^16 limit of version field
+        let rlp_encoded_monad_message = vec![
+            0xcb, 0xc8, 0x01, 0x80, 0x01, 0x01, 0x83, 0x01, 0xff, 0xff, 0x05, 0xc0,
+        ];
+
+        let decoded = alloy_rlp::decode_exact::<
+            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        >(rlp_encoded_monad_message);
+
+        assert!(decoded.is_err());
+    }
+
+    /*
+    #[test]
+    fn monad_message_encoding_sanity_test() {
+        let verified_message =
+            VerifiedMonadMessage::<SignatureType, SignatureCollectionType>::ForwardedTx(vec![
+                Bytes::from_static(&[1, 2, 3]),
+            ]);
+        let bytes: Bytes = verified_message.serialize();
+
+        let message = MonadMessage::<SignatureType, SignatureCollectionType>::deserialize(&bytes)
+            .expect("failed to deserialize");
+
+        todo!("assert bytes equal");
+    }
+    */
 }

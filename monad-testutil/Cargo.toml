@@ -19,4 +19,6 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
 
+alloy-rlp = { workspace = true }
+
 [dev-dependencies]

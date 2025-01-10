@@ -7,7 +7,6 @@ import "block.proto";
 import "blocksync.proto";
 import "discovery.proto";
 import "signing.proto";
-import "execution.proto";
 import "timeout.proto";
 import "voting.proto";
 
@@ -48,7 +47,7 @@ message ProtoUnverifiedConsensusMessage {
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
   }
-  string version = 4;
+  uint32 version = 4;
   monad_proto.signing.ProtoSignature author_signature = 6;
 }
 

@@ -15,10 +15,12 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
+
+alloy-rlp = { workspace = true }
 tracing = { workspace = true }
-zerocopy = { workspace = true }
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
 

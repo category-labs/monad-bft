@@ -43,7 +43,6 @@ fn main() {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            false,      // is_null
             Vec::new(), // delayed_execution_results
         )
         .destructure()
@@ -62,7 +61,7 @@ fn main() {
         .expect("key in valset");
 
     let proposal: VerifiedMonadMessage<_, _, _> = ConsensusMessage {
-        version: "Example".into(),
+        version: 1,
         message: ProtocolMessage::Proposal(proposal),
     }
     .sign(leader_key)

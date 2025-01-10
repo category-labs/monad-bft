@@ -11,7 +11,7 @@ use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::{ConsensusBlockBody, ConsensusBlockBodyInner, PROPOSAL_SIZE_LIMIT},
+    payload::{ConsensusBlockBody, PROPOSAL_SIZE_LIMIT},
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_crypto::certificate_signature::{
@@ -35,6 +35,7 @@ type ValidatedTxns = Vec<Recovered<TxEnvelope>>;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct EthValidator<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
@@ -157,13 +158,6 @@ where
             };
         }
 
-        if header.is_null {
-            if header.execution_inputs != Default::default() {
-                return Err(BlockValidationError::HeaderError);
-            }
-            return Ok(());
-        }
-
         let ProposedEthHeader {
             ommers_hash,
             beneficiary,
@@ -254,14 +248,6 @@ where
         self.validate_block_header(&header, &body, author_pubkey)?;
 
         if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(&body) {
-            if header.is_null
-                && body
-                    != ConsensusBlockBody::new(ConsensusBlockBodyInner {
-                        execution_body: EthBlockBody::default(),
-                    })
-            {
-                return Err(BlockValidationError::PayloadError);
-            }
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
@@ -278,6 +264,7 @@ where
 #[cfg(test)]
 mod test {
     use alloy_primitives::B256;
+    use monad_consensus_types::payload::ConsensusBlockBodyInner;
     use monad_crypto::NopSignature;
     use monad_eth_testutil::make_legacy_tx;
     use monad_state_backend::InMemoryState;
