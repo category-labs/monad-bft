@@ -1,135 +1,19 @@
-use std::marker::PhantomData;
-
 use monad_consensus_types::{
-    block::{Block, BlockKind, BlockType},
+    block::{Block, BlockKind},
     ledger::CommitResult,
-    payload::{ExecutionProtocol, Payload, PayloadId, RandaoReveal, TransactionPayload},
+    payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
+        CertificateSignatureRecoverable,
     },
     hasher::{Hash, Hasher, HasherType},
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
-
-// test utility if you only wish for simple block
-#[derive(Clone, PartialEq, Eq)]
-pub struct MockBlock<PT: PubKey> {
-    pub block_id: BlockId,
-    pub parent_block_id: BlockId,
-
-    _phantom: PhantomData<PT>,
-}
-
-impl<PT: PubKey> MockBlock<PT> {
-    pub fn new(block_id: BlockId, parent_block_id: BlockId) -> Self {
-        Self {
-            block_id,
-            parent_block_id,
-
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<PT: PubKey> Default for MockBlock<PT> {
-    fn default() -> Self {
-        MockBlock {
-            block_id: BlockId(Hash([0x00_u8; 32])),
-            parent_block_id: BlockId(Hash([0x01_u8; 32])),
-
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
-    type NodeIdPubKey = PT;
-    type TxnHash = ();
-
-    fn get_id(&self) -> BlockId {
-        self.block_id
-    }
-
-    fn get_round(&self) -> Round {
-        Round(1)
-    }
-
-    fn get_epoch(&self) -> Epoch {
-        Epoch(1)
-    }
-
-    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
-        unimplemented!()
-    }
-
-    fn get_payload(&self) -> Payload {
-        unimplemented!()
-    }
-
-    fn get_payload_id(&self) -> PayloadId {
-        PayloadId(Hash([0x00_u8; 32]))
-    }
-
-    fn get_parent_id(&self) -> BlockId {
-        self.parent_block_id
-    }
-    fn get_parent_round(&self) -> Round {
-        Round(0)
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        SeqNum(0)
-    }
-
-    fn get_state_root(&self) -> StateRootHash {
-        StateRootHash(Hash([1_u8; 32]))
-    }
-
-    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
-        vec![]
-    }
-
-    fn is_empty_block(&self) -> bool {
-        true
-    }
-
-    fn get_txn_list_len(&self) -> usize {
-        0
-    }
-
-    fn get_timestamp(&self) -> u64 {
-        0
-    }
-
-    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
-        unimplemented!()
-    }
-
-    fn get_unvalidated_block(self) -> Block<SCT> {
-        unimplemented!()
-    }
-
-    fn get_qc(&self) -> &QuorumCertificate<SCT> {
-        unimplemented!()
-    }
-
-    fn get_full_block(self) -> monad_consensus_types::block::FullBlock<SCT> {
-        unimplemented!()
-    }
-}
-
-impl<PT: PubKey> std::fmt::Debug for MockBlock<PT> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MockBlock").finish()
-    }
-}
 
 pub fn setup_block<ST, SCT>(
     author: NodeId<CertificateSignaturePubKey<ST>>,
