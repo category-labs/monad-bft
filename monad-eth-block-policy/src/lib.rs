@@ -5,7 +5,7 @@ use alloy_primitives::U256;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{Block, BlockPolicy, BlockPolicyError, BlockType, FullBlock},
-    payload::{Payload, PayloadId},
+    payload::{Payload, PayloadId, PROPOSAL_GAS_LIMIT},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     state_root_hash::StateRootHash,
@@ -107,6 +107,7 @@ pub enum TransactionError {
     MaxPriorityFeeTooHigh,
     InitCodeLimitExceeded,
     GasLimitTooLow,
+    GasLimitTooHigh,
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -139,6 +140,10 @@ pub fn static_validate_transaction(
     let intrinsic_gas = compute_intrinsic_gas(tx);
     if tx.gas_limit() < intrinsic_gas {
         return Err(TransactionError::GasLimitTooLow);
+    }
+
+    if tx.gas_limit() > PROPOSAL_GAS_LIMIT {
+        return Err(TransactionError::GasLimitTooHigh);
     }
 
     Ok(())
@@ -982,6 +987,40 @@ mod test {
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)
         ));
+
+        // transaction with gas limit lower than intrinsic gas
+        let tx_gas_limit_too_low = TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            to: TxKind::Call(address),
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10,
+            gas_limit: 20_000,
+            input: vec![].into(),
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
+        let txn = tx_gas_limit_too_low.into_signed(signature);
+
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
+
+        // transaction with gas limit higher than block gas limit
+        let tx_gas_limit_too_high = TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            to: TxKind::Call(address),
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10,
+            gas_limit: PROPOSAL_GAS_LIMIT + 1,
+            input: vec![].into(),
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
+        let txn = tx_gas_limit_too_high.into_signed(signature);
+
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
     }
 
     // TODO: check accounts for previous transactions in the block

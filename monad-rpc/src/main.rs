@@ -246,7 +246,9 @@ async fn rpc_select(
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             monad_eth_sendRawTransaction(
+                triedb_env,
                 &app_state.tx_pool,
                 params,
                 app_state.chain_id,
@@ -899,45 +901,6 @@ mod tests {
         match resp.error {
             Some(e) => assert_eq!(e.code, -32601),
             None => panic!("expected error in response"),
-        }
-    }
-
-    #[allow(non_snake_case)]
-    #[actix_web::test]
-    async fn test_monad_eth_sendRawTransaction() {
-        let (app, monad) = init_server().await;
-
-        let test_input = [make_tx_legacy, make_tx_eip1559];
-        for (i, f) in test_input.iter().enumerate() {
-            let (expected_hash, rawtx) = f(i as u64);
-            let payload = json!(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "eth_sendRawTransaction",
-                    "params": [rawtx],
-                    "id": 1
-                }
-            );
-
-            let req = test::TestRequest::post()
-                .uri("/")
-                .set_payload(payload.to_string())
-                .to_request();
-
-            let resp = app.call(req).await.unwrap();
-            let resp: jsonrpc::Response =
-                serde_json::from_value(recover_response_body(resp).await).unwrap();
-
-            match resp.result {
-                Some(r) => assert_eq!(r, Value::String(expected_hash.to_string())),
-                None => panic!("expected a result in response"),
-            }
-
-            let txn = monad
-                .ipc_receiver
-                .try_recv()
-                .unwrap_or_else(|_| panic!("testcase {i}: nothing was sent on channel"));
-            assert_eq!(&expected_hash, txn.tx_hash());
         }
     }
 

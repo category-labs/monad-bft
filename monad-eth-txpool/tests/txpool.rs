@@ -243,6 +243,25 @@ fn run_eth_txpool_test<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
 
 #[test]
 #[traced_test]
+fn test_insert_tx_exceeds_gas_limit() {
+    let tx = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
+
+    run_eth_txpool_test([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx, false)],
+            expected_pool_size_change: 0,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 1,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            expected_txs: vec![],
+            add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
 fn test_create_proposal_with_insufficient_tx_limit() {
     let tx = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
@@ -254,28 +273,6 @@ fn test_create_proposal_with_insufficient_tx_limit() {
         TxPoolTestEvent::CreateProposal {
             tx_limit: 0,
             gas_limit: GAS_LIMIT,
-            expected_txs: vec![],
-            add_to_blocktree: true,
-        },
-        TxPoolTestEvent::Block(Box::new(|pool| {
-            assert_eq!(pool.num_txs(), 1);
-        })),
-    ]);
-}
-
-#[test]
-#[traced_test]
-fn test_create_proposal_with_insufficient_gas_limit() {
-    let tx = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
-
-    run_eth_txpool_test([
-        TxPoolTestEvent::InsertTxs {
-            txs: vec![(&tx, true)],
-            expected_pool_size_change: 1,
-        },
-        TxPoolTestEvent::CreateProposal {
-            tx_limit: 1,
-            gas_limit: PROPOSAL_GAS_LIMIT,
             expected_txs: vec![],
             add_to_blocktree: true,
         },
@@ -430,9 +427,10 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
                 &tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11,
             ]
             .into_iter()
-            .map(|tx| (tx, true))
+            .enumerate()
+            .map(|(index, tx)| (tx, index != 0)) // tx1 does not get included
             .collect_vec(),
-            expected_pool_size_change: 11,
+            expected_pool_size_change: 10,
         },
         TxPoolTestEvent::CreateProposal {
             tx_limit: 128,

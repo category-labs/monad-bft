@@ -323,7 +323,8 @@ pub struct MonadEthSendRawTransactionParams {
 #[allow(non_snake_case)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
-pub async fn monad_eth_sendRawTransaction(
+pub async fn monad_eth_sendRawTransaction<T: Triedb>(
+    triedb_env: &T,
     tx_pool: &vpool::VirtualPool,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
@@ -333,13 +334,14 @@ pub async fn monad_eth_sendRawTransaction(
 
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
-            // drop transactions that will fail consensus check
+            // drop transactions that will fail consensus static validation
             if let Err(err) = static_validate_transaction(&txn, chain_id) {
                 let error_message = match err {
                     TransactionError::InvalidChainId => "Invalid chain ID",
                     TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
                     TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
                     TransactionError::GasLimitTooLow => "Gas limit too low",
+                    TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
                 };
                 return Err(JsonRpcError::custom(error_message.to_string()));
             }
@@ -357,6 +359,21 @@ pub async fn monad_eth_sendRawTransaction(
             let signer = txn.recover_signer().map_err(|_| {
                 JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
             })?;
+
+            // drop transactions with nonce too low
+            let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+            let account = triedb_env
+                .get_account(signer.into(), latest_block_num)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            if txn.nonce() < account.nonce {
+                return Err(JsonRpcError::custom(format!(
+                    "Nonce too low: next nonce {}, tx nonce {}",
+                    account.nonce,
+                    txn.nonce()
+                )));
+            }
+
             tx_pool
                 .add_transaction(Recovered::new_unchecked(txn, signer))
                 .await;
