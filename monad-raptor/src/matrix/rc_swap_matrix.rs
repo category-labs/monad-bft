@@ -24,22 +24,6 @@ impl RCSwapMatrix {
         }
     }
 
-    pub fn from_fn(
-        nrows: usize,
-        ncols: usize,
-        f: impl FnMut(usize, usize) -> bool,
-    ) -> RCSwapMatrix {
-        let mat = DenseMatrix::from_fn(nrows, ncols, f);
-        let row_permutation = RCPermutation::new(nrows);
-        let column_permutation = RCPermutation::new(ncols);
-
-        RCSwapMatrix {
-            mat,
-            row_permutation,
-            column_permutation,
-        }
-    }
-
     pub fn nrows(&self) -> usize {
         self.mat.nrows()
     }
@@ -68,20 +52,6 @@ impl RCSwapMatrix {
 
     pub fn to_dmatrix(&self) -> DenseMatrix {
         DenseMatrix::from_fn(self.mat.nrows(), self.mat.ncols(), |i, j| self[(i, j)])
-    }
-
-    pub fn mult(a: &RCSwapMatrix, b: &RCSwapMatrix) -> RCSwapMatrix {
-        assert_eq!(a.ncols(), b.nrows());
-
-        RCSwapMatrix::from_fn(a.nrows(), b.ncols(), |i, j| {
-            let mut val = false;
-
-            for k in 0..a.ncols() {
-                val ^= a[(i, k)] && b[(k, j)];
-            }
-
-            val
-        })
     }
 }
 
