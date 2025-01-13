@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Once, thread::sleep, time::Duration};
+use std::{sync::Once, thread::sleep, time::Duration};
 
 use futures::executor;
 use monad_dataplane::{
@@ -28,14 +28,12 @@ fn once_setup() {
 fn udp_broadcast() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9000";
-    let tx_addr = "127.0.0.1:9001";
+    let rx_addr = "127.0.0.1:9000".parse().unwrap();
+    let tx_addr = "127.0.0.1:9001".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(tx_addr, UP_BANDWIDTH_MBPS);
-    let rx_socketaddr: SocketAddr = rx_addr.parse().unwrap();
-    let tx_socketaddr: SocketAddr = tx_addr.parse().unwrap();
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -45,14 +43,14 @@ fn udp_broadcast() {
         .collect();
 
     tx.udp_write_broadcast(BroadcastMsg {
-        targets: vec![rx_socketaddr; num_msgs],
+        targets: vec![rx_addr; num_msgs],
         payload: payload.clone().into(),
     });
 
     for _ in 0..num_msgs {
         let msg: RecvMsg = executor::block_on(rx.udp_read());
 
-        assert_eq!(msg.src_addr, tx_socketaddr);
+        assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
     }
 }
@@ -62,14 +60,12 @@ fn udp_broadcast() {
 fn udp_unicast() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9002";
-    let tx_addr = "127.0.0.1:9003";
+    let rx_addr = "127.0.0.1:9002".parse().unwrap();
+    let tx_addr = "127.0.0.1:9003".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(tx_addr, UP_BANDWIDTH_MBPS);
-    let rx_socketaddr: SocketAddr = rx_addr.parse().unwrap();
-    let tx_socketaddr: SocketAddr = tx_addr.parse().unwrap();
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -79,13 +75,13 @@ fn udp_unicast() {
         .collect();
 
     tx.udp_write_unicast(UnicastMsg {
-        msgs: vec![(rx_socketaddr, payload.clone().into()); num_msgs],
+        msgs: vec![(rx_addr, payload.clone().into()); num_msgs],
     });
 
     for _ in 0..num_msgs {
         let msg: RecvMsg = executor::block_on(rx.udp_read());
 
-        assert_eq!(msg.src_addr, tx_socketaddr);
+        assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
     }
 }
@@ -95,13 +91,12 @@ fn udp_unicast() {
 fn tcp_slow() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9004";
-    let tx_addr = "127.0.0.1:9005";
+    let rx_addr = "127.0.0.1:9004".parse().unwrap();
+    let tx_addr = "127.0.0.1:9005".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(tx_addr, UP_BANDWIDTH_MBPS);
-    let rx_socketaddr: SocketAddr = rx_addr.parse().unwrap();
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -111,7 +106,7 @@ fn tcp_slow() {
         .collect();
 
     for _ in 0..num_msgs {
-        tx.tcp_write(rx_socketaddr, payload.clone().into());
+        tx.tcp_write(rx_addr, payload.clone().into());
         sleep(Duration::from_millis(10));
     }
 
@@ -127,13 +122,12 @@ fn tcp_slow() {
 fn tcp_rapid() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9006";
-    let tx_addr = "127.0.0.1:9007";
+    let rx_addr = "127.0.0.1:9006".parse().unwrap();
+    let tx_addr = "127.0.0.1:9007".parse().unwrap();
     let num_msgs = 32;
 
-    let mut rx = Dataplane::new(rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(tx_addr, UP_BANDWIDTH_MBPS);
-    let rx_socketaddr: SocketAddr = rx_addr.parse().unwrap();
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -143,7 +137,7 @@ fn tcp_rapid() {
         .collect();
 
     for _ in 0..num_msgs {
-        tx.tcp_write(rx_socketaddr, payload.clone().into());
+        tx.tcp_write(rx_addr, payload.clone().into());
     }
 
     for _ in 0..num_msgs {

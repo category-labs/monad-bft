@@ -17,8 +17,8 @@ const NODE_TWO_ADDR: &str = "127.0.0.1:60001";
 
 fn main() {
     env_logger::init();
-    let mut tx = Node::new(NODE_ONE_ADDR, NODE_TWO_ADDR);
-    let mut rx = Node::new(NODE_TWO_ADDR, NODE_ONE_ADDR);
+    let mut tx = Node::new(&NODE_ONE_ADDR.parse().unwrap(), NODE_TWO_ADDR);
+    let mut rx = Node::new(&NODE_TWO_ADDR.parse().unwrap(), NODE_ONE_ADDR);
 
     let num_pkts = 10;
     let pkt_size = 96342;
@@ -89,7 +89,7 @@ struct Node {
 }
 
 impl Node {
-    pub fn new(addr: &str, target_addr: &str) -> Self {
+    pub fn new(addr: &SocketAddr, target_addr: &str) -> Self {
         Self {
             network: Dataplane::new(addr, 1_000),
             target: target_addr.parse().unwrap(),

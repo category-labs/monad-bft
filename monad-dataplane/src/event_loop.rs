@@ -199,7 +199,7 @@ fn make_producer_consumer<T>(size: usize) -> (WakeableProducer<T>, WakeableConsu
 
 impl Dataplane {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub fn new(local_addr: &str, up_bandwidth_mbps: u64) -> Self {
+    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
         let (udp_ing_producer, udp_ing_consumer) = make_producer_consumer(12_800);
         let (tcp_ing_producer, tcp_ing_consumer) = make_producer_consumer(32);
 

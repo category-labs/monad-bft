@@ -114,7 +114,7 @@ fn service(
                     full_nodes: Default::default(),
                     known_addresses,
                     redundancy: 2,
-                    local_addr: server_address.to_string(),
+                    local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
                 };
 

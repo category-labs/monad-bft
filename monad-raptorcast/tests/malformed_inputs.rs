@@ -30,10 +30,10 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
 #[test]
 pub fn different_symbol_sizes() {
-    let rx_addr = "127.0.0.1:10000";
-    let tx_addr = "127.0.0.1:10001";
+    let rx_addr = "127.0.0.1:10000".parse().unwrap();
+    let tx_addr = "127.0.0.1:10001".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(rx_addr, tx_addr);
+    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
 
     let message: Bytes = vec![0; 100 * 1000].into();
 
@@ -98,10 +98,10 @@ pub fn different_symbol_sizes() {
 // of buffer indices in the decoder and panic the decoder.
 #[test]
 pub fn buffer_count_overflow() {
-    let rx_addr = "127.0.0.1:10002";
-    let tx_addr = "127.0.0.1:10003";
+    let rx_addr = "127.0.0.1:10002".parse().unwrap();
+    let tx_addr = "127.0.0.1:10003".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(rx_addr, tx_addr);
+    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
 
     let message: Bytes = vec![0; 4 * 1000].into();
 
@@ -152,10 +152,10 @@ pub fn buffer_count_overflow() {
 // would fail.
 #[test]
 pub fn oversized_message() {
-    let rx_addr = "127.0.0.1:10004";
-    let tx_addr = "127.0.0.1:10005";
+    let rx_addr = "127.0.0.1:10004".parse().unwrap();
+    let tx_addr = "127.0.0.1:10005".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(rx_addr, tx_addr);
+    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
 
     let message: Bytes = vec![0; 4 * 1000].into();
 
@@ -203,10 +203,10 @@ pub fn oversized_message() {
 // which would then call .step_by(0) on (0..0), which panics.
 #[test]
 pub fn zero_sized_packet() {
-    let rx_addr = "127.0.0.1:10006";
-    let tx_addr = "127.0.0.1:10007";
+    let rx_addr = "127.0.0.1:10006".parse().unwrap();
+    let tx_addr = "127.0.0.1:10007".parse().unwrap();
 
-    let (_rx_nodeid, _tx_nodeid, _tx_keypair, _known_addresses) = set_up_test(rx_addr, tx_addr);
+    let (_rx_nodeid, _tx_nodeid, _tx_keypair, _known_addresses) = set_up_test(&rx_addr, &tx_addr);
 
     let message = [0; 10];
 
@@ -223,8 +223,8 @@ pub fn zero_sized_packet() {
 static ONCE_SETUP: Once = Once::new();
 
 pub fn set_up_test(
-    rx_addr: &str,
-    tx_addr: &str,
+    rx_addr: &SocketAddr,
+    tx_addr: &SocketAddr,
 ) -> (
     NodeId<PubKeyType>,
     NodeId<PubKeyType>,
@@ -262,10 +262,8 @@ pub fn set_up_test(
     };
     let tx_nodeid = NodeId::new(tx_keypair.pubkey());
 
-    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = HashMap::from([
-        (rx_nodeid, rx_addr.parse().unwrap()),
-        (tx_nodeid, tx_addr.parse().unwrap()),
-    ]);
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> =
+        HashMap::from([(rx_nodeid, *rx_addr), (tx_nodeid, *tx_addr)]);
 
     let validator_set = vec![(rx_nodeid, Stake(1)), (tx_nodeid, Stake(1))];
 

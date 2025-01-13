@@ -505,8 +505,7 @@ where
         local_addr: SocketAddr::V4(SocketAddrV4::new(
             network_config.bind_address_host,
             network_config.bind_address_port,
-        ))
-        .to_string(),
+        )),
         up_bandwidth_mbps: network_config.max_mbps.into(),
     })
 }

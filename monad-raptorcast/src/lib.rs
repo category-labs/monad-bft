@@ -43,7 +43,7 @@ where
     /// a value of 2 == send 2x total payload size total
     pub redundancy: u8,
 
-    pub local_addr: String,
+    pub local_addr: SocketAddr,
 
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub up_bandwidth_mbps: u64,

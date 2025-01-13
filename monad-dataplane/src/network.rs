@@ -94,7 +94,7 @@ static mut BUF_PTR: *mut [[u8; BUF_SIZE]; NUM_RX_MSGHDR] = std::ptr::null_mut();
 
 impl NetworkSocket<'_> {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub fn new(sock_addr: &str, up_bandwidth_mbps: u64) -> Self {
+    pub fn new(sock_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
         let socket = std::net::UdpSocket::bind(sock_addr).unwrap();
         let r = unsafe {
             const GSO_SIZE: libc::c_int = MONAD_GSO_SIZE as i32;
