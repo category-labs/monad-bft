@@ -118,7 +118,7 @@ where
         cmds.into_iter()
             .map(|command| WrappedBlockSyncCommand {
                 // TODO: timeout should be more aggressive for headers request
-                request_timeout: *self.delta * 5,
+                request_timeout: *self.delta * 7,
                 command,
             })
             .collect()
@@ -140,7 +140,7 @@ where
         match wrapped.command {
             BlockSyncCommand::SendRequest { to, request } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::PointToPoint(to),
+                    target: RouterTarget::TcpPointToPoint(to),
                     message: VerifiedMonadMessage::BlockSyncRequest(request),
                 })]
             }
