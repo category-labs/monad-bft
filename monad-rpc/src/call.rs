@@ -7,6 +7,7 @@ use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::{
     block_handlers::get_block_num_from_tag,
@@ -272,18 +273,28 @@ pub async fn sender_gas_allowance<T: Triedb>(
     triedb_env: &T,
     block: &Header,
     request: &CallRequest,
+    state_overrides: &StateOverrideSet,
 ) -> Result<u64, JsonRpcError> {
-    if let (Some(from), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
+    if let (Some(sender), Some(gas_price)) = (request.from, request.max_fee_per_gas()) {
         if gas_price.is_zero() {
             return Ok(block.gas_limit);
         }
 
-        let account = triedb_env
-            .get_account(from.into(), block.number)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
+        let balance = match state_overrides
+            .get(&sender)
+            .and_then(|override_state| override_state.balance)
+        {
+            Some(balance) => balance,
+            None => {
+                let account = triedb_env
+                    .get_account(sender.into(), block.number)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                U256::from(account.balance)
+            }
+        };
 
-        let gas_limit = U256::from(account.balance)
+        let gas_limit = balance
             .checked_sub(request.value.unwrap_or_default())
             .ok_or_else(|| {
                 JsonRpcError::eth_call_error(
@@ -321,6 +332,8 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
+    trace!("monad_eth_call: {params:?}");
+
     let mut params = params;
     params.transaction.input.input = match (
         params.transaction.input.input.take(),
@@ -373,8 +386,13 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
             ))?;
 
             if params.transaction.gas.is_none() {
-                let allowance =
-                    sender_gas_allowance(triedb_env, &header.header, &params.transaction).await?;
+                let allowance = sender_gas_allowance(
+                    triedb_env,
+                    &header.header,
+                    &params.transaction,
+                    &params.state_overrides,
+                )
+                .await?;
                 params.transaction.gas = Some(U256::from(allowance));
             }
         }

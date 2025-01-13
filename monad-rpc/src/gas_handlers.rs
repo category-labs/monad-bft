@@ -39,6 +39,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_estimateGas: {params:?}");
+
     let mut params = params;
 
     params.tx.input.input = match (params.tx.input.input.take(), params.tx.input.data.take()) {
@@ -71,21 +72,22 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         header.header.base_fee_per_gas.unwrap_or_default(),
     ))?;
 
-    let allowance: Option<u64> = if params.tx.gas.is_none() {
-        Some(sender_gas_allowance(triedb_env, &header.header, &params.tx).await?)
-    } else {
-        None
-    };
-
-    if allowance.is_some() {
-        params.tx.gas = allowance.map(U256::from);
-    };
+    let sender = params.tx.from.unwrap_or_default();
+    if params.tx.gas.is_none() {
+        let allowance = sender_gas_allowance(
+            triedb_env,
+            &header.header,
+            &params.tx,
+            &params.state_override_set,
+        )
+        .await?;
+        params.tx.gas = Some(U256::from(allowance));
+    }
 
     if params.tx.chain_id.is_none() {
         params.tx.chain_id = Some(U64::from(chain_id));
     }
 
-    let sender = params.tx.from.unwrap_or_default();
     let mut txn: TxEnvelope = params.tx.clone().try_into()?;
 
     if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {

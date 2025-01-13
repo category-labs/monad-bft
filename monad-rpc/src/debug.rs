@@ -3,6 +3,7 @@ use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::{
     block_handlers::get_block_num_from_tag,
@@ -24,6 +25,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
+    trace!("monad_debug_getRawBlock: {params:?}");
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
 
     let header = match triedb_env
@@ -64,6 +66,7 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
+    trace!("monad_debug_getRawHeader: {params:?}");
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let header = match triedb_env
         .get_block_header(block_num)
@@ -96,6 +99,7 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
     triedb_env: &T,
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
+    trace!("monad_debug_getRawReceipts: {params:?}");
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
     let receipts = triedb_env
         .get_receipts(block_num)
@@ -126,6 +130,7 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     triedb_env: &T,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
+    trace!("monad_debug_getRawTransaction: {params:?}");
     let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
     let Some(TransactionLocation {
         tx_index,
