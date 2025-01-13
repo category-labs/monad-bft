@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::ErrorKind,
     net::{SocketAddr, UdpSocket},
     num::ParseIntError,
     sync::Once,
@@ -31,10 +32,10 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
 #[test]
 pub fn different_symbol_sizes() {
-    let rx_addr = "127.0.0.1:10000".parse().unwrap();
-    let tx_addr = "127.0.0.1:10001".parse().unwrap();
+    let tx_addr = "127.0.0.1:10000".parse().unwrap();
+    let rx_addr = "127.0.0.1:10001".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
     let message: Bytes = vec![0; 100 * 1000].into();
 
@@ -48,8 +49,8 @@ pub fn different_symbol_sizes() {
     // - app_message_{hash,len}: we use identical message bodies for the two messages.
     for i in 0..=1 {
         let segment_size = match i {
-            0 => DEFAULT_MTU - 20,
-            1 => DEFAULT_MTU,
+            0 => DEFAULT_SEGMENT_SIZE - 20,
+            1 => DEFAULT_SEGMENT_SIZE,
             _ => panic!(),
         };
 
@@ -99,10 +100,10 @@ pub fn different_symbol_sizes() {
 // of buffer indices in the decoder and panic the decoder.
 #[test]
 pub fn buffer_count_overflow() {
-    let rx_addr = "127.0.0.1:10002".parse().unwrap();
-    let tx_addr = "127.0.0.1:10003".parse().unwrap();
+    let tx_addr = "127.0.0.1:10002".parse().unwrap();
+    let rx_addr = "127.0.0.1:10003".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
     let message: Bytes = vec![0; 4 * 1000].into();
 
@@ -154,10 +155,10 @@ pub fn buffer_count_overflow() {
 // would fail.
 #[test]
 pub fn oversized_message() {
-    let rx_addr = "127.0.0.1:10004".parse().unwrap();
-    let tx_addr = "127.0.0.1:10005".parse().unwrap();
+    let tx_addr = "127.0.0.1:10004".parse().unwrap();
+    let rx_addr = "127.0.0.1:10005".parse().unwrap();
 
-    let (rx_nodeid, tx_nodeid, tx_keypair, known_addresses) = set_up_test(&rx_addr, &tx_addr);
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
     let message: Bytes = vec![0; 4 * 1000].into();
 
@@ -206,10 +207,11 @@ pub fn oversized_message() {
 // which would then call .step_by(0) on (0..0), which panics.
 #[test]
 pub fn zero_sized_packet() {
-    let rx_addr = "127.0.0.1:10006".parse().unwrap();
-    let tx_addr = "127.0.0.1:10007".parse().unwrap();
+    let tx_addr = "127.0.0.1:10006".parse().unwrap();
+    let rx_addr = "127.0.0.1:10007".parse().unwrap();
 
-    let (_rx_nodeid, _tx_nodeid, _tx_keypair, _known_addresses) = set_up_test(&rx_addr, &tx_addr);
+    let (_tx_nodeid, _tx_keypair, _rx_nodeid, _known_addresses) =
+        set_up_test(&tx_addr, &rx_addr, None);
 
     let message = [0; 10];
 
@@ -223,15 +225,80 @@ pub fn zero_sized_packet() {
     std::thread::sleep(Duration::from_millis(100));
 }
 
+// Verify that received encoded symbols are only rebroadcast when they are received for
+// the first time.
+#[test]
+pub fn duplicate_rebroadcast() {
+    let tx_addr = "127.0.0.1:10008".parse().unwrap();
+    let rx_addr = "127.0.0.1:10009".parse().unwrap();
+    let rebroadcast_addr = "127.0.0.1:10010".parse().unwrap();
+
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
+        set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
+
+    let message: Bytes = vec![0; 4 * 1000].into();
+
+    let tx_socket = UdpSocket::bind(tx_addr).unwrap();
+
+    let rebroadcast_socket = UdpSocket::bind(rebroadcast_addr).unwrap();
+    rebroadcast_socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+
+    let mut validators = EpochValidators {
+        validators: BTreeMap::from([
+            (rx_nodeid, Validator { stake: Stake(1) }),
+            (tx_nodeid, Validator { stake: Stake(1) }),
+        ]),
+    };
+
+    let epoch_validators = validators.view_without(vec![&tx_nodeid]);
+    let full_nodes = FullNodes::new(Vec::new());
+
+    let messages = build_messages::<SignatureType>(
+        &tx_keypair,
+        DEFAULT_SEGMENT_SIZE,
+        message,
+        2, // redundancy,
+        0, // epoch_no
+        0, // unix_ts_ms
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        &known_addresses,
+    );
+
+    // Send 5 copies of the first symbol of the first message.
+    for _ in 0..5 {
+        tx_socket
+            .send_to(
+                &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
+                messages[0].0,
+            )
+            .unwrap();
+    }
+
+    // Wait for all rebroadcasting activity to complete.
+    std::thread::sleep(Duration::from_millis(10));
+
+    // Verify that the rebroadcast target receives one copy of the symbol.
+    let _ = rebroadcast_socket.recv(&mut []).unwrap();
+
+    // Verify that the rebroadcast target never receives another copy of the same symbol.
+    assert_eq!(
+        rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+}
+
 static ONCE_SETUP: Once = Once::new();
 
 pub fn set_up_test(
-    rx_addr: &SocketAddr,
     tx_addr: &SocketAddr,
+    rx_addr: &SocketAddr,
+    rebroadcast_addr: Option<&SocketAddr>,
 ) -> (
     NodeId<PubKeyType>,
-    NodeId<PubKeyType>,
     KeyPair,
+    NodeId<PubKeyType>,
     HashMap<NodeId<PubKeyType>, SocketAddr>,
 ) {
     ONCE_SETUP.call_once(|| {
@@ -249,14 +316,6 @@ pub fn set_up_test(
         }));
     });
 
-    let rx_keypair = {
-        <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
-            &mut [2; 32],
-        )
-        .unwrap()
-    };
-    let rx_nodeid = NodeId::new(rx_keypair.pubkey());
-
     let tx_keypair = {
         <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
             &mut [1; 32],
@@ -265,10 +324,32 @@ pub fn set_up_test(
     };
     let tx_nodeid = NodeId::new(tx_keypair.pubkey());
 
-    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> =
-        HashMap::from([(rx_nodeid, *rx_addr), (tx_nodeid, *tx_addr)]);
+    let rx_keypair = {
+        <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+            &mut [2; 32],
+        )
+        .unwrap()
+    };
+    let rx_nodeid = NodeId::new(rx_keypair.pubkey());
 
-    let validator_set = vec![(rx_nodeid, Stake(1)), (tx_nodeid, Stake(1))];
+    let mut known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> =
+        HashMap::from([(tx_nodeid, *tx_addr), (rx_nodeid, *rx_addr)]);
+
+    let mut validator_set = vec![(tx_nodeid, Stake(1)), (rx_nodeid, Stake(1))];
+
+    if let Some(rebroadcast_addr) = rebroadcast_addr {
+        let rebroadcast_keypair = {
+            <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+                &mut [3; 32],
+            )
+            .unwrap()
+        };
+        let rebroadcast_nodeid = NodeId::new(rebroadcast_keypair.pubkey());
+
+        known_addresses.insert(rebroadcast_nodeid, *rebroadcast_addr);
+
+        validator_set.push((rebroadcast_nodeid, Stake(1)));
+    }
 
     {
         let known_addresses = known_addresses.clone();
@@ -316,7 +397,7 @@ pub fn set_up_test(
     // Wait for RaptorCast instance to set itself up.
     std::thread::sleep(Duration::from_millis(100));
 
-    (rx_nodeid, tx_nodeid, tx_keypair, known_addresses)
+    (tx_nodeid, tx_keypair, rx_nodeid, known_addresses)
 }
 
 #[derive(Clone, Copy)]
