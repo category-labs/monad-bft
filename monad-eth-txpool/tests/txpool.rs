@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use alloy_primitives::{hex, B256};
+use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+use alloy_primitives::{hex, Address, TxKind, B256};
 use alloy_rlp::Decodable;
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
@@ -875,4 +878,37 @@ fn test_different_account_priority_fee_ordering() {
             ]);
         }
     }
+}
+
+#[test]
+fn test_missing_chain_id() {
+    let tx: TxEnvelope = {
+        let tx = TxLegacy {
+            chain_id: None,
+            nonce: 0,
+            gas_price: BASE_FEE,
+            gas_limit: GAS_LIMIT,
+            to: TxKind::Call(Address::repeat_byte(0u8)),
+            value: Default::default(),
+            input: vec![0; 0].into(),
+        };
+
+        let signer = PrivateKeySigner::from_bytes(&S1).unwrap();
+        let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+
+        tx.into_signed(signature).into()
+    };
+
+    run_eth_txpool_test([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx, true)],
+            expected_pool_size_change: 1,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 1,
+            gas_limit: GAS_LIMIT,
+            expected_txs: vec![&tx],
+            add_to_blocktree: true,
+        },
+    ]);
 }

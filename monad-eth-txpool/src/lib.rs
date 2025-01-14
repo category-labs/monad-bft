@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use alloy_consensus::Transaction;
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use itertools::{Either, Itertools};
@@ -90,14 +89,6 @@ where
         block_policy: &EthBlockPolicy,
         account_balance: &Balance,
     ) -> Result<(), TxPoolInsertionError> {
-        let Some(tx_chain_id) = tx.chain_id() else {
-            return Err(TxPoolInsertionError::NotWellFormed);
-        };
-
-        if tx_chain_id != block_policy.get_chain_id() {
-            return Err(TxPoolInsertionError::NotWellFormed);
-        }
-
         if !self.do_local_insert {
             return Ok(());
         }
