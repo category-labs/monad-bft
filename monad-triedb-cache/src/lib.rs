@@ -92,10 +92,10 @@ where
         if cache.len() > self.execution_delay.0 as usize * 2 {
             let (evicted, _) = cache.pop_first().expect("nonempty");
             if evicted == block {
-                let (latest, _) = cache.last_key_value().expect("nonempty");
+                let maybe_latest = cache.last_key_value().map(|(latest, _)| latest);
                 tracing::warn!(
                     ?evicted,
-                    ?latest,
+                    ?maybe_latest,
                     "unexpected cache thrashing? only expect queries on the 2*delay latest blocks"
                 );
             }
