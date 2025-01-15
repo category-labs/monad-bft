@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use monad_consensus_types::{
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
@@ -79,7 +79,7 @@ where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         let vote = vote_msg.vote;
-        let round = vote_msg.vote.vote_info.round;
+        let round = vote_msg.vote.round;
 
         let mut ret_commands = Vec::new();
 
@@ -109,7 +109,7 @@ where
         debug!(
             ?round,
             ?vote,
-            epoch = ?vote.vote_info.epoch,
+            epoch = ?vote.epoch,
             current_stake = ?validators.calculate_current_stake(&round_pending_votes.keys().copied().collect::<Vec<_>>()),
             total_stake = ?validators.get_total_stake(),
             "collecting vote"
@@ -127,14 +127,14 @@ where
                 vote_idx.as_ref(),
             ) {
                 Ok(sigcol) => {
-                    let qc = QuorumCertificate::<SCT>::new(QcInfo { vote }, sigcol);
+                    let qc = QuorumCertificate::<SCT>::new(vote, sigcol);
                     // we update self.earliest round so that we no longer will build a QC for
                     // current round
                     self.earliest_round = round + Round(1);
 
                     info!(
-                        round = ?vote.vote_info.round,
-                        epoch = ?vote.vote_info.epoch,
+                        round = ?vote.round,
+                        epoch = ?vote.epoch,
                         "Created new QC"
                     );
                     return (Some(qc), ret_commands);
@@ -144,8 +144,8 @@ where
                     let cmds = Self::handle_invalid_vote(round_pending_votes, invalid_sigs);
 
                     warn!(
-                        round = ?vote.vote_info.round,
-                        epoch = ?vote.vote_info.epoch,
+                        round = ?vote.round,
+                        epoch = ?vote.epoch,
                         "Invalid signatures when creating new QC"
                     );
                     ret_commands.extend(cmds);
@@ -189,9 +189,8 @@ mod test {
     use std::collections::HashSet;
 
     use monad_consensus_types::{
-        ledger::CommitResult,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        voting::{ValidatorMapping, Vote, VoteInfo},
+        voting::{ValidatorMapping, Vote},
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
@@ -214,17 +213,12 @@ mod test {
         vote_round: Round,
         valid: bool,
     ) -> VoteMessage<SCT> {
-        let vi = VoteInfo {
+        let v = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: vote_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-        };
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: CommitResult::Commit,
         };
 
         let mut vm = VoteMessage::new(v, certkeypair);

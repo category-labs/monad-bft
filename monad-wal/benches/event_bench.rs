@@ -10,12 +10,11 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::{Vote, VoteInfo},
+    voting::Vote,
 };
 use monad_crypto::{
     certificate_signature::CertificateSignature,
@@ -119,17 +118,12 @@ fn bench_proposal(c: &mut Criterion) {
 fn bench_vote(c: &mut Criterion) {
     let keypair = get_key::<SignatureType>(1);
     let certkey = get_certificate_key::<SignatureCollectionType>(2);
-    let vi = VoteInfo {
+    let v = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
-    };
-
-    let v = Vote {
-        vote_info: vi,
-        ledger_commit_info: CommitResult::NoCommit,
     };
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
@@ -169,7 +163,7 @@ fn bench_timeout(c: &mut Criterion) {
     let author_keypair = &keypairs[0];
     let author_certkey = &cert_keys[0];
 
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: Round(1),
@@ -177,25 +171,18 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
     };
 
-    let qcinfo = QcInfo {
-        vote: Vote {
-            vote_info: vi,
-            ledger_commit_info: CommitResult::NoCommit,
-        },
-    };
-
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
+    let vote_hash = HasherType::hash_object(&vote);
 
     let mut sigs = Vec::new();
     for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {
         let node_id = NodeId::new(key.pubkey());
-        let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), cert_key);
+        let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), cert_key);
         sigs.push((node_id, sig));
     }
     let aggsig =
-        SignatureCollectionType::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
+        SignatureCollectionType::new(sigs, &validator_mapping, vote_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new(qcinfo, aggsig);
+    let qc = QuorumCertificate::new(vote, aggsig);
 
     let tmo_info = TimeoutInfo {
         epoch: Epoch(1),

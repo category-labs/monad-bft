@@ -2,11 +2,10 @@ use std::cmp;
 
 use monad_consensus_types::{
     block::{BlockPolicy, BlockType},
-    ledger::CommitResult,
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
-    voting::{Vote, VoteInfo},
+    voting::Vote,
 };
 use monad_state_backend::StateBackend;
 use monad_types::*;
@@ -103,9 +102,7 @@ impl Safety {
         }
     }
 
-    /// Make a Vote if it's safe to vote in the round. Set the commit field if
-    /// QC formed on the voted block can cause a commit: `block.qc.round` is
-    /// consecutive with `block.round`
+    /// Make a Vote if it's safe to vote in the round.
     pub fn make_vote<SCT, BPT, SBT>(
         &mut self,
         block: &BPT::ValidatedBlock,
@@ -121,7 +118,7 @@ impl Safety {
             self.update_highest_qc_round(qc_round);
             self.update_highest_vote_round(block.get_round());
 
-            let vote_info = VoteInfo {
+            let vote = Vote {
                 id: block.get_id(),
                 epoch: block.get_epoch(),
                 round: block.get_round(),
@@ -129,16 +126,7 @@ impl Safety {
                 parent_round: block.get_parent_round(),
             };
 
-            let commit_result = if commit_condition(block.get_round(), block.get_qc().info) {
-                CommitResult::Commit
-            } else {
-                CommitResult::NoCommit
-            };
-
-            return Some(Vote {
-                vote_info,
-                ledger_commit_info: commit_result,
-            });
+            return Some(vote);
         }
 
         None
@@ -158,8 +146,4 @@ fn safe_to_extend<SCT>(
         Some(t) => consecutive(block_round, t.round) && qc_round >= t.max_round(),
         None => false,
     }
-}
-
-fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
-    consecutive(block_round, qc_info.get_round())
 }

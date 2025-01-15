@@ -128,7 +128,7 @@ where
             VerifiedMonadMessage::Consensus(consensus_msg) => {
                 match &consensus_msg.deref().deref().message {
                     ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
-                    ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
+                    ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
                 }

@@ -16,7 +16,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "proto/block.proto",
                 "proto/blocksync.proto",
                 "proto/event.proto",
-                "proto/ledger.proto",
                 "proto/message.proto",
                 "proto/quorum_certificate.proto",
                 "proto/signing.proto",

@@ -1239,12 +1239,8 @@ where
 mod test {
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
-        ledger::CommitResult,
-        quorum_certificate::{QcInfo, QuorumCertificate},
-        signature_collection::SignatureCollection,
-        state_root_hash::StateRootHash,
-        validator_data::ValidatorSetData,
-        voting::{Vote, VoteInfo},
+        quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
+        state_root_hash::StateRootHash, validator_data::ValidatorSetData, voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::CertificateSignaturePubKey,
@@ -1271,34 +1267,29 @@ mod test {
             _,
         >(4, ValidatorSetFactory::default());
 
-        let qc_info = QcInfo {
-            vote: Vote {
-                vote_info: VoteInfo {
-                    id: BlockId(Hash([0x06_u8; 32])),
-                    epoch: Epoch(3),
-                    round: Round(4030),
-                    parent_id: BlockId(Hash([0x06_u8; 32])),
-                    parent_round: Round(4027),
-                },
-                ledger_commit_info: CommitResult::NoCommit,
-            },
+        let vote = Vote {
+            id: BlockId(Hash([0x06_u8; 32])),
+            epoch: Epoch(3),
+            round: Round(4030),
+            parent_id: BlockId(Hash([0x06_u8; 32])),
+            parent_round: Round(4027),
         };
         let qc_seq_num = SeqNum(2998); // one block before boundary block
 
-        let qc_info_hash = HasherType::hash_object(&qc_info.vote);
+        let vote_hash = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
 
         for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
             let node_id = NodeId::new(key.pubkey());
-            let sig = cert_key.sign(qc_info_hash.as_ref());
+            let sig = cert_key.sign(vote_hash.as_ref());
             sigs.push((node_id, sig));
         }
 
         let sigcol: BlsSignatureCollection<monad_secp::PubKey> =
-            SignatureCollectionType::new(sigs, &valmap, qc_info_hash.as_ref()).unwrap();
+            SignatureCollectionType::new(sigs, &valmap, vote_hash.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new(qc_info, sigcol);
+        let qc = QuorumCertificate::new(vote, sigcol);
 
         let state_root = StateRootHash(Hash([(qc_seq_num - STATE_ROOT_DELAY).0 as u8; 32]));
 
@@ -1437,7 +1428,7 @@ mod test {
     fn test_forkpoint_validate_6() {
         let mut forkpoint = get_forkpoint();
         // change qc content so signature collection is invalid
-        forkpoint.0.high_qc.info.vote.vote_info.round = forkpoint.0.high_qc.get_round() - Round(1);
+        forkpoint.0.high_qc.info.round = forkpoint.0.high_qc.get_round() - Round(1);
 
         assert_eq!(
             forkpoint.validate(

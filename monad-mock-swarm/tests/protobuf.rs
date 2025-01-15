@@ -7,10 +7,9 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    ledger::CommitResult,
     payload::{FullTransactionList, TransactionPayload},
     state_root_hash::StateRootHash,
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
@@ -54,16 +53,12 @@ fn test_consensus_timeout_event() {
 fn test_consensus_message_event_vote_multisig() {
     let keypair = get_key::<SignatureType>(0);
     let certkeypair = get_certificate_key::<SignatureCollectionType>(7);
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
-    };
-    let vote = Vote {
-        vote_info: vi,
-        ledger_commit_info: CommitResult::Commit,
     };
 
     let votemsg: ProtocolMessage<SignatureCollectionType> =

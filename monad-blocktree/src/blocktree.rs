@@ -308,34 +308,46 @@ where
 
     /// Iterate the block tree and return highest QC that have path to block tree
     /// root and is committable, if exists
+    ///
+    /// FIXME this does not take high_qc into account, which makes this more pessimistic than it
+    /// needs to be
     pub fn get_high_committable_qc(&self) -> Option<QuorumCertificate<SCT>> {
         let mut high_commit_qc: Option<QuorumCertificate<SCT>> = None;
         let mut iter: VecDeque<BlockId> = self.root.children_blocks.clone().into();
         while let Some(bid) = iter.pop_front() {
-            let qc = self
-                .tree
-                .get(&bid)
-                .expect("block in tree")
-                .validated_block
-                .get_qc();
-            if qc.info.vote.ledger_commit_info.is_commitable()
-                && self.is_coherent(&qc.info.vote.vote_info.parent_id)
-                && high_commit_qc
-                    .as_ref()
-                    .map(|high_commit_qc| high_commit_qc.get_round() < qc.get_round())
-                    .unwrap_or(true)
+            let block = self.tree.get(&bid).expect("block in tree");
+
+            // queue up children
+            iter.extend(block.children_blocks.iter().cloned());
+
+            let qc = block.validated_block.get_qc();
+            if high_commit_qc
+                .as_ref()
+                .is_some_and(|high_commit_qc| high_commit_qc.get_round() >= qc.get_round())
             {
-                high_commit_qc = Some(qc.clone());
+                // we already have observed a higher committable QC
+                continue;
             }
 
-            iter.extend(
-                self.tree
-                    .get(&bid)
-                    .expect("should be in tree")
-                    .children_blocks
-                    .iter()
-                    .cloned(),
-            )
+            let Some(committable_block_id) = qc.get_committable_id() else {
+                // qc is not committable (not consecutive rounds)
+                continue;
+            };
+
+            if committable_block_id == self.root.info.block_id {
+                // nothing new to commit
+                continue;
+            }
+
+            if !self.is_coherent(&committable_block_id) {
+                // the committable block is not (yet) coherent, likely because execution is lagging
+                // can also happen if committable_block_id is the parent of root
+                //
+                // TODO can we return out early here, because we're BFS?
+                continue;
+            }
+
+            high_commit_qc = Some(qc.clone());
         }
         high_commit_qc
     }
@@ -491,10 +503,9 @@ mod test {
             Block as ConsensusBlock, BlockKind, BlockType, FullBlock, PassthruBlockPolicy,
             GENESIS_TIMESTAMP,
         },
-        ledger::CommitResult,
         payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
-        quorum_certificate::{QcInfo, QuorumCertificate},
-        voting::{Vote, VoteInfo},
+        quorum_certificate::QuorumCertificate,
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -530,52 +541,28 @@ mod test {
     }
 
     fn get_vote(block: &Block) -> Vote {
-        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
-            CommitResult::Commit
-        } else {
-            CommitResult::NoCommit
-        };
         Vote {
-            vote_info: VoteInfo {
-                id: block.get_id(),
-                epoch: block.get_epoch(),
-                round: block.get_round(),
-                parent_id: block.get_parent_id(),
-                parent_round: block.get_parent_round(),
-            },
-            ledger_commit_info,
+            id: block.get_id(),
+            epoch: block.get_epoch(),
+            round: block.get_round(),
+            parent_id: block.get_parent_id(),
+            parent_round: block.get_parent_round(),
         }
     }
 
-    pub fn mock_qc(vote_info: VoteInfo) -> QC {
-        QC::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info,
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
-            },
-            MockSignatures::with_pubkeys(&[]),
-        )
+    pub fn mock_qc(vote: Vote) -> QC {
+        QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }
 
     pub fn mock_qc_for_block(block: &Block) -> QC {
-        let ledger_commit_info = if block.get_round() == block.get_parent_round() + Round(1) {
-            CommitResult::Commit
-        } else {
-            CommitResult::NoCommit
-        };
         let vote = Vote {
-            vote_info: VoteInfo {
-                id: block.get_id(),
-                epoch: block.get_epoch(),
-                round: block.get_round(),
-                parent_id: block.get_parent_id(),
-                parent_round: block.get_parent_round(),
-            },
-            ledger_commit_info,
+            id: block.get_id(),
+            epoch: block.get_epoch(),
+            round: block.get_round(),
+            parent_id: block.get_parent_id(),
+            parent_round: block.get_parent_round(),
         };
-        QC::new(QcInfo { vote }, MockSignatures::with_pubkeys(&[]))
+        QC::new(vote, MockSignatures::with_pubkeys(&[]))
     }
 
     fn full_block_new(b: &Block, p: &Payload) -> FullBlock<MockSignatures<SignatureType>> {

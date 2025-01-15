@@ -1,10 +1,9 @@
 use monad_consensus_types::{
     block::{Block, BlockKind},
-    ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     state_root_hash::StateRootHash,
-    voting::{Vote, VoteInfo},
+    voting::Vote,
 };
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
@@ -23,13 +22,8 @@ fn block_hash_id() {
     let epoch = Epoch(1);
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        QcInfo {
-            vote: Vote {
-                vote_info: VoteInfo {
-                    ..DontCare::dont_care()
-                },
-                ledger_commit_info: CommitResult::NoCommit,
-            },
+        Vote {
+            ..DontCare::dont_care()
         },
         MockSignatures::with_pubkeys(&[]),
     );

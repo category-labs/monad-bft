@@ -1,9 +1,8 @@
 use monad_consensus::{messages::message::VoteMessage, vote_state::VoteState};
 use monad_consensus_types::{
-    ledger::CommitResult,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -25,15 +24,10 @@ fn create_vote_message(
     vote_epoch: Epoch,
     vote_round: Round,
 ) -> (NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>) {
-    let vi = VoteInfo {
+    let v = Vote {
         epoch: vote_epoch,
         round: vote_round,
         ..DontCare::dont_care()
-    };
-
-    let v = Vote {
-        vote_info: vi,
-        ledger_commit_info: CommitResult::Commit,
     };
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, certkey);

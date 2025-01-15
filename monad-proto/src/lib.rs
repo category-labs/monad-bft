@@ -22,7 +22,6 @@ pub mod proto {
     include_proto!(discovery);
     include_proto!(signing);
     include_proto!(voting);
-    include_proto!(ledger);
     include_proto!(timeout);
     include_proto!(quorum_certificate);
     include_proto!(block);

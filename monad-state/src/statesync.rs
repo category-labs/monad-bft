@@ -67,40 +67,37 @@ impl<SCT: SignatureCollection> BlockBuffer<SCT> {
         if proposal.block.get_seq_num() < self.root {
             return None;
         }
-        let block_header = proposal.block.clone();
+        let proposal_qc = proposal.block.qc.clone();
         self.block_headers
-            .insert(proposal.block.get_id(), block_header.clone());
+            .insert(proposal.block.get_id(), proposal.block.clone());
 
         self.proposal_buffer.push_back((author, proposal));
         if self.proposal_buffer.len() > self.max_buffered_proposals {
             self.proposal_buffer.pop_front();
         }
 
-        let start_seq_num = block_header.get_seq_num();
-        let mut next_block_id = block_header.get_parent_id();
-        while let Some(block) = self.block_headers.get(&next_block_id) {
-            next_block_id = block.get_parent_id();
-            let end_seq_num = block.get_seq_num();
+        let finalized_block_id = proposal_qc.get_committable_id()?;
+        let finalized_block = self.block_headers.get(&finalized_block_id)?;
 
-            if !block.is_empty_block() && end_seq_num + self.state_root_delay <= start_seq_num {
-                if end_seq_num > self.root + self.resync_threshold {
-                    return Some((
-                        RootInfo {
-                            round: block.round,
-                            seq_num: block.get_seq_num(),
-                            epoch: block.epoch,
-                            block_id: block.get_id(),
-                            state_root: block.get_state_root(),
-                            timestamp_ns: block.get_timestamp().try_into().unwrap(),
-                        },
-                        block_header.get_qc().clone(),
-                    ));
-                }
-                break;
-            }
+        if finalized_block.is_empty_block() {
+            return None;
         }
 
-        None
+        if finalized_block.get_seq_num() <= self.root + self.resync_threshold {
+            return None;
+        }
+
+        Some((
+            RootInfo {
+                round: finalized_block.round,
+                seq_num: finalized_block.get_seq_num(),
+                epoch: finalized_block.epoch,
+                block_id: finalized_block.get_id(),
+                state_root: finalized_block.get_state_root(),
+                timestamp_ns: finalized_block.get_timestamp().try_into().unwrap(),
+            },
+            proposal_qc,
+        ))
     }
 
     pub fn handle_blocksync(&mut self, block: FullBlock<SCT>) {

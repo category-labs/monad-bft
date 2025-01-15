@@ -6,12 +6,11 @@ use monad_consensus::{
     validation::signing::{Validated, Verified},
 };
 use monad_consensus_types::{
-    ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{
@@ -145,17 +144,12 @@ test_all_combination!(test_vote_message, |num_keys| {
         validator_mapping,
     );
 
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: Round(2),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(1),
-    };
-
-    let vote = Vote {
-        vote_info: vi,
-        ledger_commit_info: CommitResult::Commit,
     };
 
     let votemsg = ProtocolMessage::Vote(VoteMessage::<SCT>::new(vote, &certkeys[0]));
@@ -212,7 +206,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let author_keypair = &keypairs[0];
     let author_cert_key = &cert_keys[0];
 
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: epoch_manager.get_epoch(Round(1)).expect("epoch exists"),
         round: Round(1),
@@ -220,27 +214,20 @@ test_all_combination!(test_timeout_message, |num_keys| {
         parent_round: Round(0),
     };
 
-    let qcinfo = QcInfo {
-        vote: Vote {
-            vote_info: vi,
-            ledger_commit_info: CommitResult::Commit,
-        },
-    };
-
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
+    let vote_hash = HasherType::hash_object(&vote);
 
     let mut sigs = Vec::new();
 
     for i in 0..cert_keys.len() {
         let node_id = NodeId::new(keypairs[i].pubkey());
         let sig =
-            <SCT::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), &cert_keys[i]);
+            <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &cert_keys[i]);
         sigs.push((node_id, sig));
     }
 
-    let sigcol = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
+    let sigcol = SCT::new(sigs, validator_mapping, vote_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new(qcinfo, sigcol);
+    let qc = QuorumCertificate::new(vote, sigcol);
 
     // timeout certificate for Round(2)
     // timeout message for Round(3)

@@ -7,13 +7,12 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, BlockKind},
-    ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
     validation::Error,
-    voting::{Vote, VoteInfo},
+    voting::Vote,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
@@ -55,26 +54,16 @@ fn setup_block(
     signers: &[PubKeyType],
 ) -> (Block<MockSignatures<SignatureType>>, Payload) {
     let txns = TransactionPayload::List(FullTransactionList::new(vec![1, 2, 3, 4].into()));
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([0x00_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: qc_parent_round,
     };
-    let qcinfo = QcInfo {
-        vote: Vote {
-            vote_info: vi,
-            ledger_commit_info: if qc_parent_round + Round(1) == qc_round {
-                CommitResult::Commit
-            } else {
-                CommitResult::NoCommit
-            },
-        },
-    };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        qcinfo,
+        vote,
         MockSignatures::with_pubkeys(signers),
     );
 
@@ -161,7 +150,7 @@ fn define_proposal_with_tc(
     >(NUM_NODES, ValidatorSetFactory::default());
 
     // create valid QC
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([0x09_u8; 32])),
         epoch: qc_epoch,
         round: qc_round,
@@ -170,12 +159,7 @@ fn define_proposal_with_tc(
     };
 
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        QcInfo {
-            vote: Vote {
-                vote_info: vi,
-                ledger_commit_info: CommitResult::Commit,
-            },
-        },
+        vote,
         MockSignatures::with_pubkeys(
             keys.iter()
                 .map(|kp| kp.pubkey())

@@ -501,7 +501,7 @@ where
         vote_msg: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         debug!(?vote_msg, "Vote Message");
-        if vote_msg.vote.vote_info.round < self.consensus.pacemaker.get_current_round() {
+        if vote_msg.vote.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
         }
@@ -511,7 +511,7 @@ where
 
         let epoch = self
             .epoch_manager
-            .get_epoch(vote_msg.vote.vote_info.round)
+            .get_epoch(vote_msg.vote.round)
             .expect("epoch verified");
         let validator_set = self
             .val_epoch_map
@@ -850,81 +850,86 @@ where
         let mut cmds = Vec::new();
         debug!(?qc, "try committing blocks using qc");
 
-        if qc.info.vote.ledger_commit_info.is_commitable()
-            && self
-                .consensus
-                .pending_block_tree
-                .is_coherent(&qc.info.vote.vote_info.parent_id)
+        let Some(committable_block_id) = qc.get_committable_id() else {
+            // qc is not committable (not consecutive rounds)
+            return cmds;
+        };
+
+        if !self
+            .consensus
+            .pending_block_tree
+            .is_coherent(&committable_block_id)
         {
-            let blocks_to_commit = self
-                .consensus
-                .pending_block_tree
-                .prune(&qc.info.vote.vote_info.parent_id);
-
-            debug!(
-                num_commits = ?blocks_to_commit.len(),
-                "qc triggered commit"
-            );
-
-            if !blocks_to_commit.is_empty() {
-                for block in blocks_to_commit.iter() {
-                    // when epoch boundary block is committed, this updates
-                    // epoch manager records
-                    self.metrics.consensus_events.commit_block += 1;
-                    self.block_policy.update_committed_block(block);
-                    self.tx_pool.update_committed_block(block);
-                    if !block.is_empty_block() {
-                        self.epoch_manager
-                            .schedule_epoch_start(block.get_seq_num(), block.get_round());
-                    } else {
-                        self.metrics.consensus_events.commit_empty_block += 1;
-                    }
-                    self.metrics.consensus_events.committed_bytes +=
-                        block.get_txn_list_len() as u64;
-                }
-
-                let unvalidated_blocks = blocks_to_commit
-                    .iter()
-                    .map(|b| b.clone().get_full_block())
-                    .collect();
-                cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(
-                    unvalidated_blocks,
-                ));
-
-                let last_committed_block = blocks_to_commit
-                    .last()
-                    .expect("blocks_to_commit is not empty");
-
-                while self
-                    .consensus
-                    .finalized_execution_results
-                    .first_key_value()
-                    .is_some_and(|(&finalized_seq_num, _)| {
-                        finalized_seq_num.saturating_add(self.config.execution_delay)
-                            <= last_committed_block.get_seq_num()
-                    })
-                {
-                    self.consensus.finalized_execution_results.pop_first();
-                }
-
-                // enter new pacemaker epoch if committing the boundary block
-                // bumps the current epoch
-                cmds.extend(
-                    self.consensus
-                        .pacemaker
-                        .advance_epoch(self.epoch_manager)
-                        .into_iter()
-                        .map(|cmd| {
-                            ConsensusCommand::from_pacemaker_command(
-                                self.keypair,
-                                self.cert_keypair,
-                                self.version,
-                                cmd,
-                            )
-                        }),
-                );
-            }
+            // the committable block is not (yet) coherent
+            // likely because execution is lagging
+            return cmds;
         }
+
+        let blocks_to_commit = self
+            .consensus
+            .pending_block_tree
+            .prune(&committable_block_id);
+
+        let Some(last_committed_block) = blocks_to_commit.last() else {
+            // nothing new to commit
+            return cmds;
+        };
+
+        debug!(
+            num_commits = ?blocks_to_commit.len(),
+            "qc triggered commit"
+        );
+
+        for block in blocks_to_commit.iter() {
+            // when epoch boundary block is committed, this updates
+            // epoch manager records
+            self.metrics.consensus_events.commit_block += 1;
+            self.block_policy.update_committed_block(block);
+            self.tx_pool.update_committed_block(block);
+            if !block.is_empty_block() {
+                self.epoch_manager
+                    .schedule_epoch_start(block.get_seq_num(), block.get_round());
+            } else {
+                self.metrics.consensus_events.commit_empty_block += 1;
+            }
+            self.metrics.consensus_events.committed_bytes += block.get_txn_list_len() as u64;
+        }
+
+        cmds.push(ConsensusCommand::LedgerCommit(
+            blocks_to_commit
+                .iter()
+                .map(|b| b.clone().get_full_block())
+                .collect(),
+        ));
+
+        while self
+            .consensus
+            .finalized_execution_results
+            .first_key_value()
+            .is_some_and(|(&finalized_seq_num, _)| {
+                finalized_seq_num.saturating_add(self.config.execution_delay)
+                    <= last_committed_block.get_seq_num()
+            })
+        {
+            self.consensus.finalized_execution_results.pop_first();
+        }
+
+        // enter new pacemaker epoch if committing the boundary block
+        // bumps the current epoch
+        cmds.extend(
+            self.consensus
+                .pacemaker
+                .advance_epoch(self.epoch_manager)
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        self.keypair,
+                        self.cert_keypair,
+                        self.version,
+                        cmd,
+                    )
+                }),
+        );
         cmds
     }
 
@@ -1104,9 +1109,7 @@ where
                     let vote_cmd = self.send_vote_and_reset_timer(round, v);
                     cmds.extend(vote_cmd);
                 }
-                Some(OutgoingVoteStatus::VoteReady(r))
-                    if r.vote_info.round >= v.vote_info.round =>
-                {
+                Some(OutgoingVoteStatus::VoteReady(r)) if r.round >= v.round => {
                     panic!("trying to schedule another vote in same round. scheduled vote {:?}, new vote {:?}", r, v);
                 }
                 Some(OutgoingVoteStatus::VoteReady(_)) | None => {
@@ -1538,7 +1541,6 @@ mod test {
         },
         block_validator::{BlockValidator, MockValidator},
         checkpoint::RootInfo,
-        ledger::CommitResult,
         metrics::Metrics,
         payload::{
             FullTransactionList, TransactionPayload, BASE_FEE_PER_GAS,
@@ -1549,7 +1551,7 @@ mod test {
         state_root_hash::{StateRootHash, StateRootHashInfo},
         timeout::Timeout,
         txpool::{MockTxPool, TxPool},
-        voting::{ValidatorMapping, Vote, VoteInfo},
+        voting::{ValidatorMapping, Vote},
     };
     use monad_crypto::{
         certificate_signature::{
@@ -2064,7 +2066,7 @@ mod test {
         Round(seq_num.0)
     }
 
-    // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
+    // 2f+1 votes for a Vote leads to a QC locking -- ie, high_qc is set to that QC.
     #[traced_test]
     #[test]
     fn lock_qc_high() {
@@ -2095,16 +2097,12 @@ mod test {
 
         let expected_qc_high_round = Round(5);
 
-        let vi = VoteInfo {
+        let v = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
-        };
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: CommitResult::NoCommit,
         };
 
         let vm1 = VoteMessage::<SignatureCollectionType>::new(v, &env.cert_keys[1]);
@@ -2209,7 +2207,7 @@ mod test {
             Round(1)
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
 
         let p2 = env.next_proposal_empty();
@@ -2221,7 +2219,7 @@ mod test {
             Round(2)
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
 
         for _ in 0..4 {
@@ -2266,7 +2264,7 @@ mod test {
         let (author, _, verified_message) = p1.clone().destructure();
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
 
         // send duplicate of p1, expect it to be ignored and no output commands
@@ -2375,7 +2373,7 @@ mod test {
             Round(1)
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
 
         // second proposal
@@ -2388,7 +2386,7 @@ mod test {
             Round(2)
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
 
         let mut missing_proposals = Vec::new();
@@ -2462,10 +2460,10 @@ mod test {
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
 
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.ledger_commit_info.is_commitable())
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
         );
 
         // round 2 proposal
@@ -2475,10 +2473,10 @@ mod test {
         assert!(find_commit_cmd(&p2_cmds).is_none());
 
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.ledger_commit_info.is_commitable())
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
         );
 
         let p3 = env.next_proposal_empty();
@@ -2523,10 +2521,10 @@ mod test {
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
 
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.ledger_commit_info.is_commitable())
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == v.parent_round + Round(1))
         );
 
         // round 2 timeout
@@ -2560,7 +2558,8 @@ mod test {
         // vote after a timeout happens immediately and is therefore extracted from the output cmds
         let p3_votes = extract_vote_msgs(cmds);
         assert!(p3_votes.len() == 1);
-        assert!(!p3_votes[0].vote.ledger_commit_info.is_commitable());
+        let p3_vote = p3_votes[0].vote;
+        assert!(p3_vote.round != p3_vote.parent_round + Round(1));
     }
 
     // this test checks that a malicious proposal sent only to the next leader is
@@ -2613,7 +2612,7 @@ mod test {
         };
         let cmds1 = n1
             .wrapped_state()
-            .send_vote_and_reset_timer(p1_vote.vote_info.round, p1_vote);
+            .send_vote_and_reset_timer(p1_vote.round, p1_vote);
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
         // n3 process cp1
@@ -2624,7 +2623,7 @@ mod test {
         };
         let cmds3 = n3
             .wrapped_state()
-            .send_vote_and_reset_timer(p3_vote.vote_info.round, p3_vote);
+            .send_vote_and_reset_timer(p3_vote.round, p3_vote);
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
         // n4 process cp1
@@ -2635,7 +2634,7 @@ mod test {
         };
         let cmds4 = n4
             .wrapped_state()
-            .send_vote_and_reset_timer(p4_vote.vote_info.round, p4_vote);
+            .send_vote_and_reset_timer(p4_vote.round, p4_vote);
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
         // n2 process mp1
@@ -2647,7 +2646,7 @@ mod test {
         };
         let cmds2 = n2
             .wrapped_state()
-            .send_vote_and_reset_timer(p2_vote.vote_info.round, p2_vote);
+            .send_vote_and_reset_timer(p2_vote.round, p2_vote);
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
         assert_eq!(p1_votes.vote, p3_votes.vote);
@@ -2682,7 +2681,7 @@ mod test {
             }
         }
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
-        assert_eq!(n2.consensus_state.high_qc.info.vote, votes[0].vote);
+        assert_eq!(n2.consensus_state.high_qc.info, votes[0].vote);
 
         // use the correct proposal gen to make next proposal and send it to second_state
         let cp2 = env.next_proposal(FullTransactionList::empty(), StateRootHash::default());
@@ -2819,7 +2818,7 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         let _ = wrapped_state.handle_proposal_message(author, verified_message);
         assert!(
-            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(wrapped_state.consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         assert_eq!(wrapped_state.metrics.consensus_events.rx_empty_block, 1);
     }
@@ -3001,7 +3000,7 @@ mod test {
         };
         let cmds1 = n1
             .wrapped_state()
-            .send_vote_and_reset_timer(p1_vote.vote_info.round, p1_vote);
+            .send_vote_and_reset_timer(p1_vote.round, p1_vote);
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
         let _ = n2.handle_proposal_message(author, verified_message.clone());
@@ -3011,7 +3010,7 @@ mod test {
         };
         let cmds2 = n2
             .wrapped_state()
-            .send_vote_and_reset_timer(p2_vote.vote_info.round, p2_vote);
+            .send_vote_and_reset_timer(p2_vote.round, p2_vote);
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
         let _ = n3.handle_proposal_message(author, verified_message.clone());
@@ -3021,7 +3020,7 @@ mod test {
         };
         let cmds3 = n3
             .wrapped_state()
-            .send_vote_and_reset_timer(p3_vote.vote_info.round, p3_vote);
+            .send_vote_and_reset_timer(p3_vote.round, p3_vote);
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
         let _ = n4.handle_proposal_message(author, verified_message);
@@ -3031,7 +3030,7 @@ mod test {
         };
         let cmds4 = n4
             .wrapped_state()
-            .send_vote_and_reset_timer(p4_vote.vote_info.round, p4_vote);
+            .send_vote_and_reset_timer(p4_vote.round, p4_vote);
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
         let next_leader = {
@@ -3316,7 +3315,7 @@ mod test {
                         proposal_10_blockid = verified_message.block.get_id();
 
                         assert!(
-                            matches!(node.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(10))
+                            matches!(node.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(10))
                         );
                         let vote = match node.consensus_state.scheduled_vote.clone().unwrap() {
                             OutgoingVoteStatus::VoteReady(v) => v,
@@ -3324,11 +3323,11 @@ mod test {
                         };
                         let cmds = node
                             .wrapped_state()
-                            .send_vote_and_reset_timer(vote.vote_info.round, vote);
+                            .send_vote_and_reset_timer(vote.round, vote);
 
                         let v = extract_vote_msgs(cmds);
                         assert_eq!(v.len(), 1);
-                        assert_eq!(v[0].vote.vote_info.round, Round(10));
+                        assert_eq!(v[0].vote.round, Round(10));
 
                         proposal_10_votes.push((node.nodeid, v[0]));
                     }
@@ -3542,7 +3541,7 @@ mod test {
                 };
                 let cmds = node
                     .wrapped_state()
-                    .send_vote_and_reset_timer(vote.vote_info.round, vote);
+                    .send_vote_and_reset_timer(vote.round, vote);
 
                 let v = extract_vote_msgs(cmds);
                 assert_eq!(v.len(), 1);
@@ -4477,7 +4476,7 @@ mod test {
             let _ = node.handle_proposal_message(author, verified_message.clone());
             // state should send vote to the leader in epoch 2
             assert!(
-                matches!(node.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == (expected_epoch_start_round - Round(1)))
+                matches!(node.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == (expected_epoch_start_round - Round(1)))
             );
         }
     }
@@ -4531,7 +4530,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // no blocksync requests
         assert!(find_blocksync_request(&cmds).is_none());
@@ -4562,7 +4561,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
         // should not vote for block 3
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(3))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(3))
         );
         let requested_ranges = extract_blocksync_requests(cmds);
         assert_eq!(requested_ranges.len(), 1);
@@ -4586,7 +4585,7 @@ mod test {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
             assert!(
-                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(2))
+                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(2))
             );
             assert!(find_blocksync_request(&cmds).is_none());
         }
@@ -4656,7 +4655,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // no blocksync requests
         assert!(find_blocksync_request(&cmds).is_none());
@@ -4687,7 +4686,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_4, proposal_message_4);
         // should not vote for block 4
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(4))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(4))
         );
         let requested_ranges = extract_blocksync_requests(cmds);
         assert_eq!(requested_ranges.len(), 1);
@@ -4719,7 +4718,7 @@ mod test {
             );
             // should not vote for block or blocksync
             assert!(
-                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(3))
+                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(3))
             );
             assert!(find_blocksync_request(&cmds).is_none());
             assert!(find_commit_cmd(&cmds).is_some());
@@ -4734,7 +4733,7 @@ mod test {
             let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
             // should not vote for block or blocksync
             assert!(
-                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(3))
+                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(3))
             );
             // no request blocksync as high_qc is unchanged
             assert!(find_blocksync_request(&cmds).is_none());
@@ -4759,7 +4758,7 @@ mod test {
             let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
             // should not vote for block or blocksync
             assert!(
-                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(2))
+                matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(2))
             );
             assert!(find_blocksync_request(&cmds).is_none());
             assert!(find_commit_cmd(&cmds).is_some());
@@ -4839,7 +4838,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // block 1 should be in the blocktree as coherent
         let block_1_blocktree_entry = n1
@@ -4960,7 +4959,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // should vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // block 1 should be in the blocktree as coherent
         let block_1_blocktree_entry = n1
@@ -4982,7 +4981,7 @@ mod test {
         let _ = n1.handle_proposal_message(author_2, proposal_message_2);
         // should not vote for block 2
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round != Round(2))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round != Round(2))
         );
         // block 2 should be in the blocktree as incoherent
         let block_2_blocktree_entry = n1
@@ -5047,7 +5046,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // should vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // block 1 should be in the blocktree as coherent
         let block_1_blocktree_entry = n1
@@ -5068,7 +5067,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
         // should vote for block 2
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
         // block 2 should be in the blocktree as coherent
         let block_2_blocktree_entry = n1
@@ -5089,7 +5088,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
         // should vote for block 3
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(3))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(3))
         );
         // should commit block 1
         assert!(find_commit_cmd(&cmds).is_some());
@@ -5169,7 +5168,7 @@ mod test {
         let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
         // should vote for block 1
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(1))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
         );
         // block 1 should be in the blocktree as coherent
         let block_1_blocktree_entry = n1
@@ -5190,7 +5189,7 @@ mod test {
         let _ = n1.handle_proposal_message(author_2, proposal_message_2);
         // should vote for block 2
         assert!(
-            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.vote_info.round == Round(2))
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(2))
         );
         // block 2 should be in the blocktree as coherent
         let block_2_blocktree_entry = n1

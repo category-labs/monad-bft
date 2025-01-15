@@ -355,12 +355,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus_types::{
-        ledger::CommitResult,
-        quorum_certificate::QcInfo,
-        timeout::TimeoutInfo,
-        voting::{Vote, VoteInfo},
-    };
+    use monad_consensus_types::{timeout::TimeoutInfo, voting::Vote};
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::{Hash, Hasher, HasherType},
@@ -387,7 +382,7 @@ mod test {
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valmap: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     ) -> QuorumCertificate<SCT> {
-        let vote_info = VoteInfo {
+        let vote = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: qc_epoch,
             round: qc_round,
@@ -395,11 +390,6 @@ mod test {
             parent_round: Round(0),
         };
 
-        let vote = Vote {
-            vote_info,
-            ledger_commit_info: CommitResult::NoCommit,
-        };
-        let qc_info = QcInfo { vote };
         let vote_hash = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
@@ -412,7 +402,7 @@ mod test {
 
         let sigcol = SCT::new(sigs, valmap, vote_hash.as_ref()).expect("success");
 
-        QuorumCertificate::<SCT>::new(qc_info, sigcol)
+        QuorumCertificate::<SCT>::new(vote, sigcol)
     }
 
     fn create_timeout_message<SCT: SignatureCollection>(

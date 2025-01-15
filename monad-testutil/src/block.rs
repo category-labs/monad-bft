@@ -1,10 +1,9 @@
 use monad_consensus_types::{
     block::{Block, BlockKind},
-    ledger::CommitResult,
     payload::{ExecutionProtocol, Payload, RandaoReveal, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     certificate_signature::{
@@ -32,24 +31,18 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    let vi = VoteInfo {
+    let vote = Vote {
         id: BlockId(Hash([42_u8; 32])),
         epoch: Epoch(1),
         round: qc_round,
         parent_id,
         parent_round: Round(0),
     };
-    let qcinfo = QcInfo {
-        vote: Vote {
-            vote_info: vi,
-            ledger_commit_info: CommitResult::NoCommit,
-        },
-    };
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
+    let vote_hash = HasherType::hash_object(&vote);
 
     let mut sigs = Vec::new();
     for certkey in certkeys.iter() {
-        let sig = <SCT::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), certkey);
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), certkey);
 
         for (node_id, pubkey) in validator_mapping.map.iter() {
             if *pubkey == certkey.pubkey() {
@@ -58,8 +51,8 @@ where
         }
     }
 
-    let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
-    let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
+    let sig_col = SCT::new(sigs, validator_mapping, vote_hash.as_ref()).unwrap();
+    let qc = QuorumCertificate::<SCT>::new(vote, sig_col);
 
     let block_kind = match txns {
         TransactionPayload::List(_) => BlockKind::Executable,

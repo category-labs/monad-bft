@@ -3,20 +3,11 @@ syntax = "proto3";
 package monad_proto.voting;
 
 import "basic.proto";
-import "ledger.proto";
 
-message ProtoVoteInfo {
+message ProtoVote {
   monad_proto.basic.ProtoBlockId id = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;
   monad_proto.basic.ProtoRound round = 3;
   monad_proto.basic.ProtoBlockId parent_id = 4;
   monad_proto.basic.ProtoRound parent_round = 5;
-}
-
-message ProtoVote {
-  ProtoVoteInfo vote_info = 1;
-  oneof ledger_commit_info {
-    monad_proto.ledger.ProtoNoCommit no_commit = 2;
-    monad_proto.ledger.ProtoCommit commit = 3;
-  }
 }

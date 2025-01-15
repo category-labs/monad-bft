@@ -8,8 +8,6 @@ use monad_types::*;
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
-use crate::ledger::CommitResult;
-
 /// Map validator NodeId to its Certificate PubKey
 pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
     pub map: BTreeMap<NodeId<PT>, VKT::PubKeyType>,
@@ -35,30 +33,6 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 /// Vote for consensus proposals
 #[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vote {
-    /// contents of the vote over which the QC is eventually formed
-    pub vote_info: VoteInfo,
-    /// commit decision
-    pub ledger_commit_info: CommitResult,
-}
-
-impl std::fmt::Debug for Vote {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Vote")
-            .field("vote_info", &self.vote_info)
-            .field("ledger_commit_info", &self.ledger_commit_info)
-            .finish()
-    }
-}
-
-impl Hashable for Vote {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.vote_info.hash(state);
-        self.ledger_commit_info.hash(state)
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct VoteInfo {
     /// id of the proposed block
     pub id: BlockId,
     /// epoch of the proposed block
@@ -71,9 +45,9 @@ pub struct VoteInfo {
     pub parent_round: Round,
 }
 
-impl std::fmt::Debug for VoteInfo {
+impl std::fmt::Debug for Vote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VoteInfo")
+        f.debug_struct("Vote")
             .field("id", &self.id)
             .field("epoch", &self.epoch)
             .field("r", &self.round)
@@ -83,7 +57,7 @@ impl std::fmt::Debug for VoteInfo {
     }
 }
 
-impl Hashable for VoteInfo {
+impl Hashable for Vote {
     fn hash(&self, state: &mut impl Hasher) {
         self.id.hash(state);
         state.update(self.epoch.as_bytes());
@@ -93,7 +67,7 @@ impl Hashable for VoteInfo {
     }
 }
 
-impl DontCare for VoteInfo {
+impl DontCare for Vote {
     fn dont_care() -> Self {
         Self {
             id: BlockId(Hash([0x0_u8; 32])),
@@ -107,16 +81,14 @@ impl DontCare for VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
+    use monad_crypto::hasher::{Hash, Hasher, HasherType};
     use monad_types::{BlockId, Epoch, Round};
-    use test_case::test_case;
 
-    use super::VoteInfo;
-    use crate::{ledger::CommitResult, voting::Vote};
+    use super::Vote;
 
     #[test]
-    fn voteinfo_hash() {
-        let vi = VoteInfo {
+    fn vote_hash() {
+        let vi = Vote {
             id: BlockId(Hash([0x00_u8; 32])),
             epoch: Epoch(1),
             round: Round(0),
@@ -133,32 +105,6 @@ mod test {
 
         let h1 = hasher.hash();
         let h2 = HasherType::hash_object(&vi);
-
-        assert_eq!(h1, h2);
-    }
-
-    #[test_case(CommitResult::NoCommit ; "NoCommit")]
-    #[test_case(CommitResult::Commit ; "Commit")]
-    fn vote_hash(cr: CommitResult) {
-        let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            epoch: Epoch(1),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-        };
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: cr,
-        };
-
-        let mut hasher = HasherType::new();
-        vi.hash(&mut hasher);
-        cr.hash(&mut hasher);
-
-        let h1 = hasher.hash();
-        let h2 = HasherType::hash_object(&v);
 
         assert_eq!(h1, h2);
     }

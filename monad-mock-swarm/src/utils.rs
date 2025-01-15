@@ -12,14 +12,13 @@ pub mod test_tool {
     };
     use monad_consensus_types::{
         block::{Block, BlockKind, BlockRange},
-        ledger::CommitResult,
         payload::{
             ExecutionProtocol, FullTransactionList, Payload, RandaoReveal, TransactionPayload,
         },
-        quorum_certificate::{QcInfo, QuorumCertificate},
+        quorum_certificate::QuorumCertificate,
         state_root_hash::StateRootHash,
         timeout::{Timeout, TimeoutInfo},
-        voting::{Vote, VoteInfo},
+        voting::Vote,
     };
     use monad_crypto::{
         certificate_signature::{
@@ -60,13 +59,8 @@ pub mod test_tool {
 
     pub fn fake_qc() -> QuorumCertificate<SC> {
         QC::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info: VoteInfo {
-                        ..DontCare::dont_care()
-                    },
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
+            Vote {
+                ..DontCare::dont_care()
             },
             MultiSig { sigs: vec![] },
         )
@@ -114,15 +108,12 @@ pub mod test_tool {
     }
 
     pub fn fake_vote_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
-        let vote_info = VoteInfo {
+        let vote = Vote {
             round,
             ..DontCare::dont_care()
         };
         let internal_msg = VoteMessage {
-            vote: Vote {
-                vote_info,
-                ledger_commit_info: CommitResult::NoCommit,
-            },
+            vote,
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
         ConsensusMessage {

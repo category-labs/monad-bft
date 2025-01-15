@@ -1,12 +1,11 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
     block::{Block, BlockKind},
-    ledger::CommitResult,
     payload::{ExecutionProtocol, FullTransactionList, Payload, TransactionPayload},
-    quorum_certificate::{QcInfo, QuorumCertificate},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::{Vote, VoteInfo},
+    voting::Vote,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
@@ -16,7 +15,6 @@ use monad_crypto::{
 use monad_multi_sig::MultiSig;
 use monad_testutil::signing::*;
 use monad_types::*;
-use test_case::test_case;
 use zerocopy::AsBytes;
 
 type SignatureType = NopSignature;
@@ -28,13 +26,8 @@ fn timeout_digest() {
         epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info: VoteInfo {
-                        ..DontCare::dont_care()
-                    },
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
+            Vote {
+                ..DontCare::dont_care()
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -57,13 +50,8 @@ fn timeout_info_hash() {
         epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info: VoteInfo {
-                        ..DontCare::dont_care()
-                    },
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
+            Vote {
+                ..DontCare::dont_care()
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -87,13 +75,8 @@ fn timeout_hash() {
         epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info: VoteInfo {
-                        ..DontCare::dont_care()
-                    },
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
+            Vote {
+                ..DontCare::dont_care()
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -122,13 +105,8 @@ fn timeout_msg_hash() {
         epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
-            QcInfo {
-                vote: Vote {
-                    vote_info: VoteInfo {
-                        ..DontCare::dont_care()
-                    },
-                    ledger_commit_info: CommitResult::NoCommit,
-                },
+            Vote {
+                ..DontCare::dont_care()
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -146,18 +124,7 @@ fn timeout_msg_hash() {
     let mut hasher = HasherType::new();
     hasher.update(tmo_msg.timeout.tminfo.epoch.0.as_bytes());
     hasher.update(tmo_msg.timeout.tminfo.round.0.as_bytes());
-    hasher.update(
-        tmo_msg
-            .timeout
-            .tminfo
-            .high_qc
-            .info
-            .vote
-            .vote_info
-            .id
-            .0
-            .as_bytes(),
-    );
+    hasher.update(tmo_msg.timeout.tminfo.high_qc.info.id.0.as_bytes());
     hasher.update(tmo_msg.timeout.tminfo.high_qc.get_hash());
     unsafe {
         let sig_bytes = std::mem::transmute::<
@@ -188,13 +155,8 @@ fn proposal_msg_hash() {
     let epoch = Epoch(1);
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
-        QcInfo {
-            vote: Vote {
-                vote_info: VoteInfo {
-                    ..DontCare::dont_care()
-                },
-                ledger_commit_info: CommitResult::NoCommit,
-            },
+        Vote {
+            ..DontCare::dont_care()
         },
         MockSignatures::with_pubkeys(&[]),
     );
@@ -250,16 +212,10 @@ fn max_high_qc() {
     assert_eq!(tc.max_round(), Round(3));
 }
 
-#[test_case(CommitResult::NoCommit ; "None commit_state")]
-#[test_case(CommitResult::Commit ; "Some commit_state")]
-fn vote_msg_hash(cs: CommitResult) {
-    let vi = VoteInfo {
-        ..DontCare::dont_care()
-    };
-
+#[test]
+fn vote_msg_hash() {
     let v = Vote {
-        vote_info: vi,
-        ledger_commit_info: cs,
+        ..DontCare::dont_care()
     };
 
     let certkey = get_certificate_key::<SignatureCollectionType>(7);
