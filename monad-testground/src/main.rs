@@ -326,6 +326,7 @@ async fn run<ST, SCT>(
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
+    let nodeid = config.executor_config.nodeid;
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
     let mut executor = make_monad_executor(index, state_backend, config.executor_config);
 
@@ -337,7 +338,7 @@ async fn run<ST, SCT>(
     const BLOCK_INTERVAL: usize = 100;
 
     let mut last_ledger_len = executor.ledger().get_blocks().len();
-    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+    let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
     if let Some(cx) = &cx {
         ledger_span.set_parent(cx.clone());
     }
@@ -351,7 +352,7 @@ async fn run<ST, SCT>(
         let ledger_len = executor.ledger().get_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
-            ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+            ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
             if let Some(cx) = &cx {
                 ledger_span.set_parent(cx.clone());
             }
