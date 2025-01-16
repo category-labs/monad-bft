@@ -229,6 +229,14 @@ impl JsonRpcError {
         }
     }
 
+    pub fn insufficient_funds() -> Self {
+        Self {
+            code: -32003,
+            message: "Insufficient funds for gas * price + value".into(),
+            data: None,
+        }
+    }
+
     pub fn code_size_too_large(size: usize) -> Self {
         Self {
             code: -32603,

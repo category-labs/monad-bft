@@ -294,14 +294,13 @@ pub async fn sender_gas_allowance<T: Triedb>(
             }
         };
 
+        if balance == U256::ZERO {
+            return Err(JsonRpcError::insufficient_funds());
+        }
+
         let gas_limit = balance
             .checked_sub(request.value.unwrap_or_default())
-            .ok_or_else(|| {
-                JsonRpcError::eth_call_error(
-                    "insufficient funds for gas * price + value".to_string(),
-                    None,
-                )
-            })?
+            .ok_or_else(JsonRpcError::insufficient_funds)?
             .checked_div(gas_price)
             .ok_or_else(|| JsonRpcError::internal_error("zero gas price".into()))?;
 
@@ -366,21 +365,15 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         }
     };
 
-    let sender = params.transaction.from.unwrap_or_default();
-    match sender {
-        Address::ZERO => {
-            // for eth_call from a zero address, we want to override the block base fee to be zero
-            // so that reading from the smart contract does not require the zero address
-            // to have any gas balance
-            header.header.base_fee_per_gas = Some(0);
-            params.transaction.fill_gas_prices(U256::from(0))?;
-
-            if params.transaction.gas.is_none() {
-                // eth_call from a zero address will default gas limit as block gas limit
-                params.transaction.gas = Some(U256::from(header.header.gas_limit));
-            }
-        }
-        _ => {
+    // Geth checks that the sender can pay for gas if gas price is populated.
+    // Set the base fee to zero if gas price is not populated.
+    // https://github.com/ethereum/go-ethereum/pull/20783
+    match params.transaction.gas_price_details {
+        GasPriceDetails::Legacy { gas_price: _ }
+        | GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(_),
+            ..
+        } => {
             params.transaction.fill_gas_prices(U256::from(
                 header.header.base_fee_per_gas.unwrap_or_default(),
             ))?;
@@ -396,12 +389,20 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
                 params.transaction.gas = Some(U256::from(allowance));
             }
         }
+        _ => {
+            header.header.base_fee_per_gas = Some(0);
+            params.transaction.fill_gas_prices(U256::ZERO)?;
+            if params.transaction.gas.is_none() {
+                params.transaction.gas = Some(U256::from(header.header.gas_limit));
+            }
+        }
     }
 
     if params.transaction.chain_id.is_none() {
         params.transaction.chain_id = Some(U64::from(chain_id));
     }
 
+    let sender = params.transaction.from.unwrap_or_default();
     let txn: TxEnvelope = params.transaction.try_into()?;
     let block_number = header.header.number;
     match monad_cxx::eth_call(
