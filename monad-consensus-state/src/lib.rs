@@ -887,7 +887,8 @@ where
             // epoch manager records
             self.metrics.consensus_events.commit_block += 1;
             self.block_policy.update_committed_block(block);
-            self.tx_pool.update_committed_block(block);
+            self.tx_pool
+                .update_committed_block(block, &mut self.metrics.txpool_events);
             if !block.header().is_null {
                 self.epoch_manager
                     .schedule_epoch_start(block.header().seq_num, block.get_round());
@@ -1296,6 +1297,7 @@ where
             self.block_policy,
             pending_blocktree_blocks,
             self.state_backend,
+            &mut self.metrics.txpool_events,
         ) {
             Ok(proposed_execution_inputs) => proposed_execution_inputs,
             Err(err) => {

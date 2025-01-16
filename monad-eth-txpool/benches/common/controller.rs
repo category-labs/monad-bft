@@ -2,7 +2,7 @@ use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use bytes::Bytes;
 use itertools::Itertools;
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{metrics::TxPoolEvents, txpool::TxPool};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
@@ -36,6 +36,7 @@ pub struct BenchController<'a> {
     pub state_backend: StateBackendType,
     pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
+    pub metrics: TxPoolEvents,
     pub proposal_tx_limit: usize,
     pub gas_limit: u64,
 }
@@ -54,13 +55,13 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let mut pool = Self::create_pool(block_policy, &state_backend, &txs);
+        let mut metrics = TxPoolEvents::default();
+        let mut pool = Self::create_pool(block_policy, &state_backend, &txs, &mut metrics);
 
-        pool.update_committed_block(&generate_block_with_txs(
-            Round(0),
-            block_policy.get_last_commit(),
-            Vec::default(),
-        ));
+        pool.update_committed_block(
+            &generate_block_with_txs(Round(0), block_policy.get_last_commit(), Vec::default()),
+            &mut metrics,
+        );
 
         Self {
             block_policy,
@@ -73,6 +74,7 @@ impl<'a> BenchController<'a> {
                     generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), tx)
                 })
                 .collect_vec(),
+            metrics,
             proposal_tx_limit,
             gas_limit: txs
                 .iter()
@@ -87,6 +89,7 @@ impl<'a> BenchController<'a> {
         block_policy: &BlockPolicyType,
         state_backend: &StateBackendType,
         txs: &[TxEnvelope],
+        metrics: &mut TxPoolEvents,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 
@@ -97,6 +100,7 @@ impl<'a> BenchController<'a> {
                 .collect(),
             block_policy,
             state_backend,
+            metrics
         )
         .is_empty());
 

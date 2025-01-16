@@ -8,6 +8,7 @@ use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
+    metrics::TxPoolEvents,
     payload::RoundSignature,
     txpool::TxPool,
 };
@@ -116,12 +117,12 @@ fn run_custom_eth_txpool_test<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
+    let mut metrics = TxPoolEvents::default();
 
-    pool.update_committed_block(&generate_block_with_txs(
-        Round(0),
-        SeqNum(0),
-        Vec::default(),
-    ));
+    pool.update_committed_block(
+        &generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
+        &mut metrics,
+    );
 
     let mut current_round = 1u64;
     let mut current_seq_num = 1u64;
@@ -141,6 +142,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         vec![Bytes::from(alloy_rlp::encode(tx))],
                         &eth_block_policy,
                         &state_backend,
+                        &mut metrics,
                     );
 
                     if inserted {
@@ -175,6 +177,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                     &eth_block_policy,
                     pending_blocks.iter().collect_vec(),
                     &state_backend,
+                    &mut metrics,
                 )
                 .expect("create proposal succeeds");
 
@@ -220,7 +223,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         &block,
                     );
 
-                    TxPool::update_committed_block(&mut pool, &block);
+                    TxPool::update_committed_block(&mut pool, &block, &mut metrics);
                 }
 
                 assert_eq!(

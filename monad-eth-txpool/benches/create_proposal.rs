@@ -24,6 +24,7 @@ fn criterion_benchmark(c: &mut Criterion) {
              block_policy,
              pool,
              pending_blocks,
+             metrics,
              proposal_tx_limit,
              gas_limit,
          }| {
@@ -40,6 +41,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 block_policy,
                 pending_blocks.iter().collect_vec(),
                 state_backend,
+                metrics,
             )
             .unwrap();
         },

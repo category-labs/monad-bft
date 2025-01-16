@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_consensus_types::txpool::TxPool;
+use monad_consensus_types::{metrics::TxPoolEvents, txpool::TxPool};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -26,12 +26,19 @@ fn criterion_benchmark(c: &mut Criterion) {
             assert!(pending_txs.is_empty());
 
             let state_backend = BenchController::generate_state_backend_for_txs(&txs);
-            let pool = BenchController::create_pool(&block_policy, &state_backend, &txs);
 
-            (pool, generate_block_with_txs(Round(1), SeqNum(1), txs))
+            let mut metrics = TxPoolEvents::default();
+            let pool =
+                BenchController::create_pool(&block_policy, &state_backend, &txs, &mut metrics);
+
+            (
+                pool,
+                metrics,
+                generate_block_with_txs(Round(1), SeqNum(1), txs),
+            )
         },
-        |(pool, block)| {
-            TxPool::update_committed_block(pool, block);
+        |(pool, metrics, block)| {
+            TxPool::update_committed_block(pool, block, metrics);
         },
     );
 }

@@ -11,6 +11,7 @@ use crate::{
         BlockPolicy, MockExecutionBody, MockExecutionProposedHeader, MockExecutionProtocol,
         PassthruBlockPolicy, ProposedExecutionInputs,
     },
+    metrics::TxPoolEvents,
     payload::RoundSignature,
     signature_collection::SignatureCollection,
 };
@@ -51,6 +52,7 @@ where
         txns: Vec<Bytes>,
         block_policy: &BPT,
         state_backend: &SBT,
+        metrics: &mut TxPoolEvents,
     ) -> Vec<Bytes>;
     /// Returns an RLP encoded lists of transactions to include in the proposal
     fn create_proposal(
@@ -65,14 +67,22 @@ where
         block_policy: &BPT,
         pending_blocks: Vec<&BPT::ValidatedBlock>,
         state_backend: &SBT,
+        metrics: &mut TxPoolEvents,
     ) -> Result<ProposedExecutionInputs<EPT>, StateBackendError>;
 
-    /// Optional callback on block commit
-    /// Can be used for clearing of stale txs from txpool
-    fn update_committed_block(&mut self, committed_block: &BPT::ValidatedBlock);
+    /// Callback on block commit to update the txpool's tracking mechanisms
+    fn update_committed_block(
+        &mut self,
+        committed_block: &BPT::ValidatedBlock,
+        metrics: &mut TxPoolEvents,
+    );
 
     /// Used to make sure the txpool state is reset after the node falls behind
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&BPT::ValidatedBlock>);
+    fn reset(
+        &mut self,
+        last_delay_committed_blocks: Vec<&BPT::ValidatedBlock>,
+        metrics: &mut TxPoolEvents,
+    );
 }
 
 use rand::RngCore;
@@ -105,6 +115,7 @@ where
         _tx: Vec<Bytes>,
         _block_policy: &PassthruBlockPolicy,
         _state_backend: &InMemoryState,
+        _metrics: &mut TxPoolEvents,
     ) -> Vec<Bytes> {
         vec![]
     }
@@ -122,6 +133,7 @@ where
             &<PassthruBlockPolicy as BlockPolicy<ST, SCT, MockExecutionProtocol, InMemoryState>>::ValidatedBlock,
         >,
         _state_backend: &InMemoryState,
+        _metrics: &mut TxPoolEvents,
     ) -> Result<ProposedExecutionInputs<MockExecutionProtocol>, StateBackendError> {
         let header = MockExecutionProposedHeader {};
         let body = MockExecutionBody {
@@ -143,6 +155,7 @@ where
             MockExecutionProtocol,
             InMemoryState,
         >>::ValidatedBlock,
+        _metrics: &mut TxPoolEvents,
     ) {
     }
 
@@ -151,6 +164,7 @@ where
         _last_delay_committed_blocks: Vec<
             &<PassthruBlockPolicy as BlockPolicy<ST, SCT, MockExecutionProtocol, InMemoryState>>::ValidatedBlock,
         >,
+        _metrics: &mut TxPoolEvents,
     ) {
     }
 }

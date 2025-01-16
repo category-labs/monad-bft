@@ -1074,6 +1074,7 @@ where
                 .iter()
                 .rev()
                 .collect(),
+            &mut self.metrics.txpool_events,
         );
         // commit blocks
         commands.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(

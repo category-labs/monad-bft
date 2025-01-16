@@ -8,6 +8,7 @@ use bytes::Bytes;
 use itertools::{Either, Itertools};
 use monad_consensus_types::{
     block::ProposedExecutionInputs,
+    metrics::TxPoolEvents,
     payload::RoundSignature,
     signature_collection::SignatureCollection,
     txpool::{TxPool, TxPoolInsertionError},
@@ -75,20 +76,6 @@ where
             .expect("pool size does not overflow")
     }
 
-    pub fn promote_pending(
-        &mut self,
-        block_policy: &EthBlockPolicy<ST, SCT>,
-        state_backend: &SBT,
-        max_promotable: usize,
-    ) -> Result<(), StateBackendError> {
-        self.tracked.promote_pending(
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            max_promotable,
-        )
-    }
-
     fn validate_and_insert_tx(
         &mut self,
         tx: Recovered<TxEnvelope>,
@@ -147,6 +134,13 @@ where
             .collect();
         Ok(results)
     }
+
+    fn update_aggregate_metrics(&self, metrics: &mut TxPoolEvents) {
+        metrics.pending_addresses = self.pending.num_addresses() as u64;
+        metrics.pending_txs = self.pending.num_txs() as u64;
+        metrics.tracked_addresses = self.tracked.num_addresses() as u64;
+        metrics.tracked_txs = self.tracked.num_txs() as u64;
+    }
 }
 
 impl<ST, SCT, SBT> TxPool<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
@@ -161,13 +155,16 @@ where
         txns: Vec<Bytes>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
+        metrics: &mut TxPoolEvents,
     ) -> Vec<Bytes> {
-        if let Err(state_backend_error) = self.promote_pending(
+        if let Err(state_backend_error) = self.tracked.promote_pending(
             block_policy,
             state_backend,
+            &mut self.pending,
             txns.len()
                 .min(INSERT_TXS_MIN_PROMOTE)
                 .max(INSERT_TXS_MAX_PROMOTE),
+            metrics,
         ) {
             if self.pending.is_at_promote_txs_watermark() {
                 warn!(
@@ -176,6 +173,8 @@ where
                 );
             }
         }
+
+        let incoming_num_txs = txns.len();
 
         // TODO(rene): sender recovery is done inline here
         let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
@@ -187,6 +186,8 @@ where
             })
             .unzip();
 
+        metrics.drop_invalid_bytes += incoming_num_txs.saturating_sub(decoded_txs.len()) as u64;
+
         let Ok(insertion_results) =
             self.validate_and_insert_txs(block_policy, state_backend, decoded_txs)
         else {
@@ -194,14 +195,34 @@ where
             return Vec::new();
         };
 
-        insertion_results
+        let results = insertion_results
             .into_iter()
             .zip(raw_txs)
-            .filter_map(|(insertion_result, b)| match insertion_result {
-                Ok(()) => Some(b),
-                Err(_) => None,
+            .filter_map(|(result, b)| {
+                let Some(error) = result.err() else {
+                    return Some(b);
+                };
+
+                match error {
+                    TxPoolInsertionError::NotWellFormed => metrics.drop_not_well_formed += 1,
+                    TxPoolInsertionError::NonceTooLow => metrics.drop_nonce_too_low += 1,
+                    TxPoolInsertionError::FeeTooLow => metrics.drop_fee_too_low += 1,
+                    TxPoolInsertionError::InsufficientBalance => {
+                        metrics.drop_insufficient_balance += 1
+                    }
+                    TxPoolInsertionError::PoolFull => metrics.drop_pool_full += 1,
+                    TxPoolInsertionError::ExistingHigherPriority => {
+                        metrics.drop_existing_higher_priority += 1
+                    }
+                }
+
+                None
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        self.update_aggregate_metrics(metrics);
+
+        results
     }
 
     fn create_proposal(
@@ -216,8 +237,9 @@ where
         block_policy: &EthBlockPolicy<ST, SCT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
+        metrics: &mut TxPoolEvents,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
-        self.tracked.evict_expired_txs();
+        self.tracked.evict_expired_txs(metrics);
 
         let timestamp_seconds = timestamp_ns / 1_000_000_000;
         // u64::MAX seconds is ~500 Billion years
@@ -231,6 +253,7 @@ where
             extending_blocks,
             state_backend,
             &mut self.pending,
+            metrics,
         )?;
 
         let body = EthBlockBody {
@@ -265,17 +288,31 @@ where
             parent_beacon_block_root: [0_u8; 32],
         };
 
+        self.update_aggregate_metrics(metrics);
+
         Ok(ProposedExecutionInputs { header, body })
     }
 
-    fn update_committed_block(&mut self, committed_block: &EthValidatedBlock<ST, SCT>) {
+    fn update_committed_block(
+        &mut self,
+        committed_block: &EthValidatedBlock<ST, SCT>,
+        metrics: &mut TxPoolEvents,
+    ) {
         self.tracked
-            .update_committed_block(committed_block, &mut self.pending);
+            .update_committed_block(committed_block, &mut self.pending, metrics);
 
-        self.tracked.evict_expired_txs();
+        self.tracked.evict_expired_txs(metrics);
+
+        self.update_aggregate_metrics(metrics);
     }
 
-    fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<ST, SCT>>) {
+    fn reset(
+        &mut self,
+        last_delay_committed_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
+        metrics: &mut TxPoolEvents,
+    ) {
         self.tracked.reset(last_delay_committed_blocks);
+
+        self.update_aggregate_metrics(metrics);
     }
 }

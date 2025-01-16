@@ -106,14 +106,14 @@ where
         };
         match event {
             MempoolEvent::UserTxns(txns) => {
-                let num_txns = txns.len() as u64;
-                let valid_encoded_txs =
-                    self.txpool
-                        .insert_tx(txns, self.block_policy, self.state_backend);
+                let valid_encoded_txs = self.txpool.insert_tx(
+                    txns,
+                    self.block_policy,
+                    self.state_backend,
+                    &mut self.metrics.txpool_events,
+                );
 
-                let num_valid_txns = valid_encoded_txs.len() as u64;
-                self.metrics.txpool_events.local_inserted_txns += num_valid_txns;
-                self.metrics.txpool_events.dropped_txns += num_txns - num_valid_txns;
+                self.metrics.txpool_events.insert_mempool_txs += valid_encoded_txs.len() as u64;
 
                 // Current round leader will only include txn in proposal if it
                 // hasn't observed a TC we locally formed. In all other case,
@@ -135,12 +135,15 @@ where
             }
             MempoolEvent::ForwardedTxns { sender, txns } => {
                 let num_txns = txns.len() as u64;
-                let valid_encoded_txs =
-                    self.txpool
-                        .insert_tx(txns, self.block_policy, self.state_backend);
+                let valid_encoded_txs = self.txpool.insert_tx(
+                    txns,
+                    self.block_policy,
+                    self.state_backend,
+                    &mut self.metrics.txpool_events,
+                );
 
                 let num_valid_txns = valid_encoded_txs.len() as u64;
-                self.metrics.txpool_events.external_inserted_txns += num_valid_txns;
+                self.metrics.txpool_events.insert_forwarded_txs += num_valid_txns;
 
                 if num_valid_txns != num_txns {
                     tracing::warn!(?sender, "sender forwarded bad txns");

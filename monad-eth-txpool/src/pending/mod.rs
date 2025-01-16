@@ -26,6 +26,10 @@ impl PendingTxMap {
         self.txs.is_empty()
     }
 
+    pub fn num_addresses(&self) -> usize {
+        self.txs.len()
+    }
+
     pub fn num_txs(&self) -> usize {
         self.num_txs
     }
