@@ -12,6 +12,14 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
+monad-bls = { path = "../monad-bls" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-node = { path = "../monad-node" }
+monad-secp = { path = "../monad-secp" }
+monad-types = { path = "../monad-types" }
+
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 itertools = { workspace = true }
@@ -26,10 +34,3 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true, features = ["codec"] }
 toml = { workspace = true }
 
-monad-bls = { path = "../monad-bls" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-node = { path = "../monad-node" }
-monad-secp = { path = "../monad-secp" }
-monad-types = { path = "../monad-types" }

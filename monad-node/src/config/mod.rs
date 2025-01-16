@@ -6,28 +6,26 @@ use monad_eth_types::{serde::deserialize_eth_address_from_str, EthExecutionProto
 use monad_secp::SecpSignature;
 use serde::Deserialize;
 
+pub use self::{
+    bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig},
+    consensus::NodeConsensusConfig,
+    fullnode::{FullNodeConfig, FullNodeIdentityConfig},
+    network::NodeNetworkConfig,
+    sync_peers::{BlockSyncPeersConfig, SyncPeerIdentityConfig},
+};
+
 mod bootstrap;
-pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
-
-pub mod consensus;
-pub use consensus::NodeConsensusConfig;
-
+mod consensus;
 mod fullnode;
-pub use fullnode::{FullNodeConfig, FullNodeIdentityConfig};
-
 mod network;
-pub use network::NodeNetworkConfig;
-
 mod sync_peers;
-#[allow(unused_imports)]
-pub use sync_peers::{BlockSyncPeersConfig, SyncPeerIdentityConfig};
+mod util;
 
-pub mod util;
-
-pub(crate) type SignatureType = SecpSignature;
+pub type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 pub type ExecutionProtocolType = EthExecutionProtocol;
+pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,8 +33,8 @@ pub struct NodeConfig {
     ////////////////////////////////
     // NODE-SPECIFIC CONFIGURATION //
     ////////////////////////////////
-    pub name: Option<String>,
-    pub network_name: Option<String>,
+    pub node_name: String,
+    pub network_name: String,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: Address,
@@ -62,5 +60,3 @@ pub struct NodeConfig {
     pub chain_id: u64,
     pub consensus: NodeConsensusConfig,
 }
-
-pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;

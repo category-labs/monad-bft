@@ -5,6 +5,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum NodeSetupError {
     #[error(transparent)]
+    Bls12_381(#[from] monad_bls::BlsError),
+
+    #[error(transparent)]
     ClapError(#[from] clap::Error),
 
     #[error("{msg}")]
@@ -17,10 +20,16 @@ pub enum NodeSetupError {
     IoError(#[from] std::io::Error),
 
     #[error(transparent)]
+    MetricsError(#[from] opentelemetry::metrics::MetricsError),
+
+    #[error(transparent)]
+    RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
+
+    #[error(transparent)]
     Secp256k1(#[from] monad_secp::Error),
 
     #[error(transparent)]
-    Bls12_381(#[from] monad_bls::BlsError),
+    SetGlobalDefaultError(#[from] tracing::subscriber::SetGlobalDefaultError),
 
     #[error(transparent)]
     SignatureCollectionError(
@@ -36,9 +45,6 @@ pub enum NodeSetupError {
 
     #[error(transparent)]
     TraceError(#[from] opentelemetry::trace::TraceError),
-
-    #[error(transparent)]
-    MetricsError(#[from] opentelemetry::metrics::MetricsError),
 }
 
 impl NodeSetupError {
@@ -46,14 +52,16 @@ impl NodeSetupError {
         match self {
             NodeSetupError::ClapError(e) => e.kind(),
             NodeSetupError::Custom { kind, msg: _ } => kind.to_owned(),
-            NodeSetupError::FromHexError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::IoError(_) => ErrorKind::Io,
-            NodeSetupError::Secp256k1(_) => ErrorKind::ValueValidation,
-            NodeSetupError::Bls12_381(_) => ErrorKind::ValueValidation,
-            NodeSetupError::SignatureCollectionError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
-            NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
+            NodeSetupError::IoError(_)
+            | NodeSetupError::RayonPoolBuildError(_)
+            | NodeSetupError::SetGlobalDefaultError(_) => ErrorKind::Io,
+            NodeSetupError::FromHexError(_)
+            | NodeSetupError::Secp256k1(_)
+            | NodeSetupError::Bls12_381(_)
+            | NodeSetupError::SignatureCollectionError(_)
+            | NodeSetupError::TomlDeError(_)
+            | NodeSetupError::TraceError(_)
+            | NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
         }
     }
 }

@@ -66,10 +66,6 @@ pub struct Cli {
     #[arg(long)]
     pub keystore_password: Option<String>,
 
-    /// Turn otel trace collection on
-    #[arg(long, requires = "otel_endpoint")]
-    pub record_otel_traces: bool,
-
     /// Set the time interval for metrics collection
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,

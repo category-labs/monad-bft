@@ -15,9 +15,9 @@ bench = false
 
 [dependencies]
 monad-bls = { path = "../monad-bls" }
-monad-control-panel = { path = "../monad-control-panel" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-control-panel = { path = "../monad-control-panel" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
@@ -33,6 +33,8 @@ monad-router-filter = { path = "../monad-router-filter", optional = true }
 monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-statesync = { path = "../monad-statesync" }
+monad-triedb-cache = { path = "../monad-triedb-cache" }
+monad-triedb-utils = { path = "../monad-triedb-utils" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = [
     "monad-triedb",
@@ -40,8 +42,6 @@ monad-updaters = { path = "../monad-updaters", features = [
 ] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
-monad-triedb-cache = { path = "../monad-triedb-cache" }
-monad-triedb-utils = { path = "../monad-triedb-utils" }
 
 alloy-primitives = { workspace = true }
 bytes = { workspace = true }
@@ -59,7 +59,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
-tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [features]
