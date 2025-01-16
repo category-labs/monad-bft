@@ -59,9 +59,10 @@ impl ERC20 {
         deployer: &(Address, PrivateKey),
         client: &ReqwestClient,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
+        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -78,10 +79,15 @@ impl ERC20 {
         Ok(ERC20 { addr })
     }
 
-    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey, max_fee_per_gas: u128) -> TxEnvelope {
+    pub fn deploy_tx(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+    ) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
-            chain_id: 41454,
+            chain_id,
             nonce,
             gas_limit: 800_000, // usually around 600k gas
             max_fee_per_gas,
@@ -100,8 +106,14 @@ impl ERC20 {
         &self,
         sender: &mut SimpleAccount,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> TxEnvelope {
-        self.construct_tx(sender, IERC20::destroySmartContractCall {}, max_fee_per_gas)
+        self.construct_tx(
+            sender,
+            IERC20::destroySmartContractCall {},
+            max_fee_per_gas,
+            chain_id,
+        )
     }
 
     pub fn construct_tx<T: alloy_sol_types::SolCall>(
@@ -109,6 +121,7 @@ impl ERC20 {
         sender: &mut SimpleAccount,
         input: T,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> TxEnvelope {
         let input = input.abi_encode();
         let tx = make_tx(
@@ -118,6 +131,7 @@ impl ERC20 {
             U256::ZERO,
             input,
             max_fee_per_gas,
+            chain_id,
         );
         sender.nonce += 1;
         tx
@@ -128,9 +142,18 @@ impl ERC20 {
         from: &PrivateKey,
         nonce: u64,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> TxEnvelope {
         let input = IERC20::mintCall {}.abi_encode();
-        make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
+        make_tx(
+            nonce,
+            from,
+            self.addr,
+            U256::ZERO,
+            input,
+            max_fee_per_gas,
+            chain_id,
+        )
     }
 
     pub fn construct_transfer(
@@ -140,9 +163,18 @@ impl ERC20 {
         nonce: u64,
         amount: U256,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> TxEnvelope {
         let input = IERC20::transferCall { recipient, amount }.abi_encode();
-        make_tx(nonce, from, self.addr, U256::ZERO, input, max_fee_per_gas)
+        make_tx(
+            nonce,
+            from,
+            self.addr,
+            U256::ZERO,
+            input,
+            max_fee_per_gas,
+            chain_id,
+        )
     }
 
     pub fn balance_of(&self, account: Address) -> (&'static str, [Value; 1]) {
@@ -162,9 +194,10 @@ fn make_tx(
     value: U256,
     input: impl Into<Bytes>,
     max_fee_per_gas: u128,
+    chain_id: u64,
 ) -> TxEnvelope {
     let tx = TxEip1559 {
-        chain_id: 41454,
+        chain_id,
         nonce,
         gas_limit: 100_000, // actual gas used around 51k
         max_fee_per_gas,

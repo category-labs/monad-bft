@@ -38,7 +38,7 @@ impl Generator for SelfDestructTxGenerator {
                     );
 
                     txs.push((
-                        contract.self_destruct_tx(sender, ctx.base_fee),
+                        contract.self_destruct_tx(sender, ctx.base_fee, ctx.chain_id),
                         contract.addr,
                     ))
                 } else {
@@ -47,7 +47,8 @@ impl Generator for SelfDestructTxGenerator {
 
                     self.contracts.push(ERC20 { addr });
                     // TODO: ugly inconsistency
-                    let tx = ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2);
+                    let tx =
+                        ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2, ctx.chain_id);
                     sender.nonce += 1;
                     txs.push((tx, addr));
                 }

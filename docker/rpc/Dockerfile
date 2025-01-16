@@ -94,5 +94,5 @@ COPY --from=builder /usr/src/monad-bft/*.so.* /usr/local/lib
 ENV RUST_LOG=info
 CMD monad-rpc \
     --ipc-path /monad/mempool.sock \
-    --execution-ledger-path /monad/ledger \
-    --triedb-path /monad/triedb
+    --triedb-path /monad/triedb \
+    --chain-id 20143

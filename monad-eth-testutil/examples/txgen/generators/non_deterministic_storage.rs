@@ -34,6 +34,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
                                 amount: U256::from(10),
                             },
                             ctx.base_fee,
+                            ctx.chain_id,
                         ),
                         from.addr,
                     ));
@@ -44,6 +45,7 @@ impl Generator for NonDeterministicStorageTxGenerator {
                             from,
                             IERC20::addFriendCall { friend: to },
                             ctx.base_fee,
+                            ctx.chain_id,
                         ),
                         to,
                     ));

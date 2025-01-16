@@ -52,10 +52,11 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         refresh_rx,
         rpc_sender,
         &client,
-        U256::from(1e17),
-        U256::from(1e18),
+        U256::from(config.min_native_amount),
+        U256::from(config.seed_native_amount),
         &metrics,
         config.base_fee(),
+        config.chain_id,
     );
 
     let refresher = Refresher {
@@ -164,6 +165,7 @@ async fn load_or_deploy_contracts(
     let path = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
     let max_fee_per_gas = config.base_fee() * 2;
+    let chain_id = config.chain_id;
 
     match contract_to_ensure {
         crate::RequiredContract::None => Ok(DeployedContract::None),
@@ -195,7 +197,7 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let erc20 = ERC20::deploy(&deployer, client, max_fee_per_gas).await?;
+            let erc20 = ERC20::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
 
             let deployed = DeployedContractFile {
                 erc20: Some(erc20.addr),
@@ -234,7 +236,7 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let ecmul = ECMul::deploy(&deployer, client, max_fee_per_gas).await?;
+            let ecmul = ECMul::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,
@@ -274,7 +276,7 @@ async fn load_or_deploy_contracts(
             }
 
             // if not found, deploy new contract
-            let uniswap = Uniswap::deploy(&deployer, client, max_fee_per_gas).await?;
+            let uniswap = Uniswap::deploy(&deployer, client, max_fee_per_gas, chain_id).await?;
 
             let deployed = DeployedContractFile {
                 erc20: None,

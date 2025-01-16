@@ -9,7 +9,7 @@
 # Node-specific configuration
 #########################################################
 beneficiary = "0x0000000000000000000000000000000000000000"
-name = "dev-node"
+node_name = "dev-node"
 network_name = "devnet"
 ipc_tx_batch_size = 500
 ipc_max_queued_batches = 6
@@ -23,7 +23,7 @@ statesync_request_timeout_ms = 2000
 #########################################################
 # Network-wide configuration
 #########################################################
-chain_id = 41454
+chain_id = 20143
 
 #########################################################
 # Node-specific configuration

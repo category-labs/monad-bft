@@ -110,7 +110,7 @@ pub fn native_transfer_priority_fee(
 ) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee * 2;
     let tx = TxEip1559 {
-        chain_id: 41454,
+        chain_id: ctx.chain_id,
         nonce: from.nonce,
         gas_limit: 21_000,
         max_fee_per_gas,
@@ -140,7 +140,14 @@ pub fn erc20_transfer(
     ctx: &GenCtx,
 ) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee;
-    let tx = erc20.construct_transfer(&from.key, to, from.nonce, amt, max_fee_per_gas);
+    let tx = erc20.construct_transfer(
+        &from.key,
+        to,
+        from.nonce,
+        amt,
+        max_fee_per_gas,
+        ctx.chain_id,
+    );
 
     // update from
     from.nonce += 1;
@@ -154,7 +161,7 @@ pub fn erc20_transfer(
 
 pub fn erc20_mint(from: &mut SimpleAccount, erc20: &ERC20, ctx: &GenCtx) -> TxEnvelope {
     let max_fee_per_gas = ctx.base_fee;
-    let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas);
+    let tx = erc20.construct_mint(&from.key, from.nonce, max_fee_per_gas, ctx.chain_id);
 
     // update from
     from.nonce += 1;

@@ -91,6 +91,15 @@ pub struct Config {
 
     #[clap(long, global = true, default_value_t = 50)]
     base_fee_gwei: u128,
+
+    #[arg(long, global = true, default_value_t = 20143)]
+    pub chain_id: u64,
+
+    #[arg(long, global = true, default_value_t = 100_000_000_000_000_000_000)]
+    pub min_native_amount: u128,
+
+    #[arg(long, global = true, default_value_t = 1000_000_000_000_000_000_000)]
+    pub seed_native_amount: u128,
 }
 
 impl Config {

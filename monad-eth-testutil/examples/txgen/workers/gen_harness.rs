@@ -12,6 +12,7 @@ pub trait Generator {
 
 pub struct GenCtx {
     pub base_fee: u128,
+    pub chain_id: u64,
 }
 
 pub struct GeneratorHarness {
@@ -26,6 +27,7 @@ pub struct GeneratorHarness {
     pub seed_native_amt: U256,
     pub metrics: Arc<Metrics>,
     pub base_fee: u128,
+    pub chain_id: u64,
 }
 
 impl GeneratorHarness {
@@ -38,6 +40,7 @@ impl GeneratorHarness {
         seed_native_amt: U256,
         metrics: &Arc<Metrics>,
         base_fee: u128,
+        chain_id: u64,
     ) -> Self {
         Self {
             generator,
@@ -49,6 +52,7 @@ impl GeneratorHarness {
             metrics: Arc::clone(metrics),
             seed_native_amt,
             base_fee,
+            chain_id,
         }
     }
 
@@ -72,6 +76,7 @@ impl GeneratorHarness {
                 &mut accts[seeded_idx..],
                 &GenCtx {
                     base_fee: self.base_fee,
+                    chain_id: self.chain_id,
                 },
             );
 
@@ -88,6 +93,7 @@ impl GeneratorHarness {
                             1000,
                             &GenCtx {
                                 base_fee: self.base_fee,
+                                chain_id: self.chain_id,
                             },
                         );
                         txs.push((tx, acct.addr));

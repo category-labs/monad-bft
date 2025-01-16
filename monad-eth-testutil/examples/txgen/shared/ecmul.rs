@@ -27,9 +27,10 @@ impl ECMul {
         deployer: &(Address, PrivateKey),
         client: &ReqwestClient,
         max_fee_per_gas: u128,
+        chain_id: u64,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas);
+        let tx = Self::deploy_tx(nonce, &deployer.1, max_fee_per_gas, chain_id);
         let mut rlp_encoded_tx = Vec::new();
         tx.encode_2718(&mut rlp_encoded_tx);
 
@@ -45,10 +46,15 @@ impl ECMul {
         Ok(Self { addr })
     }
 
-    pub fn deploy_tx(nonce: u64, deployer: &PrivateKey, max_fee_per_gas: u128) -> TxEnvelope {
+    pub fn deploy_tx(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+    ) -> TxEnvelope {
         let input = Bytes::from_hex(BYTECODE).unwrap();
         let tx = TxEip1559 {
-            chain_id: 41454,
+            chain_id,
             nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,
@@ -64,14 +70,19 @@ impl ECMul {
     }
 
     // Helper function to construct an ECMul transaction
-    pub fn construct_tx(&self, sender: &mut SimpleAccount, max_fee_per_gas: u128) -> TxEnvelope {
+    pub fn construct_tx(
+        &self,
+        sender: &mut SimpleAccount,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+    ) -> TxEnvelope {
         let input = IECMul::performzksyncECMulsCall {
             iterations: U256::from(200),
         }
         .abi_encode();
 
         let tx = TxEip1559 {
-            chain_id: 41454,
+            chain_id,
             nonce: sender.nonce,
             gas_limit: 2_000_000,
             max_fee_per_gas,

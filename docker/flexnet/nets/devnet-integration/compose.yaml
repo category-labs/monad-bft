@@ -29,6 +29,7 @@ services:
       dockerfile: ${DEVNET_DIR}/Dockerfile
     image: monad-node:latest
     depends_on:
+      - build_triedb
       - monad_execution
     environment:
       - RUST_LOG=
@@ -43,6 +44,7 @@ services:
       dockerfile: ${RPC_DIR}/Dockerfile
     image: monad-rpc:latest
     depends_on:
+      - build_triedb
       - monad_node
     volumes:
       - ./node:/monad

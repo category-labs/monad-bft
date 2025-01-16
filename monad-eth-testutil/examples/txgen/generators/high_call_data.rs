@@ -17,7 +17,8 @@ impl Generator for HighCallDataTxGenerator {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
 
-                let tx = ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2);
+                let tx =
+                    ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2, ctx.chain_id);
                 sender.nonce += 1;
 
                 txs.push((tx, to));

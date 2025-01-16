@@ -28,8 +28,12 @@ impl Generator for StorageDeletesTxGenerator {
                 let to = self.recipient_keys.next_addr();
 
                 let tx = if rng.gen_bool(0.3) {
-                    self.erc20
-                        .construct_tx(from, IERC20::resetCall { addr: to }, ctx.base_fee)
+                    self.erc20.construct_tx(
+                        from,
+                        IERC20::resetCall { addr: to },
+                        ctx.base_fee,
+                        ctx.chain_id,
+                    )
                 } else {
                     self.erc20.construct_tx(
                         from,
@@ -38,6 +42,7 @@ impl Generator for StorageDeletesTxGenerator {
                             amount: U256::from(10),
                         },
                         ctx.base_fee,
+                        ctx.chain_id,
                     )
                 };
 
