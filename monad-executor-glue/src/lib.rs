@@ -413,8 +413,6 @@ pub enum MempoolEvent<PT: PubKey> {
         sender: NodeId<PT>,
         txns: Vec<Bytes>,
     },
-    /// Remove transactions that were not included in proposal
-    Clear,
 }
 
 impl<PT: PubKey> Debug for MempoolEvent<PT> {
@@ -435,7 +433,6 @@ impl<PT: PubKey> Debug for MempoolEvent<PT> {
                     &txns.iter().map(Bytes::len).sum::<usize>(),
                 )
                 .finish(),
-            Self::Clear => f.debug_struct("Clear").finish(),
         }
     }
 }
@@ -630,7 +627,6 @@ where
                     txns.len()
                 )
             }
-            MonadEvent::MempoolEvent(MempoolEvent::Clear) => "CLEARMEMPOOL".to_string(),
             MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
             MonadEvent::ControlPanelEvent(_) => "CONTROLPANELEVENT".to_string(),
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),

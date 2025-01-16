@@ -1267,13 +1267,10 @@ where
                 }
                 .sign(self.keypair);
 
-                vec![
-                    ConsensusCommand::Publish {
-                        target: RouterTarget::Raptorcast(epoch),
-                        message: msg,
-                    },
-                    ConsensusCommand::ClearMempool,
-                ]
+                vec![ConsensusCommand::Publish {
+                    target: RouterTarget::Raptorcast(epoch),
+                    message: msg,
+                }]
             };
 
         match self.proposal_policy(try_propose_seq_num) {

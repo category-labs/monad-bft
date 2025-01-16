@@ -107,7 +107,6 @@ message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
     ProtoForwardedTxs forwarded_txs = 2;
-    ProtoClearMempool clear = 3;
   }
 }
 

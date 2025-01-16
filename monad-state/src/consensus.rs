@@ -23,8 +23,8 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand,
+    MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
+    TimestampCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{NodeId, SeqNum};
@@ -437,11 +437,6 @@ where
             ConsensusCommand::CheckpointSave(checkpoint) => parent_cmds.push(
                 Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
             ),
-            ConsensusCommand::ClearMempool => {
-                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
-                    MonadEvent::MempoolEvent(MempoolEvent::Clear),
-                )));
-            }
             ConsensusCommand::TimestampUpdate(t) => {
                 parent_cmds.push(Command::TimestampCommand(TimestampCommand::AdjustDelta(t)))
             }

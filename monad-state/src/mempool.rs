@@ -103,7 +103,6 @@ where
     ) -> Vec<MempoolCommand<CertificateSignaturePubKey<ST>>> {
         let ConsensusMode::Live(consensus) = self.consensus else {
             tracing::trace!("ignoring MempoolEvent, not live yet");
-            self.txpool.clear();
             return vec![];
         };
         match event {
@@ -148,10 +147,6 @@ where
                     tracing::warn!(?sender, "sender forwarded bad txns");
                 }
 
-                vec![]
-            }
-            MempoolEvent::Clear => {
-                self.txpool.clear();
                 vec![]
             }
         }

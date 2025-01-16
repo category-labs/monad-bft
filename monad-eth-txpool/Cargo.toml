@@ -39,14 +39,14 @@ rand_chacha = { workspace = true }
 tracing-test = { workspace = true }
 
 [[bench]]
-name = "insert"
-harness = false
-
-[[bench]]
 name = "create_proposal"
 harness = false
 
 [[bench]]
-name = "clear"
+name = "insert"
+harness = false
+
+[[bench]]
+name = "update"
 harness = false
 

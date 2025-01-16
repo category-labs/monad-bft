@@ -62,8 +62,6 @@ where
     CheckpointSave(Checkpoint<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
-    /// Issue to clear mempool
-    ClearMempool,
     TimestampUpdate(TimestampAdjustment),
     ScheduleVote {
         duration: Duration,

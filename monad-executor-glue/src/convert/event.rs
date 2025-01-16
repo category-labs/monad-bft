@@ -271,7 +271,6 @@ impl<PT: PubKey> From<&MempoolEvent<PT>> for ProtoMempoolEvent {
                     }),
                 })
             }
-            MempoolEvent::Clear => proto_mempool_event::Event::Clear(ProtoClearMempool {}),
         };
         Self { event: Some(event) }
     }
@@ -299,7 +298,6 @@ impl<PT: PubKey> TryFrom<ProtoMempoolEvent> for MempoolEvent<PT> {
                         .tx,
                 }
             }
-            Some(proto_mempool_event::Event::Clear(_)) => MempoolEvent::Clear,
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,

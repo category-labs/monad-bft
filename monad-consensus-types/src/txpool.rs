@@ -60,9 +60,6 @@ where
     /// Can be used for clearing of stale txs from txpool
     fn update_committed_block(&mut self, committed_block: &BPT::ValidatedBlock);
 
-    /// Reclaims memory used by internal TxPool datastructures
-    fn clear(&mut self);
-
     /// Used to make sure the txpool state is reset after the node falls behind
     fn reset(&mut self, last_delay_committed_blocks: Vec<&BPT::ValidatedBlock>);
 }
@@ -119,8 +116,6 @@ where
             Ok(FullTransactionList::new(buf.into()))
         }
     }
-
-    fn clear(&mut self) {}
 
     fn update_committed_block(
         &mut self,

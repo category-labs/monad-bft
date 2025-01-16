@@ -225,10 +225,6 @@ where
         self.tracked.evict_expired_txs();
     }
 
-    fn clear(&mut self) {
-        self.tracked.evict_expired_txs();
-    }
-
     fn reset(&mut self, last_delay_committed_blocks: Vec<&EthValidatedBlock<SCT>>) {
         self.tracked.reset(last_delay_committed_blocks);
     }

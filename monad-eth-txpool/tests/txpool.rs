@@ -77,7 +77,6 @@ enum TxPoolTestEvent<'a> {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Clear,
     Block(Box<dyn FnOnce(&mut EthTxPool<SignatureCollectionType, StateBackendType>)>),
 }
 
@@ -221,11 +220,6 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 assert_eq!(
                     expected_committed_seq_num,
                     eth_block_policy.get_last_commit().0
-                );
-            }
-            TxPoolTestEvent::Clear => {
-                TxPool::<MockSignatures<SignatureType>, EthBlockPolicy, StateBackendType>::clear(
-                    &mut pool,
                 );
             }
             TxPoolTestEvent::Block(f) => f(&mut pool),
@@ -638,7 +632,6 @@ fn test_nonce_exists_in_pending_block() {
             expected_txs: vec![&tx1],
             add_to_blocktree: true,
         },
-        TxPoolTestEvent::Clear,
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx2, true), (&tx3, true)],
             expected_pool_size_change: 1,
@@ -676,7 +669,6 @@ fn test_combine_nonces_of_blocks() {
             num_blocks: 1,
             expected_committed_seq_num: 1,
         },
-        TxPoolTestEvent::Clear,
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx2, true)],
             expected_pool_size_change: 1,
@@ -687,7 +679,6 @@ fn test_combine_nonces_of_blocks() {
             expected_txs: vec![&tx2],
             add_to_blocktree: true,
         },
-        TxPoolTestEvent::Clear,
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx3, true)],
             expected_pool_size_change: 1,
