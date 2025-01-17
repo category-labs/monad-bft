@@ -1,8 +1,6 @@
 use std::cmp::min;
 
-use alloy_consensus::{
-    transaction::Recovered, ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
-};
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{FixedBytes, TxKind};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{
@@ -14,7 +12,7 @@ use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     block_handlers::{block_receipts, get_block_num_from_tag},
@@ -23,7 +21,6 @@ use crate::{
         Quantity, UnformattedData,
     },
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    vpool,
 };
 
 pub fn parse_tx_content(
@@ -320,13 +317,13 @@ pub struct MonadEthSendRawTransactionParams {
 }
 
 // TODO: need to support EIP-4844 transactions
-#[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool")]
+#[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
 #[allow(non_snake_case)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
-    tx_pool: &vpool::VirtualPool,
+    ipc: flume::Sender<TxEnvelope>,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -378,10 +375,15 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 )));
             }
 
-            tx_pool
-                .add_transaction(Recovered::new_unchecked(txn, signer))
-                .await;
-            Ok(hash.to_string())
+            match ipc.try_send(txn) {
+                Ok(_) => Ok(hash.to_string()),
+                Err(err) => {
+                    warn!(?err, "mempool ipc send error");
+                    Err(JsonRpcError::internal_error(
+                        "unable to send to validator".into(),
+                    ))
+                }
+            }
         }
         Err(e) => {
             debug!("eth txn decode failed {:?}", e);

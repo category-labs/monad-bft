@@ -53,11 +53,6 @@ pub struct Cli {
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_concurrent_requests: u32,
 
-    /// Set the transaction entry capacity limit for the virtual mempool.
-    /// This capacity is set for each sub-pool, and entries are dropped once the capacity is reached.
-    #[arg(long, default_value_t = 20_000)]
-    pub vpool_capacity: usize,
-
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]
     pub s3_bucket: Option<String>,

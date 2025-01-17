@@ -103,12 +103,12 @@ mod tests {
     use futures_util::{SinkExt as _, StreamExt as _};
     use tokio::sync::Semaphore;
 
-    use crate::{create_app, tests::MonadRpcResourcesState, vpool, MonadRpcResources};
+    use crate::{create_app, tests::MonadRpcResourcesState, MonadRpcResources};
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
         let resources = MonadRpcResources {
-            mempool_sender: ipc_sender.clone(),
+            mempool_sender: ipc_sender,
             triedb_reader: None,
             archive_reader: None,
             chain_id: 41454,
@@ -116,7 +116,6 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender, 20_000)),
         };
         (
             MonadRpcResourcesState { ipc_receiver },

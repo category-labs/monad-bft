@@ -9,7 +9,7 @@ use actix_web::{
 use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
@@ -239,7 +239,7 @@ async fn rpc_select(
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             monad_eth_sendRawTransaction(
                 triedb_env,
-                &app_state.tx_pool,
+                app_state.mempool_sender.clone(),
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -484,14 +484,12 @@ async fn rpc_select(
         "txpool_content" => monad_txpool_content().await.map(serialize_result)?,
         "txpool_contentFrom" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_contentFrom(&app_state.tx_pool, params)
+            monad_txpool_contentFrom(params)
                 .await
                 .map(serialize_result)?
         }
         "txpool_inspect" => monad_txpool_inspect().await.map(serialize_result)?,
-        "txpool_status" => monad_txpool_status(&app_state.tx_pool)
-            .await
-            .map(serialize_result)?,
+        "txpool_status" => monad_txpool_status().await.map(serialize_result)?,
         "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }
@@ -507,7 +505,6 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
-    tx_pool: Arc<vpool::VirtualPool>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -528,7 +525,6 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
-        tx_pool: Arc<vpool::VirtualPool>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -539,7 +535,6 @@ impl MonadRpcResources {
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
-            tx_pool,
         }
     }
 }
@@ -629,11 +624,6 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
-    let tx_pool = Arc::new(vpool::VirtualPool::new(
-        ipc_sender.clone(),
-        args.vpool_capacity,
-    ));
-
     let triedb_env = args
         .triedb_path
         .clone()
@@ -667,17 +657,6 @@ async fn main() -> std::io::Result<()> {
         _ => None,
     };
 
-    // We need to spawn a task to handle changes to the base fee, and block updates
-    let tx_pool2 = tx_pool.clone();
-    let triedb_env2 = triedb_env.clone();
-    tokio::task::spawn(async move {
-        let triedb_env = block_watcher::TrieDbBlockState::new(triedb_env2.unwrap());
-        let mut watcher = block_watcher::BlockWatcher::new(triedb_env, 0);
-        while let Some(block) = watcher.next().await {
-            tx_pool2.new_block(block, 1_000).await;
-        }
-    });
-
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         triedb_env,
@@ -687,7 +666,6 @@ async fn main() -> std::io::Result<()> {
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
-        tx_pool,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -789,7 +767,6 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-            tx_pool: Arc::new(vpool::VirtualPool::new(ipc_sender.clone(), 20_000)),
         }))
         .await;
         (app, m)
