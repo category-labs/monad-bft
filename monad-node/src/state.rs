@@ -67,7 +67,8 @@ impl NodeState {
             hex::encode(bls_key.pubkey().compress())
         );
 
-        let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.node_config)?)?;
+        let node_config = NodeConfig::parse(&std::fs::read_to_string(cli.node_config)?)?;
+
         let node_name = node_config
             .name
             .clone()

@@ -175,7 +175,11 @@ async fn run(
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
 
-    let statesync_threshold: usize = node_state.node_config.statesync_threshold.into();
+    let statesync_threshold: usize = node_state
+        .node_config
+        .statesync_threshold
+        .try_into()
+        .unwrap();
 
     _ = std::fs::remove_file(node_state.mempool_ipc_path.as_path());
     _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
@@ -241,9 +245,10 @@ async fn run(
             node_state
                 .node_config
                 .statesync_max_concurrent_requests
-                .into(),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
+                .try_into()
+                .unwrap(),
+            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms),
+            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms),
             node_state
                 .statesync_ipc_path
                 .to_str()

@@ -1,3 +1,4 @@
+use crate::config::NodeConfigError;
 use clap::error::ErrorKind;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use thiserror::Error;
@@ -39,6 +40,9 @@ pub enum NodeSetupError {
 
     #[error(transparent)]
     MetricsError(#[from] opentelemetry::metrics::MetricsError),
+
+    #[error(transparent)]
+    ConfigError(#[from] NodeConfigError),
 }
 
 impl NodeSetupError {
@@ -54,6 +58,7 @@ impl NodeSetupError {
             NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
             NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
+            NodeSetupError::ConfigError(_) => ErrorKind::ValueValidation,
         }
     }
 }

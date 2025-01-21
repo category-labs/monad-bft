@@ -4,6 +4,7 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthAddress};
 use monad_secp::SecpSignature;
 use serde::Deserialize;
+use thiserror::Error;
 
 mod bootstrap;
 pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
@@ -23,6 +24,15 @@ pub(crate) type SignatureType = SecpSignature;
 pub type SignatureCollectionType =
     BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
+#[derive(Error, Debug)]
+pub enum NodeConfigError {
+    #[error(transparent)]
+    ParseError(#[from] toml::de::Error),
+
+    #[error("Node configuration error: {0}")]
+    ValidationError(String),
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -40,9 +50,9 @@ pub struct NodeConfig {
     // must be <= ipc_max_queued_batches
     pub ipc_queued_batches_watermark: u8,
 
-    pub statesync_threshold: u16,
-    pub statesync_max_concurrent_requests: u8,
-    pub statesync_request_timeout_ms: u16,
+    pub statesync_threshold: u64,
+    pub statesync_max_concurrent_requests: u64,
+    pub statesync_request_timeout_ms: u64,
 
     pub bootstrap: NodeBootstrapConfig,
     pub fullnode: FullNodeConfig,
@@ -57,3 +67,20 @@ pub struct NodeConfig {
 }
 
 pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
+
+impl NodeConfig {
+    pub fn parse(toml_str: &str) -> Result<Self, NodeConfigError> {
+        let config: NodeConfig = toml::from_str(toml_str)?;
+        config.verify()?;
+        Ok(config)
+    }
+
+    fn verify(&self) -> Result<(), NodeConfigError> {
+        if self.statesync_threshold <= self.consensus.execution_delay * 2 {
+            return Err(NodeConfigError::ValidationError(
+                "statesync_threshold must be greater than 2x the execution_delay".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
