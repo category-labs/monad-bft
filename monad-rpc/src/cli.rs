@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// Service name to set for metrics
+    #[arg(long)]
+    pub metrics_service_name: Option<String>,
+
     /// Allow pre EIP-155 transactions
     #[arg(long, default_value_t = false)]
     pub allow_unprotected_txs: bool,

@@ -37,6 +37,7 @@ where
 
         let request_metrics = self.inner.clone();
         Box::pin(self.service.call(req).map(move |res| {
+            request_metrics.active_requests.add(-1, &attributes);
             if let Ok(res) = res {
                 let elapsed = timer.elapsed();
 
@@ -45,7 +46,6 @@ where
                     res.status().as_u16() as i64,
                 ));
 
-                request_metrics.active_requests.add(-1, &attributes);
                 request_metrics
                     .request_duration
                     .record(elapsed.as_secs_f64(), &attributes);

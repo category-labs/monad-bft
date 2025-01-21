@@ -692,9 +692,14 @@ async fn main() -> std::io::Result<()> {
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
         args.otel_endpoint.map(|endpoint| {
+            let svc_name = match args.metrics_service_name {
+                Some(name) => name,
+                None => "monad-rpc".to_string(),
+            };
+
             let provider = metrics::build_otel_meter_provider(
                 &endpoint,
-                "monad-rpc".to_string(),
+                svc_name,
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");
