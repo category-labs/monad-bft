@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use monad_archive::BlockDataReaderArgs;
+use monad_archive::cli::BlockDataReaderArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive-checker", about, long_about = None)]
@@ -15,6 +15,10 @@ pub struct Cli {
     /// Override block number to start at
     #[arg(long, default_value_t = 0)]
     pub start_block: u64,
+
+    /// Override block number to stop at
+    #[arg(long)]
+    pub stop_block: Option<u64>,
 
     /// Set the concurrent blocks
     #[arg(long, default_value_t = 10)]

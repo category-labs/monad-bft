@@ -2,14 +2,15 @@ use std::{collections::HashMap, time::Duration};
 
 use alloy_primitives::TxHash;
 use alloy_rlp::Decodable;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::Engine;
 use eyre::{Context, Result};
 use futures::{StreamExt, TryStreamExt};
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::HeaderValue;
 use tokio_retry::Retry;
 use url::Url;
 
-use crate::{retry_strategy, IndexStoreReader, TxIndexedData};
+use super::retry_strategy;
+use crate::prelude::*;
 
 #[derive(Clone)]
 pub struct CloudProxyReader {

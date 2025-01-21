@@ -21,9 +21,15 @@ impl Metrics {
     pub fn new(
         otel_endpoint: Option<impl AsRef<str>>,
         service_name: impl Into<String>,
+        replica_name: impl Into<String>,
         interval: Duration,
     ) -> Result<Metrics> {
-        let provider = build_otel_meter_provider(otel_endpoint, service_name.into(), interval)?;
+        let provider = build_otel_meter_provider(
+            otel_endpoint,
+            service_name.into(),
+            replica_name.into(),
+            interval,
+        )?;
         let meter = provider.meter("opentelemetry");
 
         Ok(Metrics(Some(MetricsInner {
@@ -67,13 +73,14 @@ impl Metrics {
 fn build_otel_meter_provider(
     otel_endpoint: Option<impl AsRef<str>>,
     service_name: String,
+    replica_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
     let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_resource(opentelemetry_sdk::Resource::new(vec![
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
+                format!("{replica_name}-{service_name}"),
             ),
         ]));
 

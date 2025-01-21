@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use monad_archive::ArchiveArgs;
+use monad_archive::cli::ArchiveArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-index-checker", about, long_about = None)]
@@ -26,6 +26,10 @@ pub struct Cli {
     /// Override block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
+
+    /// Override block number to stop at
+    #[arg(long)]
+    pub stop_block: Option<u64>,
 
     #[arg(long)]
     pub otel_endpoint: Option<String>,

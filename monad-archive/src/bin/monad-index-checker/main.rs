@@ -1,34 +1,12 @@
-#![allow(unused_imports)]
-
-use std::{
-    io::Write,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom};
+use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::hex::ToHexExt;
-use archive_reader::{ArchiveReader, LatestKind::*};
-use chrono::{
-    format::{DelayedFormat, StrftimeItems},
+use clap::Parser;
+use futures::{stream, StreamExt};
+use monad_archive::{
+    fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter},
     prelude::*,
 };
-use clap::Parser;
-use eyre::{Context, Result};
-use fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter};
-use futures::{executor::block_on, future::join_all, stream, StreamExt};
-use metrics::Metrics;
-use monad_archive::*;
-use serde::{Deserialize, Serialize};
-use tokio::{
-    io::AsyncWriteExt,
-    join,
-    sync::{Mutex, Semaphore},
-    time::sleep,
-    try_join,
-};
-use tracing::{error, info, warn, Level};
+use tokio::join;
 
 mod cli;
 
@@ -41,6 +19,7 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-index-checker",
+        args.source.replica_name(),
         Duration::from_secs(15),
     )?;
 
@@ -56,13 +35,20 @@ async fn main() -> Result<()> {
         let start = Instant::now();
 
         // get latest indexed and indexed from s3
-        let latest_indexed = match reader.get_latest(Uploaded).await {
+        let latest_indexed = match reader.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number,
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
                 continue;
             }
         };
+
+        if let Some(stop_block_override) = args.stop_block {
+            if latest_checked >= stop_block_override {
+                info!("Reached stop block override, stopping...");
+                return Ok(());
+            }
+        }
 
         if latest_checked >= latest_indexed {
             info!(latest_checked, latest_indexed, "Nothing to process");

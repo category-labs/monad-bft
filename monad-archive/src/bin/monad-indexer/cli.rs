@@ -1,7 +1,5 @@
-use std::path::PathBuf;
-
-use clap::{Parser, Subcommand, ValueEnum};
-use monad_archive::{ArchiveArgs, BlockDataReaderArgs};
+use clap::Parser;
+use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-indexer", about, long_about = None)]
@@ -28,6 +26,10 @@ pub struct Cli {
     /// Override block number to start at
     #[arg(long)]
     pub start_block: Option<u64>,
+
+    /// Override block number to stop at
+    #[arg(long)]
+    pub stop_block: Option<u64>,
 
     /// Endpoint to push metrics to
     #[arg(long)]

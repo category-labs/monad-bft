@@ -1,47 +1,15 @@
 use core::str;
-use std::sync::Arc;
 
-use alloy_consensus::{Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{Block as AlloyBlock, Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable};
-use aws_config::{meta::region::RegionProviderChain, SdkConfig};
-use aws_sdk_s3::{
-    config::{BehaviorVersion, Region},
-    primitives::ByteStream,
-    Client,
-};
-use bytes::Bytes;
-use enum_dispatch::enum_dispatch;
-use eyre::{Context, Result};
-use futures::{try_join, Stream};
-use monad_triedb_utils::triedb_env::BlockHeader;
-use tokio::time::Duration;
-use tokio_retry::{
-    strategy::{jitter, ExponentialBackoff},
-    Retry,
-};
-use tracing::info;
+use futures::try_join;
 
-use crate::{
-    archive_reader::LatestKind, get_aws_config, metrics::Metrics, BlobStoreErased, BlockDataReader,
-    BlockDataReaderArgs, S3Bucket,
-};
+use crate::prelude::*;
+
 pub type Block = AlloyBlock<TxEnvelope, Header>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;
-
-#[enum_dispatch]
-pub trait BlobStore: BlobReader {
-    async fn upload(&self, key: &str, data: Vec<u8>) -> Result<()>;
-
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
-    fn bucket_name(&self) -> &str;
-}
-
-#[enum_dispatch]
-pub trait BlobReader: Clone {
-    async fn read(&self, key: &str) -> Result<Bytes>;
-}
 
 #[derive(Clone)]
 pub struct BlockDataArchive<Store = BlobStoreErased> {

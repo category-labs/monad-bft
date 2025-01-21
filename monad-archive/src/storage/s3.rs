@@ -1,23 +1,17 @@
 use core::str;
-use std::{collections::HashMap, path::Path};
 
-use aws_config::{meta::region::RegionProviderChain, SdkConfig};
-use aws_sdk_s3::{
-    config::{BehaviorVersion, Region},
-    primitives::ByteStream,
-    Client,
-};
+use aws_config::SdkConfig;
+use aws_sdk_s3::{primitives::ByteStream, Client};
 use bytes::Bytes;
-use eyre::{Context, ContextCompat, Result};
+use eyre::{Context, Result};
 use tokio::time::Duration;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
     Retry,
 };
-use tracing::info;
 
 use super::retry_strategy;
-use crate::{metrics::Metrics, BlobReader, BlobStore, TxIndexedData};
+use crate::{metrics::Metrics, prelude::*};
 
 const AWS_S3_ERRORS: &str = "aws_s3_errors";
 const AWS_S3_READS: &str = "aws_s3_reads";
@@ -28,28 +22,6 @@ pub struct S3Bucket {
     pub client: Client,
     pub bucket: String,
     pub metrics: Metrics,
-}
-
-pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
-    let region_provider = RegionProviderChain::default_provider().or_else(
-        region
-            .map(Region::new)
-            .unwrap_or_else(|| Region::new("us-east-2")),
-    );
-
-    info!(
-        "Running in region: {}",
-        region_provider
-            .region()
-            .await
-            .map(|r| r.to_string())
-            .unwrap_or("No region found".into())
-    );
-
-    aws_config::defaults(BehaviorVersion::latest())
-        .region(region_provider)
-        .load()
-        .await
 }
 
 impl S3Bucket {

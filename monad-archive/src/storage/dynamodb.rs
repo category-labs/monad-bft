@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use alloy_primitives::{hex::FromHex, TxHash};
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable};
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
     types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
@@ -9,7 +9,6 @@ use aws_sdk_dynamodb::{
 };
 use eyre::{bail, Context, Result};
 use futures::future::join_all;
-use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio_retry::{
     strategy::{jitter, ExponentialBackoff},
@@ -17,7 +16,8 @@ use tokio_retry::{
 };
 use tracing::error;
 
-use crate::{metrics::Metrics, IndexStore, IndexStoreReader, TxIndexedData};
+use super::retry_strategy;
+use crate::prelude::*;
 
 const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
 const AWS_DYNAMODB_WRITES: &str = "aws_dynamodb_writes";
@@ -284,12 +284,6 @@ fn extract_txhash_from_map(
         dbg!("txhash attr not found");
     }
     None
-}
-
-pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration> {
-    ExponentialBackoff::from_millis(10)
-        .max_delay(Duration::from_secs(1))
-        .map(jitter)
 }
 
 fn inc_err(metrics: &Metrics) {

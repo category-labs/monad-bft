@@ -5,7 +5,7 @@ use alloy_primitives::{
     Address, Bytes,
 };
 use alloy_rlp::Decodable;
-use monad_archive::{BlockDataReader, IndexStoreReader};
+use monad_archive::prelude::{BlockDataReader, IndexStoreReader};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};

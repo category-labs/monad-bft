@@ -5,9 +5,8 @@ use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use eyre::{Context, ContextCompat, Result};
 use rocksdb::DB;
-use tracing::info;
 
-use crate::*;
+use crate::{cli::RocksDbCliArgs, prelude::*};
 
 #[derive(Clone)]
 pub struct RocksDbClient {

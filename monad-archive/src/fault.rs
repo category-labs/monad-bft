@@ -5,7 +5,7 @@ use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
-use crate::TxIndexedData;
+use crate::prelude::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlockCheckResult {

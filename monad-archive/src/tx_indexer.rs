@@ -1,59 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use alloy_consensus::ReceiptEnvelope;
+use alloy_rlp::Encodable;
+use eyre::{bail, Result};
 
-use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::{BlockHash, TxHash};
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use aws_config::SdkConfig;
-use aws_sdk_dynamodb::{
-    types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest},
-    Client,
-};
-use enum_dispatch::enum_dispatch;
-use eyre::{bail, Context, Result};
-use futures::future::join_all;
-use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
-use tokio_retry::{
-    strategy::{jitter, ExponentialBackoff},
-    Retry,
-};
-use tracing::error;
-
-use crate::{
-    dynamodb::DynamoDBArchive, BlobStore, BlobStoreErased, Block, BlockDataArchive,
-    BlockDataReader, IndexStoreErased,
-};
-
-#[enum_dispatch]
-pub trait IndexStore: IndexStoreReader {
-    async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()>;
-}
-
-#[enum_dispatch]
-pub trait IndexStoreReader: Clone {
-    async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>>;
-    async fn get(&self, key: &TxHash) -> Result<Option<TxIndexedData>>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
-pub struct TxIndexedData {
-    pub tx: TxEnvelope,
-    pub trace: Vec<u8>,
-    pub receipt: ReceiptEnvelope,
-    pub header_subset: HeaderSubset,
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, RlpEncodable, RlpDecodable,
-)]
-#[rlp(trailing)]
-pub struct HeaderSubset {
-    pub block_hash: BlockHash,
-    pub block_number: u64,
-    pub tx_index: u64,
-    pub gas_used: u128,
-    pub base_fee_per_gas: Option<u64>,
-}
+use crate::prelude::*;
 
 #[derive(Clone)]
 pub struct TxIndexArchiver<Store = IndexStoreErased> {
@@ -71,13 +20,13 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
 
     pub async fn update_latest_indexed(&self, block_num: u64) -> Result<()> {
         self.block_data_archive
-            .update_latest(block_num, crate::LatestKind::Indexed)
+            .update_latest(block_num, LatestKind::Indexed)
             .await
     }
 
     pub async fn get_latest_indexed(&self) -> Result<u64> {
         self.block_data_archive
-            .get_latest(crate::LatestKind::Indexed)
+            .get_latest(LatestKind::Indexed)
             .await
     }
 
@@ -90,6 +39,11 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
         let block_number = block.header.number;
         let block_hash = block.header.hash_slow();
         let base_fee_per_gas = block.header.base_fee_per_gas;
+
+        if block.body.transactions.len() != traces.len() || traces.len() != receipts.len() {
+            bail!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}", 
+            block.body.length(), traces.len(), receipts.len());
+        }
 
         let mut prev_cumulative_gas_used = 0;
 

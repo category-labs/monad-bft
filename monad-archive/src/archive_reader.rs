@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
-use url::Url;
 
-use crate::*;
+use crate::{cli::AwsCliArgs, prelude::*, storage::CloudProxyReader};
 
 pub enum LatestKind {
     Uploaded,
@@ -38,11 +37,15 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
     ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
         let url = url::Url::parse(url)?;
         let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
-        let block_data_reader = BlockDataArchive::new(BlobStoreErased::S3Bucket(S3Bucket::new(
-            bucket,
-            &get_aws_config(region).await,
-            Metrics::none(),
-        )));
+        let block_data_reader = BlockDataArchive::new(
+            AwsCliArgs {
+                bucket,
+                concurrency,
+                region,
+            }
+            .build_blob_store(&Metrics::none())
+            .await,
+        );
 
         Ok(ArchiveReader::new(block_data_reader, cloud_proxy_reader))
     }

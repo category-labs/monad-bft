@@ -1,7 +1,7 @@
 use alloy_consensus::{Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
-use monad_archive::BlockDataReader;
+use monad_archive::prelude::BlockDataReader;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
