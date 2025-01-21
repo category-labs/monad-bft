@@ -343,6 +343,9 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                     TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
                     TransactionError::GasLimitTooLow => "Gas limit too low",
                     TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
+                    TransactionError::UnsupportedTransactionType => {
+                        "EIP4844 and EIP7702 transactions unsupported"
+                    }
                 };
                 return Err(JsonRpcError::custom(error_message.to_string()));
             }

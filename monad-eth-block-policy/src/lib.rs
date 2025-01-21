@@ -111,6 +111,7 @@ pub enum TransactionError {
     InitCodeLimitExceeded,
     GasLimitTooLow,
     GasLimitTooHigh,
+    UnsupportedTransactionType,
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -144,6 +145,10 @@ pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(),
 
     if tx.gas_limit() > PROPOSAL_GAS_LIMIT {
         return Err(TransactionError::GasLimitTooHigh);
+    }
+
+    if tx.is_eip4844() || tx.is_eip7702() {
+        return Err(TransactionError::UnsupportedTransactionType);
     }
 
     Ok(())
