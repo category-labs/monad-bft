@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::Duration,
@@ -158,6 +158,35 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             .expect("failed to read triedb path")
             .path();
     }
+
+    let mut bootstrap_validators = Vec::new();
+    let validator_set = checkpoint_validators_first
+        .clone()
+        .validators
+        .0
+        .into_iter()
+        .map(|data| data.node_id)
+        .collect::<BTreeSet<_>>();
+    for peer_config in &node_state.node_config.bootstrap.peers {
+        let peer_id = NodeId::new(peer_config.secp256k1_pubkey);
+        if validator_set.contains(&peer_id) {
+            bootstrap_validators.push(peer_id);
+        }
+    }
+
+    // default statesync peers to bootstrap validators if none is specified
+    let state_sync_peers = if node_state.node_config.statesync.peers.is_empty() {
+        bootstrap_validators
+    } else {
+        node_state
+            .node_config
+            .statesync
+            .peers
+            .into_iter()
+            .map(|p| NodeId::new(p.secp256k1_pubkey))
+            .collect()
+    };
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -194,13 +223,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.genesis_path.to_string_lossy().to_string(),
-            checkpoint_validators_first
-                .validators
-                .0
-                .iter()
-                .map(|validator| validator.node_id)
-                .filter(|node_id| node_id != &NodeId::new(node_state.secp256k1_identity.pubkey()))
-                .collect(),
+            state_sync_peers,
             node_state
                 .node_config
                 .statesync_max_concurrent_requests

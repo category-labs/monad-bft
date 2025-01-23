@@ -11,7 +11,7 @@ pub use self::{
     consensus::NodeConsensusConfig,
     fullnode::{FullNodeConfig, FullNodeIdentityConfig},
     network::NodeNetworkConfig,
-    sync_peers::{BlockSyncPeersConfig, SyncPeerIdentityConfig},
+    sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig},
 };
 
 mod bootstrap;
@@ -51,6 +51,7 @@ pub struct NodeConfig {
     pub bootstrap: NodeBootstrapConfig,
     pub fullnode: FullNodeConfig,
     pub blocksync_override: BlockSyncPeersConfig,
+    pub statesync: StateSyncPeersConfig,
     pub network: NodeNetworkConfig,
 
     // TODO split network-wide configuration into separate file
