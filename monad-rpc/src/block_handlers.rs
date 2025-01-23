@@ -1,9 +1,10 @@
-use alloy_consensus::{Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
 use monad_archive::prelude::BlockDataReader;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -293,7 +294,7 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
 }
 
 pub async fn map_block_receipts<R>(
-    transactions: &[TxEnvelope],
+    transactions: Vec<TxEnvelope>,
     receipts: Vec<ReceiptEnvelope>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
@@ -307,10 +308,19 @@ pub async fn map_block_receipts<R>(
         ))?;
     }
 
+    let recovered_txs = transactions
+        .into_par_iter()
+        .map(|tx| {
+            let signer = tx.recover_signer()?;
+            Ok(Recovered::new_unchecked(tx, signer))
+        })
+        .collect::<Result<Vec<Recovered<TxEnvelope>>, alloy_primitives::SignatureError>>()
+        .map_err(|_| JsonRpcError::txn_decode_error())?;
+
     let mut prev_receipt = None;
     let mut num_prev_logs = 0;
 
-    transactions
+    recovered_txs
         .iter()
         .zip(receipts.into_iter())
         .enumerate()
@@ -334,6 +344,7 @@ pub async fn map_block_receipts<R>(
                 block_num,
                 tx_index as u64,
                 num_prev_logs,
+                tx.signer(),
             )?;
 
             Ok(f(parsed_receipt))
@@ -342,7 +353,7 @@ pub async fn map_block_receipts<R>(
 }
 
 pub async fn block_receipts(
-    transactions: &[TxEnvelope],
+    transactions: Vec<TxEnvelope>,
     receipts: Vec<ReceiptEnvelope>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
@@ -406,7 +417,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?;
         let block_receipts = map_block_receipts(
-            &transactions,
+            transactions,
             receipts,
             &header.header,
             header.hash,
@@ -421,7 +432,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
         if let Ok(bloom_receipts) = archive_reader.get_block_receipts(block_num).await {
             if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
                 let block_receipts = map_block_receipts(
-                    &block.body.transactions,
+                    block.body.transactions,
                     bloom_receipts,
                     &block.header,
                     block.header.hash_slow(),

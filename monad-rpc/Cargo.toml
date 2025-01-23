@@ -41,6 +41,7 @@ tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
+rayon = { workspace = true }
 scc = { workspace = true }
 schemars = "0.8.21"
 opentelemetry = { workspace = true, features = ["metrics"] }
