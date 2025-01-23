@@ -53,6 +53,7 @@ pub async fn handler(
 #[derive(Deserialize)]
 pub struct EthSubscribeRequest {
     kind: SubscriptionKind,
+    #[serde(default)]
     params: Params,
 }
 
@@ -71,23 +72,16 @@ pub struct EthUnsubscribeResponse {
     result: bool,
 }
 
-// TODO: better subscription id
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
-pub struct SubscriptionID(FixedData<32>);
-
-impl SubscriptionID {
-    pub fn new() -> Self {
-        let mut rng = rand::thread_rng();
-        let random_bytes: [u8; 32] = rng.gen();
-        let id = FixedData::<32>(random_bytes);
-        SubscriptionID(id)
-    }
+fn new_subscription_id() -> FixedData<32> {
+    let mut rng = rand::thread_rng();
+    let random_bytes: [u8; 32] = rng.gen();
+    FixedData(random_bytes)
 }
 
 #[derive(Message, Debug)]
 #[rtype(result = "()")]
 struct SubscriptionMessage {
-    id: SubscriptionID,
+    id: FixedData<32>,
     kind: SubscriptionKind,
     message: Box<BlockUpdate>,
     filter: Option<Filter>,
@@ -116,9 +110,13 @@ enum SubscriptionKind {
 pub struct WebsocketSession {
     pub heartbeat: Instant,
     pub server: Addr<MonadRpcResources>,
-    // Maps a subscription to a handle
-    subscriptions: HashMap<SubscriptionID, (SpawnHandle, usize)>,
+    subscriptions: HashMap<FixedData<32>, SubscriptionInfo>,
     tx: tokio::sync::broadcast::Sender<Box<BlockUpdate>>,
+}
+
+struct SubscriptionInfo {
+    kind: SubscriptionKind,
+    filter: Option<Filter>,
 }
 
 impl WebsocketSession {
@@ -137,6 +135,19 @@ impl WebsocketSession {
             ctx.ping(b"");
         });
     }
+
+    fn handle_subscription(
+        &mut self,
+        _ctx: &mut ws::WebsocketContext<Self>,
+        kind: SubscriptionKind,
+        filter: Option<Filter>,
+    ) -> FixedData<32> {
+        let id = new_subscription_id();
+
+        self.subscriptions
+            .insert(id, SubscriptionInfo { kind, filter });
+        id
+    }
 }
 
 impl Actor for WebsocketSession {
@@ -144,6 +155,19 @@ impl Actor for WebsocketSession {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.heartbeat(ctx);
+
+        // Create a new broadcast receiver
+        let mut rx = self.tx.subscribe();
+
+        // Get actor address to send messages to self
+        let addr = ctx.address();
+
+        // Spawn a task to forward block updates to the actor
+        actix::spawn(async move {
+            while let Ok(update) = rx.recv().await {
+                addr.do_send(ProcessSubscriptions(update));
+            }
+        });
     }
 
     fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
@@ -171,7 +195,7 @@ impl Handler<SubscriptionMessage> for WebsocketSession {
                     .collect();
 
                 let body = SubscriptionUpdate {
-                    subscription: msg.id.0,
+                    subscription: msg.id,
                     result: SubscriptionResult::NewHeads(reth_rpc_types::Block {
                         header: block_header,
                         withdrawals: None,
@@ -230,7 +254,7 @@ impl Handler<SubscriptionMessage> for WebsocketSession {
                 };
 
                 let body = SubscriptionUpdate {
-                    subscription: msg.id.0,
+                    subscription: msg.id,
                     result: SubscriptionResult::Logs(logs),
                 };
 
@@ -245,6 +269,29 @@ impl Handler<SubscriptionMessage> for WebsocketSession {
                 };
             }
         };
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct ProcessSubscriptions(Box<BlockUpdate>);
+
+impl Handler<ProcessSubscriptions> for WebsocketSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: ProcessSubscriptions, ctx: &mut Self::Context) {
+        for (id, info) in &self.subscriptions {
+            let subscription_msg = SubscriptionMessage {
+                id: *id,
+                kind: info.kind.clone(),
+                message: msg.0.clone(),
+                filter: info.filter.clone(),
+            };
+
+            let addr = ctx.address();
+
+            addr.do_send(subscription_msg);
+        }
     }
 }
 
@@ -321,65 +368,27 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
                                         }
                                     };
 
-                                let id = SubscriptionID::new();
+                                let filter = match req.params {
+                                    Params::Logs(filter) => Some(*filter),
+                                    Params::None => None,
+                                    _ => {
+                                        ctx.text(prepare_ws_response(
+                                            &crate::jsonrpc::Response::from_error(
+                                                JsonRpcError::invalid_params(),
+                                            ),
+                                        ));
+                                        return;
+                                    }
+                                };
+
+                                let id = self.handle_subscription(ctx, req.kind, filter);
 
                                 ctx.text(prepare_ws_response(
                                     &crate::jsonrpc::Response::from_result(
                                         request.id,
-                                        serialize_result(EthSubscribeResponse { id: id.0 }),
+                                        serialize_result(EthSubscribeResponse { id }),
                                     ),
                                 ));
-
-                                match req.kind {
-                                    SubscriptionKind::NewHeads => {
-                                        let addr = ctx.address();
-                                        let mut rx = self.tx.subscribe();
-                                        let id = id.clone();
-
-                                        let handle =
-                                            ctx.spawn(actix::fut::wrap_future(async move {
-                                                while let Ok(msg) = rx.recv().await {
-                                                    let _ = addr.do_send(SubscriptionMessage {
-                                                        id,
-                                                        kind: SubscriptionKind::NewHeads,
-                                                        message: msg,
-                                                        filter: None,
-                                                    });
-                                                }
-                                            }));
-
-                                        self.subscriptions.insert(id, (handle, 0));
-                                    }
-                                    SubscriptionKind::Logs => {
-                                        let filter = match req.params {
-                                            Params::None => None,
-                                            Params::Logs(filter) => Some(filter),
-                                            _ => {
-                                                ctx.text(prepare_ws_response(
-                                                    &crate::jsonrpc::Response::from_error(
-                                                        JsonRpcError::invalid_params(),
-                                                    ),
-                                                ));
-                                                return;
-                                            }
-                                        };
-
-                                        let addr = ctx.address();
-                                        let mut rx = self.tx.subscribe();
-                                        let id = id.clone();
-
-                                        ctx.spawn(actix::fut::wrap_future(async move {
-                                            while let Ok(msg) = rx.recv().await {
-                                                let _ = addr.do_send(SubscriptionMessage {
-                                                    id,
-                                                    kind: SubscriptionKind::Logs,
-                                                    message: msg,
-                                                    filter: filter.clone().map(|f| *f.clone()),
-                                                });
-                                            }
-                                        }));
-                                    }
-                                }
                             }
                             "eth_unsubscribe" => {
                                 let params: EthUnsubscribeRequest =
@@ -395,11 +404,7 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
                                         }
                                     };
 
-                                if let Some((handle, _)) =
-                                    self.subscriptions.remove(&SubscriptionID(params.id))
-                                {
-                                    ctx.cancel_future(handle);
-
+                                if let Some(_) = self.subscriptions.remove(&params.id) {
                                     ctx.text(prepare_ws_response(
                                         &crate::jsonrpc::Response::from_result(
                                             request.id,
