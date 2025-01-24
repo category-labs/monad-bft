@@ -135,7 +135,7 @@ impl InMemoryStateInner {
         };
         self.states.insert(seq_num, last_state);
 
-        if self.commits.len() > self.execution_delay.0 as usize * 1000
+        if self.commits.len() > (self.execution_delay.0 as usize).saturating_mul(1000)
         // this is big just for statesync/blocksync. TODO don't hardcode
         {
             self.commits.pop_first();
