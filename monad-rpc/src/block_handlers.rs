@@ -299,7 +299,7 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     Ok(None)
 }
 
-pub async fn map_block_receipts<R>(
+pub fn map_block_receipts<R>(
     transactions: Vec<TxEnvelopeWithSender>,
     receipts: Vec<ReceiptWithLogIndex>,
     block_header: &RlpHeader,
@@ -318,7 +318,7 @@ pub async fn map_block_receipts<R>(
 
     transactions
         .iter()
-        .zip(receipts.into_iter())
+        .zip(receipts)
         .enumerate()
         .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
             let prev_receipt = prev_receipt.replace(receipt.to_owned());
@@ -344,7 +344,7 @@ pub async fn map_block_receipts<R>(
         .collect()
 }
 
-pub async fn block_receipts(
+pub fn block_receipts(
     transactions: Vec<TxEnvelopeWithSender>,
     receipts: Vec<ReceiptWithLogIndex>,
     block_header: &RlpHeader,
@@ -357,7 +357,6 @@ pub async fn block_receipts(
         block_hash,
         |receipt| receipt,
     )
-    .await
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -415,8 +414,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
             &header.header,
             header.hash,
             MonadTransactionReceipt,
-        )
-        .await?;
+        )?;
         return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
     }
 
@@ -430,8 +428,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
                     &block.header,
                     block.header.hash_slow(),
                     MonadTransactionReceipt,
-                )
-                .await?;
+                )?;
                 return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
             }
         }

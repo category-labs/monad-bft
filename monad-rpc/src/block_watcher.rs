@@ -95,8 +95,7 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
             bloom_receipts,
             &header.header,
             header.hash,
-        )
-        .await?;
+        )?;
 
         let result: Vec<_> = transactions.into_iter().zip(receipts).collect();
         Ok(result)

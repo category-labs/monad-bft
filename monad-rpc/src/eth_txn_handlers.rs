@@ -1,15 +1,17 @@
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
-use alloy_primitives::{FixedBytes, TxKind};
+use alloy_primitives::{Address, Bloom, FixedBytes, TxKind, B256};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{
-    BlockNumberOrTag, Filter, FilterBlockOption, FilteredParams, Log, Receipt, Transaction,
-    TransactionReceipt,
+    BlockNumberOrTag, Filter, FilterBlockOption, FilterSet, FilteredParams, Log, Receipt,
+    Transaction, TransactionReceipt,
 };
+use futures::stream::{self, StreamExt};
+use itertools::Either;
 use monad_archive::prelude::{BlockDataReader, IndexStoreReader};
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
-    ReceiptWithLogIndex, TransactionLocation, Triedb, TxEnvelopeWithSender,
+    BlockHeader, ReceiptWithLogIndex, TransactionLocation, Triedb, TxEnvelopeWithSender,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace, warn};
@@ -116,7 +118,7 @@ pub fn parse_tx_receipt(
         contract_address,
         gas_used,
         effective_gas_price,
-        // TODO: EIP4844 fields
+        // TODO: EIP4844 and EIP7702 fields
         blob_gas_used: None,
         blob_gas_price: None,
         authorization_list: None,
@@ -159,8 +161,6 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
-
-    let mut logs = Vec::new();
 
     let filter = p.filters;
     let (from_block, to_block) = match filter.block_option {
@@ -228,92 +228,148 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     }
 
     let filtered_params = FilteredParams::new(Some(filter.clone()));
+    let block_range = from_block..=to_block;
 
-    for block_num in from_block..=to_block {
-        let receipts: Vec<TransactionReceipt> = if let Some(header) = triedb_env
-            .get_block_header(block_num)
-            .await
-            .map_err(JsonRpcError::internal_error)?
-        {
-            if FilteredParams::matches_address(
-                header.header.logs_bloom,
-                &FilteredParams::address_filter(&filter.address),
-            ) && FilteredParams::matches_topics(
-                header.header.logs_bloom,
-                &FilteredParams::topics_filter(&filter.topics),
-            ) {
-                // try fetching from triedb
-                let transactions = triedb_env
-                    .get_transactions(block_num)
-                    .await
-                    .map_err(JsonRpcError::internal_error)?;
-                let bloom_receipts = triedb_env
-                    .get_receipts(block_num)
-                    .await
-                    .map_err(JsonRpcError::internal_error)?;
-                block_receipts(transactions, bloom_receipts, &header.header, header.hash).await?
-            } else {
-                vec![]
-            }
-        } else if let Some(archive_reader) = archive_reader {
-            // fallback to archive reader if header not available in triedb
-            let block = archive_reader
-                .get_block_by_number(block_num)
-                .await
-                .map_err(|_| JsonRpcError::internal_error("error getting block header".into()))?;
-            if FilteredParams::matches_address(
-                block.header.logs_bloom,
-                &FilteredParams::address_filter(&filter.address),
-            ) && FilteredParams::matches_topics(
-                block.header.logs_bloom,
-                &FilteredParams::topics_filter(&filter.topics),
-            ) {
-                let bloom_receipts =
-                    archive_reader
-                        .get_block_receipts(block_num)
-                        .await
-                        .map_err(|_| {
-                            JsonRpcError::internal_error("error getting block receipts".into())
-                        })?;
-                block_receipts(
-                    block.body.transactions,
-                    bloom_receipts,
-                    &block.header,
-                    block.header.hash_slow(),
-                )
-                .await?
-            } else {
-                vec![]
-            }
-        } else {
-            return Err(JsonRpcError::internal_error(
-                "error getting block header".into(),
-            ));
+    let filter_match =
+        |bloom: Bloom, address: &FilterSet<Address>, topics: &[FilterSet<B256>]| -> bool {
+            FilteredParams::matches_address(bloom, &FilteredParams::address_filter(address))
+                && FilteredParams::matches_topics(bloom, &FilteredParams::topics_filter(topics))
         };
 
-        let mut receipt_logs: Vec<Log> = receipts
-            .into_iter()
-            .flat_map(|receipt| {
-                let logs: Vec<Log> = receipt
-                    .inner
-                    .logs()
-                    .iter()
-                    .filter(|log: &&Log| {
-                        !(filtered_params.filter.is_some()
-                            && (!filtered_params.filter_address(&log.address())
-                                || !filtered_params.filter_topics(log.topics())))
-                    })
-                    .cloned()
-                    .collect();
-                logs
-            })
-            .collect();
+    let triedb_stream = stream::iter(block_range)
+        .map(|block_num| {
+            let filter_clone = filter.clone();
+            async move {
+                if let Some(header) = triedb_env
+                    .get_block_header(block_num)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?
+                {
+                    if filter_match(
+                        header.header.logs_bloom,
+                        &filter_clone.address,
+                        &filter_clone.topics,
+                    ) {
+                        // try fetching from triedb
+                        let transactions = triedb_env
+                            .get_transactions(block_num)
+                            .await
+                            .map_err(JsonRpcError::internal_error)?;
+                        let bloom_receipts = triedb_env
+                            .get_receipts(block_num)
+                            .await
+                            .map_err(JsonRpcError::internal_error)?;
+                        // successfully fetched from triedb
+                        Ok(Either::Left((header, transactions, bloom_receipts)))
+                    } else {
+                        Ok(Either::Left((header, vec![], vec![])))
+                    }
+                } else {
+                    Ok(Either::Right(block_num)) // pass block number to try for archive
+                }
+            }
+        })
+        .buffered(10);
 
-        logs.append(&mut receipt_logs);
-    }
+    let data = triedb_stream
+        .map(|result| {
+            let filter_clone = filter.clone();
+            async move {
+                match result {
+                    Ok(Either::Left(data)) => Ok(data), // successfully fetched from triedb
+                    Ok(Either::Right(block_num)) => {
+                        // fallback and try fetching from archive
+                        if let Some(archive_reader) = archive_reader {
+                            let block = archive_reader
+                                .get_block_by_number(block_num)
+                                .await
+                                .map_err(|_| {
+                                    JsonRpcError::internal_error(
+                                        "error getting block header from archiver".into(),
+                                    )
+                                })?;
+                            if filter_match(
+                                block.header.logs_bloom,
+                                &filter_clone.address,
+                                &filter_clone.topics,
+                            ) {
+                                let bloom_receipts = archive_reader
+                                    .get_block_receipts(block_num)
+                                    .await
+                                    .map_err(|_| {
+                                        JsonRpcError::internal_error(
+                                            "error getting block receipts from archiver".into(),
+                                        )
+                                    })?;
+                                Ok((
+                                    BlockHeader {
+                                        hash: block.header.hash_slow(),
+                                        header: block.header,
+                                    },
+                                    block.body.transactions,
+                                    bloom_receipts,
+                                ))
+                            } else {
+                                Ok((
+                                    BlockHeader {
+                                        hash: block.header.hash_slow(),
+                                        header: block.header,
+                                    },
+                                    vec![],
+                                    vec![],
+                                ))
+                            }
+                        } else {
+                            Err(JsonRpcError::internal_error(
+                                "error getting block header from triedb and archive".into(),
+                            ))
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        })
+        .buffered(100)
+        .collect::<Vec<_>>()
+        .await;
+
+    let data = data.into_iter().collect::<Result<Vec<_>, _>>()?;
+
+    let receipts: Vec<TransactionReceipt> = data
+        .iter()
+        .map(|(header, transactions, bloom_receipts)| {
+            block_receipts(
+                transactions.to_vec(),
+                bloom_receipts.to_vec(),
+                &header.header,
+                header.hash,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    let receipt_logs: Vec<Log> = receipts
+        .into_iter()
+        .flat_map(|receipt| {
+            let logs: Vec<Log> = receipt
+                .inner
+                .logs()
+                .iter()
+                .filter(|log: &&Log| {
+                    !(filtered_params.filter.is_some()
+                        && (!filtered_params.filter_address(&log.address())
+                            || !filtered_params.filter_topics(log.topics())))
+                })
+                .cloned()
+                .collect();
+            logs
+        })
+        .collect();
 
     Ok(MonadEthGetLogsResult(
-        logs.into_iter().map(MonadLog).collect(),
+        receipt_logs.into_iter().map(MonadLog).collect(),
     ))
 }
 

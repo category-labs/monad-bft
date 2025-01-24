@@ -4919,6 +4919,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
+ "itertools 0.10.5",
  "monad-archive",
  "monad-cxx",
  "monad-eth-block-policy",

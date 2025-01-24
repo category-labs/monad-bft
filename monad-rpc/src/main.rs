@@ -142,9 +142,10 @@ pub async fn rpc_handler(
     match serde_json::to_vec(&response) {
         Ok(bytes) => {
             if bytes.len() > app_state.max_response_size as usize {
-                debug!("response exceed size limit: {body:?} => {response:?}");
-                return HttpResponse::Ok()
-                    .json(Response::from_error(JsonRpcError::invalid_request()));
+                info!("response exceed size limit: {body:?}");
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
+                    "response exceed size limit".to_string(),
+                )));
             }
         }
         Err(e) => {
