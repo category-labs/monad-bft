@@ -236,39 +236,61 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     let filtered_params = FilteredParams::new(Some(filter.clone()));
 
     for block_num in from_block..=to_block {
-        // TODO: check block's log_bloom against the filter
         let receipts: Vec<TransactionReceipt> = if let Some(header) = triedb_env
             .get_block_header(block_num)
             .await
             .map_err(JsonRpcError::internal_error)?
         {
-            // try fetching from triedb
-            let transactions = triedb_env
-                .get_transactions(block_num)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            let bloom_receipts = triedb_env
-                .get_receipts(block_num)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            block_receipts(transactions, bloom_receipts, &header.header, header.hash).await?
+            if FilteredParams::matches_address(
+                header.header.logs_bloom,
+                &FilteredParams::address_filter(&filter.address),
+            ) && FilteredParams::matches_topics(
+                header.header.logs_bloom,
+                &FilteredParams::topics_filter(&filter.topics),
+            ) {
+                // try fetching from triedb
+                let transactions = triedb_env
+                    .get_transactions(block_num)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                let bloom_receipts = triedb_env
+                    .get_receipts(block_num)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                block_receipts(transactions, bloom_receipts, &header.header, header.hash).await?
+            } else {
+                vec![]
+            }
         } else if let Some(archive_reader) = archive_reader {
             // fallback to archive reader if header not available in triedb
             let block = archive_reader
                 .get_block_by_number(block_num)
                 .await
                 .map_err(|_| JsonRpcError::internal_error("error getting block header".into()))?;
-            let bloom_receipts = archive_reader
-                .get_block_receipts(block_num)
-                .await
-                .map_err(|_| JsonRpcError::internal_error("error getting block receipts".into()))?;
-            block_receipts(
-                block.body.transactions,
-                bloom_receipts,
-                &block.header,
-                block.header.hash_slow(),
-            )
-            .await?
+            if FilteredParams::matches_address(
+                block.header.logs_bloom,
+                &FilteredParams::address_filter(&filter.address),
+            ) && FilteredParams::matches_topics(
+                block.header.logs_bloom,
+                &FilteredParams::topics_filter(&filter.topics),
+            ) {
+                let bloom_receipts =
+                    archive_reader
+                        .get_block_receipts(block_num)
+                        .await
+                        .map_err(|_| {
+                            JsonRpcError::internal_error("error getting block receipts".into())
+                        })?;
+                block_receipts(
+                    block.body.transactions,
+                    bloom_receipts,
+                    &block.header,
+                    block.header.hash_slow(),
+                )
+                .await?
+            } else {
+                vec![]
+            }
         } else {
             return Err(JsonRpcError::internal_error(
                 "error getting block header".into(),
