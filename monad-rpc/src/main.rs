@@ -581,10 +581,18 @@ pub fn create_app<S: 'static>(
         .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(args.rpc_worker_threads)
+        .build()?;
+
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Cli) -> std::io::Result<()> {
     let subscriber = Registry::default()
         .with(EnvFilter::from_default_env())
         .with(

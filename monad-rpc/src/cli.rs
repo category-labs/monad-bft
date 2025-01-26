@@ -68,4 +68,8 @@ pub struct Cli {
     /// Set the API key to read archive data from
     #[arg(long)]
     pub archive_api_key: Option<String>,
+
+    /// Number of worker threads assigned for RPC
+    #[arg(long, default_value_t = 1)]
+    pub rpc_worker_threads: usize,
 }
