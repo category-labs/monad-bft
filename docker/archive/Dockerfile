@@ -78,22 +78,26 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     mv target/release/monad-index-checker index-checker && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
 
-RUN strip \
-    archiver \
-    archive-checker \
-    indexer \
-    index-checker \
-    *.so 
+# Debug runner
+FROM base AS runner-debug
 
-# Runner
-FROM base AS runner
 WORKDIR /usr/src/monad-bft
-
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=1
+
 COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
 COPY --from=builder /usr/src/monad-bft/archive-checker /usr/local/bin/monad-archive-checker
 COPY --from=builder /usr/src/monad-bft/indexer /usr/local/bin/monad-indexer
 COPY --from=builder /usr/src/monad-bft/index-checker /usr/local/bin/monad-index-checker
 COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 
-ENV RUST_LOG=info
+# Runner
+FROM runner-debug AS runner
+
+RUN strip \
+    /usr/local/bin/monad-archiver \
+    /usr/local/bin/monad-archive-checker \
+    /usr/local/bin/monad-indexer \
+    /usr/local/bin/monad-index-checker \
+    /usr/local/lib/*.so
