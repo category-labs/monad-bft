@@ -15,7 +15,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hashable, Hasher},
 };
-use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{SeqNum, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
@@ -106,6 +106,7 @@ pub fn compute_txn_max_value_to_u128(txn: &TxEnvelope) -> u128 {
 // allow for more fine grain debugging if needed
 #[derive(Debug)]
 pub enum TransactionError {
+    BaseFeeTooLow,
     InvalidChainId,
     MaxPriorityFeeTooHigh,
     InitCodeLimitExceeded,
@@ -149,6 +150,11 @@ pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(),
 
     if tx.is_eip4844() || tx.is_eip7702() {
         return Err(TransactionError::UnsupportedTransactionType);
+    }
+
+    // TODO: remove this check once we have dynamic base fees
+    if tx.max_fee_per_gas() < BASE_FEE_PER_GAS as u128 {
+        return Err(TransactionError::BaseFeeTooLow);
     }
 
     Ok(())
