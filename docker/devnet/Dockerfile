@@ -2,6 +2,8 @@ FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
+RUN useradd -m -u 2000 monad
+
 RUN apt update && apt install -y \
   binutils \
   iproute2 \
@@ -90,7 +92,10 @@ RUN strip \
 
 # Runner
 FROM base AS runner
+
 WORKDIR /usr/src/monad-bft
+
+USER monad
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node

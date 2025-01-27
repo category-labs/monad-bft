@@ -1,6 +1,8 @@
 # Builder
 FROM ubuntu:24.04 AS base
 
+RUN useradd -m -u 2000 monad
+
 RUN apt update && apt upgrade -y
 RUN apt update && apt install -y binutils ca-certificates curl iproute2 pkg-config gnupg software-properties-common wget cgroup-tools
 
@@ -41,7 +43,7 @@ FROM base AS builder
 WORKDIR /usr/src/monad-bft
 RUN apt update && apt upgrade -y
 RUN apt update && apt install -y binutils ca-certificates curl iproute2 pkg-config gnupg software-properties-common wget cgroup-tools
-RUN apt install -y clang 
+RUN apt install -y clang
 
 ######## BEGIN CMAKE
 RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
@@ -78,6 +80,9 @@ RUN cargo build --release --example txgen && \
 
 # Runner
 FROM ubuntu:24.04 as runner
+
+USER monad
+
 WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/txgen /usr/local/bin/txgen

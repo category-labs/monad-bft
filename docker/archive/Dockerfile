@@ -2,6 +2,8 @@ FROM ubuntu:24.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
+RUN useradd -m -u 2000 monad
+
 RUN apt update && apt install -y \
   binutils \
   iproute2 \
@@ -76,18 +78,21 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     mv target/release/monad-archive-checker archive-checker && \
     mv target/release/monad-indexer indexer && \
     mv target/release/monad-index-checker index-checker && \
-    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` . 
+    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` .
 
 RUN strip \
     archiver \
     archive-checker \
     indexer \
     index-checker \
-    *.so 
+    *.so
 
 # Runner
 FROM base AS runner
+
 WORKDIR /usr/src/monad-bft
+
+USER monad
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 COPY --from=builder /usr/src/monad-bft/archiver /usr/local/bin/monad-archiver
