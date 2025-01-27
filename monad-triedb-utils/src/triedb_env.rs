@@ -162,7 +162,7 @@ fn process_request(triedb_handle: &TriedbHandle, async_request: AsyncRequest) {
     );
 }
 
-pub trait Triedb {
+pub trait Triedb: std::fmt::Debug {
     fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64, String>> + Send;
     fn get_account(
         &self,
@@ -235,6 +235,14 @@ pub struct TriedbEnv {
     mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
 }
 
+impl std::fmt::Debug for TriedbEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TriedbEnv")
+            .field("path", &self.triedb_path)
+            .finish()
+    }
+}
+
 impl TriedbEnv {
     pub fn new(triedb_path: &Path, max_concurrent_triedb_reads: usize) -> Self {
         // create a mpsc channel where sender are incoming requests, and the receiver is the triedb poller
@@ -260,6 +268,7 @@ impl TriedbPath for TriedbEnv {
 }
 
 impl Triedb for TriedbEnv {
+    #[tracing::instrument(level = "debug")]
     async fn get_latest_block(&self) -> Result<u64, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -283,6 +292,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_account(&self, addr: EthAddress, block_num: u64) -> Result<Account, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -341,6 +351,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_storage_at(
         &self,
         addr: EthAddress,
@@ -398,6 +409,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_code(&self, code_hash: EthCodeHash, block_num: u64) -> Result<String, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -441,6 +453,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_receipt(
         &self,
         receipt_index: u64,
@@ -544,6 +557,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_transaction(
         &self,
         txn_index: u64,
@@ -600,6 +614,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_transactions(&self, block_num: u64) -> Result<Vec<TxEnvelopeWithSender>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -649,6 +664,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -702,6 +718,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_transaction_location_by_hash(
         &self,
         tx_hash: EthTxHash,
@@ -760,6 +777,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_block_number_by_hash(
         &self,
         block_hash: EthBlockHash,
@@ -813,6 +831,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_call_frame(
         &self,
         txn_index: u64,
@@ -856,6 +875,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
+    #[tracing::instrument(level = "debug")]
     async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 

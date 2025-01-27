@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use actix::prelude::*;
-use actix_http::body::BoxBody;
 use actix_web::{
-    dev::{ServiceFactory, ServiceRequest, ServiceResponse},
+    dev::{ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
 use alloy_consensus::TxEnvelope;
@@ -12,10 +11,12 @@ use eth_json_types::serialize_result;
 use futures::SinkExt;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::metrics::MeterProvider;
+use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
+use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
+use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -83,7 +84,11 @@ mod trace_handlers;
 mod vpool;
 mod websocket;
 
-async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
+pub async fn rpc_handler(
+    root_span: RootSpan,
+    body: bytes::Bytes,
+    app_state: web::Data<MonadRpcResources>,
+) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -97,12 +102,14 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
             let Ok(request) = serde_json::from_value::<Request>(json_request) else {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
             };
+            root_span.record("json_method", &request.method);
             ResponseWrapper::Single(Response::from_result(
                 request.id,
                 rpc_select(&app_state, &request.method, request.params).await,
             ))
         }
         RequestWrapper::Batch(json_batch_request) => {
+            root_span.record("json_method", "batch");
             if json_batch_request.is_empty()
                 || json_batch_request.len() > app_state.batch_request_limit as usize
             {
@@ -112,6 +119,7 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
             let batch_response =
                 futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
                     let app_state = app_state.clone(); // cheap copy
+
                     async move {
                         let Ok(request) = serde_json::from_value::<Request>(json_request) else {
                             return (Value::Null, Err(JsonRpcError::invalid_request()));
@@ -159,6 +167,7 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
     HttpResponse::Ok().json(&response)
 }
 
+#[tracing::instrument(level = "debug", skip(app_state))]
 async fn rpc_select(
     app_state: &MonadRpcResources,
     method: &str,
@@ -543,61 +552,91 @@ impl Actor for MonadRpcResources {
     type Context = Context<Self>;
 }
 
-pub fn create_app_with_metrics<S: 'static>(
-    app_data: S,
-    with_metrics: metrics::Metrics,
-) -> App<
-    impl ServiceFactory<
-        ServiceRequest,
-        Config = (),
-        Response = ServiceResponse,
-        Error = actix_web::Error,
-        InitError = (),
-    >,
-> {
-    App::new()
-        .app_data(web::JsonConfig::default().limit(8192))
-        .app_data(web::Data::new(app_data))
-        .wrap(with_metrics)
-        .service(web::resource("/").route(web::post().to(rpc_handler)))
-        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+pub struct MonadJsonRootSpanBuilder;
+
+impl RootSpanBuilder for MonadJsonRootSpanBuilder {
+    fn on_request_start(request: &ServiceRequest) -> tracing::Span {
+        tracing_actix_web::root_span!(request, json_method = tracing::field::Empty)
+    }
+
+    fn on_request_end<B: actix_web::body::MessageBody>(
+        span: tracing::Span,
+        outcome: &Result<ServiceResponse<B>, Error>,
+    ) {
+    }
 }
 
-pub fn create_app<S: 'static>(
-    app_data: S,
-) -> App<
-    impl ServiceFactory<
-        ServiceRequest,
-        Response = ServiceResponse<BoxBody>,
-        Config = (),
-        InitError = (),
-        Error = Error,
-    >,
-> {
-    App::new()
-        .app_data(web::JsonConfig::default().limit(8192))
-        .app_data(web::Data::new(app_data))
-        .service(web::resource("/").route(web::post().to(rpc_handler)))
-        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
-}
-
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    let subscriber = Registry::default()
-        .with(EnvFilter::from_default_env())
-        .with(
-            FmtLayer::default()
-                .json()
-                .with_span_events(FmtSpan::NONE)
-                .with_current_span(false)
-                .with_span_list(false)
-                .with_writer(std::io::stdout)
-                .with_ansi(false),
-        );
+    let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
+        args.otel_endpoint.as_ref().map(|endpoint| {
+            opentelemetry_otlp::SpanExporterBuilder::Tonic(
+                opentelemetry_otlp::new_exporter()
+                    .tonic()
+                    .with_endpoint(endpoint),
+            )
+            .build_span_exporter()
+            .expect("cannot build span exporter for otel_endpoint")
+        });
 
-    tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
+    let rt = opentelemetry_sdk::runtime::Tokio;
+
+    let service_name = match args.metrics_service_name {
+        Some(name) => name,
+        None => "monad-rpc".to_string(),
+    };
+    let otel_span_telemetry = match otlp_exporter {
+        Some(exporter) => {
+            let otel_config = opentelemetry_sdk::trace::Config::default().with_resource(
+                opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+                    "service.name".to_string(),
+                    service_name.clone(),
+                )]),
+            );
+
+            let trace_provider = opentelemetry_sdk::trace::TracerProvider::builder()
+                .with_config(otel_config)
+                .with_batch_exporter(exporter, rt)
+                .build();
+            let tracer = trace_provider.tracer("monad-rpc");
+            Some(tracing_opentelemetry::layer().with_tracer(tracer))
+        }
+        None => None,
+    };
+
+    let fmt_layer = FmtLayer::default()
+        .json()
+        .with_span_events(FmtSpan::NONE)
+        .with_current_span(false)
+        .with_span_list(false)
+        .with_writer(std::io::stdout)
+        .with_ansi(false);
+
+    match otel_span_telemetry {
+        Some(telemetry) => {
+            let s = Registry::default()
+                .with(EnvFilter::from_default_env())
+                .with(telemetry)
+                .with(fmt_layer);
+            tracing::subscriber::set_global_default(s).expect("failed to set logger");
+        }
+        None => {
+            let s = Registry::default()
+                .with(EnvFilter::from_default_env())
+                .with(
+                    FmtLayer::default()
+                        .json()
+                        .with_span_events(FmtSpan::NONE)
+                        .with_current_span(false)
+                        .with_span_list(false)
+                        .with_writer(std::io::stdout)
+                        .with_ansi(false),
+                );
+            tracing::subscriber::set_global_default(s).expect("failed to set logger");
+        }
+    };
 
     // initialize concurrent requests limiter
     let concurrent_requests_limiter = Arc::new(Semaphore::new(
@@ -675,15 +714,10 @@ async fn main() -> std::io::Result<()> {
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.map(|endpoint| {
-            let svc_name = match args.metrics_service_name {
-                Some(name) => name,
-                None => "monad-rpc".to_string(),
-            };
-
+        args.otel_endpoint.as_ref().map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
-                &endpoint,
-                svc_name,
+                endpoint,
+                service_name,
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");
@@ -697,16 +731,31 @@ async fn main() -> std::io::Result<()> {
 
     // main server app
     match with_metrics {
-        Some(metrics) => {
-            HttpServer::new(move || create_app_with_metrics(resources.clone(), metrics.clone()))
-                .bind((args.rpc_addr, args.rpc_port))?
-                .shutdown_timeout(1)
-                .run()
-        }
-        None => HttpServer::new(move || create_app(resources.clone()))
-            .bind((args.rpc_addr, args.rpc_port))?
-            .shutdown_timeout(1)
-            .run(),
+        Some(metrics) => HttpServer::new(move || {
+            App::new()
+                .wrap(metrics.clone())
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::Data::new(resources.clone()))
+                .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+        })
+        .bind((args.rpc_addr, args.rpc_port))?
+        .shutdown_timeout(1)
+        .workers(2)
+        .run(),
+        None => HttpServer::new(move || {
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::Data::new(resources.clone()))
+                .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+        })
+        .bind((args.rpc_addr, args.rpc_port))?
+        .shutdown_timeout(1)
+        .workers(2)
+        .run(),
     }
     .await?;
 
@@ -764,7 +813,7 @@ mod tests {
     ) {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
-        let app = test::init_service(create_app(MonadRpcResources {
+        let resources = MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,
@@ -773,7 +822,15 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
-        }))
+        };
+        let app = test::init_service(
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::Data::new(resources.clone()))
+                .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
+        )
         .await;
         (app, m)
     }

@@ -324,8 +324,9 @@ pub struct MonadEthCallParams {
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
+#[tracing::instrument(level = "debug")]
 #[rpc(method = "eth_call", ignore = "chain_id")]
-pub async fn monad_eth_call<T: Triedb + TriedbPath>(
+pub async fn monad_eth_call<T: Triedb + TriedbPath + std::fmt::Debug>(
     triedb_env: &T,
     chain_id: u64,
     params: MonadEthCallParams,

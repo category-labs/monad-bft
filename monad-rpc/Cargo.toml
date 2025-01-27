@@ -39,13 +39,15 @@ serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 tracing = { workspace = true, features = ["log"] }
+tracing-actix-web = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 notify = "6.1.1"
 pin-project = "1.1.5"
 rayon = { workspace = true }
 schemars = "0.8.21"
 opentelemetry = { workspace = true, features = ["metrics"] }
-opentelemetry-otlp = "0.17.0"
+opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 
 [dev-dependencies]

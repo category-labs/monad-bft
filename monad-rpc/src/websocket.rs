@@ -98,12 +98,14 @@ mod tests {
     use std::sync::Arc;
 
     use actix_http::{ws, ws::Frame};
+    use actix_web::{web, App};
     use alloy_consensus::TxEnvelope;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
     use tokio::sync::Semaphore;
+    use tracing_actix_web::TracingLogger;
 
-    use crate::{create_app, tests::MonadRpcResourcesState, MonadRpcResources};
+    use crate::{tests::MonadRpcResourcesState, MonadJsonRootSpanBuilder, MonadRpcResources};
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
@@ -119,7 +121,14 @@ mod tests {
         };
         (
             MonadRpcResourcesState { ipc_receiver },
-            actix_test::start(move || create_app(resources.clone())),
+            actix_test::start(move || {
+                App::new()
+                    .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                    .app_data(web::JsonConfig::default().limit(8192))
+                    .app_data(web::Data::new(resources.clone()))
+                    .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
+                    .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
+            }),
         )
     }
 

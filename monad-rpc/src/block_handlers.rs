@@ -16,6 +16,7 @@ use crate::{
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
+#[tracing::instrument(level = "debug")]
 pub async fn get_block_num_from_tag<T: Triedb>(
     triedb_env: &T,
     tag: BlockTags,
@@ -76,6 +77,7 @@ fn parse_block_content(
 
 #[rpc(method = "eth_blockNumber")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug")]
 /// Returns the number of most recent block.
 pub async fn monad_eth_blockNumber<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_blockNumber");
@@ -89,6 +91,7 @@ pub async fn monad_eth_blockNumber<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Q
 
 #[rpc(method = "eth_chainId", ignore = "chain_id")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug")]
 /// Returns the chain ID of the current network.
 pub async fn monad_eth_chainId(chain_id: u64) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_chainId");
@@ -110,6 +113,7 @@ pub struct MonadEthGetBlock {
 
 #[rpc(method = "eth_getBlockByHash")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip(archive_reader))]
 /// Returns information about a block by hash.
 pub async fn monad_eth_getBlockByHash<T: Triedb>(
     triedb_env: &T,
@@ -169,6 +173,7 @@ pub struct MonadEthGetBlockByNumberParams {
 
 #[rpc(method = "eth_getBlockByNumber")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip(archive_reader))]
 /// Returns information about a block by number.
 pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     triedb_env: &T,
@@ -219,6 +224,7 @@ pub struct MonadEthGetBlockTransactionCountByHashParams {
 
 #[rpc(method = "eth_getBlockTransactionCountByHash")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip(archive_reader))]
 /// Returns the number of transactions in a block from a block matching the given block hash.
 pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
     triedb_env: &T,
@@ -260,6 +266,7 @@ pub struct MonadEthGetBlockTransactionCountByNumberParams {
 
 #[rpc(method = "eth_getBlockTransactionCountByNumber")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip(archive_reader))]
 /// Returns the number of transactions in a block matching the given block number.
 pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     triedb_env: &T,
@@ -363,6 +370,7 @@ pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
 #[rpc(method = "eth_getBlockReceipts")]
 #[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip(archive_reader))]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     triedb_env: &T,
