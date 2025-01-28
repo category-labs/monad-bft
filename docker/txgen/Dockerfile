@@ -77,7 +77,7 @@ RUN cargo build --release --example txgen && \
     mv target/release/examples/txgen txgen
 
 # Runner
-FROM ubuntu:24.04 as runner
+FROM base as runner
 WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/txgen /usr/local/bin/txgen

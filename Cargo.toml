@@ -64,7 +64,7 @@ debug = true
 panic = "abort"
 
 [workspace.metadata.cargo-shear]
-ignored = ["getrandom", "pbjson"]
+ignored = ["alloy-transport-http", "getrandom", "pbjson"]
 
 [workspace.dependencies]
 alloy-consensus = "0.8"
@@ -79,6 +79,7 @@ alloy-signer-local = "0.8"
 alloy-sol-macro = "0.8"
 alloy-sol-types = "0.8"
 alloy-transport = "0.8"
+alloy-transport-http = "0.8"
 
 actix = "0.13"
 actix-http = "3.6.0"
