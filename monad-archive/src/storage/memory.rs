@@ -84,7 +84,7 @@ impl IndexStoreReader for MemoryStorage {
 impl IndexStore for MemoryStorage {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         for data in kvs {
-            let key = data.tx.tx_hash();
+            let key = data.tx.tx.tx_hash();
             self.index.lock().await.insert(*key, data);
         }
         Ok(())
@@ -94,12 +94,13 @@ impl IndexStore for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{
-        Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction, TxEip1559, TxEnvelope,
+        Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction, TxEip1559,
     };
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use bytes::Bytes;
+    use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
 
@@ -144,7 +145,7 @@ mod tests {
         Ok(())
     }
 
-    fn mock_tx(salt: u64) -> TxEnvelope {
+    fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
             nonce: salt,
             gas_limit: 456 + salt,
@@ -155,18 +156,25 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&B256::from(U256::from(123))).unwrap();
         let sig = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
         let tx = tx.into_signed(sig);
-        TxEnvelope::from(tx)
+        TxEnvelopeWithSender {
+            tx: tx.into(),
+            sender: signer.address(),
+        }
     }
 
-    fn mock_rx() -> ReceiptEnvelope {
-        ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
+    fn mock_rx() -> ReceiptWithLogIndex {
+        let receipt = ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
             Receipt::<Log> {
                 logs: vec![],
                 status: alloy_consensus::Eip658Value::Eip658(true),
                 cumulative_gas_used: 55,
             },
             Bloom::repeat_byte(b'a'),
-        ))
+        ));
+        ReceiptWithLogIndex {
+            receipt,
+            starting_log_index: 0,
+        }
     }
 
     #[tokio::test]
@@ -175,7 +183,7 @@ mod tests {
 
         // Create test transaction data
         let tx = mock_tx(1);
-        let tx_hash = *tx.tx_hash(); // Get the actual hash from the transaction
+        let tx_hash = *tx.tx.tx_hash(); // Get the actual hash from the transaction
 
         let test_data = TxIndexedData {
             tx,

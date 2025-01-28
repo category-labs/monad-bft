@@ -1,9 +1,9 @@
-use alloy_consensus::{Header as RlpHeader, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::Header as RlpHeader;
 use alloy_primitives::{FixedBytes, U256};
 use alloy_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt};
 use monad_archive::prelude::BlockDataReader;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::Triedb;
+use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, Triedb, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -32,7 +32,7 @@ pub async fn get_block_num_from_tag<T: Triedb>(
 fn parse_block_content(
     block_hash: FixedBytes<32>,
     header: RlpHeader,
-    transactions: Vec<TxEnvelope>,
+    transactions: Vec<TxEnvelopeWithSender>,
     return_full_txns: bool,
 ) -> JsonRpcResult<Option<MonadEthGetBlock>> {
     // parse transactions
@@ -53,7 +53,7 @@ fn parse_block_content(
 
         BlockTransactions::Full(txs)
     } else {
-        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx_hash()).collect())
+        BlockTransactions::Hashes(transactions.iter().map(|tx| *tx.tx.tx_hash()).collect())
     };
 
     // NOTE: no withdrawals currently in monad-bft
@@ -293,8 +293,8 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
 }
 
 pub async fn map_block_receipts<R>(
-    transactions: &[TxEnvelope],
-    receipts: Vec<ReceiptEnvelope>,
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
     f: impl Fn(TransactionReceipt) -> R,
@@ -308,7 +308,6 @@ pub async fn map_block_receipts<R>(
     }
 
     let mut prev_receipt = None;
-    let mut num_prev_logs = 0;
 
     transactions
         .iter()
@@ -317,23 +316,20 @@ pub async fn map_block_receipts<R>(
         .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
             let prev_receipt = prev_receipt.replace(receipt.to_owned());
             let gas_used = if let Some(prev_receipt) = &prev_receipt {
-                receipt.cumulative_gas_used() - prev_receipt.cumulative_gas_used()
+                receipt.receipt.cumulative_gas_used() - prev_receipt.receipt.cumulative_gas_used()
             } else {
-                receipt.cumulative_gas_used()
+                receipt.receipt.cumulative_gas_used()
             };
-
-            num_prev_logs += prev_receipt.map_or(0, |r| r.logs().len());
 
             let parsed_receipt = parse_tx_receipt(
                 block_header.base_fee_per_gas,
                 Some(block_header.timestamp),
                 block_hash,
-                tx,
+                tx.to_owned(),
                 gas_used,
                 receipt,
                 block_num,
                 tx_index as u64,
-                num_prev_logs,
             )?;
 
             Ok(f(parsed_receipt))
@@ -342,8 +338,8 @@ pub async fn map_block_receipts<R>(
 }
 
 pub async fn block_receipts(
-    transactions: &[TxEnvelope],
-    receipts: Vec<ReceiptEnvelope>,
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
     block_header: &RlpHeader,
     block_hash: FixedBytes<32>,
 ) -> Result<Vec<TransactionReceipt>, JsonRpcError> {
@@ -406,7 +402,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?;
         let block_receipts = map_block_receipts(
-            &transactions,
+            transactions,
             receipts,
             &header.header,
             header.hash,
@@ -418,11 +414,11 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 
     // try archive if header not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok(bloom_receipts) = archive_reader.get_block_receipts(block_num).await {
+        if let Ok(receipts_with_log_index) = archive_reader.get_block_receipts(block_num).await {
             if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
                 let block_receipts = map_block_receipts(
-                    &block.body.transactions,
-                    bloom_receipts,
+                    block.body.transactions,
+                    receipts_with_log_index,
                     &block.header,
                     block.header.hash_slow(),
                     MonadTransactionReceipt,

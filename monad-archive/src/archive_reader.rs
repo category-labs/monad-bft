@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{BlockHash, TxHash};
 use eyre::Result;
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 
 use crate::{cli::AwsCliArgs, prelude::*, storage::CloudProxyReader};
 
@@ -82,7 +82,7 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> BlockDataReader
         self.block_data_reader.get_block_by_hash(block_hash).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
         self.block_data_reader
             .get_block_receipts(block_number)
             .await

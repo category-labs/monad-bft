@@ -150,6 +150,7 @@ async fn handle_block(
 
     // check 1 key
     if let Some(tx) = first {
+        let tx = tx.tx; // grab inner TxEnvelope
         let key = tx.tx_hash().encode_hex();
         match tx_index_archiver.store.get(tx.tx_hash()).await {
             Ok(Some(resp)) => {
@@ -181,16 +182,17 @@ async fn checkpoint_latest(archiver: &TxIndexArchiver, block_num: u64) {
 mod tests {
     use alloy_consensus::{
         BlockBody, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction,
-        TxEip1559, TxEnvelope,
+        TxEip1559,
     };
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
     use crate::storage::memory::MemoryStorage;
 
-    fn mock_tx(salt: u64) -> TxEnvelope {
+    fn mock_tx(salt: u64) -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
             nonce: salt,
             gas_limit: 456 + salt,
@@ -201,21 +203,28 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&B256::from(U256::from(123))).unwrap();
         let sig = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
         let tx = tx.into_signed(sig);
-        TxEnvelope::from(tx)
+        TxEnvelopeWithSender {
+            tx: tx.into(),
+            sender: signer.address(),
+        }
     }
 
-    fn mock_rx() -> ReceiptEnvelope {
-        ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
+    fn mock_rx() -> ReceiptWithLogIndex {
+        let receipt = ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
             Receipt::<Log> {
                 logs: vec![],
                 status: alloy_consensus::Eip658Value::Eip658(true),
                 cumulative_gas_used: 55,
             },
             Bloom::repeat_byte(b'a'),
-        ))
+        ));
+        ReceiptWithLogIndex {
+            receipt,
+            starting_log_index: 0,
+        }
     }
 
-    fn mock_block(number: u64, transactions: Vec<TxEnvelope>) -> Block {
+    fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block {
         Block {
             header: Header {
                 number,
@@ -298,7 +307,7 @@ mod tests {
         // Verify all transactions were indexed properly
         for block_num in 0..=5 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
-            let tx_hash = block.body.transactions[0].tx_hash();
+            let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.store.get(tx_hash).await.unwrap();
             assert!(indexed.is_some());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
@@ -369,7 +378,7 @@ mod tests {
         // Verify each block's transaction was indexed
         for block_num in 0..=10 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
-            let tx_hash = block.body.transactions[0].tx_hash();
+            let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.store.get(tx_hash).await.unwrap();
             assert!(indexed.is_some());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
@@ -419,7 +428,7 @@ mod tests {
         // Verify each block's transactions were indexed
         for block_num in 0..=5 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
-            let tx_hash = block.body.transactions[0].tx_hash();
+            let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.store.get(tx_hash).await.unwrap();
             assert!(indexed.is_some());
             assert_eq!(indexed.unwrap().header_subset.block_number, block_num);
@@ -469,6 +478,7 @@ mod tests {
 
             // Verify each transaction
             for tx in block.body.transactions {
+                let tx = tx.tx;
                 let indexed = index_archiver.store.get(tx.tx_hash()).await.unwrap();
                 assert!(indexed.is_some());
             }
@@ -500,7 +510,7 @@ mod tests {
         // Verify blocks before error were indexed
         for block_num in 0..=1 {
             let block = reader.get_block_by_number(block_num).await.unwrap();
-            let tx_hash = block.body.transactions[0].tx_hash();
+            let tx_hash = block.body.transactions[0].tx.tx_hash();
             let indexed = index_archiver.store.get(tx_hash).await.unwrap();
             assert!(indexed.is_some());
         }
@@ -539,7 +549,7 @@ mod tests {
         assert_eq!(num_txs, 1);
 
         // Verify indexed data
-        let tx_hash = block.body.transactions[0].tx_hash();
+        let tx_hash = block.body.transactions[0].tx.tx_hash();
         let indexed = index_archiver.store.get(tx_hash).await.unwrap();
         assert!(indexed.is_some());
 
@@ -556,7 +566,7 @@ mod tests {
 
         // Prepare empty block test data
         let block = mock_block(block_num, vec![]);
-        let receipts: Vec<ReceiptEnvelope> = vec![];
+        let receipts: Vec<ReceiptWithLogIndex> = vec![];
         let traces: Vec<Vec<u8>> = vec![];
 
         // Store test data in reader
@@ -603,7 +613,7 @@ mod tests {
 
         // Verify all transactions were indexed correctly
         for (i, tx) in block.body.transactions.iter().enumerate() {
-            let tx_hash = tx.tx_hash();
+            let tx_hash = tx.tx.tx_hash();
             let indexed = index_archiver.store.get(tx_hash).await.unwrap();
             assert!(indexed.is_some());
             let indexed = indexed.unwrap();

@@ -207,7 +207,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
-            .map(|tx| *tx.tx_hash())
+            .map(|tx| *tx.tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
             .get_call_frames(block_num)
@@ -243,7 +243,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
                     .body
                     .transactions
                     .iter()
-                    .map(|tx| *tx.tx_hash())
+                    .map(|tx| *tx.tx.tx_hash())
                     .collect::<Vec<_>>();
 
                 for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
@@ -309,7 +309,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
-            .map(|tx| *tx.tx_hash())
+            .map(|tx| *tx.tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
             .get_call_frames(block_num)
@@ -340,7 +340,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
                     .body
                     .transactions
                     .iter()
-                    .map(|tx| *tx.tx_hash())
+                    .map(|tx| *tx.tx.tx_hash())
                     .collect::<Vec<_>>();
 
                 for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {

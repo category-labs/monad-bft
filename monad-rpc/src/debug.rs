@@ -1,4 +1,5 @@
-use alloy_consensus::{Block, BlockBody};
+use alloy_consensus::{Block, BlockBody, ReceiptEnvelope};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
@@ -43,7 +44,10 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
     let transactions = triedb_env
         .get_transactions(block_num)
         .await
-        .map_err(JsonRpcError::internal_error)?;
+        .map_err(JsonRpcError::internal_error)?
+        .into_iter()
+        .map(|recovered_tx| recovered_tx.tx)
+        .collect();
 
     let block = Block {
         header: header.header,
@@ -101,10 +105,13 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     trace!("monad_debug_getRawReceipts: {params:?}");
     let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
-    let receipts = triedb_env
+    let receipts: Vec<ReceiptEnvelope> = triedb_env
         .get_receipts(block_num)
         .await
-        .map_err(JsonRpcError::internal_error)?;
+        .map_err(JsonRpcError::internal_error)?
+        .into_iter()
+        .map(|receipt_with_log_index| receipt_with_log_index.receipt)
+        .collect();
 
     let mut rlp_receipts = Vec::new();
     for receipt in receipts {
@@ -152,7 +159,7 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     };
 
     let mut res = Vec::new();
-    tx.encode(&mut res);
+    tx.tx.encode_2718(&mut res);
     Ok(hex::encode(&res))
 }
 

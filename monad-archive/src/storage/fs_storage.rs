@@ -110,7 +110,7 @@ impl IndexStore for FsStorage {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         let mut buf = Vec::with_capacity(1024);
         for data in kvs {
-            let key = data.tx.tx_hash().encode_hex();
+            let key = data.tx.tx.tx_hash().encode_hex();
             buf.clear();
             data.encode(&mut buf);
             fs::write(self.index.join(key), &buf).await?;

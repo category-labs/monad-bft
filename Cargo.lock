@@ -4905,6 +4905,7 @@ dependencies = [
  "actix-web",
  "actix-web-actors",
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-client",
@@ -5135,6 +5136,7 @@ dependencies = [
  "monad-state-backend",
  "monad-triedb",
  "monad-types",
+ "serde",
  "tracing",
 ]
 

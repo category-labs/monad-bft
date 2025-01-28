@@ -8,10 +8,11 @@ use std::{
 };
 
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::{keccak256, FixedBytes};
-use alloy_rlp::Decodable;
+use alloy_primitives::{keccak256, Address, FixedBytes};
+use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
 use futures::channel::oneshot;
 use monad_triedb::TriedbHandle;
+use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
 use crate::{
@@ -78,6 +79,19 @@ pub struct BlockHeader {
 pub struct TransactionLocation {
     pub tx_index: u64,
     pub block_num: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+pub struct ReceiptWithLogIndex {
+    pub receipt: ReceiptEnvelope,
+    pub starting_log_index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+
+pub struct TxEnvelopeWithSender {
+    pub tx: TxEnvelope,
+    pub sender: Address,
 }
 
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
@@ -151,20 +165,20 @@ pub trait Triedb {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<ReceiptEnvelope>, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<ReceiptWithLogIndex>, String>> + Send;
     fn get_receipts(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<ReceiptEnvelope>, String>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync;
     fn get_transaction(
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Option<TxEnvelope>, String>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<TxEnvelopeWithSender>, String>> + Send;
     fn get_transactions(
         &self,
         block_num: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<TxEnvelope>, String>> + Send + Sync;
+    ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync;
     fn get_block_header(
         &self,
         block_num: u64,
@@ -412,7 +426,7 @@ impl Triedb for TriedbEnv {
         &self,
         receipt_index: u64,
         block_num: u64,
-    ) -> Result<Option<ReceiptEnvelope>, String> {
+    ) -> Result<Option<ReceiptWithLogIndex>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -448,7 +462,7 @@ impl Triedb for TriedbEnv {
                 match result {
                     Some(rlp_receipt) => {
                         let mut rlp_buf = rlp_receipt.as_slice();
-                        let receipt = ReceiptEnvelope::decode(&mut rlp_buf)
+                        let receipt = ReceiptWithLogIndex::decode(&mut rlp_buf)
                             .map_err(|e| format!("decode receipt failed: {}", e))?;
                         Ok(Some(receipt))
                     }
@@ -462,7 +476,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptEnvelope>, String> {
+    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithLogIndex>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -490,7 +504,7 @@ impl Triedb for TriedbEnv {
                     let receipts = rlp_receipts
                         .iter()
                         .filter_map(|rlp_receipt| {
-                            ReceiptEnvelope::decode(&mut rlp_receipt.as_slice())
+                            ReceiptWithLogIndex::decode(&mut rlp_receipt.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP receipt: {e}");
                                     String::from("error decoding receipt")
@@ -513,7 +527,7 @@ impl Triedb for TriedbEnv {
         &self,
         txn_index: u64,
         block_num: u64,
-    ) -> Result<Option<TxEnvelope>, String> {
+    ) -> Result<Option<TxEnvelopeWithSender>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -547,7 +561,7 @@ impl Triedb for TriedbEnv {
 
                 match result {
                     Some(rlp_transaction) => {
-                        match TxEnvelope::decode(&mut rlp_transaction.as_slice()) {
+                        match TxEnvelopeWithSender::decode(&mut rlp_transaction.as_slice()) {
                             Ok(transaction) => Ok(Some(transaction)),
                             Err(e) => {
                                 warn!("Failed to decode RLP transaction: {e}");
@@ -565,7 +579,7 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TxEnvelope>, String> {
+    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TxEnvelopeWithSender>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -593,7 +607,7 @@ impl Triedb for TriedbEnv {
                     let signed_transactions = rlp_transactions
                         .iter()
                         .filter_map(|rlp_transaction| {
-                            TxEnvelope::decode(&mut rlp_transaction.as_slice())
+                            TxEnvelopeWithSender::decode(&mut rlp_transaction.as_slice())
                                 .map_err(|e| {
                                     error!("Failed to decode RLP transaction: {e}");
                                     String::from("error decoding transaction")

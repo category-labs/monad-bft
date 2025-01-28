@@ -1,13 +1,14 @@
 use core::str;
 
-use alloy_consensus::{Block as AlloyBlock, Header, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{Block as AlloyBlock, Header};
 use alloy_primitives::BlockHash;
 use alloy_rlp::{Decodable, Encodable};
 use futures::try_join;
+use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 use crate::prelude::*;
 
-pub type Block = AlloyBlock<TxEnvelope, Header>;
+pub type Block = AlloyBlock<TxEnvelopeWithSender, Header>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
@@ -56,7 +57,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
         self.read_block(block_num).await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
         let receipts_key = self.receipts_key(block_number);
 
         let rlp_receipts = self.store.read(&receipts_key).await?;
@@ -178,7 +179,7 @@ impl<Store: BlobStore> BlockDataArchive<Store> {
 
     pub async fn archive_receipts(
         &self,
-        receipts: Vec<ReceiptEnvelope>,
+        receipts: Vec<ReceiptWithLogIndex>,
         block_num: u64,
     ) -> Result<()> {
         // 1) Prepare the receipts upload

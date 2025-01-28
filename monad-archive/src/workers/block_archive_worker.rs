@@ -179,16 +179,17 @@ async fn checkpoint_latest(archiver: &BlockDataArchive, block_num: u64) {
 mod tests {
     use alloy_consensus::{
         BlockBody, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction,
-        TxEip1559, TxEnvelope,
+        TxEip1559,
     };
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
     use crate::storage::memory::MemoryStorage;
 
-    fn mock_tx() -> TxEnvelope {
+    fn mock_tx() -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
             nonce: 123,
             gas_limit: 456,
@@ -199,21 +200,28 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&B256::from(U256::from(123))).unwrap();
         let sig = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
         let tx = tx.into_signed(sig);
-        TxEnvelope::from(tx)
+        TxEnvelopeWithSender {
+            tx: tx.into(),
+            sender: signer.address(),
+        }
     }
 
-    fn mock_rx() -> ReceiptEnvelope {
-        ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
+    fn mock_rx() -> ReceiptWithLogIndex {
+        let receipt = ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
             Receipt::<Log> {
                 logs: vec![],
                 status: alloy_consensus::Eip658Value::Eip658(true),
                 cumulative_gas_used: 55,
             },
             Bloom::repeat_byte(b'a'),
-        ))
+        ));
+        ReceiptWithLogIndex {
+            receipt,
+            starting_log_index: 0,
+        }
     }
 
-    fn mock_block(number: u64, transactions: Vec<TxEnvelope>) -> Block {
+    fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block {
         Block {
             header: Header {
                 number,
@@ -229,7 +237,7 @@ mod tests {
 
     async fn mock_source(
         archive: &BlockDataArchive,
-        data: impl IntoIterator<Item = (Block, Vec<ReceiptEnvelope>, Vec<Vec<u8>>)>,
+        data: impl IntoIterator<Item = (Block, Vec<ReceiptWithLogIndex>, Vec<Vec<u8>>)>,
     ) {
         let mut max_block_num = u64::MIN;
         for (block, receipts, traces) in data {

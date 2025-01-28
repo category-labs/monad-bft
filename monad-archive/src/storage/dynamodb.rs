@@ -62,7 +62,7 @@ impl IndexStore for DynamoDBArchive {
     async fn bulk_put(&self, kvs: impl Iterator<Item = TxIndexedData>) -> Result<()> {
         let mut requests = Vec::with_capacity(kvs.size_hint().0);
         for data in kvs {
-            let hash = format!("{:x}", data.tx.tx_hash());
+            let hash = format!("{:x}", data.tx.tx.tx_hash());
             let mut attribute_map = HashMap::new();
             attribute_map.insert("tx_hash".to_owned(), AttributeValue::S(hash));
 

@@ -7,7 +7,7 @@ use std::{
 use alloy_consensus::{Block, TxEnvelope};
 use alloy_rpc_types::TransactionReceipt;
 use futures::{FutureExt, Stream};
-use monad_triedb_utils::triedb_env::{BlockHeader, Triedb};
+use monad_triedb_utils::triedb_env::{BlockHeader, Triedb, TxEnvelopeWithSender};
 use pin_project::pin_project;
 use tracing::error;
 
@@ -31,7 +31,10 @@ enum State {
         task: std::pin::Pin<
             Box<
                 dyn futures::Future<
-                        Output = Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError>,
+                        Output = Result<
+                            Vec<(TxEnvelopeWithSender, TransactionReceipt)>,
+                            JsonRpcError,
+                        >,
                     > + Send
                     + Sync,
             >,
@@ -48,7 +51,9 @@ pub trait BlockState: Send {
         &self,
         header: BlockHeader,
         block_num: u64,
-    ) -> impl Future<Output = Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError>> + Send + Sync;
+    ) -> impl Future<Output = Result<Vec<(TxEnvelopeWithSender, TransactionReceipt)>, JsonRpcError>>
+           + Send
+           + Sync;
 }
 
 #[derive(Clone)]
@@ -74,7 +79,7 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
         &self,
         header: BlockHeader,
         block_num: u64,
-    ) -> Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError> {
+    ) -> Result<Vec<(TxEnvelopeWithSender, TransactionReceipt)>, JsonRpcError> {
         let transactions = self
             .inner
             .get_transactions(block_num)
@@ -85,8 +90,13 @@ impl<T: Triedb + Send + Sync> BlockState for TrieDbBlockState<T> {
             .get_receipts(block_num)
             .await
             .map_err(JsonRpcError::internal_error)?;
-        let receipts =
-            block_receipts(&transactions, bloom_receipts, &header.header, header.hash).await?;
+        let receipts = block_receipts(
+            transactions.clone(),
+            bloom_receipts,
+            &header.header,
+            header.hash,
+        )
+        .await?;
 
         let result: Vec<_> = transactions.into_iter().zip(receipts).collect();
         Ok(result)
@@ -123,7 +133,7 @@ impl BlockState for MockBlockState {
         &self,
         _block_header: BlockHeader,
         _block_num: u64,
-    ) -> Result<Vec<(TxEnvelope, TransactionReceipt)>, JsonRpcError> {
+    ) -> Result<Vec<(TxEnvelopeWithSender, TransactionReceipt)>, JsonRpcError> {
         Ok(vec![])
     }
 }
@@ -149,7 +159,7 @@ impl<B: BlockState + Clone> BlockWatcher<B> {
 #[derive(Clone, Default)]
 pub struct BlockWithReceipts {
     pub block_header: BlockHeader,
-    pub transactions: Vec<TxEnvelope>,
+    pub transactions: Vec<TxEnvelopeWithSender>,
     pub receipts: Vec<TransactionReceipt>,
 }
 

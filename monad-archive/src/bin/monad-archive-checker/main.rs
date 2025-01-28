@@ -1,12 +1,12 @@
 #![allow(async_fn_in_trait)]
 
-use alloy_consensus::ReceiptEnvelope;
 use clap::Parser;
 use futures::{future::join_all, join};
 use monad_archive::{
     fault::{BlockCheckResult, Fault, FaultWriter},
     prelude::*,
 };
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tokio::sync::Semaphore;
 
 mod cli;
@@ -154,7 +154,7 @@ async fn latest_uploaded_block(readers: &[impl BlockDataReader], max_lag: &u64) 
 struct BlockData {
     pub bucket: String,
     pub block: Option<Block>,
-    pub receipts: Option<Vec<ReceiptEnvelope>>,
+    pub receipts: Option<Vec<ReceiptWithLogIndex>>,
     pub traces: Option<Vec<Vec<u8>>>,
 }
 

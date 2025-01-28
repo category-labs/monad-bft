@@ -8,7 +8,6 @@ pub mod triedb_reader;
 
 use std::collections::HashMap;
 
-use alloy_consensus::{ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{BlockHash, TxHash};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
@@ -18,6 +17,7 @@ use enum_dispatch::enum_dispatch;
 use eyre::Result;
 use fs_storage::FsStorage;
 use memory::MemoryStorage;
+use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 pub use rocksdb_storage::*;
 pub use s3::*;
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,7 @@ pub trait BlockDataReader: Clone {
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
     async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block>;
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptEnvelope>>;
+    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>>;
     async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>>;
 }
 
@@ -84,9 +84,9 @@ pub trait IndexStoreReader: Clone {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct TxIndexedData {
-    pub tx: TxEnvelope,
+    pub tx: TxEnvelopeWithSender,
     pub trace: Vec<u8>,
-    pub receipt: ReceiptEnvelope,
+    pub receipt: ReceiptWithLogIndex,
     pub header_subset: HeaderSubset,
 }
 
@@ -97,6 +97,7 @@ pub struct TxIndexedData {
 pub struct HeaderSubset {
     pub block_hash: BlockHash,
     pub block_number: u64,
+    pub block_timestamp: u64,
     pub tx_index: u64,
     pub gas_used: u128,
     pub base_fee_per_gas: Option<u64>,

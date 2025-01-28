@@ -1,4 +1,3 @@
-use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::hex::ToHexExt;
 use clap::Parser;
 use futures::{stream, StreamExt};
@@ -6,6 +5,7 @@ use monad_archive::{
     fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter},
     prelude::*,
 };
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tokio::join;
 
 mod cli;
@@ -169,7 +169,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         .body
         .transactions
         .iter()
-        .map(|tx| *tx.tx_hash())
+        .map(|tx| *tx.tx.tx_hash())
         .collect::<Vec<_>>();
 
     let gas_used_vec: Vec<_> = {
@@ -177,14 +177,15 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
         receipts
             .iter()
             .map(|r| {
-                let gas_used = r.cumulative_gas_used() - last;
-                last = r.cumulative_gas_used();
+                let gas_used = r.receipt.cumulative_gas_used() - last;
+                last = r.receipt.cumulative_gas_used();
                 gas_used
             })
             .collect()
     };
 
     let block_hash = block.header.hash_slow();
+    let block_timestamp = block.header.timestamp;
     let base_fee_per_gas = block.header.base_fee_per_gas;
     let expected = block
         .body
@@ -197,6 +198,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
             header_subset: HeaderSubset {
                 block_hash,
                 block_number: block_num,
+                block_timestamp,
                 tx_index: idx as u64,
                 gas_used: gas_used_vec[idx],
                 base_fee_per_gas,
@@ -210,7 +212,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
     let mut faults = Vec::new();
 
     for expected in expected {
-        let key = expected.tx.tx_hash();
+        let key = expected.tx.tx.tx_hash();
         let fetched = fetched.get(key);
         let Some(fetched) = fetched else {
             faults.push(Fault::MissingTxhash {
@@ -255,7 +257,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
 async fn get_block_data(
     reader: &ArchiveReader,
     block_num: u64,
-) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptEnvelope>), BlockCheckResult> {
+) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptWithLogIndex>), BlockCheckResult> {
     let (block, traces, receipts) = join!(
         reader.get_block_by_number(block_num),
         reader.get_block_traces(block_num),

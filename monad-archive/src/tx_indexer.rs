@@ -1,6 +1,6 @@
-use alloy_consensus::ReceiptEnvelope;
 use alloy_rlp::Encodable;
 use eyre::{bail, Result};
+use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 
 use crate::prelude::*;
 
@@ -34,9 +34,10 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
         &self,
         block: Block,
         traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptEnvelope>,
+        receipts: Vec<ReceiptWithLogIndex>,
     ) -> Result<()> {
         let block_number = block.header.number;
+        let block_timestamp = block.header.timestamp;
         let block_hash = block.header.hash_slow();
         let base_fee_per_gas = block.header.base_fee_per_gas;
 
@@ -56,8 +57,8 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
             .enumerate()
             .map(|(idx, ((tx, trace), receipt))| {
                 // calculate gas used by this tx
-                let gas_used = receipt.cumulative_gas_used() - prev_cumulative_gas_used;
-                prev_cumulative_gas_used = receipt.cumulative_gas_used();
+                let gas_used = receipt.receipt.cumulative_gas_used() - prev_cumulative_gas_used;
+                prev_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
 
                 TxIndexedData {
                     tx,
@@ -66,6 +67,7 @@ impl<Store: IndexStore> TxIndexArchiver<Store> {
                     header_subset: HeaderSubset {
                         block_hash,
                         block_number,
+                        block_timestamp,
                         tx_index: idx as u64,
                         gas_used,
                         base_fee_per_gas,
