@@ -10,6 +10,7 @@ use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::SinkExt;
+use metrics::Metrics;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
@@ -88,6 +89,7 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
         Ok(req) => req,
         Err(e) => {
             debug!("parse error: {e} {body:?}");
+
             return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
         }
     };
@@ -97,10 +99,13 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
             let Ok(request) = serde_json::from_value::<Request>(json_request) else {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
             };
-            ResponseWrapper::Single(Response::from_result(
-                request.id,
-                rpc_select(&app_state, &request.method, request.params).await,
-            ))
+
+            let rpc_result = rpc_select(&app_state, &request.method, request.params).await;
+            if let Some(metrics) = &app_state.metrics {
+                metrics.record_rpc_request(request.method, rpc_result.as_ref().err());
+            }
+
+            ResponseWrapper::Single(Response::from_result(request.id, rpc_result))
         }
         RequestWrapper::Batch(json_batch_request) => {
             if json_batch_request.is_empty()
@@ -116,9 +121,15 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
                         let Ok(request) = serde_json::from_value::<Request>(json_request) else {
                             return (Value::Null, Err(JsonRpcError::invalid_request()));
                         };
-                        let (state, id, method, params) =
-                            (app_state, request.id, request.method, request.params);
-                        (id, rpc_select(&state, &method, params).await)
+
+                        let rpc_result =
+                            rpc_select(&app_state, &request.method, request.params).await;
+
+                        if let Some(metrics) = &app_state.metrics {
+                            metrics.record_rpc_request(request.method, rpc_result.as_ref().err());
+                        }
+
+                        (request.id, rpc_result)
                     }
                 }))
                 .await
@@ -505,6 +516,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -525,6 +537,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
+        metrics: Option<Arc<Metrics>>,
     ) -> Self {
         Self {
             mempool_sender,
@@ -535,6 +548,7 @@ impl MonadRpcResources {
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
+            metrics,
         }
     }
 }
@@ -545,7 +559,7 @@ impl Actor for MonadRpcResources {
 
 pub fn create_app_with_metrics<S: 'static>(
     app_data: S,
-    with_metrics: metrics::Metrics,
+    with_metrics: Arc<metrics::Metrics>,
 ) -> App<
     impl ServiceFactory<
         ServiceRequest,
@@ -657,17 +671,6 @@ async fn main() -> std::io::Result<()> {
         _ => None,
     };
 
-    let resources = MonadRpcResources::new(
-        ipc_sender.clone(),
-        triedb_env,
-        archive_reader,
-        args.chain_id,
-        args.batch_request_limit,
-        args.max_response_size,
-        args.allow_unprotected_txs,
-        concurrent_requests_limiter,
-    );
-
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
         args.otel_endpoint.map(|endpoint| {
             let svc_name = match args.metrics_service_name {
@@ -685,9 +688,23 @@ async fn main() -> std::io::Result<()> {
             provider
         });
 
-    let with_metrics = meter_provider
-        .as_ref()
-        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+    let with_metrics = meter_provider.as_ref().map(|provider| {
+        Arc::new(metrics::Metrics::new(
+            provider.clone().meter("opentelemetry"),
+        ))
+    });
+
+    let resources = MonadRpcResources::new(
+        ipc_sender.clone(),
+        triedb_env,
+        archive_reader,
+        args.chain_id,
+        args.batch_request_limit,
+        args.max_response_size,
+        args.allow_unprotected_txs,
+        concurrent_requests_limiter,
+        with_metrics.clone(),
+    );
 
     // main server app
     match with_metrics {
@@ -767,6 +784,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            metrics: None,
         }))
         .await;
         (app, m)

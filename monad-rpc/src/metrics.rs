@@ -6,10 +6,12 @@ use actix_web::{
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use opentelemetry::{
-    metrics::{Histogram, Meter, UpDownCounter},
-    KeyValue,
+    metrics::{Counter, Histogram, Meter, UpDownCounter},
+    KeyValue, Value,
 };
 use opentelemetry_otlp::WithExportConfig;
+
+use crate::jsonrpc::JsonRpcError;
 
 pub struct MetricsMiddleware<S> {
     service: S,
@@ -97,6 +99,7 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 pub struct Metrics {
     request_duration: Histogram<f64>,
     active_requests: UpDownCounter<i64>,
+    rpc_requests: Counter<u64>,
 }
 
 impl Metrics {
@@ -112,10 +115,29 @@ impl Metrics {
             .with_description("Number of concurrent http requests that are in-flight")
             .init();
 
+        let rpc_requests = meter
+            .u64_counter("monad.rpc.rpc_request")
+            .with_description("Number of rpc requests")
+            .init();
+
         Self {
             request_duration,
             active_requests,
+            rpc_requests,
         }
+    }
+
+    pub fn record_rpc_request(&self, method: String, error: Option<&JsonRpcError>) {
+        let mut attributes = vec![KeyValue::new("method", method)];
+
+        if let Some(error) = error {
+            attributes.push(KeyValue::new(
+                "error",
+                Value::String(error.message.clone().into()),
+            ));
+        };
+
+        self.rpc_requests.add(1, &attributes);
     }
 }
 

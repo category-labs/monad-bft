@@ -116,6 +116,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            metrics: None,
         };
         (
             MonadRpcResourcesState { ipc_receiver },
