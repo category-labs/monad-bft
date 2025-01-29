@@ -5089,6 +5089,7 @@ dependencies = [
  "monad-state-backend",
  "monad-triedb",
  "monad-types",
+ "opentelemetry",
  "tracing",
 ]
 

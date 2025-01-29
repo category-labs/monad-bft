@@ -4,6 +4,7 @@ use actix::prelude::*;
 use actix_http::ws::{Message as WebsocketMessage, ProtocolError};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
+use monad_triedb_utils::triedb_env::Triedb;
 use tracing::debug;
 
 use crate::MonadRpcResources;
@@ -15,10 +16,10 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 #[rtype(result = "()")]
 pub struct Disconnect {}
 
-pub async fn handler(
+pub async fn handler<T: Triedb + Unpin + Clone>(
     req: HttpRequest,
     stream: web::Payload,
-    app_state: web::Data<MonadRpcResources>,
+    app_state: web::Data<MonadRpcResources<T>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     debug!("ws_handler {:?}", &req);
     ws::start(
@@ -31,12 +32,12 @@ pub async fn handler(
     )
 }
 
-pub struct WebsocketSession {
+pub struct WebsocketSession<T: Triedb + Unpin + 'static> {
     pub heartbeat: Instant,
-    pub server: Addr<MonadRpcResources>,
+    pub server: Addr<MonadRpcResources<T>>,
 }
 
-impl WebsocketSession {
+impl<T: Triedb + Unpin + 'static> WebsocketSession<T> {
     fn heartbeat(&self, ctx: &mut ws::WebsocketContext<Self>) {
         ctx.run_interval(HEARTBEAT_INTERVAL, |actor, ctx| {
             debug!("heartbeat");
@@ -54,7 +55,7 @@ impl WebsocketSession {
     }
 }
 
-impl Actor for WebsocketSession {
+impl<T: Triedb + 'static + Unpin> Actor for WebsocketSession<T> {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -67,7 +68,9 @@ impl Actor for WebsocketSession {
     }
 }
 
-impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession {
+impl<T: Triedb + 'static + Unpin> StreamHandler<Result<WebsocketMessage, ProtocolError>>
+    for WebsocketSession<T>
+{
     fn handle(&mut self, item: Result<WebsocketMessage, ProtocolError>, ctx: &mut Self::Context) {
         match item {
             Ok(message) => {
@@ -101,13 +104,14 @@ mod tests {
     use alloy_consensus::TxEnvelope;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
+    use monad_triedb_utils::triedb_env::TriedbEnv;
     use tokio::sync::Semaphore;
 
     use crate::{create_app, tests::MonadRpcResourcesState, MonadRpcResources};
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
-        let resources = MonadRpcResources {
+        let resources = MonadRpcResources::<TriedbEnv> {
             mempool_sender: ipc_sender,
             triedb_reader: None,
             archive_reader: None,

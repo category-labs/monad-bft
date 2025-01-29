@@ -12,7 +12,10 @@ use eth_json_types::serialize_result;
 use futures::SinkExt;
 use metrics::Metrics;
 use monad_archive::archive_reader::ArchiveReader;
-use monad_triedb_utils::triedb_env::TriedbEnv;
+use monad_triedb_utils::{
+    metrics::MetricsWrapper,
+    triedb_env::{Triedb, TriedbEnv, TriedbPath},
+};
 use opentelemetry::metrics::MeterProvider;
 use serde_json::Value;
 use tokio::sync::Semaphore;
@@ -84,7 +87,10 @@ mod trace_handlers;
 mod vpool;
 mod websocket;
 
-async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
+async fn rpc_handler<T: Triedb + TriedbPath>(
+    body: bytes::Bytes,
+    app_state: web::Data<MonadRpcResources<T>>,
+) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -170,8 +176,8 @@ async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>
     HttpResponse::Ok().json(&response)
 }
 
-async fn rpc_select(
-    app_state: &MonadRpcResources,
+async fn rpc_select<T: Triedb + TriedbPath>(
+    app_state: &MonadRpcResources<T>,
     method: &str,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -507,9 +513,9 @@ async fn rpc_select(
 }
 
 #[derive(Clone)]
-struct MonadRpcResources {
+struct MonadRpcResources<T: Triedb + 'static> {
     mempool_sender: flume::Sender<TxEnvelope>,
-    triedb_reader: Option<TriedbEnv>,
+    triedb_reader: Option<T>,
     archive_reader: Option<ArchiveReaderType>,
     chain_id: u64,
     batch_request_limit: u16,
@@ -519,7 +525,7 @@ struct MonadRpcResources {
     metrics: Option<Arc<Metrics>>,
 }
 
-impl Handler<Disconnect> for MonadRpcResources {
+impl<T: Triedb + 'static + Unpin> Handler<Disconnect> for MonadRpcResources<T> {
     type Result = ();
 
     fn handle(&mut self, _msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
@@ -527,10 +533,10 @@ impl Handler<Disconnect> for MonadRpcResources {
     }
 }
 
-impl MonadRpcResources {
+impl<T: Triedb> MonadRpcResources<T> {
     pub fn new(
         mempool_sender: flume::Sender<TxEnvelope>,
-        triedb_reader: Option<TriedbEnv>,
+        triedb_reader: Option<T>,
         archive_reader: Option<ArchiveReaderType>,
         chain_id: u64,
         batch_request_limit: u16,
@@ -553,12 +559,12 @@ impl MonadRpcResources {
     }
 }
 
-impl Actor for MonadRpcResources {
+impl<T: Triedb + 'static + Unpin> Actor for MonadRpcResources<T> {
     type Context = Context<Self>;
 }
 
-pub fn create_app_with_metrics<S: 'static>(
-    app_data: S,
+pub fn create_app_with_metrics(
+    app_data: MonadRpcResources<MetricsWrapper<TriedbEnv>>,
     with_metrics: Arc<metrics::Metrics>,
 ) -> App<
     impl ServiceFactory<
@@ -573,12 +579,15 @@ pub fn create_app_with_metrics<S: 'static>(
         .app_data(web::JsonConfig::default().limit(8192))
         .app_data(web::Data::new(app_data))
         .wrap(with_metrics)
-        .service(web::resource("/").route(web::post().to(rpc_handler)))
-        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+        .service(web::resource("/").route(web::post().to(rpc_handler::<MetricsWrapper<TriedbEnv>>)))
+        .service(
+            web::resource("/ws/")
+                .route(web::get().to(websocket::handler::<MetricsWrapper<TriedbEnv>>)),
+        )
 }
 
-pub fn create_app<S: 'static>(
-    app_data: S,
+pub fn create_app(
+    app_data: MonadRpcResources<TriedbEnv>,
 ) -> App<
     impl ServiceFactory<
         ServiceRequest,
@@ -591,8 +600,8 @@ pub fn create_app<S: 'static>(
     App::new()
         .app_data(web::JsonConfig::default().limit(8192))
         .app_data(web::Data::new(app_data))
-        .service(web::resource("/").route(web::post().to(rpc_handler)))
-        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
+        .service(web::resource("/").route(web::post().to(rpc_handler::<TriedbEnv>)))
+        .service(web::resource("/ws/").route(web::get().to(websocket::handler::<TriedbEnv>)))
 }
 
 #[tokio::main]
@@ -694,30 +703,47 @@ async fn main() -> std::io::Result<()> {
         ))
     });
 
-    let resources = MonadRpcResources::new(
-        ipc_sender.clone(),
-        triedb_env,
-        archive_reader,
-        args.chain_id,
-        args.batch_request_limit,
-        args.max_response_size,
-        args.allow_unprotected_txs,
-        concurrent_requests_limiter,
-        with_metrics.clone(),
-    );
-
     // main server app
     match with_metrics {
         Some(metrics) => {
+            let triedb_with_metrics = meter_provider.as_ref().map(|provider| {
+                MetricsWrapper::new(triedb_env.unwrap(), provider.clone().meter("opentelemetry"))
+            });
+            let resources = MonadRpcResources::new(
+                ipc_sender.clone(),
+                triedb_with_metrics.clone(),
+                archive_reader,
+                args.chain_id,
+                args.batch_request_limit,
+                args.max_response_size,
+                args.allow_unprotected_txs,
+                concurrent_requests_limiter,
+                Some(metrics.clone()),
+            );
+
             HttpServer::new(move || create_app_with_metrics(resources.clone(), metrics.clone()))
                 .bind((args.rpc_addr, args.rpc_port))?
                 .shutdown_timeout(1)
                 .run()
         }
-        None => HttpServer::new(move || create_app(resources.clone()))
-            .bind((args.rpc_addr, args.rpc_port))?
-            .shutdown_timeout(1)
-            .run(),
+        None => {
+            let resources = MonadRpcResources::new(
+                ipc_sender.clone(),
+                triedb_env,
+                archive_reader,
+                args.chain_id,
+                args.batch_request_limit,
+                args.max_response_size,
+                args.allow_unprotected_txs,
+                concurrent_requests_limiter,
+                None,
+            );
+
+            HttpServer::new(move || create_app(resources.clone()))
+                .bind((args.rpc_addr, args.rpc_port))?
+                .shutdown_timeout(1)
+                .run()
+        }
     }
     .await?;
 
@@ -775,7 +801,7 @@ mod tests {
     ) {
         let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
-        let app = test::init_service(create_app(MonadRpcResources {
+        let app = test::init_service(create_app(MonadRpcResources::<TriedbEnv> {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,

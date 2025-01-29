@@ -17,6 +17,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+opentelemetry = { workspace = true, features = ["metrics"]}
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]
