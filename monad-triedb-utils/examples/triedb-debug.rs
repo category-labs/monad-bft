@@ -35,6 +35,10 @@ enum Commands {
         seq_num: u64,
         proposed_round: Option<u64>,
     },
+    Transactions {
+        seq_num: u64,
+        proposed_round: Option<u64>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -42,6 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let reader = TriedbReader::try_new(&args.triedb_path)
         .unwrap_or_else(|| panic!("failed to open triedb path: {:?}", &args.triedb_path));
+
+    let start = std::time::Instant::now();
 
     match args.command {
         Commands::Account {
@@ -103,7 +109,34 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             println!("version={:?}, eth_header={:?}", version, maybe_eth_header);
         }
+        Commands::Transactions {
+            seq_num,
+            proposed_round,
+        } => {
+            let seq_num = SeqNum(seq_num);
+            let version = match proposed_round {
+                // hack because subcommand doesn't generate option properly
+                None | Some(0) => Version::Finalized,
+                Some(round) => Version::Proposal(Round(round)),
+            };
+
+            // txn_index set to None to indiciate return all transactions
+            let (key, key_len_nibbles) = create_triedb_key(version, KeyInput::TxIndex(None));
+            let maybe_transactions = unsafe {
+                reader
+                    .handle()
+                    .traverse_triedb(&key, key_len_nibbles, seq_num.0)
+            };
+
+            println!(
+                "version={:?}, num_transactions={:?}",
+                version,
+                maybe_transactions.map(|txs| txs.len())
+            );
+        }
     };
+
+    println!("elapsed={:?}", start.elapsed());
 
     Ok(())
 }
