@@ -149,9 +149,8 @@ impl From<FilterError> for JsonRpcError {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(transparent)]
 pub struct MonadEthGetLogsParams {
-    filters: Vec<Filter>,
+    filters: Filter,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -168,142 +167,132 @@ pub async fn monad_eth_getLogs<T: Triedb>(
 
     let mut logs = Vec::new();
 
-    for req in p.filters {
-        let filter: Filter = req.clone();
-        let (from_block, to_block) = match req.block_option {
-            FilterBlockOption::Range {
-                from_block,
-                to_block,
-            } => {
-                let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
-                    match block {
-                        None => BlockTags::default(),
-                        Some(b) => match b {
-                            BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
-                            _ => BlockTags::Latest,
-                        },
-                    }
-                };
-                let from_block_tag = into_block_tag(from_block);
-                let to_block_tag = into_block_tag(to_block);
+    let filter = p.filters;
+    let (from_block, to_block) = match filter.block_option {
+        FilterBlockOption::Range {
+            from_block,
+            to_block,
+        } => {
+            let into_block_tag = |block: Option<BlockNumberOrTag>| -> BlockTags {
+                match block {
+                    None => BlockTags::default(),
+                    Some(b) => match b {
+                        BlockNumberOrTag::Number(q) => BlockTags::Number(Quantity(q)),
+                        _ => BlockTags::Latest,
+                    },
+                }
+            };
+            let from_block_tag = into_block_tag(from_block);
+            let to_block_tag = into_block_tag(to_block);
 
-                let from_block = get_block_num_from_tag(triedb_env, from_block_tag)
-                    .await
-                    .map_err(|_| {
-                        JsonRpcError::internal_error(
-                            "could not get starting block range".to_string(),
-                        )
-                    })?;
-                let to_block = get_block_num_from_tag(triedb_env, to_block_tag)
-                    .await
-                    .map_err(|_| {
-                        JsonRpcError::internal_error("could not get ending block range".to_string())
-                    })?;
-                (from_block, to_block)
-            }
-            FilterBlockOption::AtBlockHash(block_hash) => {
-                let latest_block_num =
-                    get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+            let from_block = get_block_num_from_tag(triedb_env, from_block_tag)
+                .await
+                .map_err(|_| {
+                    JsonRpcError::internal_error("could not get starting block range".to_string())
+                })?;
+            let to_block = get_block_num_from_tag(triedb_env, to_block_tag)
+                .await
+                .map_err(|_| {
+                    JsonRpcError::internal_error("could not get ending block range".to_string())
+                })?;
+            (from_block, to_block)
+        }
+        FilterBlockOption::AtBlockHash(block_hash) => {
+            let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
 
-                let block = triedb_env
-                    .get_block_number_by_hash(block_hash.into(), latest_block_num)
-                    .await
-                    .map_err(|_| {
-                        JsonRpcError::internal_error("could not get block hash".to_string())
-                    })?;
-                let block_num = match block {
-                    Some(block_num) => block_num,
-                    None => {
-                        // retry from archive reader if block hash not available in triedb
-                        if let Some(archive_reader) = archive_reader {
-                            if let Ok(block) = archive_reader.get_block_by_hash(&block_hash).await {
-                                block.header.number
-                            } else {
-                                return Ok(MonadEthGetLogsResult(vec![]));
-                            }
+            let block = triedb_env
+                .get_block_number_by_hash(block_hash.into(), latest_block_num)
+                .await
+                .map_err(|_| {
+                    JsonRpcError::internal_error("could not get block hash".to_string())
+                })?;
+            let block_num = match block {
+                Some(block_num) => block_num,
+                None => {
+                    // retry from archive reader if block hash not available in triedb
+                    if let Some(archive_reader) = archive_reader {
+                        if let Ok(block) = archive_reader.get_block_by_hash(&block_hash).await {
+                            block.header.number
                         } else {
                             return Ok(MonadEthGetLogsResult(vec![]));
                         }
+                    } else {
+                        return Ok(MonadEthGetLogsResult(vec![]));
                     }
-                };
-                (block_num, block_num)
-            }
+                }
+            };
+            (block_num, block_num)
+        }
+    };
+
+    if from_block > to_block {
+        return Err(FilterError::InvalidBlockRange.into());
+    }
+    if to_block - from_block > 1000 {
+        return Err(FilterError::RangeTooLarge.into());
+    }
+
+    let filtered_params = FilteredParams::new(Some(filter.clone()));
+
+    for block_num in from_block..=to_block {
+        // TODO: check block's log_bloom against the filter
+        let receipts: Vec<TransactionReceipt> = if let Some(header) = triedb_env
+            .get_block_header(block_num)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+        {
+            // try fetching from triedb
+            let transactions = triedb_env
+                .get_transactions(block_num)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            let bloom_receipts = triedb_env
+                .get_receipts(block_num)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            block_receipts(&transactions, bloom_receipts, &header.header, header.hash).await?
+        } else if let Some(archive_reader) = archive_reader {
+            // fallback to archive reader if header not available in triedb
+            let block = archive_reader
+                .get_block_by_number(block_num)
+                .await
+                .map_err(|_| JsonRpcError::internal_error("error getting block header".into()))?;
+            let bloom_receipts = archive_reader
+                .get_block_receipts(block_num)
+                .await
+                .map_err(|_| JsonRpcError::internal_error("error getting block receipts".into()))?;
+            block_receipts(
+                &block.body.transactions,
+                bloom_receipts,
+                &block.header,
+                block.header.hash_slow(),
+            )
+            .await?
+        } else {
+            return Err(JsonRpcError::internal_error(
+                "error getting block header".into(),
+            ));
         };
 
-        if from_block > to_block {
-            return Err(FilterError::InvalidBlockRange.into());
-        }
-        if to_block - from_block > 1000 {
-            return Err(FilterError::RangeTooLarge.into());
-        }
+        let mut receipt_logs: Vec<Log> = receipts
+            .into_iter()
+            .flat_map(|receipt| {
+                let logs: Vec<Log> = receipt
+                    .inner
+                    .logs()
+                    .iter()
+                    .filter(|log: &&Log| {
+                        !(filtered_params.filter.is_some()
+                            && (!filtered_params.filter_address(&log.address())
+                                || !filtered_params.filter_topics(log.topics())))
+                    })
+                    .cloned()
+                    .collect();
+                logs
+            })
+            .collect();
 
-        let filtered_params = FilteredParams::new(Some(filter.clone()));
-
-        for block_num in from_block..=to_block {
-            // TODO: check block's log_bloom against the filter
-            let receipts: Vec<TransactionReceipt> = if let Some(header) = triedb_env
-                .get_block_header(block_num)
-                .await
-                .map_err(JsonRpcError::internal_error)?
-            {
-                // try fetching from triedb
-                let transactions = triedb_env
-                    .get_transactions(block_num)
-                    .await
-                    .map_err(JsonRpcError::internal_error)?;
-                let bloom_receipts = triedb_env
-                    .get_receipts(block_num)
-                    .await
-                    .map_err(JsonRpcError::internal_error)?;
-                block_receipts(&transactions, bloom_receipts, &header.header, header.hash).await?
-            } else if let Some(archive_reader) = archive_reader {
-                // fallback to archive reader if header not available in triedb
-                let block = archive_reader
-                    .get_block_by_number(block_num)
-                    .await
-                    .map_err(|_| {
-                        JsonRpcError::internal_error("error getting block header".into())
-                    })?;
-                let bloom_receipts =
-                    archive_reader
-                        .get_block_receipts(block_num)
-                        .await
-                        .map_err(|_| {
-                            JsonRpcError::internal_error("error getting block receipts".into())
-                        })?;
-                block_receipts(
-                    &block.body.transactions,
-                    bloom_receipts,
-                    &block.header,
-                    block.header.hash_slow(),
-                )
-                .await?
-            } else {
-                return Err(JsonRpcError::internal_error(
-                    "error getting block header".into(),
-                ));
-            };
-
-            let mut receipt_logs: Vec<Log> = receipts
-                .into_iter()
-                .flat_map(|receipt| {
-                    let logs: Vec<Log> = receipt
-                        .inner
-                        .logs()
-                        .iter()
-                        .filter(|log: &&Log| {
-                            !(filtered_params.filter.is_some()
-                                && (!filtered_params.filter_address(&log.address())
-                                    || !filtered_params.filter_topics(log.topics())))
-                        })
-                        .cloned()
-                        .collect();
-                    logs
-                })
-                .collect();
-
-            logs.append(&mut receipt_logs);
-        }
+        logs.append(&mut receipt_logs);
     }
 
     Ok(MonadEthGetLogsResult(
