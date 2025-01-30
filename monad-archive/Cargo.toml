@@ -25,7 +25,7 @@ bench = false
 
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
-alloy-consensus = { workspace = true }
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-signer = { workspace = true }

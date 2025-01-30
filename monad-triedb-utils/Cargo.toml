@@ -21,7 +21,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-serde = { workspace = true, features = ["derive", "rc"] }
+serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]

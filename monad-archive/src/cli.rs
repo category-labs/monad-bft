@@ -192,9 +192,15 @@ impl AwsCliArgs {
     }
 
     pub async fn build_index_store(&self, metrics: &Metrics) -> DynamoDBArchive {
+        let config = &get_aws_config(self.region.clone()).await;
+
         DynamoDBArchive::new(
+            BlockDataArchive::new(
+                S3Bucket::new(self.bucket.clone(), config, metrics.clone()).into(),
+            )
+            .into(),
             self.bucket.clone(),
-            &get_aws_config(self.region.clone()).await,
+            config,
             self.concurrency,
             metrics.clone(),
         )

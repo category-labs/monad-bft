@@ -36,16 +36,22 @@ impl<BStore: BlockDataReader, IStore: IndexStoreReader> ArchiveReader<BStore, IS
         concurrency: usize,
     ) -> Result<ArchiveReader<BlockDataArchive, CloudProxyReader>> {
         let url = url::Url::parse(url)?;
-        let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket.clone(), concurrency)?;
         let block_data_reader = BlockDataArchive::new(
             AwsCliArgs {
-                bucket,
+                bucket: bucket.clone(),
                 concurrency,
                 region,
             }
             .build_blob_store(&Metrics::none())
             .await,
         );
+        let cloud_proxy_reader = CloudProxyReader::new(
+            block_data_reader.clone().into(),
+            api_key,
+            url,
+            bucket,
+            concurrency,
+        )?;
 
         Ok(ArchiveReader::new(block_data_reader, cloud_proxy_reader))
     }

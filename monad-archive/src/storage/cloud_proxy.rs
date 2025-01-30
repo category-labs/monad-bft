@@ -1,7 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
 use alloy_primitives::TxHash;
-use alloy_rlp::Decodable;
 use base64::Engine;
 use eyre::{Context, Result};
 use futures::{StreamExt, TryStreamExt};
@@ -13,15 +12,22 @@ use super::retry_strategy;
 use crate::prelude::*;
 
 #[derive(Clone)]
-pub struct CloudProxyReader {
+pub struct CloudProxyReader<BDR = BlockDataReaderErased> {
+    pub block_data_reader: BDR,
     pub client: reqwest::Client,
     pub url: Url,
     pub table: String,
     pub concurrency: usize,
 }
 
-impl CloudProxyReader {
-    pub fn new(api_key: &str, url: Url, table: String, concurrency: usize) -> Result<Self> {
+impl<BDR: BlockDataReader> CloudProxyReader<BDR> {
+    pub fn new(
+        block_data_reader: BDR,
+        api_key: &str,
+        url: Url,
+        table: String,
+        concurrency: usize,
+    ) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::with_capacity(1);
         headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
         let client = reqwest::ClientBuilder::new()
@@ -29,6 +35,7 @@ impl CloudProxyReader {
             .timeout(Duration::from_secs(2))
             .build()?;
         Ok(Self {
+            block_data_reader,
             client,
             url,
             table,
@@ -43,7 +50,7 @@ struct ProxyResponse {
     data: String,
 }
 
-impl IndexStoreReader for CloudProxyReader {
+impl<BDR: BlockDataReader> IndexStoreReader for CloudProxyReader<BDR> {
     async fn bulk_get(&self, keys: &[TxHash]) -> Result<HashMap<TxHash, TxIndexedData>> {
         // TODO: real bulk requests
         futures::stream::iter(keys)
@@ -75,8 +82,12 @@ impl IndexStoreReader for CloudProxyReader {
         let resp: ProxyResponse = resp.json().await?;
         let bytes = base64::prelude::BASE64_STANDARD.decode(resp.data)?;
 
-        let data = TxIndexedData::decode(&mut bytes.as_slice())
-            .wrap_err("Failed to rlp decode TxIndexedData from cloud proxy")?;
-        Ok(Some(data))
+        let decoded = IndexDataStorageRepr::decode(&bytes)
+            .wrap_err("Failed to decode index data repr in CloudProxyReader")?;
+        let latest = decoded
+            .convert(&self.block_data_reader)
+            .await
+            .wrap_err("Failed to convert to latest index data repr in CloudProxyReader")?;
+        Ok(Some(latest))
     }
 }
