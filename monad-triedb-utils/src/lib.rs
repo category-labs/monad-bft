@@ -31,6 +31,7 @@ use crate::{
 
 pub mod decode;
 pub mod key;
+pub mod mock_triedb;
 pub mod triedb_env;
 
 const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;

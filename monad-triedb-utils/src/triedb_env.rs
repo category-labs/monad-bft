@@ -24,11 +24,11 @@ use crate::{
     key::{create_triedb_key, KeyInput, Version},
 };
 
-type EthAddress = [u8; 20];
-type EthStorageKey = [u8; 32];
-type EthCodeHash = [u8; 32];
-type EthTxHash = [u8; 32];
-type EthBlockHash = [u8; 32];
+pub type EthAddress = [u8; 20];
+pub type EthStorageKey = [u8; 32];
+pub type EthCodeHash = [u8; 32];
+pub type EthTxHash = [u8; 32];
+pub type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
     SyncRequest(SyncRequest),
@@ -67,7 +67,7 @@ struct AsyncRequest {
     block_num: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Account {
     pub nonce: u64,
     pub balance: u128,

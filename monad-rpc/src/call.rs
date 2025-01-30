@@ -268,6 +268,41 @@ impl TryFrom<CallRequest> for TxEnvelope {
     }
 }
 
+/// Populate gas limit and gas prices
+pub async fn fill_gas_params<T: Triedb>(
+    triedb_env: &T,
+    tx: &mut CallRequest,
+    header: &mut Header,
+    state_overrides: &StateOverrideSet,
+) -> Result<(), JsonRpcError> {
+    // Geth checks that the sender can pay for gas if gas price is populated.
+    // Set the base fee to zero if gas price is not populated.
+    // https://github.com/ethereum/go-ethereum/pull/20783
+    match tx.gas_price_details {
+        GasPriceDetails::Legacy { gas_price: _ }
+        | GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(_),
+            ..
+        } => {
+            tx.fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
+
+            if tx.gas.is_none() {
+                let allowance =
+                    sender_gas_allowance(triedb_env, header, tx, state_overrides).await?;
+                tx.gas = Some(U256::from(allowance));
+            }
+        }
+        _ => {
+            header.base_fee_per_gas = Some(0);
+            tx.fill_gas_prices(U256::ZERO)?;
+            if tx.gas.is_none() {
+                tx.gas = Some(U256::from(header.gas_limit));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
 pub async fn sender_gas_allowance<T: Triedb>(
     triedb_env: &T,
@@ -365,38 +400,13 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath + std::fmt::Debug>(
         }
     };
 
-    // Geth checks that the sender can pay for gas if gas price is populated.
-    // Set the base fee to zero if gas price is not populated.
-    // https://github.com/ethereum/go-ethereum/pull/20783
-    match params.transaction.gas_price_details {
-        GasPriceDetails::Legacy { gas_price: _ }
-        | GasPriceDetails::Eip1559 {
-            max_fee_per_gas: Some(_),
-            ..
-        } => {
-            params.transaction.fill_gas_prices(U256::from(
-                header.header.base_fee_per_gas.unwrap_or_default(),
-            ))?;
-
-            if params.transaction.gas.is_none() {
-                let allowance = sender_gas_allowance(
-                    triedb_env,
-                    &header.header,
-                    &params.transaction,
-                    &params.state_overrides,
-                )
-                .await?;
-                params.transaction.gas = Some(U256::from(allowance));
-            }
-        }
-        _ => {
-            header.header.base_fee_per_gas = Some(0);
-            params.transaction.fill_gas_prices(U256::ZERO)?;
-            if params.transaction.gas.is_none() {
-                params.transaction.gas = Some(U256::from(header.header.gas_limit));
-            }
-        }
-    }
+    fill_gas_params(
+        triedb_env,
+        &mut params.transaction,
+        &mut header.header,
+        &params.state_overrides,
+    )
+    .await?;
 
     if params.transaction.chain_id.is_none() {
         params.transaction.chain_id = Some(U64::from(chain_id));
@@ -430,9 +440,13 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath + std::fmt::Debug>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::U256;
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, U256};
+    use monad_cxx::StateOverrideSet;
+    use monad_triedb_utils::mock_triedb::MockTriedb;
     use serde_json::json;
 
+    use super::{fill_gas_params, CallRequest, GasPriceDetails};
     use crate::{jsonrpc, tests::init_server};
 
     #[test]
@@ -536,5 +550,77 @@ mod tests {
 
         let resp: jsonrpc::Response = actix_test::call_and_read_body_json(&app, req).await;
         assert!(resp.result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fill_gas_params() {
+        let mock_triedb = MockTriedb {};
+
+        // when gas price is not populated, then
+        // (1) header base fee is set to zero and (2) tx gas limit is set to block gas limit
+        let mut call_request = CallRequest::default();
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let state_overrides = StateOverrideSet::default();
+
+        let result = fill_gas_params(
+            &mock_triedb,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(call_request.gas, Some(U256::from(300_000_000)));
+        assert_eq!(header.base_fee_per_gas, Some(0));
+
+        // when gas price is populated but sender address is not populated, then
+        // (1) tx gas limit is set to block gas limit
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(1_000_000),
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(call_request.gas, Some(U256::from(300_000_000)));
+
+        // when gas price is populated and sender address is populated, then
+        // (1) check whether user has sufficient balance
+        let mut call_request = CallRequest {
+            from: Some(Address::default()),
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(1_000_000),
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+        )
+        .await;
+        assert!(result.is_err());
     }
 }

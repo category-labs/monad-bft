@@ -1,5 +1,3 @@
-use std::cmp::min;
-
 use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{FixedBytes, TxKind};
 use alloy_rlp::Decodable;
@@ -37,12 +35,7 @@ pub fn parse_tx_content(
     let tx = tx.tx;
 
     // effective gas price is calculated according to eth json rpc specification
-    let base_fee: u128 = base_fee.unwrap_or_default().into();
-    let effective_gas_price = base_fee
-        + min(
-            tx.max_fee_per_gas() - base_fee,
-            tx.max_priority_fee_per_gas().unwrap_or_default(),
-        );
+    let effective_gas_price = tx.effective_gas_price(base_fee);
 
     Ok(Transaction {
         inner: tx,
@@ -69,14 +62,9 @@ pub fn parse_tx_receipt(
     let tx = tx.tx;
     let starting_log_index = receipt.starting_log_index;
     let receipt = receipt.receipt;
-    let base_fee_per_gas = base_fee_per_gas.unwrap_or_default() as u128;
 
     // effective gas price is calculated according to eth json rpc specification
-    let effective_gas_price = base_fee_per_gas
-        + min(
-            tx.max_fee_per_gas() - base_fee_per_gas,
-            tx.max_priority_fee_per_gas().unwrap_or_default(),
-        );
+    let effective_gas_price = tx.effective_gas_price(base_fee_per_gas);
 
     let block_hash = Some(block_hash);
     let block_number = Some(block_num);
@@ -102,15 +90,20 @@ pub fn parse_tx_receipt(
         _ => None,
     };
 
-    // TODO: support other transaction types
-    let inner_receipt: ReceiptEnvelope<Log> = ReceiptEnvelope::Eip1559(ReceiptWithBloom {
+    let receipt_with_bloom = ReceiptWithBloom {
         receipt: Receipt {
             status: receipt.status().into(),
             cumulative_gas_used: receipt.cumulative_gas_used(),
             logs,
         },
         logs_bloom: *receipt.logs_bloom(),
-    });
+    };
+    let inner_receipt: ReceiptEnvelope<Log> = match receipt {
+        ReceiptEnvelope::Legacy(_) => ReceiptEnvelope::Legacy(receipt_with_bloom),
+        ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
+        ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
+        _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
+    };
 
     let tx_receipt = TransactionReceipt {
         inner: inner_receipt,

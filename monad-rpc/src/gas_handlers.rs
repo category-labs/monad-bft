@@ -14,7 +14,7 @@ use tracing::trace;
 
 use crate::{
     block_handlers::get_block_num_from_tag,
-    call::{sender_gas_allowance, CallRequest},
+    call::{fill_gas_params, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -166,7 +166,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     };
 
     let block_number = get_block_num_from_tag(triedb_env, params.block).await?;
-    let header = match triedb_env
+    let mut header = match triedb_env
         .get_block_header(block_number)
         .await
         .map_err(JsonRpcError::internal_error)?
@@ -179,20 +179,13 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         }
     };
 
-    params.tx.fill_gas_prices(U256::from(
-        header.header.base_fee_per_gas.unwrap_or_default(),
-    ))?;
-
-    if params.tx.gas.is_none() {
-        let allowance = sender_gas_allowance(
-            triedb_env,
-            &header.header,
-            &params.tx,
-            &params.state_override_set,
-        )
-        .await?;
-        params.tx.gas = Some(U256::from(allowance));
-    }
+    fill_gas_params(
+        triedb_env,
+        &mut params.tx,
+        &mut header.header,
+        &params.state_override_set,
+    )
+    .await?;
 
     if params.tx.chain_id.is_none() {
         params.tx.chain_id = Some(U64::from(chain_id));
