@@ -152,7 +152,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
         let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
 
-        params.tx.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
+        params.tx.gas = Some(U256::from(mid));
         txn = params.tx.clone().try_into()?;
 
         match monad_cxx::eth_call(
