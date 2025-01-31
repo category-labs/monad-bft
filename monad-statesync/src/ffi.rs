@@ -181,7 +181,7 @@ impl<PT: PubKey> StateSync<PT> {
                 }
             }));
 
-            let mut sync_ctx = SyncCtx::create(
+            let mut sync_ctx = SyncCtx::new(
                 db_paths_ptr,
                 num_db_paths,
                 genesis_path.as_ptr(),
@@ -202,7 +202,8 @@ impl<PT: PubKey> StateSync<PT> {
                         target.encode(&mut buf);
                         unsafe {
                             bindings::monad_statesync_client_handle_target(
-                                sync_ctx.ctx,
+                                // handle_target can be called on an active or inactive SyncCtx
+                                sync_ctx.get_or_create_ctx(),
                                 buf.as_ptr(),
                                 buf.len() as u64,
                             )
@@ -212,10 +213,12 @@ impl<PT: PubKey> StateSync<PT> {
                     }
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
+                        // handle_response can only be called on an active SyncCtx
+                        let ctx = sync_ctx.ctx.expect("received response on inactive ctx");
                         unsafe {
                             for upsert in &response.response {
                                 let upsert_result = bindings::monad_statesync_client_handle_upsert(
-                                    sync_ctx.ctx,
+                                    ctx,
                                     response.request.prefix,
                                     match upsert.upsert_type {
                                         StateSyncUpsertType::Code => {
@@ -247,7 +250,7 @@ impl<PT: PubKey> StateSync<PT> {
                                 );
                             }
                             bindings::monad_statesync_client_handle_done(
-                                sync_ctx.ctx,
+                                ctx,
                                 bindings::monad_sync_done {
                                     success: true,
                                     prefix: response.request.prefix,
@@ -273,6 +276,7 @@ impl<PT: PubKey> StateSync<PT> {
                 }
             }
             // this loop exits when execution is about to start
+            assert!(sync_ctx.ctx.is_none());
         });
 
         Self {
@@ -396,11 +400,11 @@ struct SyncCtx {
         ),
     >,
 
-    ctx: *mut bindings::monad_statesync_client_context,
+    ctx: Option<*mut bindings::monad_statesync_client_context>,
 }
 impl SyncCtx {
     /// Initialize SyncCtx. There should only ever be *one* SyncCtx at any given time.
-    fn create(
+    fn new(
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
         genesis_file: *const ::std::os::raw::c_char,
@@ -419,63 +423,47 @@ impl SyncCtx {
             request_ctx,
             statesync_send_request,
 
-            ctx: unsafe {
-                let ctx = bindings::monad_statesync_client_context_create(
-                    dbname_paths,
-                    len,
-                    genesis_file,
-                    request_ctx,
-                    statesync_send_request,
-                );
-                let client_version = bindings::monad_statesync_version();
-                assert!(bindings::monad_statesync_client_compatible(client_version));
-                let num_prefixes = bindings::monad_statesync_client_prefixes();
-                for prefix in 0..num_prefixes {
-                    bindings::monad_statesync_client_handle_new_peer(
-                        ctx,
-                        prefix as u64,
-                        client_version,
-                    );
-                }
-                ctx
-            },
+            ctx: None,
         }
+    }
+
+    fn get_or_create_ctx(&mut self) -> *mut bindings::monad_statesync_client_context {
+        *self.ctx.get_or_insert_with(|| unsafe {
+            let ctx = bindings::monad_statesync_client_context_create(
+                self.dbname_paths,
+                self.len,
+                self.genesis_file,
+                self.request_ctx,
+                self.statesync_send_request,
+            );
+            let client_version = bindings::monad_statesync_version();
+            assert!(bindings::monad_statesync_client_compatible(client_version));
+            let num_prefixes = bindings::monad_statesync_client_prefixes();
+            for prefix in 0..num_prefixes {
+                bindings::monad_statesync_client_handle_new_peer(
+                    ctx,
+                    prefix as u64,
+                    client_version,
+                );
+            }
+            ctx
+        })
     }
 
     /// Returns true if reached target and successfully finalized
     fn try_finalize(&mut self) -> bool {
-        if unsafe { bindings::monad_statesync_client_has_reached_target(self.ctx) } {
-            let root_matches = unsafe { bindings::monad_statesync_client_finalize(self.ctx) };
+        let ctx = self
+            .ctx
+            .expect("try_finalize should only be called on active SyncCtx");
+
+        if unsafe { bindings::monad_statesync_client_has_reached_target(ctx) } {
+            let root_matches = unsafe { bindings::monad_statesync_client_finalize(ctx) };
             assert!(root_matches, "state root doesn't match, are peers trusted?");
 
-            unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
-            self.ctx = unsafe {
-                let ctx = bindings::monad_statesync_client_context_create(
-                    self.dbname_paths,
-                    self.len,
-                    self.genesis_file,
-                    self.request_ctx,
-                    self.statesync_send_request,
-                );
-                let client_version = bindings::monad_statesync_version();
-                assert!(bindings::monad_statesync_client_compatible(client_version));
-                let num_prefixes = bindings::monad_statesync_client_prefixes();
-                for prefix in 0..num_prefixes {
-                    bindings::monad_statesync_client_handle_new_peer(
-                        ctx,
-                        prefix as u64,
-                        client_version,
-                    );
-                }
-                ctx
-            };
+            unsafe { bindings::monad_statesync_client_context_destroy(ctx) }
+            self.ctx = None;
             return true;
         }
         false
-    }
-}
-impl Drop for SyncCtx {
-    fn drop(&mut self) {
-        unsafe { bindings::monad_statesync_client_context_destroy(self.ctx) }
     }
 }
