@@ -5,6 +5,7 @@ use std::{
         mpsc, Arc,
     },
     thread,
+    time::Duration,
 };
 
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
@@ -30,9 +31,13 @@ type EthTxHash = [u8; 32];
 type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
+    SyncRequest(SyncRequest),
+    AsyncRequest(AsyncRequest),
+}
+
+enum SyncRequest {
     BlockNumberRequest(BlockNumberRequest),
     TraverseRequest(TraverseRequest),
-    AsyncRequest(AsyncRequest),
 }
 
 struct BlockNumberRequest {
@@ -94,40 +99,54 @@ pub struct TxEnvelopeWithSender {
     pub sender: Address,
 }
 
+const MAX_QUEUE_BEFORE_POLL: usize = 100;
+const MAX_POLL_COMPLETIONS: usize = usize::MAX;
+
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
         TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
 
     loop {
-        triedb_handle.triedb_poll(false, usize::MAX);
+        triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
 
-        // spin on receiver
-        match receiver.try_recv() {
-            Ok(triedb_request) => {
-                match triedb_request {
-                    TriedbRequest::BlockNumberRequest(block_num_request) => {
-                        let block_num = triedb_handle.latest_finalized_block().unwrap_or_default();
-                        let _ = block_num_request.request_sender.send(block_num);
+        // get next request, or sleep for 1ms
+        let mut maybe_request = receiver.recv_timeout(Duration::from_millis(1)).ok();
+        let mut num_queued = 0_usize;
+        while let Some(triedb_request) = maybe_request {
+            match triedb_request {
+                TriedbRequest::SyncRequest(sync_request) => {
+                    // poll for completions before initiating sync request
+                    triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
+                    match sync_request {
+                        SyncRequest::BlockNumberRequest(block_num_request) => {
+                            let block_num =
+                                triedb_handle.latest_finalized_block().unwrap_or_default();
+                            let _ = block_num_request.request_sender.send(block_num);
+                        }
+                        SyncRequest::TraverseRequest(traverse_request) => {
+                            let rlp_encoded_data = triedb_handle.traverse_triedb(
+                                &traverse_request.triedb_key,
+                                traverse_request.key_len_nibbles,
+                                traverse_request.block_num,
+                            );
+                            let _ = traverse_request.request_sender.send(rlp_encoded_data);
+                        }
                     }
-                    TriedbRequest::TraverseRequest(traverse_request) => {
-                        let rlp_encoded_data = triedb_handle.traverse_triedb(
-                            &traverse_request.triedb_key,
-                            traverse_request.key_len_nibbles,
-                            traverse_request.block_num,
-                        );
-                        let _ = traverse_request.request_sender.send(rlp_encoded_data);
-                    }
-                    TriedbRequest::AsyncRequest(async_request) => {
-                        // Process the request directly in this thread
-                        process_request(&triedb_handle, async_request);
-                    }
+                    // this is a sync request, so break out and poll for completions again
+                    break;
+                }
+                TriedbRequest::AsyncRequest(async_request) => {
+                    // Process the request directly in this thread
+                    process_request(&triedb_handle, async_request);
                 }
             }
-            Err(_) => {
-                // no message received, continue spinning
-                continue;
+            num_queued += 1;
+            if num_queued > MAX_QUEUE_BEFORE_POLL {
+                break;
             }
+            // check for any other outstanding async requests to queue up before polling
+            maybe_request = receiver.try_recv().ok();
         }
     }
 }
@@ -247,9 +266,9 @@ impl Triedb for TriedbEnv {
 
         if let Err(e) =
             self.mpsc_sender
-                .try_send(TriedbRequest::BlockNumberRequest(BlockNumberRequest {
-                    request_sender,
-                }))
+                .try_send(TriedbRequest::SyncRequest(SyncRequest::BlockNumberRequest(
+                    BlockNumberRequest { request_sender },
+                )))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("could not get latest block from triedb"));
@@ -484,14 +503,16 @@ impl Triedb for TriedbEnv {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
 
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_num,
-            }))
+        if let Err(e) =
+            self.mpsc_sender
+                .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
+                    TraverseRequest {
+                        request_sender,
+                        triedb_key,
+                        key_len_nibbles,
+                        block_num,
+                    },
+                )))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -587,14 +608,16 @@ impl Triedb for TriedbEnv {
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
 
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_num,
-            }))
+        if let Err(e) =
+            self.mpsc_sender
+                .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
+                    TraverseRequest {
+                        request_sender,
+                        triedb_key,
+                        key_len_nibbles,
+                        block_num,
+                    },
+                )))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
@@ -842,12 +865,14 @@ impl Triedb for TriedbEnv {
         if let Err(e) = self
             .mpsc_sender
             .clone()
-            .try_send(TriedbRequest::TraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_num,
-            }))
+            .try_send(TriedbRequest::SyncRequest(SyncRequest::TraverseRequest(
+                TraverseRequest {
+                    request_sender,
+                    triedb_key,
+                    key_len_nibbles,
+                    block_num,
+                },
+            )))
         {
             warn!("Polling thread channel full: {e}");
             return Err(String::from("error reading from db due to rate limit"));
