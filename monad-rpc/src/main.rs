@@ -630,6 +630,12 @@ async fn main() -> std::io::Result<()> {
         .as_deref()
         .map(|path| TriedbEnv::new(path, args.triedb_max_concurrent_requests as usize));
 
+    // Used for compute heavy tasks
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.compute_threadpool_size)
+        .build_global()
+        .unwrap();
+
     // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
     let archive_reader = match (
         args.s3_bucket,

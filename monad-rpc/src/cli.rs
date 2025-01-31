@@ -68,4 +68,7 @@ pub struct Cli {
     /// Set the API key to read archive data from
     #[arg(long)]
     pub archive_api_key: Option<String>,
+
+    #[arg(long, default_value_t = 1)]
+    pub compute_threadpool_size: usize,
 }

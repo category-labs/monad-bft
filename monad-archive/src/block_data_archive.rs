@@ -6,6 +6,7 @@ use alloy_rlp::{Decodable, Encodable};
 use eyre::bail;
 use futures::try_join;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::prelude::*;
 
@@ -67,6 +68,7 @@ impl<Store: BlobStore> BlockDataReader for BlockDataArchive<Store> {
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
         let bytes = self.store.read(&self.block_key(block_num)).await?;
         BlockStorageRepr::decode_and_convert(&bytes)
+            .await
             .wrap_err_with(|| format!("Failed to decode block: block_num: {}", block_num))
     }
 
@@ -232,7 +234,7 @@ impl BlockStorageRepr {
         Ok(buf)
     }
 
-    fn decode_and_convert(buf: &[u8]) -> Result<Block> {
+    async fn decode_and_convert(buf: &[u8]) -> Result<Block> {
         if buf.len() < 2 {
             bail!(
                 "Cannot decode block, len must be > 2: actual: {}",
@@ -256,37 +258,48 @@ impl BlockStorageRepr {
         };
 
         match decoding_result {
-            Ok(decoded) => decoded.convert(),
+            Ok(decoded) => decoded.convert().await,
             Err(e) => {
                 info!(?e, "Failed to parse BlockStorageRepr despite sentinel bit being set. Falling back to raw InlineV0 decoding...");
                 let v0 =
                     BlockStorageRepr::V0(AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..])?);
-                v0.convert()
+                v0.convert().await
             }
         }
     }
 
-    fn convert(self) -> Result<Block> {
+    async fn convert(self) -> Result<Block> {
         Ok(match self {
-            BlockStorageRepr::V0(block) => Block {
-                header: block.header,
-                body: BlockBody {
-                    ommers: block.body.ommers,
-                    withdrawals: block.body.withdrawals,
-                    // replace with sender wrapped tx
-                    transactions: block
-                        .body
-                        .transactions
-                        .iter()
-                        .map(|tx| -> Result<TxEnvelopeWithSender> {
-                            Ok(TxEnvelopeWithSender {
-                                sender: tx.recover_signer()?,
-                                tx: tx.clone(),
+            BlockStorageRepr::V0(block) => {
+                // Sender recovery is expensive, so run it on a non-worker thread
+                let transactions = if block.body.transactions.is_empty() {
+                    vec![]
+                } else {
+                    spawn_rayon_async(move || {
+                        block
+                            .body
+                            .transactions
+                            .into_par_iter()
+                            .map(|tx| -> Result<TxEnvelopeWithSender> {
+                                Ok(TxEnvelopeWithSender {
+                                    sender: tx.recover_signer()?,
+                                    tx,
+                                })
                             })
-                        })
-                        .collect::<Result<Vec<TxEnvelopeWithSender>>>()?,
-                },
-            },
+                            .collect::<Result<Vec<TxEnvelopeWithSender>>>()
+                    })
+                    .await??
+                };
+
+                Block {
+                    header: block.header,
+                    body: BlockBody {
+                        ommers: block.body.ommers,
+                        withdrawals: block.body.withdrawals,
+                        transactions,
+                    },
+                }
+            }
             BlockStorageRepr::V1(block) => block,
         })
     }
@@ -369,6 +382,18 @@ impl ReceiptStorageRepr {
             ReceiptStorageRepr::V1(receipts) => receipts,
         })
     }
+}
+
+async fn spawn_rayon_async<F, R>(func: F) -> Result<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(|| {
+        let _ = tx.send(func());
+    });
+    rx.await.map_err(Into::into)
 }
 #[cfg(test)]
 mod tests {
@@ -480,8 +505,8 @@ mod tests {
             ))]
         }
 
-        #[test]
-        fn test_block_storage_v0_encode_decode() {
+        #[tokio::test]
+        async fn test_block_storage_v0_encode_decode() {
             let v0_block = create_v0_block();
             let repr = BlockStorageRepr::V0(v0_block.clone());
 
@@ -489,7 +514,9 @@ mod tests {
             assert_eq!(encoded[0], BlockStorageRepr::SENTINEL);
             assert_eq!(encoded[1], BlockStorageRepr::V0_MARKER);
 
-            let decoded = BlockStorageRepr::decode_and_convert(&encoded).unwrap();
+            let decoded = BlockStorageRepr::decode_and_convert(&encoded)
+                .await
+                .unwrap();
             assert_eq!(decoded.header.number, 1);
             assert_eq!(decoded.body.transactions.len(), 1);
 
@@ -497,8 +524,8 @@ mod tests {
             assert_eq!(decoded.body.transactions[0].sender, expected_sender);
         }
 
-        #[test]
-        fn test_block_storage_v1_encode_decode() {
+        #[tokio::test]
+        async fn test_block_storage_v1_encode_decode() {
             let block = create_test_block(1);
             let repr = BlockStorageRepr::V1(block.clone());
 
@@ -506,7 +533,9 @@ mod tests {
             assert_eq!(encoded[0], BlockStorageRepr::SENTINEL);
             assert_eq!(encoded[1], BlockStorageRepr::V1_MARKER);
 
-            let decoded = BlockStorageRepr::decode_and_convert(&encoded).unwrap();
+            let decoded = BlockStorageRepr::decode_and_convert(&encoded)
+                .await
+                .unwrap();
             assert_eq!(decoded.header.number, block.header.number);
             assert_eq!(
                 decoded.body.transactions[0].sender,
@@ -621,9 +650,9 @@ mod tests {
             assert_eq!(converted[1].starting_log_index, 2);
         }
 
-        #[test]
-        fn test_invalid_storage_data() {
-            assert!(BlockStorageRepr::decode_and_convert(&[]).is_err());
+        #[tokio::test]
+        async fn test_invalid_storage_data() {
+            assert!(BlockStorageRepr::decode_and_convert(&[]).await.is_err());
             assert!(ReceiptStorageRepr::decode_and_convert(&[]).is_err());
 
             assert!(BlockStorageRepr::decode_and_convert(&[
@@ -633,6 +662,7 @@ mod tests {
                 0,
                 0
             ])
+            .await
             .is_err());
         }
     }
