@@ -497,9 +497,9 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
 
                 let response = match txpool_state.get_status_by_hash(&hash) {
                     None | Some(TxStatus::Unknown) => continue,
-                    Some(
-                        TxStatus::Unknown | TxStatus::Evicted { reason: _ } | TxStatus::Replaced,
-                    ) => Err(JsonRpcError::custom("rejected".to_string())),
+                    Some(TxStatus::Evicted { reason: _ } | TxStatus::Replaced) => {
+                        Err(JsonRpcError::custom("rejected".to_string()))
+                    }
                     Some(TxStatus::Dropped { reason }) => {
                         Err(JsonRpcError::custom(reason.as_user_string()))
                     }

@@ -6,15 +6,15 @@ use serde_json::Value;
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_key_from_tag,
-    eth_json_types::{serialize_result, BlockTags, EthAddress, EthHash, MonadU256},
+    block_handlers::get_block_key_from_tag_or_hash,
+    eth_json_types::{serialize_result, BlockTagOrHash, BlockTags, EthAddress, EthHash, MonadU256},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBalanceParams {
     account: EthAddress,
-    block_number: BlockTags,
+    block_number: BlockTagOrHash,
 }
 
 #[rpc(method = "eth_getBalance")]
@@ -26,7 +26,7 @@ pub async fn monad_eth_getBalance<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block_number).await?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
@@ -38,7 +38,7 @@ pub async fn monad_eth_getBalance<T: Triedb>(
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetCodeParams {
     account: EthAddress,
-    block_number: BlockTags,
+    block: BlockTagOrHash,
 }
 
 #[rpc(method = "eth_getCode")]
@@ -50,7 +50,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number.clone());
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await
@@ -66,7 +66,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
 pub struct MonadEthGetStorageAtParams {
     account: EthAddress,
     position: MonadU256,
-    block_number: BlockTags,
+    block: BlockTagOrHash,
 }
 
 #[rpc(method = "eth_getStorageAt")]
@@ -78,7 +78,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
     triedb_env
         .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
@@ -88,7 +88,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionCountParams {
     account: EthAddress,
-    block_number: BlockTags,
+    block: BlockTagOrHash,
 }
 
 #[rpc(method = "eth_getTransactionCount")]
@@ -100,7 +100,7 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
     let account = triedb_env
         .get_account(block_key, params.account.0)
         .await

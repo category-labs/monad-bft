@@ -205,6 +205,14 @@ impl JsonRpcError {
         }
     }
 
+    pub fn resource_not_found() -> Self {
+        Self {
+            code: -32001,
+            message: "Resource not found".into(),
+            data: None,
+        }
+    }
+
     pub fn internal_error(message: String) -> Self {
         Self {
             code: -32603,

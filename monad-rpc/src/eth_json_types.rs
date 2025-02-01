@@ -311,7 +311,7 @@ impl<'de> Deserialize<'de> for Quantity {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FixedData<const N: usize>(pub [u8; N]);
 
 impl<const N: usize> std::fmt::Display for FixedData<N> {
@@ -414,21 +414,27 @@ impl<'de> Deserialize<'de> for BlockTags {
 
 #[derive(Debug, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
-pub enum BlockReference {
+pub enum BlockTagOrHash {
     BlockTags(BlockTags),
-    EthHash(EthHash),
+    Hash(EthHash),
 }
 
-impl<'de> Deserialize<'de> for BlockReference {
+impl<'de> Deserialize<'de> for BlockTagOrHash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let buf = String::deserialize(deserializer)?;
         BlockTags::from_str(&buf)
-            .map(BlockReference::BlockTags)
-            .or_else(|_| EthHash::from_str(&buf).map(BlockReference::EthHash))
-            .map_err(|e| serde::de::Error::custom(format!("BlockReference parse failed: {e:?}")))
+            .map(BlockTagOrHash::BlockTags)
+            .or_else(|_| EthHash::from_str(&buf).map(BlockTagOrHash::Hash))
+            .map_err(|e| serde::de::Error::custom(format!("BlockTagOrHash parse failed: {e:?}")))
+    }
+}
+
+impl Default for BlockTagOrHash {
+    fn default() -> Self {
+        BlockTagOrHash::BlockTags(BlockTags::Latest)
     }
 }
 

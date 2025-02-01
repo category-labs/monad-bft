@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_key_from_tag,
-    eth_json_types::BlockTags,
+    block_handlers::get_block_key_from_tag_or_hash,
+    eth_json_types::BlockTagOrHash,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -358,7 +358,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
 pub struct MonadEthCallParams {
     transaction: CallRequest,
     #[serde(default)]
-    block: BlockTags,
+    block: BlockTagOrHash,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
     state_overrides: StateOverrideSet, // empty = no state overrides
@@ -392,7 +392,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
-    let block_key = get_block_key_from_tag(triedb_env, params.block);
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
     let mut header = match triedb_env
         .get_block_header(block_key)
         .await

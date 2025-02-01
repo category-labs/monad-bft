@@ -12,7 +12,7 @@ use tracing::trace;
 
 use crate::{
     eth_json_types::{
-        BlockReference, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
+        BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -24,6 +24,23 @@ pub fn get_block_key_from_tag<T: Triedb>(triedb_env: &T, tag: BlockTags) -> Bloc
         BlockTags::Latest => triedb_env.get_latest_voted_block_key(),
         BlockTags::Safe => triedb_env.get_latest_voted_block_key(),
         BlockTags::Finalized => BlockKey::Finalized(triedb_env.get_latest_finalized_block_key()),
+    }
+}
+
+pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
+    triedb_env: &T,
+    block_reference: BlockTagOrHash,
+) -> JsonRpcResult<BlockKey> {
+    match block_reference {
+        BlockTagOrHash::BlockTags(tag) => Ok(get_block_key_from_tag(triedb_env, tag)),
+        BlockTagOrHash::Hash(block_hash) => {
+            let num = triedb_env
+                .get_block_number_by_hash(triedb_env.get_latest_voted_block_key(), block_hash.0)
+                .await
+                .map_err(|_| JsonRpcError::resource_not_found())?
+                .ok_or(JsonRpcError::resource_not_found())?;
+            Ok(triedb_env.get_block_key(SeqNum(num)))
+        }
     }
 }
 
@@ -359,7 +376,7 @@ pub fn block_receipts(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsParams {
-    block_reference: BlockReference,
+    block: BlockTagOrHash,
 }
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -376,20 +393,7 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    let block_key = match params.block_reference {
-        BlockReference::BlockTags(block_tag) => get_block_key_from_tag(triedb_env, block_tag),
-        BlockReference::EthHash(block_hash) => {
-            let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
-            match triedb_env
-                .get_block_number_by_hash(latest_block_key, block_hash.0)
-                .await
-                .map_err(JsonRpcError::internal_error)?
-            {
-                Some(block_num) => triedb_env.get_block_key(SeqNum(block_num)),
-                None => return Ok(None),
-            }
-        }
-    };
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
 
     if let Some(header) = triedb_env
         .get_block_header(block_key)
