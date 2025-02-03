@@ -29,17 +29,20 @@ autocxx::include_cpp! {
 
 pub const EVMC_SUCCESS: i32 = 0;
 
+#[derive(Clone, Debug)]
 pub enum CallResult {
     Success(SuccessCallResult),
     Failure(FailureCallResult),
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct SuccessCallResult {
     pub gas_used: u64,
     pub gas_refund: u64,
     pub output_data: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct FailureCallResult {
     pub message: String,
     pub data: Option<String>,

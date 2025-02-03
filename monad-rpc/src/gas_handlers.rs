@@ -1,9 +1,12 @@
-use std::ops::{Div, Sub};
+use std::{
+    ops::{Div, Sub},
+    path::PathBuf,
+};
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
-use alloy_primitives::{TxKind, U256, U64};
+use alloy_consensus::{Header, Transaction as _, TxEnvelope};
+use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
-use monad_cxx::StateOverrideSet;
+use monad_cxx::{CallResult, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use serde::Deserialize;
@@ -15,6 +18,120 @@ use crate::{
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
+
+trait EthCallProvider {
+    fn eth_call(&self, txn: TxEnvelope) -> CallResult;
+}
+
+struct GasEstimator {
+    chain_id: u64,
+    block_header: Header,
+    sender: Address,
+    block_number: u64,
+    triedb_path: PathBuf,
+    state_override: StateOverrideSet,
+}
+
+impl GasEstimator {
+    fn new(
+        chain_id: u64,
+        block_header: Header,
+        sender: Address,
+        block_number: u64,
+        triedb_path: PathBuf,
+        state_override: StateOverrideSet,
+    ) -> Self {
+        Self {
+            chain_id,
+            block_header,
+            sender,
+            block_number,
+            triedb_path,
+            state_override,
+        }
+    }
+}
+
+impl EthCallProvider for GasEstimator {
+    fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+        monad_cxx::eth_call(
+            self.chain_id,
+            txn,
+            self.block_header.clone(),
+            self.sender,
+            self.block_number,
+            self.triedb_path.as_path(),
+            &self.state_override,
+        )
+    }
+}
+
+fn estimate_gas<T: EthCallProvider>(
+    provider: &T,
+    call_request: &mut CallRequest,
+) -> Result<Quantity, JsonRpcError> {
+    let mut txn: TxEnvelope = call_request.clone().try_into()?;
+
+    // simple transfer
+    if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
+        return Ok(Quantity(21_000));
+    }
+
+    let (gas_used, gas_refund) = match provider.eth_call(txn.clone()) {
+        monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
+            gas_used,
+            gas_refund,
+            ..
+        }) => (gas_used, gas_refund),
+        monad_cxx::CallResult::Failure(error) => {
+            return Err(JsonRpcError::eth_call_error(error.message, error.data))
+        }
+    };
+
+    let upper_bound_gas_limit = txn.gas_limit();
+    call_request.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
+    txn = call_request.clone().try_into()?;
+
+    let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
+        if txn.gas_limit() < upper_bound_gas_limit {
+            match provider.eth_call(txn.clone()) {
+                monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
+                    gas_used, ..
+                }) => (gas_used.sub(1), txn.gas_limit()),
+                monad_cxx::CallResult::Failure(_error_message) => {
+                    (txn.gas_limit(), upper_bound_gas_limit)
+                }
+            }
+        } else {
+            (gas_used.sub(1), txn.gas_limit())
+        };
+
+    // Binary search for the lowest gas limit.
+    while (upper_bound_gas_limit - lower_bound_gas_limit) > 1 {
+        // Error ratio from geth https://github.com/ethereum/go-ethereum/blob/c736b04d9b3bec8d9281146490b05075a91e7eea/internal/ethapi/api.go#L57
+        if (upper_bound_gas_limit - lower_bound_gas_limit) as f64 / (upper_bound_gas_limit as f64)
+            < 0.015
+        {
+            break;
+        }
+
+        let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
+
+        call_request.gas = Some(U256::from(mid));
+        txn = call_request.clone().try_into()?;
+
+        match provider.eth_call(txn) {
+            monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
+                upper_bound_gas_limit = mid;
+            }
+            monad_cxx::CallResult::Failure(_error_message) => {
+                lower_bound_gas_limit = mid;
+            }
+        };
+    }
+
+    Ok(Quantity(upper_bound_gas_limit))
+}
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthEstimateGasParams {
@@ -48,8 +165,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    let state_override_set = &params.state_override_set;
-
     let block_number = get_block_num_from_tag(triedb_env, params.block).await?;
     let header = match triedb_env
         .get_block_header(block_number)
@@ -68,7 +183,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         header.header.base_fee_per_gas.unwrap_or_default(),
     ))?;
 
-    let sender = params.tx.from.unwrap_or_default();
     if params.tx.gas.is_none() {
         let allowance = sender_gas_allowance(
             triedb_env,
@@ -90,90 +204,16 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         .chain_id
         .expect("chain id must be populated")
         .to::<u64>();
-    let mut txn: TxEnvelope = params.tx.clone().try_into()?;
 
-    if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
-        return Ok(Quantity(21_000));
-    }
-
-    let (gas_used, gas_refund) = match monad_cxx::eth_call(
+    let eth_call_provider = GasEstimator::new(
         tx_chain_id,
-        txn.clone(),
-        header.header.clone(),
+        header.header,
         sender,
         block_number,
-        &triedb_env.path(),
-        state_override_set,
-    ) {
-        monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
-            gas_used,
-            gas_refund,
-            ..
-        }) => (gas_used, gas_refund),
-        monad_cxx::CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
-    };
-
-    let upper_bound_gas_limit: u64 = txn.gas_limit();
-    params.tx.gas = Some(U256::from((gas_used + gas_refund) * 64 / 63));
-    txn = params.tx.clone().try_into()?;
-
-    let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
-        if txn.gas_limit() < upper_bound_gas_limit {
-            match monad_cxx::eth_call(
-                tx_chain_id,
-                txn.clone(),
-                header.header.clone(),
-                sender,
-                block_number,
-                &triedb_env.path(),
-                state_override_set,
-            ) {
-                monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
-                    gas_used, ..
-                }) => (gas_used.sub(1), txn.gas_limit()),
-                monad_cxx::CallResult::Failure(_error_message) => {
-                    (txn.gas_limit(), upper_bound_gas_limit)
-                }
-            }
-        } else {
-            (gas_used.sub(1), txn.gas_limit())
-        };
-
-    // Binary search for the lowest gas limit.
-    while (upper_bound_gas_limit - lower_bound_gas_limit) > 1 {
-        // Error ratio from geth https://github.com/ethereum/go-ethereum/blob/c736b04d9b3bec8d9281146490b05075a91e7eea/internal/ethapi/api.go#L57
-        if (upper_bound_gas_limit - lower_bound_gas_limit) as f64 / (upper_bound_gas_limit as f64)
-            < 0.015
-        {
-            break;
-        }
-
-        let mid = (upper_bound_gas_limit + lower_bound_gas_limit) / 2;
-
-        params.tx.gas = Some(U256::from(mid));
-        txn = params.tx.clone().try_into()?;
-
-        match monad_cxx::eth_call(
-            tx_chain_id,
-            txn.clone(),
-            header.header.clone(),
-            sender,
-            block_number,
-            &triedb_env.path(),
-            state_override_set,
-        ) {
-            monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
-                upper_bound_gas_limit = mid;
-            }
-            monad_cxx::CallResult::Failure(_error_message) => {
-                lower_bound_gas_limit = mid;
-            }
-        };
-    }
-
-    Ok(Quantity(upper_bound_gas_limit))
+        triedb_env.path(),
+        params.state_override_set,
+    );
+    estimate_gas(&eth_call_provider, &mut params.tx)
 }
 
 pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
@@ -301,4 +341,100 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         oldest_block: header.header.number.saturating_sub(block_count),
         reward,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_cxx::{FailureCallResult, SuccessCallResult};
+
+    use super::*;
+
+    struct MockGasEstimator {
+        gas_used: u64,
+        gas_refund: u64,
+    }
+
+    impl EthCallProvider for MockGasEstimator {
+        fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+            if txn.gas_limit() >= self.gas_used + self.gas_refund {
+                CallResult::Success(SuccessCallResult {
+                    gas_used: self.gas_used,
+                    gas_refund: self.gas_refund,
+                    ..Default::default()
+                })
+            } else {
+                CallResult::Failure(FailureCallResult {
+                    ..Default::default()
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn test_gas_limit_too_low() {
+        // user specified gas limit lower than actual gas used
+        let mut call_request = CallRequest {
+            gas: Some(U256::from(30_000)),
+            ..Default::default()
+        };
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+        };
+
+        // should return gas estimation failure
+        let result = estimate_gas(&provider, &mut call_request);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gas_limit_unspecified() {
+        // user did not specify gas limit
+        let mut call_request = CallRequest::default();
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+        };
+
+        // should return correct gas estimation
+        let result = estimate_gas(&provider, &mut call_request);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Quantity(60267));
+    }
+
+    #[test]
+    fn test_gas_limit_sufficient() {
+        // user specify gas limit that is sufficient
+        let mut call_request = CallRequest {
+            gas: Some(U256::from(70_000)),
+            ..Default::default()
+        };
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+        };
+
+        // should return correct gas estimation
+        let result = estimate_gas(&provider, &mut call_request);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Quantity(60267));
+    }
+
+    #[test]
+    fn test_gas_limit_just_sufficient() {
+        // user specify gas limit that is just sufficient
+        let mut call_request = CallRequest {
+            gas: Some(U256::from(60_000)),
+            ..Default::default()
+        };
+        let provider = MockGasEstimator {
+            gas_used: 50_000,
+            gas_refund: 10_000,
+        };
+
+        // should return correct gas estimation
+        let result = estimate_gas(&provider, &mut call_request);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Quantity(60267));
+    }
 }
