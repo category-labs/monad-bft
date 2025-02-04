@@ -11,7 +11,6 @@ use shared::{ecmul::ECMul, erc20::ERC20, uniswap::Uniswap};
 use tracing_subscriber::util::SubscriberInitExt;
 use url::Url;
 
-// pub mod complex;
 pub mod generators;
 pub mod prelude;
 pub mod run;
@@ -100,6 +99,14 @@ pub struct Config {
 
     #[arg(long, global = true, default_value_t = 1000_000_000_000_000_000_000)]
     pub seed_native_amount: u128,
+
+    /// Should trace logs be written to ./trace.log
+    #[arg(long, global = true, default_value_t = false)]
+    pub trace_log_file: bool,
+
+    /// Should debug logs be written to ./debug.log
+    #[arg(long, global = true, default_value_t = false)]
+    pub debug_log_file: bool,
 }
 
 impl Config {
@@ -256,11 +263,12 @@ pub enum TxType {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = setup_logging() {
+    let config = Config::parse();
+
+    if let Err(e) = setup_logging(config.trace_log_file, config.debug_log_file) {
         error!("Erorr setting up logging: {e:?}");
     }
 
-    let config = Config::parse();
     let client: ReqwestClient = ClientBuilder::default().http(config.rpc_url.clone());
 
     info!("Config: {config:?}");
@@ -280,15 +288,28 @@ async fn main() {
     }
 }
 
-fn setup_logging() -> Result<()> {
+fn setup_logging(trace_log_file: bool, debug_log_file: bool) -> Result<()> {
     use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Layer};
-    let trace_layer = fmt::layer()
-        .with_writer(std::fs::File::create("trace.log")?)
-        .with_filter(EnvFilter::new("txgen=trace"));
 
-    let debug_layer = fmt::layer()
-        .with_writer(std::fs::File::create("debug.log")?)
-        .with_filter(EnvFilter::new("txgen=debug"));
+    let trace_layer = if trace_log_file {
+        Some(
+            fmt::layer()
+                .with_writer(std::fs::File::create("trace.log")?)
+                .with_filter(EnvFilter::new("txgen=trace")),
+        )
+    } else {
+        None
+    };
+
+    let debug_layer = if debug_log_file {
+        Some(
+            fmt::layer()
+                .with_writer(std::fs::File::create("debug.log")?)
+                .with_filter(EnvFilter::new("txgen=debug")),
+        )
+    } else {
+        None
+    };
 
     let rust_log = env::var("RUST_LOG").unwrap_or("info".into());
 
