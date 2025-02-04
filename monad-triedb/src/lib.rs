@@ -67,12 +67,24 @@ pub unsafe extern "C" fn read_async_callback(
 /// # Safety
 /// This is used as a callback when traversing the transaction or receipt trie
 pub unsafe extern "C" fn traverse_callback(
+    op_kind: u32,
     context: *mut std::ffi::c_void,
     key_ptr: *const u8,
     key_len: usize,
     value_ptr: *const u8,
     value_len: usize,
 ) {
+    if op_kind != 0
+    // value
+    {
+        if op_kind != 1
+        // ended normally
+        {
+            warn!("traverse_callback notified that traverse was ended early due to version invalidation");
+        }
+        return;
+    }
+
     let traverse_data = unsafe { Box::from_raw(context as *mut TraverseData) };
 
     let key = unsafe {

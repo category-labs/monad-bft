@@ -25,11 +25,22 @@ int triedb_read(
 void triedb_async_read(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user);
-// traverse the trie
+
+// traverse the trie.
+enum triedb_async_traverse_callback
+{
+    triedb_async_traverse_callback_value,
+    triedb_async_traverse_callback_finished_normally,
+    triedb_async_traverse_callback_finished_early
+};
+
 typedef void (*callback_func)(
-    void *context, bytes path, size_t path_len, bytes value,
-    size_t value_len);
-void triedb_traverse(
+    enum triedb_async_traverse_callback kind, void *context, bytes path,
+    size_t path_len, bytes value, size_t value_len);
+bool triedb_traverse(
+    triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void *context, callback_func callback);
+void triedb_async_traverse(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void *context, callback_func callback);
 // pumps async reads, processing no
