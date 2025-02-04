@@ -110,8 +110,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         let mut messages = Vec::new();
 
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
-            let mut batch_guard = broadcast_batcher.create_flush_guard();
+            // scoped variables are dropped in reverse order of declaration.
+            // when *batch_guard is dropped, packets can get flushed
+            //
+            // Declaring (validator) batch guard last to give rebroadcast
+            // priorities to validators
             let mut full_node_forward_batch_guard = full_node_forward_batcher.create_flush_guard();
+            let mut batch_guard = broadcast_batcher.create_flush_guard();
 
             let payload_end_idx = (payload_start_idx + message.stride).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
