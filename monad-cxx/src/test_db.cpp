@@ -1,5 +1,7 @@
 #include "test_db.hpp"
 
+#include <monad/core/block.hpp>
+#include <monad/core/monad_block.hpp>
 #include <monad/db/trie_db.hpp>
 
 #include <cstdio>
@@ -17,7 +19,8 @@ struct TestDb
 
     TestDb(std::filesystem::path const &path)
         : path{path}
-        , db{machine, mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}}
+        , db{machine,
+             mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}}
         , tdb{db}
     {
     }
@@ -60,7 +63,13 @@ void testdb_load_callenv(TestDb *const db)
                     .code_hash =
                         0x8e0388ecf64cfa76b3a6af159f77451519a7f9bb862e4cce24175c791fdcb0df_bytes32,
                     .nonce = 1}}});
-    db->tdb.commit(state_deltas, code, {});
+
+    BlockHeader hdr{.number = 0};
+    auto const consensus_header =
+        MonadConsensusBlockHeader::from_eth_header(hdr);
+    db->tdb.commit(state_deltas, code, consensus_header);
+    db->tdb.finalize(hdr.number, consensus_header.round);
+    db->tdb.set_block_and_round(hdr.number);
 }
 
 void testdb_load_transfer(TestDb *const db)
@@ -73,7 +82,12 @@ void testdb_load_transfer(TestDb *const db)
             .account = {
                 std::nullopt, Account{.balance = 100'000u, .nonce = 1}}});
 
-    db->tdb.commit(state_deltas, code, {});
+    BlockHeader hdr{.number = 0};
+    auto const consensus_header =
+        MonadConsensusBlockHeader::from_eth_header(hdr);
+    db->tdb.commit(state_deltas, code, consensus_header);
+    db->tdb.finalize(hdr.number, consensus_header.round);
+    db->tdb.set_block_and_round(hdr.number);
 }
 
 void testdb_load_callcontract(TestDb *const db)
@@ -112,7 +126,13 @@ void testdb_load_callcontract(TestDb *const db)
                     .code_hash =
                         0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2_bytes32,
                     .nonce = 1}}});
-    db->tdb.commit(state_deltas, code, {});
+
+    BlockHeader hdr{.number = 0};
+    auto const consensus_header =
+        MonadConsensusBlockHeader::from_eth_header(hdr);
+    db->tdb.commit(state_deltas, code, consensus_header);
+    db->tdb.finalize(hdr.number, consensus_header.round);
+    db->tdb.set_block_and_round(hdr.number);
 }
 
 std::string testdb_path(TestDb const *const db)

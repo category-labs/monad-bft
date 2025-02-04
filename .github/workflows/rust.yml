@@ -38,8 +38,53 @@ jobs:
       - name: Format
         run: cargo +nightly-2024-12-10 fmt --all --check
       - uses: Swatinem/rust-cache@v2
+      - name: Install C++ dependencies
+        run: |
+          sudo apt update && sudo apt upgrade -y
+
+          sudo apt update && sudo apt install -y apt-utils
+        
+          sudo apt update && sudo apt install -y dialog
+        
+          sudo apt update && sudo apt install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            software-properties-common \
+            wget
+        
+          sudo mkdir -p /opt
+          sudo cp -r monad-cxx/monad-execution/scripts/ubuntu-build/* /opt/
+        
+          sudo apt update && sudo apt install -y \
+            clang-18 \
+            gcc-13 \
+            g++-13
+        
+          sudo /opt/install-boost.sh
+          sudo /opt/install-tools.sh
+          sudo /opt/install-deps.sh
+        
+          sudo apt update && sudo apt install -y \
+            libarchive-dev \
+            libbrotli-dev \
+            libcap-dev \
+            libcli11-dev \
+            libgmp-dev \
+            libtbb-dev \
+            libzstd-dev
+      - name: Setup Hugepage
+        run: |
+          cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+          cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
+          sudo bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
+          sudo bash -c "echo 4 > /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages"
+          cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+          cat /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
+
+          ulimit -l 16770785280
       - name: Lint
-        run: cargo clippy --all-targets --all-features --
+        run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo clippy --all-targets --all-features --
           -D clippy::suspicious
           -D clippy::style
           -D clippy::clone_on_copy
@@ -62,11 +107,11 @@ jobs:
           -A clippy::enum-variant-names
           -A clippy::mutable_key_type
       - name: Check
-        run: cargo check --all-targets --all-features
+        run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo check --all-targets --all-features
       - name: Run tests
-        run: cargo test --release --all-targets --all-features
+        run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo test --release --all-targets --all-features
       - name: Run doc tests
-        run: cargo test --release --doc --all-features
+        run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo test --release --doc --all-features
       - run: rustup target add wasm32-unknown-unknown
       - name: Check WASM
-        run: cargo check --target wasm32-unknown-unknown -p monad-debugger
+        run: ASMFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CFLAGS="-march=haswell" cargo check --target wasm32-unknown-unknown -p monad-debugger

@@ -1,18 +1,13 @@
 // build.rs
 
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     use cmake::Config;
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=include");
     println!("cargo:rerun-if-changed=monad-execution");
-    println!("cargo:rerun-if-env-changed=ETH_CALL_TARGET");
-    let target = env::var("ETH_CALL_TARGET").unwrap_or("mock_eth_call".to_owned());
-    if target != "mock_eth_call" {
-        println!("cargo:rustc-cfg=triedb");
-    }
-    println!("cargo:warning=target {}", &target);
+    println!("cargo:rerun-if-env-changed=TRIEDB_TARGET");
 
     let includes = [PathBuf::from("include")];
 
@@ -28,12 +23,15 @@ fn main() {
         b.flag_if_supported(std).compile("monad-cxx");
     }
 
+    // Because we added test files here, the we need to build monad_rpc (for execution) together
+    // with the tests, thus we need a new target
+    let target = "monad_rpc_test";
     let dst = Config::new(".")
-        .define("CMAKE_BUILD_TARGET", &target)
+        .define("CMAKE_BUILD_TARGET", target)
         .always_configure(true)
         .define("BUILD_SHARED_LIBS", "ON")
         .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
-        .build_target(&target)
+        .build_target(target)
         .very_verbose(true)
         .build();
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dst.display());
