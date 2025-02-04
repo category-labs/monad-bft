@@ -1,7 +1,7 @@
 use tokio::time::MissedTickBehavior;
 
 use super::*;
-use crate::{shared::erc20::ERC20, DeployedContract};
+use crate::{cli::DeployedContract, shared::erc20::ERC20};
 
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,

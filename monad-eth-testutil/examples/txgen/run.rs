@@ -5,10 +5,10 @@ use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    cli::{Config, DeployedContract},
     generators::make_generator,
     prelude::*,
     shared::{ecmul::ECMul, erc20::ERC20, eth_json_rpc::EthJsonRpc, uniswap::Uniswap},
-    DeployedContract,
 };
 
 pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
@@ -77,7 +77,6 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         target_tps: config.tps,
         metrics: Arc::clone(&metrics),
         sent_txs,
-        verbose: config.verbose,
     };
 
     let mut tasks = FuturesUnordered::new();
@@ -161,6 +160,8 @@ async fn load_or_deploy_contracts(
     config: &Config,
     client: &ReqwestClient,
 ) -> Result<DeployedContract> {
+    use crate::cli::RequiredContract;
+
     let contract_to_ensure = config.required_contract();
     let path = "deployed_contracts.json";
     let deployer = PrivateKey::new(&config.root_private_keys[0]);
@@ -168,8 +169,8 @@ async fn load_or_deploy_contracts(
     let chain_id = config.chain_id;
 
     match contract_to_ensure {
-        crate::RequiredContract::None => Ok(DeployedContract::None),
-        crate::RequiredContract::ERC20 => {
+        RequiredContract::None => Ok(DeployedContract::None),
+        RequiredContract::ERC20 => {
             // try from commmand line arg
             if let Some(erc20) = &config.erc20_contract {
                 let erc20 = Address::from_str(erc20)
@@ -208,7 +209,7 @@ async fn load_or_deploy_contracts(
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
             Ok(DeployedContract::ERC20(erc20))
         }
-        crate::RequiredContract::ECMUL => {
+        RequiredContract::ECMUL => {
             // try from commmand line arg
             if let Some(ecmul) = &config.ecmul_contract {
                 let ecmul = Address::from_str(ecmul)
@@ -247,7 +248,7 @@ async fn load_or_deploy_contracts(
             write_and_verify_deployed_contracts(client, path, &deployed).await?;
             Ok(DeployedContract::ECMUL(ecmul))
         }
-        crate::RequiredContract::Uniswap => {
+        RequiredContract::Uniswap => {
             // try from commmand line arg
             if let Some(uniswap) = &config.uniswap_contract {
                 let uniswap = Address::from_str(uniswap)

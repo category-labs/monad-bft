@@ -10,7 +10,11 @@ use self_destruct::SelfDestructTxGenerator;
 use storage_deletes::StorageDeletesTxGenerator;
 use uniswap::UniswapGenerator;
 
-use crate::{prelude::*, shared::erc20::ERC20, DeployedContract, GeneratorConfig};
+use crate::{
+    cli::{Config, DeployedContract, GeneratorConfig},
+    prelude::*,
+    shared::erc20::ERC20,
+};
 
 mod duplicates;
 mod ecmul;

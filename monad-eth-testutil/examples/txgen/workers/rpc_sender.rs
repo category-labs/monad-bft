@@ -13,8 +13,6 @@ pub struct RpcSender {
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
     pub sent_txs: Arc<DashMap<TxHash, Instant>>,
-
-    pub verbose: bool,
 }
 
 impl RpcSender {
@@ -65,19 +63,11 @@ impl RpcSender {
         let metrics = self.metrics.clone();
         let sent_txs = self.sent_txs.clone();
         let batch = Vec::from_iter(batch.iter().cloned()); // todo: make more performant
-        let verbose = self.verbose;
 
         tokio::spawn(async move {
             let now = Instant::now();
             for (tx, to) in &batch {
                 let _ = sent_txs.insert(*tx.tx_hash(), now);
-                if verbose {
-                    trace!(
-                        tx_hash = tx.tx_hash().to_string(),
-                        to = to.to_string(),
-                        "Tx"
-                    );
-                }
             }
 
             send_batch(&client, batch.iter().map(|(tx, _)| tx), &metrics).await;

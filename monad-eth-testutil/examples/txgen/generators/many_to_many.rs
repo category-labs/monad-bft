@@ -1,5 +1,5 @@
 use super::{erc20_transfer, native_transfer};
-use crate::{prelude::*, shared::erc20::ERC20, TxType};
+use crate::{cli::TxType, prelude::*, shared::erc20::ERC20};
 
 pub struct ManyToManyGenerator {
     pub recipient_keys: SeededKeyPool,
