@@ -97,7 +97,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         epoch_validators: &mut BTreeMap<Epoch, EpochValidators<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
-        forward: impl FnMut(Bytes),
+        forward: impl FnMut(Bytes, u16),
         message: RecvMsg,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
@@ -106,7 +106,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         let mut broadcast_batcher =
             BroadcastBatcher::new(self_id, rebroadcast, &message.payload, message.stride);
         // batch packets forwarding to full nodes
-        let mut full_node_forward_batcher = ForwardBatcher::new(self_id, forward, &message.payload);
+        let mut full_node_forward_batcher =
+            ForwardBatcher::new(self_id, forward, &message.payload, message.stride);
 
         let mut messages = Vec::new();
 
@@ -1035,18 +1036,19 @@ struct ForwardBatch {
 }
 pub(crate) struct ForwardBatcher<'a, F, PT>
 where
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
     self_id: NodeId<PT>,
     forward: F,
     message: &'a Bytes,
+    stride: u16,
 
     batch: Option<ForwardBatch>,
 }
 impl<F, PT> Drop for ForwardBatcher<'_, F, PT>
 where
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
     fn drop(&mut self) {
@@ -1055,14 +1057,15 @@ where
 }
 impl<'a, F, PT> ForwardBatcher<'a, F, PT>
 where
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
-    pub fn new(self_id: NodeId<PT>, forward: F, message: &'a Bytes) -> Self {
+    pub fn new(self_id: NodeId<PT>, forward: F, message: &'a Bytes, stride: u16) -> Self {
         Self {
             self_id,
             forward,
             message,
+            stride,
             batch: None,
         }
     }
@@ -1084,7 +1087,10 @@ where
                 num_bytes = batch.end_idx - batch.start_idx,
                 "forwarding chunks"
             );
-            (self.forward)(self.message.slice(batch.start_idx..batch.end_idx));
+            (self.forward)(
+                self.message.slice(batch.start_idx..batch.end_idx),
+                self.stride,
+            );
         }
     }
 }
@@ -1092,7 +1098,7 @@ where
 pub(crate) struct ForwardBatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
     batcher: &'g mut ForwardBatcher<'a, F, PT>,
@@ -1101,7 +1107,7 @@ where
 impl<'a, 'g, F, PT> ForwardBatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
     pub(crate) fn queue_forward(&mut self, payload_start_idx: usize, payload_end_idx: usize) {
@@ -1123,7 +1129,7 @@ where
 impl<'a, 'g, F, PT> Drop for ForwardBatcherGuard<'a, 'g, F, PT>
 where
     'a: 'g,
-    F: FnMut(Bytes),
+    F: FnMut(Bytes, u16),
     PT: PubKey,
 {
     fn drop(&mut self) {
@@ -1389,7 +1395,7 @@ mod tests {
         udp_state.handle_message(
             &mut epoch_validators,
             |_targets, _payload, _stride| {},
-            |_payload| {},
+            |_payload, _stride| {},
             recv_msg,
         );
     }

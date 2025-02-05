@@ -404,7 +404,6 @@ where
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 let dataplane = RefCell::new(&mut this.dataplane);
-                let local_segment_size = segment_size_for_mtu(this.mtu);
                 this.udp_state.handle_message(
                     &mut this.epoch_validators,
                     |targets, payload, bcast_stride| {
@@ -419,12 +418,12 @@ where
                             stride: bcast_stride,
                         });
                     },
-                    |payload| {
+                    |payload, bcast_stride| {
                         // callback for forwarding chunks to full nodes
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
                             targets: full_node_addrs.clone(),
                             payload,
-                            stride: local_segment_size.into(),
+                            stride: bcast_stride,
                         });
                     },
                     message,
