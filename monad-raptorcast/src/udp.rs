@@ -103,7 +103,8 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
-        let mut broadcast_batcher = BroadcastBatcher::new(self_id, rebroadcast, &message.payload);
+        let mut broadcast_batcher =
+            BroadcastBatcher::new(self_id, rebroadcast, &message.payload, message.stride);
         // batch packets forwarding to full nodes
         let mut full_node_forward_batcher = ForwardBatcher::new(self_id, forward, &message.payload);
 
@@ -168,7 +169,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         payload_end_idx,
                         &parsed_message.author,
                         || targets.view().keys().copied().collect(),
-                        message.stride,
                     )
                 }
 
@@ -908,7 +908,6 @@ struct BroadcastBatch<PT: PubKey> {
 
     start_idx: usize,
     end_idx: usize,
-    stride: usize,
 }
 pub(crate) struct BroadcastBatcher<'a, F, PT>
 where
@@ -918,6 +917,7 @@ where
     self_id: NodeId<PT>,
     rebroadcast: F,
     message: &'a Bytes,
+    stride: usize,
 
     batch: Option<BroadcastBatch<PT>>,
 }
@@ -935,11 +935,12 @@ where
     F: FnMut(Vec<NodeId<PT>>, Bytes, usize),
     PT: PubKey,
 {
-    pub fn new(self_id: NodeId<PT>, rebroadcast: F, message: &'a Bytes) -> Self {
+    pub fn new(self_id: NodeId<PT>, rebroadcast: F, message: &'a Bytes, stride: usize) -> Self {
         Self {
             self_id,
             rebroadcast,
             message,
+            stride,
             batch: None,
         }
     }
@@ -966,7 +967,7 @@ where
             (self.rebroadcast)(
                 batch.targets,
                 self.message.slice(batch.start_idx..batch.end_idx),
-                batch.stride,
+                self.stride,
             );
         }
     }
@@ -992,7 +993,6 @@ where
         payload_end_idx: usize,
         author: &NodeId<PT>,
         targets: impl FnOnce() -> Vec<NodeId<PT>>,
-        stride: usize,
     ) {
         self.flush_batch = false;
         if self
@@ -1004,7 +1004,6 @@ where
             let batch = self.batcher.batch.as_mut().unwrap();
             assert_eq!(batch.end_idx, payload_start_idx);
             batch.end_idx = payload_end_idx;
-            batch.stride = stride;
         } else {
             self.batcher.flush();
             self.batcher.batch = Some(BroadcastBatch {
@@ -1013,7 +1012,6 @@ where
 
                 start_idx: payload_start_idx,
                 end_idx: payload_end_idx,
-                stride,
             })
         }
     }
