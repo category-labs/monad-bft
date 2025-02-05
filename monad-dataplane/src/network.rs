@@ -368,13 +368,12 @@ impl NetworkSocket<'_> {
         &mut self,
         to: Vec<SocketAddr>,
         data: Bytes,
-        stride: usize,
+        stride: u16,
     ) -> Option<()> {
         if to.is_empty() {
             return None;
         }
 
-        let stride: u16 = stride.try_into().unwrap();
         let max_iovec_len: usize = max_iovec_len(stride).into();
 
         let num_chunks = data.len().div_ceil(max_iovec_len);

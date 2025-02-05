@@ -45,7 +45,7 @@ fn udp_broadcast() {
     tx.udp_write_broadcast(BroadcastMsg {
         targets: vec![rx_addr; num_msgs],
         payload: payload.clone().into(),
-        stride: DEFAULT_SEGMENT_SIZE.into(),
+        stride: DEFAULT_SEGMENT_SIZE,
     });
 
     for _ in 0..num_msgs {

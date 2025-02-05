@@ -62,7 +62,7 @@ const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct BroadcastMsg {
     pub targets: Vec<SocketAddr>,
     pub payload: Bytes,
-    pub stride: usize,
+    pub stride: u16,
 }
 
 /// Send a list of unicast payloads
@@ -75,7 +75,7 @@ pub struct UnicastMsg {
 pub struct RecvMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
-    pub stride: usize,
+    pub stride: u16,
 }
 
 pub struct Dataplane {
@@ -457,10 +457,10 @@ impl DataplaneEventLoop {
                 continue;
             }
 
-            let stride: usize = if result.stride == 0 {
-                len
+            let stride: u16 = if result.stride == 0 {
+                len.try_into().unwrap()
             } else {
-                result.stride.into()
+                result.stride
             };
 
             let b = Bytes::copy_from_slice(&self.udp_socket.recv_ctrl.buf_refs[i][0..len]);

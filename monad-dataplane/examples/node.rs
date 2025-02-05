@@ -71,7 +71,7 @@ fn main() {
             tx.network.udp_write_broadcast(BroadcastMsg {
                 targets: vec![tx.target],
                 payload: b.slice(i * pkt_size..(i + 1) * pkt_size),
-                stride: DEFAULT_SEGMENT_SIZE.into(),
+                stride: DEFAULT_SEGMENT_SIZE,
             })
         }
 
