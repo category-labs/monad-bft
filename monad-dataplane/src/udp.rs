@@ -25,6 +25,9 @@ pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
 
 pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 
+const ETHERNET_MTU: u16 = 1500;
+const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
+
 pub fn spawn_tasks(
     local_addr: SocketAddr,
     udp_ingress_tx: mpsc::Sender<RecvMsg>,
@@ -63,7 +66,7 @@ pub fn spawn_tasks(
 
 async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
     loop {
-        let buf = BytesMut::with_capacity(DEFAULT_SEGMENT_SIZE.into());
+        let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
         match udp_socket_rx.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
