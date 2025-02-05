@@ -11,7 +11,7 @@ use futures::{executor, Stream};
 use futures_util::FutureExt;
 use monad_dataplane::{
     event_loop::{BroadcastMsg, Dataplane, RecvMsg},
-    network::DEFAULT_MTU,
+    network::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE},
 };
 use rand::Rng;
 
@@ -71,7 +71,7 @@ fn main() {
             tx.network.udp_write_broadcast(BroadcastMsg {
                 targets: vec![tx.target],
                 payload: b.slice(i * pkt_size..(i + 1) * pkt_size),
-                stride: pkt_size,
+                stride: DEFAULT_SEGMENT_SIZE.into(),
             })
         }
 
