@@ -15,8 +15,8 @@ pub struct NodeNetworkConfig {
     pub mtu: u16,
 }
 
-// TODO: When running in docker with vpnkit, we seem to occasionally get ICMP frag-neededs
-// for 20 bytes less than the expected MTU -- investigate what's causing this.
+// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
+// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
 fn default_mtu() -> u16 {
     1480
 }

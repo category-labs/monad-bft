@@ -373,7 +373,7 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
 
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
-    gso_size: u16,
+    segment_size: u16,
     app_message: Bytes,
     redundancy: u8, // 2 == send 1 extra packet for every 1 original
     epoch_no: u64,
@@ -388,7 +388,7 @@ where
 
     build_messages_with_length(
         key,
-        gso_size,
+        segment_size,
         app_message,
         app_message_len,
         redundancy,
@@ -407,7 +407,7 @@ where
 // such a message.
 pub fn build_messages_with_length<ST>(
     key: &ST::KeyPairType,
-    gso_size: u16,
+    segment_size: u16,
     app_message: Bytes,
     app_message_len: u32,
     redundancy: u8, // 2 == send 1 extra packet for every 1 original
@@ -419,9 +419,9 @@ pub fn build_messages_with_length<ST>(
 where
     ST: CertificateSignatureRecoverable,
 {
-    let body_size = gso_size
+    let body_size = segment_size
         .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
-        .expect("GSO too small");
+        .expect("segment_size too small");
 
     let is_broadcast = matches!(
         build_target,
@@ -469,7 +469,7 @@ where
         num_packets
     };
 
-    let mut message = BytesMut::zeroed(gso_size as usize * num_packets);
+    let mut message = BytesMut::zeroed(segment_size as usize * num_packets);
     let app_message_hash: AppMessageHash = HexBytes({
         let mut hasher = HasherType::new();
         hasher.update(&app_message);
@@ -477,7 +477,7 @@ where
     });
 
     let mut chunk_datas = message
-        .chunks_mut(gso_size.into())
+        .chunks_mut(segment_size.into())
         .map(|chunk| (None, &mut chunk[(HEADER_LEN + proof_size).into()..]))
         .collect_vec();
     assert_eq!(chunk_datas.len(), num_packets);
@@ -492,7 +492,7 @@ where
                 tracing::warn!(?to, "not sending message, address unknown");
                 return Vec::new();
             };
-            outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets));
+            outbound_gso_idx.push((*addr, 0..segment_size as usize * num_packets));
             for (chunk_idx, (chunk_symbol_id, chunk_data)) in chunk_datas.iter_mut().enumerate() {
                 // populate chunk_recipient
                 chunk_data[0..20].copy_from_slice(&compute_hash(to).0);
@@ -514,7 +514,7 @@ where
                 if let Some(addr) = known_addresses.get(node_id) {
                     outbound_gso_idx.push((
                         *addr,
-                        start_idx * gso_size as usize..end_idx * gso_size as usize,
+                        start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
@@ -563,7 +563,7 @@ where
                 if let Some(addr) = known_addresses.get(node_id) {
                     outbound_gso_idx.push((
                         *addr,
-                        start_idx * gso_size as usize..end_idx * gso_size as usize,
+                        start_idx * segment_size as usize..end_idx * segment_size as usize,
                     ));
                 } else {
                     tracing::warn!(?node_id, "not sending message, address unknown")
@@ -579,7 +579,7 @@ where
             for node_id in full_nodes_view.view() {
                 // TODO: assign a sub-segment of range to each full node
                 if let Some(addr) = known_addresses.get(node_id) {
-                    full_node_gso_idx.push((*addr, 0..(num_packets * gso_size as usize)));
+                    full_node_gso_idx.push((*addr, 0..(num_packets * segment_size as usize)));
                 } else {
                     tracing::warn!(
                         ?node_id,
@@ -632,10 +632,10 @@ where
     let epoch_no: u64 = epoch_no;
     let unix_ts_ms: u64 = unix_ts_ms;
     message
-        // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch)
-        .chunks_mut(gso_size as usize * chunks_per_merkle_batch)
+        // .par_chunks_mut(segment_size as usize * chunks_per_merkle_batch)
+        .chunks_mut(segment_size as usize * chunks_per_merkle_batch)
         .for_each(|merkle_batch| {
-            let mut merkle_batch = merkle_batch.chunks_mut(gso_size as usize).collect_vec();
+            let mut merkle_batch = merkle_batch.chunks_mut(segment_size as usize).collect_vec();
             let merkle_leaves = merkle_batch
                 .iter_mut()
                 .enumerate()
@@ -1148,7 +1148,7 @@ mod tests {
         certificate_signature::CertificateSignaturePubKey,
         hasher::{Hasher, HasherType},
     };
-    use monad_dataplane::event_loop::RecvMsg;
+    use monad_dataplane::{event_loop::RecvMsg, network::DEFAULT_SEGMENT_SIZE};
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Stake};
 
@@ -1198,7 +1198,6 @@ mod tests {
         (keys.pop().unwrap(), validators, known_addresses)
     }
 
-    const GSO_SIZE: u16 = 1500;
     const EPOCH: u64 = 5;
     const UNIX_TS_MS: u64 = 5;
 
@@ -1217,7 +1216,7 @@ mod tests {
 
         let messages = build_messages::<SignatureType>(
             &key,
-            GSO_SIZE, // gso_size
+            DEFAULT_SEGMENT_SIZE, // segment_size
             app_message.clone(),
             2,     // redundancy,
             EPOCH, // epoch_no
@@ -1230,7 +1229,7 @@ mod tests {
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
-                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
                     parse_message::<SignatureType>(&mut signature_cache, message.clone())
                         .expect("valid message");
@@ -1254,7 +1253,7 @@ mod tests {
 
         let messages = build_messages::<SignatureType>(
             &key,
-            GSO_SIZE, // gso_size
+            DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             2,     // redundancy,
             EPOCH, // epoch_no
@@ -1267,8 +1266,10 @@ mod tests {
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
-                let mut message: BytesMut =
-                    aggregate_message.split_to(GSO_SIZE.into()).as_ref().into();
+                let mut message: BytesMut = aggregate_message
+                    .split_to(DEFAULT_SEGMENT_SIZE.into())
+                    .as_ref()
+                    .into();
                 // try flipping each bit
                 for bit_idx in 0..message.len() * 8 {
                     let old_byte = message[bit_idx / 8];
@@ -1302,7 +1303,7 @@ mod tests {
 
         let messages = build_messages::<SignatureType>(
             &key,
-            GSO_SIZE, // gso_size
+            DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             2,     // redundancy,
             EPOCH, // epoch_no
@@ -1317,7 +1318,7 @@ mod tests {
 
         for (_to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
-                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
                     parse_message::<SignatureType>(&mut signature_cache, message.clone())
                         .expect("valid message");
@@ -1336,7 +1337,7 @@ mod tests {
 
         let messages = build_messages::<SignatureType>(
             &key,
-            GSO_SIZE, // gso_size
+            DEFAULT_SEGMENT_SIZE, // segment_size
             app_message,
             2,     // redundancy,
             EPOCH, // epoch_no
@@ -1352,7 +1353,7 @@ mod tests {
         let messages_len = messages.len();
         for (to, mut aggregate_message) in messages {
             while !aggregate_message.is_empty() {
-                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let message = aggregate_message.split_to(DEFAULT_SEGMENT_SIZE.into());
                 let parsed_message =
                     parse_message::<SignatureType>(&mut signature_cache, message.clone())
                         .expect("valid message");

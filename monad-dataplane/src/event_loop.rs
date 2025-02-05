@@ -220,8 +220,8 @@ impl Dataplane {
 
         // 64 is Linux kernel limit on max number of segments
         assert!(
-            (crate::network::max_iovec_len(default_mtu as usize)
-                / crate::network::gso_size(default_mtu as usize))
+            (crate::network::max_iovec_len(default_mtu)
+                / crate::network::segment_size_for_mtu(default_mtu))
                 <= 64
         );
 

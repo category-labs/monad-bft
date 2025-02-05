@@ -5,7 +5,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use itertools::Itertools;
 use lru::LruCache;
 use monad_crypto::hasher::{Hasher, HasherType};
-use monad_dataplane::network::gso_size;
+use monad_dataplane::network::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
@@ -13,9 +13,6 @@ use monad_raptorcast::{
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
-
-const MONAD_MTU: usize = 1480;
-const GSO_SIZE: usize = gso_size(MONAD_MTU);
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -57,7 +54,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
                 &keys[0],
-                GSO_SIZE.try_into().unwrap(), // gso_size
+                DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
                 2, // redundancy,
                 0, // epoch_no
@@ -99,7 +96,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let messages = build_messages::<SecpSignature>(
             &keys[0],
-            GSO_SIZE.try_into().unwrap(), // gso_size
+            DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
             2, // redundancy,
             0, // epoch_no
@@ -113,7 +110,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let example_chunk = parse_message::<SecpSignature>(
             &mut LruCache::new(SIGNATURE_CACHE_SIZE),
-            messages[0].clone().split_to(GSO_SIZE),
+            messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into()),
         )
         .expect("valid chunk");
 
@@ -134,7 +131,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     while !message.is_empty() {
                         let parsed_message = parse_message::<SecpSignature>(
                             &mut signature_cache,
-                            message.split_to(GSO_SIZE),
+                            message.split_to(DEFAULT_SEGMENT_SIZE.into()),
                         )
                         .expect("valid message");
                         decoder

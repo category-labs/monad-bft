@@ -18,6 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
     CertificateSignatureRecoverable,
 };
+use monad_dataplane::network::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
@@ -287,7 +288,7 @@ where
                             redundancy: 3,
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,
-                            mtu: 1480,
+                            mtu: DEFAULT_MTU,
                         }),
                     },
                     ledger_config: match args.ledger {

@@ -8,14 +8,19 @@ use std::{
 use bytes::Bytes;
 use tracing::warn;
 
-pub const MAX_UDP_PKT: usize = 65535;
-const MAX_IPV4_HDR: usize = 20;
-const MAX_UDP_HDR: usize = 8;
+// When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
+// https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
+pub const DEFAULT_MTU: u16 = 1480;
 
-pub const fn gso_size(mtu: usize) -> usize {
+const MAX_IPV4_HDR: u16 = 20;
+const MAX_UDP_HDR: u16 = 8;
+pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
     mtu - MAX_IPV4_HDR - MAX_UDP_HDR
 }
 
+pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
+
+pub const MAX_UDP_PKT: usize = 65535;
 const BUF_SIZE: usize = MAX_UDP_PKT;
 const NUM_RX_MSGHDR: usize = 128;
 const NUM_TX_MSGHDR: usize = 1024;
@@ -24,9 +29,9 @@ const CMSG_LEN: usize = 88;
 // message length is limited by the max limit of the underlying protocol
 //FIXME: This is expected size MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR, but the actual measured
 //number where the packet isn't being fragmented is 65493. investigate
-pub const fn max_iovec_len(mtu: usize) -> usize {
-    let gso = gso_size(mtu);
-    65493 / gso * gso
+pub const fn max_iovec_len(mtu: u16) -> u16 {
+    let segment_size = segment_size_for_mtu(mtu);
+    65493 / segment_size * segment_size
 }
 
 const LINUX_SENDMMSG_VLEN_MAX: usize = 1024;
@@ -186,7 +191,7 @@ impl NetworkSocket<'_> {
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub fn new(sock_addr: &SocketAddr, up_bandwidth_mbps: u64, mtu: u16) -> Self {
         let default_socket = std::net::UdpSocket::bind(sock_addr).unwrap();
-        TxSockets::set_rx_sock_opts(&default_socket, gso_size(mtu as usize) as i32);
+        TxSockets::set_rx_sock_opts(&default_socket, segment_size_for_mtu(mtu) as i32);
 
         let local_sock_addr = default_socket.local_addr().unwrap();
 
@@ -369,11 +374,14 @@ impl NetworkSocket<'_> {
             return None;
         }
 
-        let num_chunks = data.len().div_ceil(max_iovec_len(stride));
+        let stride: u16 = stride.try_into().unwrap();
+        let max_iovec_len: usize = max_iovec_len(stride).into();
+
+        let num_chunks = data.len().div_ceil(max_iovec_len);
         assert!(num_chunks * to.len() <= NUM_TX_MSGHDR);
 
-        for (i, k) in (0..data.len()).step_by(max_iovec_len(stride)).enumerate() {
-            let mut n = k + max_iovec_len(stride);
+        for (i, k) in (0..data.len()).step_by(max_iovec_len).enumerate() {
+            let mut n = k + max_iovec_len;
             if n > data.len() {
                 n = data.len();
             }
@@ -401,7 +409,7 @@ impl NetworkSocket<'_> {
                 self.send_ctrl.msgs[k].msg_hdr.msg_namelen =
                     unsafe { self.send_ctrl.name[k].assume_init_ref().len() };
                 self.send_ctrl.msgs[k].msg_len = self.send_ctrl.iovecs[j].iov_len as u32;
-                self.send_ctrl.stride[k] = stride as u16;
+                self.send_ctrl.stride[k] = stride;
             }
         }
 
@@ -420,7 +428,7 @@ impl NetworkSocket<'_> {
             while !payload.is_empty() {
                 assert!(i < NUM_TX_MSGHDR);
                 let chunk =
-                    payload.split_to(max_iovec_len(self.local_mtu as usize).min(payload.len()));
+                    payload.split_to(usize::from(max_iovec_len(self.local_mtu)).min(payload.len()));
 
                 self.send_ctrl.name[i].write(to.into());
 
@@ -436,7 +444,7 @@ impl NetworkSocket<'_> {
                     self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
                 self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
                     unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
-                self.send_ctrl.stride[i] = gso_size(self.local_mtu as usize) as u16;
+                self.send_ctrl.stride[i] = segment_size_for_mtu(self.local_mtu);
 
                 i += 1;
                 if i == NUM_TX_MSGHDR {

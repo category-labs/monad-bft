@@ -3,7 +3,7 @@ use std::{sync::Once, thread::sleep, time::Duration};
 use futures::executor;
 use monad_dataplane::{
     event_loop::{BroadcastMsg, Dataplane, RecvMsg, UnicastMsg},
-    network::gso_size,
+    network::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE},
 };
 use ntest::timeout;
 use rand::Rng;
@@ -23,9 +23,6 @@ fn once_setup() {
     });
 }
 
-const MONAD_MTU: usize = 1480;
-const GSO_SIZE: usize = gso_size(MONAD_MTU);
-
 #[test]
 #[timeout(1000)]
 fn udp_broadcast() {
@@ -35,20 +32,20 @@ fn udp_broadcast() {
     let tx_addr = "127.0.0.1:9001".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
 
-    let payload: Vec<u8> = (0..GSO_SIZE)
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
     tx.udp_write_broadcast(BroadcastMsg {
         targets: vec![rx_addr; num_msgs],
         payload: payload.clone().into(),
-        stride: GSO_SIZE,
+        stride: DEFAULT_SEGMENT_SIZE.into(),
     });
 
     for _ in 0..num_msgs {
@@ -68,13 +65,13 @@ fn udp_unicast() {
     let tx_addr = "127.0.0.1:9003".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
 
-    let payload: Vec<u8> = (0..GSO_SIZE)
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
@@ -99,13 +96,13 @@ fn tcp_slow() {
     let tx_addr = "127.0.0.1:9005".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
 
-    let payload: Vec<u8> = (0..GSO_SIZE)
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
@@ -130,13 +127,13 @@ fn tcp_rapid() {
     let tx_addr = "127.0.0.1:9007".parse().unwrap();
     let num_msgs = 32;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, MONAD_MTU.try_into().unwrap());
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS, DEFAULT_MTU);
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
 
-    let payload: Vec<u8> = (0..GSO_SIZE)
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 

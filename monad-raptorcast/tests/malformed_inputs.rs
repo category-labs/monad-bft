@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
+use monad_dataplane::network::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
@@ -46,9 +47,9 @@ pub fn different_symbol_sizes() {
     // - author: we use the same tx keypair/nodeid for both messages;
     // - app_message_{hash,len}: we use identical message bodies for the two messages.
     for i in 0..=1 {
-        let gso_size = match i {
-            0 => 1460,
-            1 => 1480,
+        let segment_size = match i {
+            0 => DEFAULT_MTU - 20,
+            1 => DEFAULT_MTU,
             _ => panic!(),
         };
 
@@ -64,7 +65,7 @@ pub fn different_symbol_sizes() {
 
         let messages = build_messages::<SignatureType>(
             &tx_keypair,
-            gso_size,
+            segment_size,
             message.clone(),
             2, // redundancy,
             0, // epoch_no
@@ -77,11 +78,11 @@ pub fn different_symbol_sizes() {
         // in the second message.
         if i == 0 {
             tx_socket
-                .send_to(&messages[0].1[0..usize::from(gso_size)], messages[0].0)
+                .send_to(&messages[0].1[0..usize::from(segment_size)], messages[0].0)
                 .unwrap();
         } else {
             for message in messages {
-                for chunk in message.1.chunks(usize::from(gso_size)) {
+                for chunk in message.1.chunks(usize::from(segment_size)) {
                     tx_socket.send_to(chunk, message.0).unwrap();
                 }
             }
@@ -107,8 +108,6 @@ pub fn buffer_count_overflow() {
 
     let tx_socket = UdpSocket::bind(tx_addr).unwrap();
 
-    let gso_size = 1460;
-
     let mut validators = EpochValidators {
         validators: BTreeMap::from([
             (rx_nodeid, Validator { stake: Stake(1) }),
@@ -121,7 +120,7 @@ pub fn buffer_count_overflow() {
 
     let messages = build_messages::<SignatureType>(
         &tx_keypair,
-        gso_size,
+        DEFAULT_SEGMENT_SIZE,
         message,
         2, // redundancy,
         0, // epoch_no
@@ -135,7 +134,10 @@ pub fn buffer_count_overflow() {
     for _ in 0..1000 {
         for _ in 0..70 {
             tx_socket
-                .send_to(&messages[0].1[0..usize::from(gso_size)], messages[0].0)
+                .send_to(
+                    &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
+                    messages[0].0,
+                )
                 .unwrap();
         }
 
@@ -161,8 +163,6 @@ pub fn oversized_message() {
 
     let tx_socket = UdpSocket::bind(tx_addr).unwrap();
 
-    let gso_size = 1460;
-
     let mut validators = EpochValidators {
         validators: BTreeMap::from([
             (rx_nodeid, Validator { stake: Stake(1) }),
@@ -175,9 +175,9 @@ pub fn oversized_message() {
 
     let messages = build_messages_with_length::<SignatureType>(
         &tx_keypair,
-        gso_size,
+        DEFAULT_SEGMENT_SIZE,
         message,
-        ((SOURCE_SYMBOLS_MAX + 1) * usize::from(gso_size))
+        ((SOURCE_SYMBOLS_MAX + 1) * usize::from(DEFAULT_SEGMENT_SIZE))
             .try_into()
             .unwrap(),
         2, // redundancy,
@@ -190,7 +190,10 @@ pub fn oversized_message() {
     // Sending a single packet of an oversized message is sufficient to crash the
     // receiver if it is vulnerable to this issue.
     tx_socket
-        .send_to(&messages[0].1[0..usize::from(gso_size)], messages[0].0)
+        .send_to(
+            &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
+            messages[0].0,
+        )
         .unwrap();
 
     // Wait for RaptorCast instance to catch up.
@@ -287,7 +290,7 @@ pub fn set_up_test(
                 redundancy: 2,
                 local_addr: rx_addr,
                 up_bandwidth_mbps: 1_000,
-                mtu: 1480,
+                mtu: DEFAULT_MTU,
             };
 
             let mut service = RaptorCast::<

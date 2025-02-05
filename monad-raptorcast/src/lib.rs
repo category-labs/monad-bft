@@ -17,7 +17,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{
     event_loop::{BroadcastMsg, Dataplane, UnicastMsg},
-    network::gso_size,
+    network::segment_size_for_mtu,
 };
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
@@ -215,17 +215,18 @@ where
                                      build_target: BuildTarget<ST>,
                                      app_message: Bytes|
                      -> UnicastMsg {
+                        let segment_size = segment_size_for_mtu(self.mtu);
+
                         let unix_ts_ms = std::time::UNIX_EPOCH
                             .elapsed()
                             .expect("time went backwards")
                             .as_millis()
                             .try_into()
                             .expect("unix epoch doesn't fit in u64");
+
                         let messages = udp::build_messages::<ST>(
                             &self.key,
-                            gso_size(self.mtu as usize)
-                                .try_into()
-                                .expect("GSO size too big"),
+                            segment_size,
                             app_message,
                             self.redundancy,
                             epoch.0,
@@ -403,7 +404,7 @@ where
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 let dataplane = RefCell::new(&mut this.dataplane);
-                let local_gso_size = gso_size(this.mtu as usize);
+                let local_segment_size = segment_size_for_mtu(this.mtu);
                 this.udp_state.handle_message(
                     &mut this.epoch_validators,
                     |targets, payload, bcast_stride| {
@@ -423,7 +424,7 @@ where
                         dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
                             targets: full_node_addrs.clone(),
                             payload,
-                            stride: local_gso_size,
+                            stride: local_segment_size.into(),
                         });
                     },
                     message,

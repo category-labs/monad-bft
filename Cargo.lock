@@ -5542,6 +5542,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-dataplane",
  "monad-executor",
  "monad-executor-glue",
  "monad-raptorcast",

@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
+use monad_dataplane::network::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
@@ -116,7 +117,7 @@ fn service(
                     redundancy: 2,
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
-                    mtu: 1480,
+                    mtu: DEFAULT_MTU,
                 };
 
                 let mut service = RaptorCast::<
