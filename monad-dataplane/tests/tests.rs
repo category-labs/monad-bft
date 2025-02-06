@@ -145,3 +145,90 @@ fn tcp_rapid() {
         assert_eq!(received_payload, payload);
     }
 }
+
+const MINIMUM_SEGMENT_SIZE: u16 = 256;
+
+#[test]
+#[timeout(30000)]
+fn broadcast_all_strides() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9008".parse().unwrap();
+    let tx_addr = "127.0.0.1:9009".parse().unwrap();
+
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let total_length: usize = 100000;
+
+    let payload: Vec<u8> = (0..total_length)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    for stride in MINIMUM_SEGMENT_SIZE..=DEFAULT_SEGMENT_SIZE {
+        tx.udp_write_broadcast(BroadcastMsg {
+            targets: vec![rx_addr],
+            payload: payload.clone().into(),
+            stride,
+        });
+
+        let stride = stride.into();
+
+        let num_msgs = total_length.div_ceil(stride);
+
+        for i in 0..num_msgs {
+            let msg: RecvMsg = executor::block_on(rx.udp_read());
+
+            assert_eq!(msg.src_addr, tx_addr);
+            assert_eq!(
+                &msg.payload[..],
+                &payload[i * stride..((i + 1) * stride).min(payload.len())]
+            );
+        }
+    }
+}
+
+#[test]
+#[timeout(30000)]
+fn unicast_all_strides() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9010".parse().unwrap();
+    let tx_addr = "127.0.0.1:9011".parse().unwrap();
+
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let total_length: usize = 100000;
+
+    let payload: Vec<u8> = (0..total_length)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    for stride in MINIMUM_SEGMENT_SIZE..=DEFAULT_SEGMENT_SIZE {
+        tx.udp_write_unicast(UnicastMsg {
+            msgs: vec![(rx_addr, payload.clone().into())],
+            stride,
+        });
+
+        let stride = stride.into();
+
+        let num_msgs = total_length.div_ceil(stride);
+
+        for i in 0..num_msgs {
+            let msg: RecvMsg = executor::block_on(rx.udp_read());
+
+            assert_eq!(msg.src_addr, tx_addr);
+            assert_eq!(
+                &msg.payload[..],
+                &payload[i * stride..((i + 1) * stride).min(payload.len())]
+            );
+        }
+    }
+}
