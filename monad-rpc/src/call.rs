@@ -419,13 +419,11 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath + std::fmt::Debug>(
         .expect("chain id must be populated")
         .to::<u64>();
     let txn: TxEnvelope = params.transaction.try_into()?;
-    let block_number = header.header.number;
     match monad_cxx::eth_call(
         tx_chain_id,
         txn,
         header.header,
         sender,
-        block_number,
         &triedb_env.path(),
         state_overrides,
     ) {

@@ -58,7 +58,7 @@ void monad_state_override_set::set_override_state(
 monad_evmc_result eth_call(
     monad_chain_config const chain_config, std::vector<uint8_t> const &rlp_txn,
     std::vector<uint8_t> const &rlp_header,
-    std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
+    std::vector<uint8_t> const &rlp_sender,
     std::string const &triedb_path,
     monad_state_override_set const &state_overrides)
 {

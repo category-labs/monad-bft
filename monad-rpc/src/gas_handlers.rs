@@ -27,7 +27,6 @@ struct GasEstimator {
     chain_id: u64,
     block_header: Header,
     sender: Address,
-    block_number: u64,
     triedb_path: PathBuf,
     state_override: StateOverrideSet,
 }
@@ -37,7 +36,6 @@ impl GasEstimator {
         chain_id: u64,
         block_header: Header,
         sender: Address,
-        block_number: u64,
         triedb_path: PathBuf,
         state_override: StateOverrideSet,
     ) -> Self {
@@ -45,7 +43,6 @@ impl GasEstimator {
             chain_id,
             block_header,
             sender,
-            block_number,
             triedb_path,
             state_override,
         }
@@ -59,7 +56,6 @@ impl EthCallProvider for GasEstimator {
             txn,
             self.block_header.clone(),
             self.sender,
-            self.block_number,
             self.triedb_path.as_path(),
             &self.state_override,
         )
@@ -202,7 +198,6 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         tx_chain_id,
         header.header,
         sender,
-        block_number,
         triedb_env.path(),
         params.state_override_set,
     );
