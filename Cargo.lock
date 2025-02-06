@@ -4414,6 +4414,7 @@ dependencies = [
  "eyre",
  "futures",
  "hex",
+ "monad-eth-testutil",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",

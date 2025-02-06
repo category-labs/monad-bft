@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, iter::repeat};
 
 use alloy_consensus::{
-    transaction::Recovered, SignableTransaction, Transaction, TxEip1559, TxEnvelope, TxLegacy,
+    transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
+    Transaction, TxEip1559, TxEnvelope, TxLegacy,
 };
-use alloy_primitives::{keccak256, Address, FixedBytes, TxKind, U256};
+use alloy_primitives::{keccak256, Address, Bloom, FixedBytes, Log, LogData, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_consensus_types::{
@@ -67,6 +68,24 @@ pub fn make_eip1559_tx(
         .sign_hash_sync(&transaction.signature_hash())
         .unwrap();
     transaction.into_signed(signature).into()
+}
+
+pub fn make_receipt(logs_len: usize) -> ReceiptWithBloom {
+    ReceiptWithBloom::new(
+        Receipt::<Log> {
+            logs: vec![Log {
+                address: Default::default(),
+                data: LogData::new(
+                    vec![],
+                    repeat(42).take(logs_len).collect::<Vec<u8>>().into(),
+                )
+                .unwrap(),
+            }],
+            status: Eip658Value::Eip658(true),
+            cumulative_gas_used: 21000,
+        },
+        Bloom::repeat_byte(b'a'),
+    )
 }
 
 pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {

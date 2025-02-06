@@ -1,28 +1,8 @@
-use std::iter::repeat;
-
-use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom};
-use alloy_primitives::{Bloom, Log, LogData, B256};
+use alloy_consensus::ReceiptEnvelope;
+use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
-use monad_eth_testutil::{make_eip1559_tx, make_legacy_tx};
+use monad_eth_testutil::{make_eip1559_tx, make_legacy_tx, make_receipt};
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
-
-fn create_receipt(logs_len: usize) -> ReceiptWithBloom {
-    ReceiptWithBloom::new(
-        Receipt::<Log> {
-            logs: vec![Log {
-                address: Default::default(),
-                data: LogData::new(
-                    vec![],
-                    repeat(42).take(logs_len).collect::<Vec<u8>>().into(),
-                )
-                .unwrap(),
-            }],
-            status: Eip658Value::Eip658(true),
-            cumulative_gas_used: 21000,
-        },
-        Bloom::repeat_byte(b'a'),
-    )
-}
 
 #[test]
 fn test_rlp_encode_decode_legacy_tx() {
@@ -59,7 +39,7 @@ fn test_rlp_encode_decode_eip1559_tx() {
 
 #[test]
 fn test_rlp_encode_decode_legacy_receipt() {
-    let receipt = ReceiptEnvelope::Legacy(create_receipt(50));
+    let receipt = ReceiptEnvelope::Legacy(make_receipt(50));
     let receipt_with_index = ReceiptWithLogIndex {
         receipt,
         starting_log_index: 5,
@@ -74,7 +54,7 @@ fn test_rlp_encode_decode_legacy_receipt() {
 
 #[test]
 fn test_rlp_encode_decode_eip1559_receipt() {
-    let receipt = ReceiptEnvelope::Eip1559(create_receipt(50));
+    let receipt = ReceiptEnvelope::Eip1559(make_receipt(50));
     let receipt_with_index = ReceiptWithLogIndex {
         receipt,
         starting_log_index: 5,

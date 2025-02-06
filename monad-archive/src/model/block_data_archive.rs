@@ -502,6 +502,7 @@ mod tests {
     use alloy_primitives::{Bloom, Log, LogData, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_eth_testutil::make_receipt;
 
     use super::*;
     use crate::kvstore::memory::MemoryStorage;
@@ -537,28 +538,6 @@ mod tests {
                 ommers: vec![],
                 withdrawals: None,
             },
-        }
-    }
-
-    fn create_test_receipt(receipt_len: usize) -> ReceiptWithLogIndex {
-        let receipt = ReceiptEnvelope::Eip1559(ReceiptWithBloom::new(
-            Receipt::<Log> {
-                logs: vec![Log {
-                    address: Default::default(),
-                    data: LogData::new(
-                        vec![],
-                        repeat(42).take(receipt_len).collect::<Vec<u8>>().into(),
-                    )
-                    .unwrap(),
-                }],
-                status: alloy_consensus::Eip658Value::Eip658(true),
-                cumulative_gas_used: 55,
-            },
-            Bloom::repeat_byte(b'a'),
-        ));
-        ReceiptWithLogIndex {
-            receipt,
-            starting_log_index: 0,
         }
     }
 
@@ -803,7 +782,11 @@ mod tests {
         let archive = BlockDataArchive::new(store);
 
         let block_num = 1;
-        let receipts = vec![create_test_receipt(10)];
+        let receipt = ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(make_receipt(10)),
+            starting_log_index: 0,
+        };
+        let receipts = vec![receipt];
         let traces = vec![vec![1, 2, 3]];
 
         archive
@@ -939,7 +922,11 @@ mod tests {
         let store = MemoryStorage::new("test");
         let archive = BlockDataArchive::new(store.clone());
         let block = create_custom_block(1);
-        let receipts = vec![create_test_receipt(5)];
+        let receipt = ReceiptWithLogIndex {
+            receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
+            starting_log_index: 0,
+        };
+        let receipts = vec![receipt];
         let traces = vec![vec![4, 5, 6]];
         archive.archive_block(block.clone()).await.unwrap();
         archive.archive_receipts(receipts.clone(), 1).await.unwrap();

@@ -70,3 +70,6 @@ url = { workspace = true }
 tempfile.workspace = true
 mongodb = "3.2.1"
 regex = "1.10.2"
+
+[dev-dependencies]
+monad-eth-testutil = { path = "../monad-eth-testutil" }

@@ -99,7 +99,12 @@ impl CallRequest {
             } => {
                 let max_fee_per_gas = match max_fee_per_gas {
                     Some(mut max_fee_per_gas) => {
-                        if max_fee_per_gas < base_fee {
+                        if max_fee_per_gas != U256::ZERO && max_fee_per_gas < base_fee {
+                            return Err(JsonRpcError::eth_call_error(
+                                "max fee per gas less than block base fee".to_string(),
+                                None,
+                            ));
+                        } else if max_fee_per_gas == U256::ZERO {
                             max_fee_per_gas = base_fee;
                         }
 
@@ -461,9 +466,11 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use alloy_consensus::Header;
     use alloy_primitives::{Address, U256};
-    use monad_ethcall::StateOverrideSet;
+    use monad_ethcall::{StateOverrideObject, StateOverrideSet};
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
         triedb_env::{BlockKey, FinalizedBlockKey},
@@ -472,7 +479,7 @@ mod tests {
     use serde_json::json;
 
     use super::{fill_gas_params, CallRequest, GasPriceDetails};
-    use crate::{jsonrpc, tests::init_server};
+    use crate::{call::sender_gas_allowance, jsonrpc, tests::init_server};
 
     #[test]
     fn parse_call_request() {
@@ -613,7 +620,7 @@ mod tests {
             ..Default::default()
         };
         let mut header = Header {
-            base_fee_per_gas: Some(10_000_000_000),
+            base_fee_per_gas: Some(100_000),
             gas_limit: 300_000_000,
             ..Default::default()
         };
@@ -651,5 +658,72 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fill_gas_prices() {
+        // when gas price is specified, returns error if gas price is less than block base fee
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(50)),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::from(100)).is_err());
+
+        // when gas price is not specified, do not return error, set maxFeePerGas to block base fee
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::from(100)).is_ok());
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::from(100)));
+
+        // legacy transaction gas prices is not checked
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::from(50),
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::from(100)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sender_gas_allowance() {
+        let mock_triedb = MockTriedb::default();
+
+        // when both sender and gas price is populated, and balance override is specified
+        // (1) use overriden balance to check gas allowance
+        let gas_price = U256::from(2000);
+        let call_request = CallRequest {
+            from: Some(Address::ZERO),
+            gas_price_details: GasPriceDetails::Legacy { gas_price },
+            ..Default::default()
+        };
+        let header = Header {
+            base_fee_per_gas: Some(1000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let balance_override = U256::from(1_000_000);
+        let mut overrides: StateOverrideSet = HashMap::new();
+        overrides.insert(
+            Address::ZERO,
+            StateOverrideObject {
+                balance: Some(balance_override),
+                ..Default::default()
+            },
+        );
+
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+        let result =
+            sender_gas_allowance(&mock_triedb, block_key, &header, &call_request, &overrides).await;
+        let gas_limit = result.unwrap();
+        assert_eq!(U256::from(gas_limit), balance_override / gas_price);
     }
 }
