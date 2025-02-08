@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    info!(?args);
+    info!(?args, "Cli Arguments: ");
 
     let metrics = Metrics::new(
         args.otel_endpoint,
@@ -28,6 +28,18 @@ async fn main() -> Result<()> {
 
     let block_data_source = args.block_data_source.build(&metrics).await?;
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
+
+    // Confirm connectivity
+    if !args.skip_connectivity_check {
+        block_data_source
+            .get_latest(LatestKind::Uploaded)
+            .await
+            .wrap_err("Cannot connect to block data source")?;
+        archive_writer
+            .get_latest(LatestKind::Uploaded)
+            .await
+            .wrap_err("Cannot connect to archive sink")?;
+    }
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");

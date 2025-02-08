@@ -62,4 +62,7 @@ pub struct Cli {
 
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    pub skip_connectivity_check: bool,
 }

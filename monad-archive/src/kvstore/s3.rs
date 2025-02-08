@@ -4,13 +4,8 @@ use aws_config::SdkConfig;
 use aws_sdk_s3::{primitives::ByteStream, Client};
 use bytes::Bytes;
 use eyre::{Context, Result};
-use tokio::time::Duration;
-use tokio_retry::{
-    strategy::{jitter, ExponentialBackoff},
-    Retry,
-};
 
-use super::retry_strategy;
+use super::retry;
 use crate::{metrics::Metrics, prelude::*};
 
 const AWS_S3_ERRORS: &str = "aws_s3_errors";
@@ -71,11 +66,7 @@ impl KVReader for S3Bucket {
 impl KVStore for S3Bucket {
     // Upload rlp-encoded bytes with retry
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
-        let retry_strategy = ExponentialBackoff::from_millis(10)
-            .max_delay(Duration::from_secs(1))
-            .map(jitter);
-
-        Retry::spawn(retry_strategy, || {
+        retry(|| {
             let client = &self.client;
             let bucket = &self.bucket;
             let key = key.as_ref().to_string();
@@ -114,7 +105,7 @@ impl KVStore for S3Bucket {
 
         loop {
             let token = continuation_token.as_ref();
-            let response = Retry::spawn(retry_strategy(), || {
+            let response = retry(|| {
                 let mut request = self
                     .client
                     .list_objects_v2()

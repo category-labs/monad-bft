@@ -1,6 +1,7 @@
 pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
+pub mod mongo;
 pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
@@ -8,14 +9,18 @@ pub mod triedb_reader;
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use cloud_proxy::CloudProxyReader;
 use enum_dispatch::enum_dispatch;
 use eyre::Result;
 use futures::future::try_join_all;
-use memory::MemoryStorage;
-use rocksdb_storage::RocksDbClient;
-use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::{
+    strategy::{jitter, ExponentialBackoff},
+    RetryIf,
+};
 
+use self::{
+    cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage,
+    rocksdb_storage::RocksDbClient,
+};
 use crate::prelude::*;
 
 #[enum_dispatch(KVStore, KVReader)]
@@ -25,6 +30,7 @@ pub enum KVStoreErased {
     S3Bucket,
     DynamoDBArchive,
     MemoryStorage,
+    MongoDbStorage,
 }
 
 #[enum_dispatch(KVReader)]
@@ -35,6 +41,7 @@ pub enum KVReaderErased {
     MemoryStorage,
     DynamoDBArchive,
     CloudProxyReader,
+    MongoDbStorage,
 }
 
 impl From<KVStoreErased> for KVReaderErased {
@@ -44,6 +51,7 @@ impl From<KVStoreErased> for KVReaderErased {
             KVStoreErased::S3Bucket(x) => KVReaderErased::S3Bucket(x),
             KVStoreErased::MemoryStorage(x) => KVReaderErased::MemoryStorage(x),
             KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),
+            KVStoreErased::MongoDbStorage(x) => KVReaderErased::MongoDbStorage(x),
         }
     }
 }
@@ -93,4 +101,28 @@ pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Du
     ExponentialBackoff::from_millis(10)
         .max_delay(Duration::from_secs(1))
         .map(jitter)
+}
+
+pub fn retry<A: tokio_retry::Action>(
+    a: A,
+) -> RetryIf<std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration>, A, RetryTimeout> {
+    RetryIf::spawn(retry_strategy(), a, RetryTimeout::ms(10_000))
+}
+
+pub struct RetryTimeout {
+    cutoff: Instant,
+}
+
+impl<E> tokio_retry::Condition<E> for RetryTimeout {
+    fn should_retry(&mut self, _error: &E) -> bool {
+        Instant::now() < self.cutoff
+    }
+}
+
+impl RetryTimeout {
+    fn ms(ms: u64) -> Self {
+        Self {
+            cutoff: Instant::now() + Duration::from_millis(ms),
+        }
+    }
 }

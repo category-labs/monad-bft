@@ -676,14 +676,14 @@ async fn main() -> std::io::Result<()> {
         .unwrap();
 
     // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
-    let archive_reader = match (
+    let aws_archive_reader = match (
         args.s3_bucket,
         args.region,
         args.archive_url,
         args.archive_api_key,
     ) {
         (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
-            match ArchiveReader::initialize_reader(
+            match ArchiveReader::init_aws_reader(
                 s3_bucket,
                 Some(region),
                 &archive_url,
@@ -700,6 +700,17 @@ async fn main() -> std::io::Result<()> {
             }
         }
         _ => None,
+    };
+
+    let archive_reader = match (args.mongo_db_name, args.mongo_url) {
+        (Some(db_name), Some(url)) => match ArchiveReader::init_mongo_reader(url, db_name).await {
+            Ok(mongo_reader) => Some(mongo_reader.with_fallback(aws_archive_reader)),
+            Err(e) => {
+                warn!("Unable to initialize mongo-backed ArchiveReader: {e:?}");
+                aws_archive_reader
+            }
+        },
+        _ => aws_archive_reader,
     };
 
     let resources = MonadRpcResources::new(

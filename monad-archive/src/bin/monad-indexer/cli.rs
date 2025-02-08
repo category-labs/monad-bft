@@ -40,4 +40,7 @@ pub struct Cli {
     /// the block level data store
     #[arg(long, default_value_t = 350 * 1024)]
     pub max_inline_encoded_len: usize,
+
+    #[arg(long, default_value_t = false)]
+    pub skip_connectivity_check: bool,
 }
