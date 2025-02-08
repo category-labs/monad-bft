@@ -23,6 +23,10 @@ bench = false
 [lib]
 bench = false
 
+[features]
+default = []  
+mongodb-integration-tests = []  
+
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
 alloy-consensus = { workspace = true, features = ["k256"] }
@@ -63,3 +67,5 @@ reqwest = { workspace = true }
 rocksdb = "0.22.0"
 url = { workspace = true }
 tempfile.workspace = true
+mongodb = "3.2.1"
+regex = "1.10.2"

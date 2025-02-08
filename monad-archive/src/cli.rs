@@ -7,7 +7,10 @@ use clap::Parser;
 use eyre::{bail, OptionExt};
 use futures::join;
 
-use crate::{kvstore::rocksdb_storage::RocksDbClient, prelude::*};
+use crate::{
+    kvstore::{mongo::MongoDbStorage, rocksdb_storage::RocksDbClient},
+    prelude::*,
+};
 
 async fn get_aws_config(region: Option<String>) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(
@@ -42,12 +45,14 @@ pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
     Triedb(TrieDbCliArgs),
+    MongoDb(MongoDbCliArgs),
 }
 
 #[derive(Debug, Clone)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
+    MongoDb(MongoDbCliArgs),
 }
 
 impl FromStr for BlockDataReaderArgs {
@@ -67,6 +72,7 @@ impl FromStr for BlockDataReaderArgs {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(next)?),
+            "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }
@@ -90,6 +96,7 @@ impl FromStr for ArchiveArgs {
         Ok(match first.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(next)?),
             "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
+            "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
             }
@@ -102,8 +109,12 @@ impl BlockDataReaderArgs {
         use BlockDataReaderArgs::*;
         Ok(match self {
             Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
-            RocksDb(args) => BlockDataArchive::new(RocksDbClient::try_from(args)?.into()).into(),
+            RocksDb(args) => BlockDataArchive::new(RocksDbClient::try_from(args)?).into(),
             Triedb(args) => TriedbReader::new(args).into(),
+            MongoDb(args) => BlockDataArchive::new(
+                MongoDbStorage::new_block_store(&args.url, &args.db, None).await?,
+            )
+            .into(),
         })
     }
 
@@ -113,6 +124,9 @@ impl BlockDataReaderArgs {
             Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
             Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
+            MongoDb(mongo_db_cli_args) => {
+                format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
+            }
         }
     }
 }
@@ -122,6 +136,11 @@ impl ArchiveArgs {
         let store = match self {
             ArchiveArgs::Aws(args) => args.build_blob_store(metrics).await,
             ArchiveArgs::RocksDb(args) => RocksDbClient::try_from(args)?.into(),
+            ArchiveArgs::MongoDb(args) => {
+                MongoDbStorage::new_block_store(&args.url, &args.db, args.capped_size)
+                    .await?
+                    .into()
+            }
         };
         Ok(BlockDataArchive::new(store))
     }
@@ -142,6 +161,14 @@ impl ArchiveArgs {
                 let store = KVStoreErased::from(args.build()?);
                 (store.clone(), store)
             }
+            ArchiveArgs::MongoDb(args) => (
+                MongoDbStorage::new_block_store(&args.url, &args.db, None)
+                    .await?
+                    .into(),
+                MongoDbStorage::new_index_store(&args.url, &args.db, args.capped_size)
+                    .await?
+                    .into(),
+            ),
         };
         Ok(TxIndexArchiver::new(
             index,
@@ -162,15 +189,27 @@ impl ArchiveArgs {
                 let store = KVStoreErased::from(args.build()?);
                 (store.clone(), store)
             }
+            ArchiveArgs::MongoDb(args) => (
+                MongoDbStorage::new_block_store(&args.url, &args.db, None)
+                    .await?
+                    .into(),
+                MongoDbStorage::new_index_store(&args.url, &args.db, args.capped_size)
+                    .await?
+                    .into(),
+            ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
-        Ok(ArchiveReader::new(bdr, index.into()))
+        // TODO: Fixme
+        Ok(ArchiveReader::new(bdr, index, None))
     }
 
     pub fn replica_name(&self) -> String {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
+            ArchiveArgs::MongoDb(mongo_db_cli_args) => {
+                format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
+            }
         }
     }
 }
@@ -244,6 +283,23 @@ impl TrieDbCliArgs {
             max_concurrent_requests: usize::from_str(&next(
                 "args missing max_concurrent_requests",
             )?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MongoDbCliArgs {
+    pub url: String,
+    pub db: String,
+    pub capped_size: Option<u64>,
+}
+
+impl MongoDbCliArgs {
+    pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
+        Ok(MongoDbCliArgs {
+            url: next("storage args missing mongo url")?,
+            db: next("storage args missing mongo db name")?,
+            capped_size: next("").ok().and_then(|s| u64::from_str(&s).ok()),
         })
     }
 }

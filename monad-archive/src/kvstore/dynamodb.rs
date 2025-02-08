@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use aws_config::SdkConfig;
 use aws_sdk_dynamodb::{
@@ -9,13 +9,9 @@ use bytes::Bytes;
 use eyre::{bail, Context, Result};
 use futures::future::try_join_all;
 use tokio::sync::Semaphore;
-use tokio_retry::{
-    strategy::{jitter, ExponentialBackoff},
-    Retry,
-};
 use tracing::error;
 
-use super::retry_strategy;
+use super::retry;
 use crate::prelude::*;
 
 const AWS_DYNAMODB_ERRORS: &str = "aws_dynamodb_errors";
@@ -138,7 +134,7 @@ impl DynamoDBArchive {
                     .build()?,
             );
 
-            let response = Retry::spawn(retry_strategy(), || async {
+            let response = retry(|| async {
                 self.client
                     .batch_get_item()
                     .set_request_items(Some(request_items.clone()))
@@ -147,6 +143,10 @@ impl DynamoDBArchive {
                     .wrap_err_with(|| {
                         inc_err(&self.metrics);
                         format!("Request keys (0x stripped in req): {:?}", &batch)
+                    })
+                    .map_err(|e| {
+                        error!(?e);
+                        e
                     })
             })
             .await?;
@@ -164,7 +164,7 @@ impl DynamoDBArchive {
                 if unprocessed.is_empty() {
                     break;
                 }
-                let response_retry = Retry::spawn(retry_strategy(), || async {
+                let response_retry = retry(|| async {
                     self.client
                         .batch_get_item()
                         .set_request_items(Some(unprocessed.clone()))
@@ -173,6 +173,10 @@ impl DynamoDBArchive {
                         .wrap_err_with(|| {
                             inc_err(&self.metrics);
                             "Failed to get unprocessed keys"
+                        })
+                        .map_err(|e| {
+                            error!(?e);
+                            e
                         })
                 })
                 .await?;
@@ -196,12 +200,8 @@ impl DynamoDBArchive {
         }
         let num_writes = values.len();
 
-        let retry_strategy = ExponentialBackoff::from_millis(10)
-            .max_delay(Duration::from_secs(1))
-            .map(jitter);
-
         // TODO: Only deal with unprocessed items, but it's pretty complicated
-        Retry::spawn(retry_strategy, || {
+        retry(|| {
             let values = values.clone();
             let client = &self.client;
             let table = self.table.clone();
@@ -221,6 +221,10 @@ impl DynamoDBArchive {
                     .wrap_err_with(|| {
                         inc_err(metrics);
                         format!("Failed to upload to table {}. Retrying...", table)
+                    })
+                    .map_err(|e| {
+                        error!(?e);
+                        e
                     })?;
 
                 // Check for unprocessed items

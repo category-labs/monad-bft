@@ -1,7 +1,6 @@
 use std::ops::Deref;
 
 use alloy_primitives::{hex::ToHexExt, TxHash};
-use alloy_rlp::Encodable;
 use eyre::bail;
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
@@ -16,34 +15,45 @@ pub struct TxIndexArchiver {
     pub index_store: KVStoreErased,
     pub block_data_archive: BlockDataArchive,
     pub max_inline_encoded_len: usize,
-    reader: IndexReader,
+    pub reader: IndexReaderImpl,
 }
 
 // Allows archiver to also read without duplicated code
 impl Deref for TxIndexArchiver {
-    type Target = IndexReader;
+    type Target = IndexReaderImpl;
 
     fn deref(&self) -> &Self::Target {
         &self.reader
     }
 }
 
+pub trait IndexReader {
+    async fn get_latest_indexed(&self) -> Result<u64>;
+    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
+    async fn get_tx_indexed_data_bulk(
+        &self,
+        tx_hashes: &[TxHash],
+    ) -> Result<HashMap<TxHash, TxIndexedData>>;
+    async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)>;
+    async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)>;
+    async fn get_receipt(&self, tx_hash: &TxHash) -> Result<(ReceiptWithLogIndex, HeaderSubset)>;
+}
+
 #[derive(Clone)]
-pub struct IndexReader {
+pub struct IndexReaderImpl {
     pub index_store: KVReaderErased,
     pub block_data_reader: BlockDataReaderErased,
 }
 
-impl IndexReader {
-    pub fn new(index_store: KVReaderErased, block_data_reader: BlockDataReaderErased) -> Self {
+impl IndexReaderImpl {
+    pub fn new(
+        index_store: impl Into<KVReaderErased>,
+        block_data_reader: impl Into<BlockDataReaderErased>,
+    ) -> Self {
         Self {
-            index_store,
-            block_data_reader,
+            index_store: index_store.into(),
+            block_data_reader: block_data_reader.into(),
         }
-    }
-
-    pub async fn get_latest_indexed(&self) -> Result<u64> {
-        self.block_data_reader.get_latest(LatestKind::Indexed).await
     }
 
     async fn get_repr(&self, tx_hash: &TxHash) -> Result<IndexDataStorageRepr> {
@@ -55,16 +65,22 @@ impl IndexReader {
             .wrap_err_with(|| format!("No data found in index for txhash: {}", &key))?;
         IndexDataStorageRepr::decode(&bytes)
     }
+}
+
+impl IndexReader for IndexReaderImpl {
+    async fn get_latest_indexed(&self) -> Result<u64> {
+        self.block_data_reader.get_latest(LatestKind::Indexed).await
+    }
 
     /// Prefer get_tx, get_receipt, get_trace where possible to avoid unecessary network calls
-    pub async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData> {
+    async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData> {
         self.get_repr(tx_hash)
             .await?
             .convert(&self.block_data_reader)
             .await
     }
 
-    pub async fn get_tx_indexed_data_bulk(
+    async fn get_tx_indexed_data_bulk(
         &self,
         tx_hashes: &[TxHash],
     ) -> Result<HashMap<TxHash, TxIndexedData>> {
@@ -88,24 +104,21 @@ impl IndexReader {
         Ok(output)
     }
 
-    pub async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
+    async fn get_tx(&self, tx_hash: &TxHash) -> Result<(TxEnvelopeWithSender, HeaderSubset)> {
         self.get_repr(tx_hash)
             .await?
             .get_tx(&self.block_data_reader)
             .await
     }
 
-    pub async fn get_receipt(
-        &self,
-        tx_hash: &TxHash,
-    ) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
+    async fn get_receipt(&self, tx_hash: &TxHash) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
         self.get_repr(tx_hash)
             .await?
             .get_receipt(&self.block_data_reader)
             .await
     }
 
-    pub async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)> {
+    async fn get_trace(&self, tx_hash: &TxHash) -> Result<(Vec<u8>, HeaderSubset)> {
         self.get_repr(tx_hash)
             .await?
             .get_trace(&self.block_data_reader)
@@ -115,15 +128,13 @@ impl IndexReader {
 
 impl TxIndexArchiver {
     pub fn new(
-        index_store: KVStoreErased,
+        index_store: impl Into<KVStoreErased>,
         block_data_archive: BlockDataArchive,
         max_inline_encoded_len: usize,
     ) -> TxIndexArchiver {
+        let index_store = index_store.into();
         Self {
-            reader: IndexReader::new(
-                index_store.clone().into(),
-                block_data_archive.clone().into(),
-            ),
+            reader: IndexReaderImpl::new(index_store.clone(), block_data_archive.clone()),
             index_store,
             block_data_archive,
             max_inline_encoded_len,
@@ -153,7 +164,7 @@ impl TxIndexArchiver {
             || (offsets.is_some() && receipts.len() != offsets.as_ref().unwrap().len())
         {
             bail!("Block must have same number of txs as traces and receipts. num_txs: {}, num_traces: {}, num_receipts: {}", 
-            block.body.length(), traces.len(), receipts.len());
+            block.body.transactions.len(), traces.len(), receipts.len());
         }
 
         let mut prev_cumulative_gas_used = 0;
@@ -205,6 +216,7 @@ impl TxIndexArchiver {
 
 #[cfg(test)]
 mod tests {
+    use alloy_rlp::Encodable;
 
     use super::*;
     use crate::{
@@ -214,7 +226,7 @@ mod tests {
 
     fn setup_indexer() -> (BlockDataArchive, TxIndexArchiver) {
         let sink = MemoryStorage::new("sink");
-        let archiver = BlockDataArchive::new(sink.clone().into());
+        let archiver = BlockDataArchive::new(sink.clone());
         let index_archiver =
             TxIndexArchiver::new(KVStoreErased::from(sink), archiver.clone(), 1024);
         (archiver, index_archiver)

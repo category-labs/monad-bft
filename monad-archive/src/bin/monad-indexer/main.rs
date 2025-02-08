@@ -9,7 +9,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let args = cli::Cli::parse();
-    info!(?args);
+    info!(?args, "Cli Arguments: ");
 
     let metrics = Metrics::new(
         args.otel_endpoint,
@@ -23,6 +23,18 @@ async fn main() -> Result<()> {
         .archive_sink
         .build_index_archive(&metrics, args.max_inline_encoded_len)
         .await?;
+
+    // Confirm connectivity
+    if !args.skip_connectivity_check {
+        block_data_reader
+            .get_latest(LatestKind::Uploaded)
+            .await
+            .wrap_err("Cannot connect to block data source")?;
+        tx_index_archiver
+            .get_latest_indexed()
+            .await
+            .wrap_err("Cannot connect to archive sink")?;
+    }
 
     // for testing
     if args.reset_index {

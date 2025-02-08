@@ -25,26 +25,18 @@ enum ReceiptStorageRepr {
 }
 
 #[derive(Clone)]
-pub struct BlockDataArchive<Store = KVStoreErased> {
-    pub store: Store,
+pub struct BlockDataArchive {
+    pub store: KVStoreErased,
 
     pub latest_uploaded_table_key: &'static str,
     pub latest_indexed_table_key: &'static str,
-
-    // key =  {block}/{block_number}, value = {RLP(Block)}
     pub block_table_prefix: &'static str,
-
-    // key = {block_hash}/{$block_hash}, value = {str(block_number)}
     pub block_hash_table_prefix: &'static str,
-
-    // key = {receipts}/{block_number}, value = {RLP(Vec<Receipt>)}
     pub receipts_table_prefix: &'static str,
-
-    // key = {traces}/{block_number}, value = {RLP(Vec<Vec<u8>>)}
     pub traces_table_prefix: &'static str,
 }
 
-impl<Store: KVStore> BlockDataReader for BlockDataArchive<Store> {
+impl BlockDataReader for BlockDataArchive {
     fn get_bucket(&self) -> &str {
         self.store.bucket_name()
     }
@@ -163,10 +155,10 @@ impl<Store: KVStore> BlockDataReader for BlockDataArchive<Store> {
     }
 }
 
-impl<Store: KVStore> BlockDataArchive<Store> {
-    pub fn new(archive: Store) -> Self {
+impl BlockDataArchive {
+    pub fn new(archive: impl Into<KVStoreErased>) -> Self {
         BlockDataArchive {
-            store: archive,
+            store: archive.into(),
             block_table_prefix: "block",
             block_hash_table_prefix: "block_hash",
             receipts_table_prefix: "receipts",
