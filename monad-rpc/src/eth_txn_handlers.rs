@@ -1,4 +1,6 @@
-use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
+use alloy_consensus::{
+    transaction::Recovered, ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
+};
 use alloy_primitives::{Address, Bloom, FixedBytes, TxKind, B256};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{
@@ -405,7 +407,7 @@ fn base_fee_validation(max_fee_per_gas: u128, base_fee: impl BaseFeePerGas) -> b
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
-    ipc: flume::Sender<TxEnvelope>,
+    ipc: flume::Sender<Recovered<TxEnvelope>>,
     base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
@@ -414,10 +416,10 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     trace!("monad_eth_sendRawTransaction: {params:?}");
 
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
-        Ok(txn) => {
+        Ok(tx) => {
             // drop transactions that will fail consensus static validation
             if let Err(err) =
-                static_validate_transaction(&txn, chain_id, CHAIN_PARAMS_LATEST.proposal_gas_limit)
+                static_validate_transaction(&tx, chain_id, CHAIN_PARAMS_LATEST.proposal_gas_limit)
             {
                 let error_message = match err {
                     TransactionError::InvalidChainId => "Invalid chain ID",
@@ -433,23 +435,23 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             }
 
             // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
-            if !allow_unprotected_txs && txn.chain_id().is_none() {
+            if !allow_unprotected_txs && tx.chain_id().is_none() {
                 return Err(JsonRpcError::custom(
                     "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
                 ));
             }
 
-            if !base_fee_validation(txn.max_fee_per_gas(), base_fee_per_gas) {
+            if !base_fee_validation(tx.max_fee_per_gas(), base_fee_per_gas) {
                 return Err(JsonRpcError::custom(
                     "maxFeePerGas too low to be include in upcoming blocks".to_string(),
                 ));
             }
 
-            let hash = *txn.tx_hash();
+            let hash = *tx.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
             let signer = spawn_rayon_async({
-                let txn = txn.clone();
+                let txn = tx.clone();
                 move || txn.recover_signer()
             })
             .await
@@ -464,15 +466,15 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 .get_account(signer.into(), latest_block_num)
                 .await
                 .map_err(JsonRpcError::internal_error)?;
-            if txn.nonce() < account.nonce {
+            if tx.nonce() < account.nonce {
                 return Err(JsonRpcError::custom(format!(
                     "Nonce too low: next nonce {}, tx nonce {}",
                     account.nonce,
-                    txn.nonce()
+                    tx.nonce()
                 )));
             }
 
-            match ipc.try_send(txn) {
+            match ipc.try_send(Recovered::new_unchecked(tx, signer)) {
                 Ok(_) => Ok(hash.to_string()),
                 Err(err) => {
                     warn!(?err, "mempool ipc send error");

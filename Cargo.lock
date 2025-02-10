@@ -4953,31 +4953,73 @@ dependencies = [
  "alloy-rlp",
  "alloy-signer",
  "alloy-signer-local",
- "bytes",
  "criterion",
- "futures",
  "indexmap 2.7.0",
  "itertools 0.10.5",
- "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-testutil",
+ "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-executor",
- "monad-executor-glue",
  "monad-perf-util",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
  "rand",
  "rand_chacha",
- "rayon",
  "serde",
- "tokio",
- "tokio-util",
  "tracing",
  "tracing-test",
+]
+
+[[package]]
+name = "monad-eth-txpool-executor"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-rlp",
+ "futures",
+ "itertools 0.10.5",
+ "monad-chain-config",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-block-policy",
+ "monad-eth-txpool",
+ "monad-eth-txpool-ipc",
+ "monad-eth-txpool-types",
+ "monad-eth-types",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-state-backend",
+ "pin-project",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "monad-eth-txpool-ipc"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-rlp",
+ "bincode",
+ "futures",
+ "monad-eth-txpool-types",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "monad-eth-txpool-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "serde",
 ]
 
 [[package]]
@@ -5144,7 +5186,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
- "monad-eth-txpool",
+ "monad-eth-txpool-executor",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -5299,6 +5341,7 @@ dependencies = [
  "alloy-signer-local",
  "bytes",
  "clap 4.4.10",
+ "dashmap",
  "env_logger 0.10.1",
  "flume",
  "futures",
@@ -5308,6 +5351,8 @@ dependencies = [
  "monad-chain-config",
  "monad-cxx",
  "monad-eth-block-policy",
+ "monad-eth-txpool-ipc",
+ "monad-eth-txpool-types",
  "monad-eth-types",
  "monad-rpc-docs",
  "monad-triedb-utils",
@@ -5322,10 +5367,8 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "tempfile",
  "test-case",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-actix-web",
  "tracing-opentelemetry",
@@ -5585,6 +5628,8 @@ dependencies = [
 name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-rlp",
  "bytes",
  "futures",
  "monad-blocksync",

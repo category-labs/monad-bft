@@ -1,9 +1,9 @@
-use bytes::Bytes;
 use common::SignatureType;
 use criterion::{criterion_group, criterion_main, Criterion};
-use itertools::Itertools;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
+};
 use monad_types::GENESIS_SEQ_NUM;
 
 use self::common::{run_txpool_benches, BenchController, SignatureCollectionType, EXECUTION_DELAY};
@@ -33,23 +33,22 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let state_backend = BenchController::generate_state_backend_for_txs(&txs);
 
-            (
-                pool,
-                txs.iter()
-                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
-                    .collect_vec(),
-                state_backend,
-            )
+            (pool, txs, state_backend)
         },
         |(pool, txs, state_backend)| {
-            assert!(!pool
-                .insert_txs(
-                    txs.to_vec(),
-                    &block_policy,
-                    state_backend,
-                    &mut TxPoolMetrics::default()
-                )
-                .is_empty());
+            pool.insert_txs(
+                &mut EthTxPoolEventTracker::new(
+                    &mut EthTxPoolMetrics::default(),
+                    &mut EthTxPoolSnapshotManager::default(),
+                    &mut Vec::default(),
+                ),
+                &block_policy,
+                state_backend,
+                txs.to_owned(),
+                true,
+                |_| {},
+            )
+            .unwrap();
         },
     );
 }

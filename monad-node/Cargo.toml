@@ -22,7 +22,7 @@ monad-control-panel = { path = "../monad-control-panel" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
 monad-eth-block-validator = { path = "../monad-eth-block-validator" }
-monad-eth-txpool = { path = "../monad-eth-txpool" }
+monad-eth-txpool-executor = { path = "../monad-eth-txpool-executor" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }

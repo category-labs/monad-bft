@@ -3,9 +3,7 @@ use std::time::Duration;
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_rlp::Decodable;
-use bytes::Bytes;
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use monad_consensus_types::{
     block::ProposedExecutionInputs, payload::RoundSignature,
     signature_collection::SignatureCollection,
@@ -14,21 +12,15 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_types::{
-    Balance, EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS,
-};
+use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing::warn;
 
-use self::{
-    error::TxPoolInsertionError, pending::PendingTxMap, tracked::TrackedTxMap,
-    transaction::ValidEthTransaction,
-};
-use crate::metrics::TxPoolMetrics;
+use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
+use crate::EthTxPoolEventTracker;
 
-mod error;
 mod pending;
 mod tracked;
 mod transaction;
@@ -99,87 +91,26 @@ where
         self.proposal_gas_limit = proposal_gas_limit
     }
 
-    fn validate_and_insert_tx(
+    pub fn insert_txs(
         &mut self,
-        tx: Recovered<TxEnvelope>,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
-        account_balance: &Balance,
-    ) -> Result<(), TxPoolInsertionError> {
+        state_backend: &SBT,
+        txs: Vec<Recovered<TxEnvelope>>,
+        owned: bool,
+        mut on_insert: impl FnMut(&ValidEthTransaction),
+    ) -> Result<(), StateBackendError> {
         if !self.do_local_insert {
             return Ok(());
         }
 
-        let tx = ValidEthTransaction::validate(tx, block_policy, self.proposal_gas_limit)?;
-        tx.apply_max_value(account_balance)?;
-
-        // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
-
-        match self.tracked.try_add_tx(tx) {
-            Either::Left(tx) => self.pending.try_add_tx(tx),
-            Either::Right(result) => result,
-        }
-    }
-
-    fn validate_and_insert_txs(
-        &mut self,
-        block_policy: &EthBlockPolicy<ST, SCT>,
-        state_backend: &impl StateBackend,
-        txs: Vec<Recovered<TxEnvelope>>,
-    ) -> Result<Vec<Result<(), TxPoolInsertionError>>, StateBackendError> {
-        let senders = txs.iter().map(|tx| tx.signer()).collect_vec();
-
-        // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
-        // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
-        // seqnum will result in a lookup outside that range. As a fix, we add 1 so the seqnum is on
-        // the edge of the range.
-        let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
-
-        let sender_account_balances = block_policy.compute_account_base_balances(
-            block_seq_num,
-            state_backend,
-            None,
-            senders.iter(),
-        )?;
-
-        let results = txs
-            .into_iter()
-            .zip(senders.iter())
-            .map(|(tx, sender)| {
-                self.validate_and_insert_tx(
-                    tx,
-                    block_policy,
-                    &sender_account_balances
-                        .get(&sender)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        Ok(results)
-    }
-
-    fn update_aggregate_metrics(&self, metrics: &mut TxPoolMetrics) {
-        metrics.pending_addresses = self.pending.num_addresses() as u64;
-        metrics.pending_txs = self.pending.num_txs() as u64;
-        metrics.tracked_addresses = self.tracked.num_addresses() as u64;
-        metrics.tracked_txs = self.tracked.num_txs() as u64;
-    }
-
-    pub fn insert_txs(
-        &mut self,
-        txns: Vec<Bytes>,
-        block_policy: &EthBlockPolicy<ST, SCT>,
-        state_backend: &SBT,
-        metrics: &mut TxPoolMetrics,
-    ) -> Vec<Bytes> {
         if let Err(state_backend_error) = self.tracked.promote_pending(
+            event_tracker,
             block_policy,
             state_backend,
             &mut self.pending,
-            txns.len()
-                .min(INSERT_TXS_MIN_PROMOTE)
-                .max(INSERT_TXS_MAX_PROMOTE),
-            metrics,
+            INSERT_TXS_MIN_PROMOTE,
+            INSERT_TXS_MAX_PROMOTE,
         ) {
             if self.pending.is_at_promote_txs_watermark() {
                 warn!(
@@ -189,59 +120,64 @@ where
             }
         }
 
-        let incoming_num_txs = txns.len();
-
-        // TODO(rene): sender recovery is done inline here
-        let (decoded_txs, raw_txs): (Vec<_>, Vec<_>) = txns
-            .into_par_iter()
-            .filter_map(|raw_tx| {
-                let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
-                let signer = tx.recover_signer().ok()?;
-                Some((Recovered::new_unchecked(tx, signer), raw_tx))
-            })
-            .unzip();
-
-        metrics.drop_invalid_bytes += incoming_num_txs.saturating_sub(decoded_txs.len()) as u64;
-
-        let Ok(insertion_results) =
-            self.validate_and_insert_txs(block_policy, state_backend, decoded_txs)
-        else {
-            // can't insert, state backend is delayed
-            return Vec::new();
-        };
-
-        let results = insertion_results
+        let txs = txs
             .into_iter()
-            .zip(raw_txs)
-            .filter_map(|(result, b)| {
-                let Some(error) = result.err() else {
-                    return Some(b);
-                };
-
-                match error {
-                    TxPoolInsertionError::NotWellFormed => metrics.drop_not_well_formed += 1,
-                    TxPoolInsertionError::NonceTooLow => metrics.drop_nonce_too_low += 1,
-                    TxPoolInsertionError::FeeTooLow => metrics.drop_fee_too_low += 1,
-                    TxPoolInsertionError::InsufficientBalance => {
-                        metrics.drop_insufficient_balance += 1
-                    }
-                    TxPoolInsertionError::PoolFull => metrics.drop_pool_full += 1,
-                    TxPoolInsertionError::ExistingHigherPriority => {
-                        metrics.drop_existing_higher_priority += 1
-                    }
-                }
-
-                None
+            .filter_map(|tx| {
+                ValidEthTransaction::validate(
+                    event_tracker,
+                    block_policy,
+                    self.proposal_gas_limit,
+                    tx,
+                    owned,
+                )
             })
-            .collect::<Vec<_>>();
+            .collect_vec();
 
-        self.update_aggregate_metrics(metrics);
+        // BlockPolicy only guarantees that data is available for seqnum (N-k, N] for some execution
+        // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
+        // seqnum will result in a lookup at N-k. As a fix, we add 1 so the seqnum is on the edge of
+        // the range at N-k+1.
+        let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
 
-        results
+        let addresses = txs.iter().map(ValidEthTransaction::signer).collect_vec();
+
+        let account_balances = block_policy.compute_account_base_balances(
+            block_seq_num,
+            state_backend,
+            None,
+            addresses.iter(),
+        )?;
+
+        for tx in txs {
+            let account_balance = account_balances
+                .get(tx.signer_ref())
+                .cloned()
+                .unwrap_or_default();
+
+            let Some(_new_account_balance) = tx.apply_max_value(account_balance) else {
+                event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
+                continue;
+            };
+
+            let Some(tx) = self
+                .tracked
+                .try_insert_tx(event_tracker, tx)
+                .unwrap_or_else(|tx| self.pending.try_insert_tx(event_tracker, tx))
+            else {
+                continue;
+            };
+
+            on_insert(tx);
+        }
+
+        self.update_aggregate_metrics(event_tracker);
+
+        Ok(())
     }
 
     pub fn create_proposal(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -253,15 +189,15 @@ where
 
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
-        metrics: &mut TxPoolMetrics,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
-        self.tracked.evict_expired_txs(metrics);
+        self.tracked.evict_expired_txs(event_tracker);
 
         let timestamp_seconds = timestamp_ns / 1_000_000_000;
         // u64::MAX seconds is ~500 Billion years
         assert!(timestamp_seconds < u64::MAX.into());
 
         let transactions = self.tracked.create_proposal(
+            event_tracker,
             proposed_seq_num,
             tx_limit,
             proposal_gas_limit,
@@ -270,7 +206,6 @@ where
             extending_blocks.iter().collect(),
             state_backend,
             &mut self.pending,
-            metrics,
         )?;
 
         let body = EthBlockBody {
@@ -305,31 +240,40 @@ where
             parent_beacon_block_root: [0_u8; 32],
         };
 
-        self.update_aggregate_metrics(metrics);
+        self.update_aggregate_metrics(event_tracker);
 
         Ok(ProposedExecutionInputs { header, body })
     }
 
     pub fn update_committed_block(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         committed_block: EthValidatedBlock<ST, SCT>,
-        metrics: &mut TxPoolMetrics,
     ) {
         self.tracked
-            .update_committed_block(committed_block, &mut self.pending, metrics);
+            .update_committed_block(event_tracker, committed_block, &mut self.pending);
 
-        self.tracked.evict_expired_txs(metrics);
+        self.tracked.evict_expired_txs(event_tracker);
 
-        self.update_aggregate_metrics(metrics);
+        self.update_aggregate_metrics(event_tracker);
     }
 
     pub fn reset(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
-        metrics: &mut TxPoolMetrics,
     ) {
         self.tracked.reset(last_delay_committed_blocks);
 
-        self.update_aggregate_metrics(metrics);
+        self.update_aggregate_metrics(event_tracker);
+    }
+
+    fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
+        event_tracker.update_aggregate_metrics(
+            self.pending.num_addresses() as u64,
+            self.pending.num_txs() as u64,
+            self.tracked.num_addresses() as u64,
+            self.tracked.num_txs() as u64,
+        );
     }
 }

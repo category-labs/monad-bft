@@ -99,20 +99,21 @@ mod tests {
 
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
-    use alloy_consensus::TxEnvelope;
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
     use tokio::sync::Semaphore;
     use tracing_actix_web::TracingLogger;
 
     use crate::{
-        tests::MonadRpcResourcesState, FixedFee, MonadJsonRootSpanBuilder, MonadRpcResources,
+        tests::MonadRpcResourcesState, EthTxPoolBridgeState, FixedFee, MonadJsonRootSpanBuilder,
+        MonadRpcResources,
     };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
-        let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
+        let (ipc_sender, ipc_receiver) = flume::unbounded();
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender,
+            mempool_state: EthTxPoolBridgeState::new(),
             triedb_reader: None,
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),

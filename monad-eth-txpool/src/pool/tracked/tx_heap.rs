@@ -44,7 +44,7 @@ impl<'a> TrackedTxHeap<'a> {
                 continue;
             };
 
-            assert_eq!(address, &tx.sender());
+            assert_eq!(address, tx.signer_ref());
 
             heap_vec.push(OrderedTxGroup {
                 tx,
@@ -107,7 +107,7 @@ impl<'a> TrackedTxHeap<'a> {
         tx: &'a ValidEthTransaction,
         queued: VecDeque<&'a ValidEthTransaction>,
     ) {
-        assert_eq!(address, &tx.sender());
+        assert_eq!(address, tx.signer_ref());
 
         self.virtual_time += 1;
         self.heap.push(OrderedTxGroup {

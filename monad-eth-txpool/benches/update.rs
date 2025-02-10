@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
-use monad_eth_txpool::TxPoolMetrics;
+use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager};
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
@@ -27,7 +27,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let state_backend = BenchController::generate_state_backend_for_txs(&txs);
 
-            let mut metrics = TxPoolMetrics::default();
+            let mut metrics = EthTxPoolMetrics::default();
             let pool =
                 BenchController::create_pool(&block_policy, &state_backend, &txs, &mut metrics);
 
@@ -38,7 +38,14 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         },
         |(pool, metrics, block)| {
-            pool.update_committed_block(block.to_owned(), metrics);
+            pool.update_committed_block(
+                &mut EthTxPoolEventTracker::new(
+                    metrics,
+                    &mut EthTxPoolSnapshotManager::default(),
+                    &mut Vec::default(),
+                ),
+                block.to_owned(),
+            );
         },
     );
 }

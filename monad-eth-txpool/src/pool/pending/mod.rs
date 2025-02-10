@@ -1,8 +1,10 @@
 use alloy_primitives::Address;
 use indexmap::IndexMap;
+use monad_eth_txpool_types::EthTxPoolDropReason;
 
 pub use self::list::PendingTxList;
-use super::{error::TxPoolInsertionError, transaction::ValidEthTransaction};
+use super::transaction::ValidEthTransaction;
+use crate::EthTxPoolEventTracker;
 
 mod list;
 
@@ -37,31 +39,38 @@ impl PendingTxMap {
         self.num_txs >= PROMOTE_TXS_WATERMARK
     }
 
-    pub fn try_add_tx(&mut self, tx: ValidEthTransaction) -> Result<(), TxPoolInsertionError> {
+    pub fn try_insert_tx(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        tx: ValidEthTransaction,
+    ) -> Option<&ValidEthTransaction> {
         if self.num_txs >= MAX_TXS {
-            return Err(TxPoolInsertionError::PoolFull);
+            event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
+            return None;
         }
 
         let num_addresses = self.txs.len();
         assert!(num_addresses <= MAX_ADDRESSES);
 
-        match self.txs.entry(tx.sender()) {
-            indexmap::map::Entry::Occupied(mut tx_list) => {
-                if tx_list.get_mut().try_add(tx)? {
-                    self.num_txs += 1;
-                }
+        match self.txs.entry(tx.signer()) {
+            indexmap::map::Entry::Occupied(tx_list) => {
+                let tx = tx_list.into_mut().try_insert(event_tracker, tx)?;
+
+                self.num_txs += 1;
+                Some(tx)
             }
             indexmap::map::Entry::Vacant(v) => {
                 if num_addresses == MAX_ADDRESSES {
-                    return Err(TxPoolInsertionError::PoolFull);
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
+                    return None;
                 }
 
-                v.insert(PendingTxList::new(tx));
+                let tx = PendingTxList::insert_entry(event_tracker, v, tx);
+
                 self.num_txs += 1;
+                Some(tx)
             }
         }
-
-        Ok(())
     }
 
     pub fn remove(&mut self, address: &Address) -> Option<PendingTxList> {

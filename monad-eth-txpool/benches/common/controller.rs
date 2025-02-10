@@ -1,12 +1,13 @@
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
 use alloy_rlp::Encodable;
-use bytes::Bytes;
 use itertools::Itertools;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
-use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
+};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -36,7 +37,8 @@ pub struct BenchController<'a> {
     pub state_backend: StateBackendType,
     pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
-    pub metrics: TxPoolMetrics,
+    pub metrics: EthTxPoolMetrics,
+    pub snapshot_manager: EthTxPoolSnapshotManager,
     pub proposal_tx_limit: usize,
     pub proposal_gas_limit: u64,
     pub proposal_byte_limit: u64,
@@ -56,12 +58,17 @@ impl<'a> BenchController<'a> {
 
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
-        let mut metrics = TxPoolMetrics::default();
+        let mut metrics = EthTxPoolMetrics::default();
+        let mut snapshot_manager = EthTxPoolSnapshotManager::default();
         let mut pool = Self::create_pool(block_policy, &state_backend, &txs, &mut metrics);
 
         pool.update_committed_block(
+            &mut EthTxPoolEventTracker::new(
+                &mut metrics,
+                &mut snapshot_manager,
+                &mut Vec::default(),
+            ),
             generate_block_with_txs(Round(0), block_policy.get_last_commit(), Vec::default()),
-            &mut metrics,
         );
 
         Self {
@@ -71,11 +78,12 @@ impl<'a> BenchController<'a> {
             pending_blocks: pending_block_txs
                 .into_iter()
                 .enumerate()
-                .map(|(idx, tx)| {
-                    generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), tx)
+                .map(|(idx, txs)| {
+                    generate_block_with_txs(Round(idx as u64 + 1), SeqNum(idx as u64 + 1), txs)
                 })
                 .collect_vec(),
             metrics,
+            snapshot_manager,
             proposal_tx_limit,
             proposal_gas_limit: txs
                 .iter()
@@ -95,26 +103,33 @@ impl<'a> BenchController<'a> {
     pub fn create_pool(
         block_policy: &BlockPolicyType,
         state_backend: &StateBackendType,
-        txs: &[TxEnvelope],
-        metrics: &mut TxPoolMetrics,
+        txs: &[Recovered<TxEnvelope>],
+        metrics: &mut EthTxPoolMetrics,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 
-        assert!(!pool
-            .insert_txs(
-                txs.iter()
-                    .map(|t| Bytes::from(alloy_rlp::encode(t)))
-                    .collect(),
-                block_policy,
-                state_backend,
-                metrics
-            )
-            .is_empty());
+        let mut inserted = false;
+
+        pool.insert_txs(
+            &mut EthTxPoolEventTracker::new(
+                metrics,
+                &mut EthTxPoolSnapshotManager::default(),
+                &mut Vec::default(),
+            ),
+            block_policy,
+            state_backend,
+            txs.to_vec(),
+            true,
+            |_| inserted = true,
+        )
+        .unwrap();
+
+        assert!(inserted);
 
         pool
     }
 
-    pub fn generate_state_backend_for_txs(txs: &[TxEnvelope]) -> StateBackendType {
+    pub fn generate_state_backend_for_txs(txs: &[Recovered<TxEnvelope>]) -> StateBackendType {
         InMemoryStateInner::new(
             Balance::MAX,
             SeqNum(4),
@@ -131,7 +146,7 @@ impl<'a> BenchController<'a> {
         txs: usize,
         nonce_var: usize,
         pending_blocks: usize,
-    ) -> (Vec<Vec<TxEnvelope>>, Vec<TxEnvelope>) {
+    ) -> (Vec<Vec<Recovered<TxEnvelope>>>, Vec<Recovered<TxEnvelope>>) {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         let mut accounts = (0..accounts)
@@ -157,9 +172,11 @@ impl<'a> BenchController<'a> {
                             TRANSACTION_SIZE_BYTES,
                         );
 
+                        let signer = tx.recover_signer().unwrap();
+
                         *nonce += 1;
 
-                        tx
+                        Recovered::new_unchecked(tx, signer)
                     })
                     .collect_vec();
 
@@ -175,7 +192,7 @@ impl<'a> BenchController<'a> {
                     .get(idx % accounts.len())
                     .expect("account idx is in range");
 
-                make_legacy_tx(
+                let tx = make_legacy_tx(
                     *account,
                     rng.gen_range(BASE_FEE_PER_GAS..=BASE_FEE_PER_GAS + 10000)
                         .into(),
@@ -184,7 +201,11 @@ impl<'a> BenchController<'a> {
                         .checked_add(rng.gen_range(0..=nonce_var as u64))
                         .expect("nonce does not overflow"),
                     TRANSACTION_SIZE_BYTES,
-                )
+                );
+
+                let signer = tx.recover_signer().unwrap();
+
+                Recovered::new_unchecked(tx, signer)
             })
             .collect_vec();
 

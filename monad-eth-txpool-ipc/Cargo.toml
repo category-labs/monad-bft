@@ -1,0 +1,16 @@
+[package]
+name = "monad-eth-txpool-ipc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
+
+alloy-consensus = { workspace = true }
+alloy-rlp = { workspace = true }
+bincode = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

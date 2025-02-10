@@ -112,11 +112,11 @@ where
     T: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
+    TS: Stream<Item = E> + Unpin,
 
     TP: Stream<Item = E> + Unpin,
     CP: Stream<Item = E> + Unpin,
     LO: Stream<Item = E> + Unpin,
-    TS: Stream<Item = E> + Unpin,
     SS: Stream<Item = E> + Unpin,
     CL: Stream<Item = E> + Unpin,
 

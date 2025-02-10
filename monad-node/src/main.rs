@@ -18,7 +18,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
-use monad_eth_txpool::{EthTxPoolExecutor, EthTxPoolIpcConfig};
+use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
@@ -215,7 +215,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),
             StateBackendCache::new(

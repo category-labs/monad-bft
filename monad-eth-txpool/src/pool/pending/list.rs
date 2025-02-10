@@ -1,8 +1,10 @@
 use std::collections::{btree_map::Entry, BTreeMap};
 
+use alloy_primitives::Address;
+use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::Nonce;
 
-use crate::pool::{error::TxPoolInsertionError, transaction::ValidEthTransaction};
+use crate::{pool::transaction::ValidEthTransaction, EthTxPoolEventTracker};
 
 /// This struct ensures at the type level that nonce_map is never empty, a property used to enforce
 /// that every address in the PendingTxMap has an associated pending transaction.
@@ -12,33 +14,50 @@ pub struct PendingTxList {
 }
 
 impl PendingTxList {
-    pub fn new(tx: ValidEthTransaction) -> Self {
+    pub fn insert_entry<'a>(
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        entry: indexmap::map::VacantEntry<'a, Address, Self>,
+        tx: ValidEthTransaction,
+    ) -> &'a ValidEthTransaction {
         let mut nonce_map = BTreeMap::new();
 
-        nonce_map.insert(tx.nonce(), tx);
+        let nonce = tx.nonce();
 
-        Self { nonce_map }
+        event_tracker.insert_pending(tx.hash(), tx.is_owned());
+        nonce_map.insert(nonce, tx);
+
+        let entry = entry.insert(Self { nonce_map });
+
+        entry.nonce_map.get(&nonce).unwrap()
     }
 
     pub fn num_txs(&self) -> usize {
         self.nonce_map.len()
     }
 
-    /// Returns true when the list does not contain a transaction with the same nonce and false when
-    /// an existing tx was updated.
-    pub fn try_add(&mut self, tx: ValidEthTransaction) -> Result<bool, TxPoolInsertionError> {
+    /// Produces a reference to the tx if it is present in the tx list after attempting to insert
+    /// it.
+    pub fn try_insert(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        tx: ValidEthTransaction,
+    ) -> Option<&ValidEthTransaction> {
         match self.nonce_map.entry(tx.nonce()) {
             Entry::Vacant(v) => {
-                v.insert(tx);
-                Ok(true)
+                event_tracker.insert_pending(tx.hash(), tx.is_owned());
+                Some(v.insert(tx))
             }
-            Entry::Occupied(mut existing_tx) => {
-                if &tx < existing_tx.get() {
-                    return Err(TxPoolInsertionError::ExistingHigherPriority);
+            Entry::Occupied(mut entry) => {
+                let existing_tx = entry.get();
+
+                if &tx < existing_tx {
+                    event_tracker.drop(tx.hash(), EthTxPoolDropReason::ExistingHigherPriority);
+                    return None;
                 }
 
-                existing_tx.insert(tx);
-                Ok(false)
+                event_tracker.replace_pending(existing_tx.hash(), tx.hash(), tx.is_owned());
+                entry.insert(tx);
+                Some(entry.into_mut())
             }
         }
     }

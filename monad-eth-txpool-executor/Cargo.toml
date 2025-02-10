@@ -1,0 +1,26 @@
+[package]
+name = "monad-eth-txpool-executor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-chain-config = { path = "../monad-chain-config" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
+monad-eth-txpool-ipc = { path = "../monad-eth-txpool-ipc" }
+monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-state-backend = { path = "../monad-state-backend" }
+
+alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+itertools = { workspace = true }
+pin-project = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

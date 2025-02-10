@@ -21,6 +21,9 @@ members = [
     "monad-eth-block-validator",
     "monad-eth-ledger",
     "monad-eth-testutil",
+    "monad-eth-txpool-executor",
+    "monad-eth-txpool-ipc",
+    "monad-eth-txpool-types",
     "monad-eth-txpool",
     "monad-eth-types",
     "monad-executor-glue",
@@ -132,6 +135,7 @@ itertools = "0.10"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.24"
+notify = "6.1.1"
 ntest = "0.9"
 opentelemetry = "0.24"
 opentelemetry_sdk = "0.24"
@@ -141,6 +145,7 @@ pbjson = "0.7"
 pbjson-build = "0.7"
 pbkdf2 = "0.12"
 peak_alloc = "0.2"
+pin-project = "1.1.5"
 priority-queue = "1.3"
 prost = "0.12"
 prost-build = "0.12"
@@ -169,6 +174,7 @@ tiny-bip39 = "1.0"
 tiny-keccak = "2"
 tokio = "1.39"
 tokio-retry = "0.3.0"
+tokio-stream = "0.1.17"
 tokio-util = "0.7"
 toml = "0.7"
 tracing = "0.1"

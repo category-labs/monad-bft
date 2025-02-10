@@ -1,15 +1,14 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use actix::prelude::*;
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use clap::Parser;
 use eth_json_types::serialize_result;
-use fee::FixedFee;
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_triedb_utils::triedb_env::TriedbEnv;
@@ -46,12 +45,12 @@ use crate::{
         monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
         monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
     },
+    fee::FixedFee,
     gas_handlers::{
         monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_gasPrice,
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
-    mempool_tx::MempoolTxIpcSender,
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -59,9 +58,8 @@ use crate::{
     trace_handlers::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
-    vpool::{
-        monad_txpool_content, monad_txpool_contentFrom, monad_txpool_inspect, monad_txpool_status,
-    },
+    txpool::{EthTxPoolBridge, EthTxPoolBridgeState},
+    vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
     websocket::Disconnect,
 };
 
@@ -78,10 +76,10 @@ mod gas_handlers;
 mod gas_oracle;
 mod hex;
 mod jsonrpc;
-mod mempool_tx;
 mod metrics;
 mod trace;
 mod trace_handlers;
+mod txpool;
 mod vpool;
 mod websocket;
 
@@ -493,15 +491,18 @@ async fn rpc_select(
                 .await
                 .map(serialize_result)?
         }
-        "txpool_content" => monad_txpool_content().await.map(serialize_result)?,
-        "txpool_contentFrom" => {
+        "txpool_statusByHash" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_contentFrom(params)
+            monad_txpool_statusByHash(&app_state.mempool_state, params)
                 .await
                 .map(serialize_result)?
         }
-        "txpool_inspect" => monad_txpool_inspect().await.map(serialize_result)?,
-        "txpool_status" => monad_txpool_status().await.map(serialize_result)?,
+        "txpool_statusByAddress" => {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_txpool_statusByAddress(&app_state.mempool_state, params)
+                .await
+                .map(serialize_result)?
+        }
         "web3_clientVersion" => serialize_result("monad"),
         _ => Err(JsonRpcError::method_not_found()),
     }
@@ -509,7 +510,8 @@ async fn rpc_select(
 
 #[derive(Clone)]
 struct MonadRpcResources {
-    mempool_sender: flume::Sender<TxEnvelope>,
+    mempool_sender: flume::Sender<Recovered<TxEnvelope>>,
+    mempool_state: Arc<EthTxPoolBridgeState>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReader>,
     base_fee_per_gas: FixedFee,
@@ -530,7 +532,8 @@ impl Handler<Disconnect> for MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        mempool_sender: flume::Sender<TxEnvelope>,
+        mempool_sender: flume::Sender<Recovered<TxEnvelope>>,
+        mempool_state: Arc<EthTxPoolBridgeState>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReader>,
         fixed_base_fee: u128,
@@ -542,6 +545,7 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             mempool_sender,
+            mempool_state,
             triedb_reader,
             archive_reader,
             base_fee_per_gas: FixedFee::new(fixed_base_fee),
@@ -652,19 +656,48 @@ async fn main() -> std::io::Result<()> {
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
-    let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(
+    let (ipc_sender, ipc_receiver) = flume::bounded::<Recovered<TxEnvelope>>(
         // TODO configurable
         10_000,
     );
-    tokio::spawn(async move {
-        let ipc_path = args.ipc_path;
-        let mut sender = retry(|| async { MempoolTxIpcSender::new(&ipc_path).await })
-            .await
-            .expect("failed to create ipc sender");
+    let txpool_state = EthTxPoolBridgeState::new();
 
-        while let Ok(tx) = ipc_receiver.recv_async().await {
-            if let Err(e) = sender.send(tx).await {
-                warn!("IPC send failed, monad-bft likely crashed: {}", e);
+    tokio::spawn({
+        let txpool_state = txpool_state.clone();
+
+        async move {
+            let ipc_path = args.ipc_path;
+
+            let mut bridge =
+                retry(|| async { EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await })
+                    .await
+                    .expect("failed to create ipc sender");
+
+            let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
+
+            loop {
+                tokio::select! {
+                    result = ipc_receiver.recv_async() => {
+                        let tx = result.unwrap();
+
+                        txpool_state.add_tx(&tx);
+                        if let Err(e) = bridge.send(&tx).await {
+                            warn!("IPC send failed, monad-bft likely crashed: {}", e);
+                        }
+                    }
+
+                    result = bridge.next() => {
+                        let Some(events) = result else {
+                            continue;
+                        };
+
+                        txpool_state.handle_events(events);
+                    }
+
+                    now = cleanup_timer.tick() => {
+                        txpool_state.cleanup(now);
+                    }
+                }
             }
         }
     });
@@ -725,6 +758,7 @@ async fn main() -> std::io::Result<()> {
 
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
+        txpool_state,
         triedb_env,
         archive_reader,
         BASE_FEE_PER_GAS.into(),
@@ -822,17 +856,18 @@ mod tests {
     use super::*;
 
     pub struct MonadRpcResourcesState {
-        pub ipc_receiver: flume::Receiver<TxEnvelope>,
+        pub ipc_receiver: flume::Receiver<Recovered<TxEnvelope>>,
     }
 
     pub async fn init_server() -> (
         impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
         MonadRpcResourcesState,
     ) {
-        let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(1_000);
+        let (ipc_sender, ipc_receiver) = flume::bounded(1_000);
         let m = MonadRpcResourcesState { ipc_receiver };
         let resources = MonadRpcResources {
             mempool_sender: ipc_sender.clone(),
+            mempool_state: EthTxPoolBridgeState::new(),
             triedb_reader: None,
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),

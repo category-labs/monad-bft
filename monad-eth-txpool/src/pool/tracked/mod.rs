@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -15,12 +15,8 @@ use tracing::{debug, error, info, trace};
 use tx_heap::TrackedTxHeapDrainAction;
 
 use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
-use super::{
-    error::TxPoolInsertionError,
-    pending::{PendingTxList, PendingTxMap},
-    transaction::ValidEthTransaction,
-};
-use crate::metrics::TxPoolMetrics;
+use super::{pending::PendingTxMap, transaction::ValidEthTransaction};
+use crate::EthTxPoolEventTracker;
 
 mod list;
 mod tx_heap;
@@ -84,24 +80,28 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
-    pub fn try_add_tx(
+    /// Produces a reference to the tx if it was inserted, producing None when the tx signer was
+    /// tracked but the tx was not inserted. If the tx signer is not tracked or the tracked pool is
+    /// not ready to accept txs, an error is produced with the original tx.
+    pub fn try_insert_tx(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
-    ) -> Either<ValidEthTransaction, Result<(), TxPoolInsertionError>> {
+    ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
         if self.last_commit_seq_num.is_none() {
-            return Either::Left(tx);
+            return Err(tx);
         }
 
-        match self.txs.entry(tx.sender()) {
-            IndexMapEntry::Vacant(_) => Either::Left(tx),
-            IndexMapEntry::Occupied(mut o) => {
-                Either::Right(o.get_mut().try_add_tx(tx, self.hard_tx_expiry))
-            }
-        }
+        let Some(tx_list) = self.txs.get_mut(tx.signer_ref()) else {
+            return Err(tx);
+        };
+
+        Ok(tx_list.try_insert_tx(event_tracker, tx, self.hard_tx_expiry))
     }
 
     pub fn create_proposal(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -110,7 +110,6 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-        metrics: &mut TxPoolMetrics,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
             return Ok(Vec::new());
@@ -135,13 +134,19 @@ where
             debug!(?elapsed, "txpool create_proposal");
         });
 
-        self.promote_pending(
+        if let Err(err) = self.promote_pending(
+            event_tracker,
             block_policy,
             state_backend,
             pending,
+            0,
             MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
-            metrics,
-        )?;
+        ) {
+            error!(
+                ?err,
+                "txpool failed to promote pending txs during create_proposal"
+            );
+        }
 
         if self.txs.is_empty() || tx_limit == 0 {
             return Ok(Vec::new());
@@ -170,7 +175,7 @@ where
             proposal_byte_limit,
             tx_heap,
             account_balances,
-        )?;
+        );
 
         let proposal_num_tx = proposal_tx_list.len();
 
@@ -186,11 +191,12 @@ where
 
     pub fn promote_pending(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
+        min_promotable: usize,
         max_promotable: usize,
-        metrics: &mut TxPoolMetrics,
     ) -> Result<(), StateBackendError> {
         let Some(last_commit_seq_num) = self.last_commit_seq_num else {
             return Ok(());
@@ -199,6 +205,10 @@ where
         let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
             return Ok(());
         };
+
+        if insertable < min_promotable {
+            return Ok(());
+        }
 
         let insertable = insertable.min(max_promotable);
 
@@ -231,13 +241,11 @@ where
         )?;
 
         for (address, pending_tx_list) in to_insert {
-            let pending_num_txs = pending_tx_list.num_txs();
-
             let Some(account_nonce) = account_nonces.get(&address) else {
                 error!("txpool address missing from state backend");
 
-                metrics.pending_drop_unknown_addresses += 1;
-                metrics.pending_drop_unknown_txs += pending_num_txs as u64;
+                event_tracker
+                    .pending_drop_unknown(pending_tx_list.into_map().values().map(|tx| tx.hash()));
 
                 continue;
             };
@@ -247,7 +255,15 @@ where
                     unreachable!("pending address present in tracked map")
                 }
                 IndexMapEntry::Vacant(v) => {
-                    Self::finalize_promotion(v, *account_nonce, pending_tx_list, metrics);
+                    let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
+                        event_tracker,
+                        *account_nonce,
+                        pending_tx_list,
+                    ) else {
+                        continue;
+                    };
+
+                    v.insert(tracked_tx_list);
                 }
             }
         }
@@ -262,7 +278,7 @@ where
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&Address, u128>,
-    ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), StateBackendError> {
+    ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
 
         let mut txs = Vec::new();
@@ -293,33 +309,32 @@ where
                 return TrackedTxHeapDrainAction::Skip;
             };
 
-            match tx.apply_max_value(account_balance) {
-                Ok(new_account_balance) => {
-                    *account_balance = new_account_balance;
+            let Some(new_account_balance) = tx.apply_max_value(*account_balance) else {
+                return TrackedTxHeapDrainAction::Skip;
+            };
 
-                    total_gas += tx.gas_limit();
-                    total_size += tx_size;
-                    trace!(txn_hash = ?tx.hash(), "txn included in proposal");
-                    txs.push(tx.raw().to_owned());
+            *account_balance = new_account_balance;
 
-                    if txs.len() < tx_limit {
-                        TrackedTxHeapDrainAction::Continue
-                    } else {
-                        TrackedTxHeapDrainAction::Stop
-                    }
-                }
-                Err(_) => TrackedTxHeapDrainAction::Skip,
+            total_gas += tx.gas_limit();
+            total_size += tx_size;
+            trace!(txn_hash = ?tx.hash(), "txn included in proposal");
+            txs.push(tx.raw().to_owned());
+
+            if txs.len() < tx_limit {
+                TrackedTxHeapDrainAction::Continue
+            } else {
+                TrackedTxHeapDrainAction::Stop
             }
         });
 
-        Ok((total_gas, txs))
+        (total_gas, txs)
     }
 
     pub fn update_committed_block(
         &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         committed_block: EthValidatedBlock<ST, SCT>,
         pending: &mut PendingTxMap,
-        metrics: &mut TxPoolMetrics,
     ) {
         {
             let seqnum = committed_block.get_seq_num();
@@ -343,19 +358,11 @@ where
                 .expect("nonce does not overflow");
 
             match self.txs.entry(*address) {
-                IndexMapEntry::Occupied(tx_list) => {
-                    let num_txs = tx_list.get().num_txs();
-
-                    let Some(tx_list) = TrackedTxList::update_account_nonce(tx_list, account_nonce)
-                    else {
-                        metrics.tracked_remove_committed_addresses += 1;
-                        metrics.tracked_remove_committed_txs += num_txs as u64;
-                        continue;
-                    };
-
-                    metrics.tracked_remove_committed_txs +=
-                        num_txs.saturating_sub(tx_list.get().num_txs()) as u64;
-                }
+                IndexMapEntry::Occupied(tx_list) => TrackedTxList::update_committed_account_nonce(
+                    event_tracker,
+                    tx_list,
+                    account_nonce,
+                ),
                 IndexMapEntry::Vacant(v) => {
                     if insertable == 0 {
                         continue;
@@ -365,15 +372,23 @@ where
                         continue;
                     };
 
+                    let Some(tracked_tx_list) = TrackedTxList::new_from_promote_pending(
+                        event_tracker,
+                        account_nonce,
+                        pending_tx_list,
+                    ) else {
+                        return;
+                    };
+
                     insertable -= 1;
 
-                    Self::finalize_promotion(v, account_nonce, pending_tx_list, metrics);
+                    v.insert(tracked_tx_list);
                 }
             }
         }
     }
 
-    pub fn evict_expired_txs(&mut self, metrics: &mut TxPoolMetrics) {
+    pub fn evict_expired_txs(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
         let num_txs = self.num_txs();
 
         let tx_expiry = if num_txs < SOFT_EVICT_ADDRESSES_WATERMARK {
@@ -394,16 +409,9 @@ where
                 break;
             };
 
-            let entry_num_txs = entry.get().num_txs();
-
-            let Some(entry) = TrackedTxList::evict_expired_txs(entry, tx_expiry) else {
-                metrics.tracked_evict_expired_addresses += 1;
-                metrics.tracked_evict_expired_txs += entry_num_txs as u64;
+            if TrackedTxList::evict_expired_txs(event_tracker, entry, tx_expiry) {
                 continue;
-            };
-
-            metrics.tracked_evict_expired_txs +=
-                entry_num_txs.saturating_sub(entry.get().num_txs()) as u64;
+            }
 
             idx += 1;
         }
@@ -414,33 +422,5 @@ where
         self.last_commit_seq_num = last_delay_committed_blocks
             .last()
             .map(|block| block.get_seq_num())
-    }
-
-    fn finalize_promotion(
-        v: indexmap::map::VacantEntry<'_, Address, TrackedTxList>,
-        account_nonce: u64,
-        pending_tx_list: PendingTxList,
-        metrics: &mut TxPoolMetrics,
-    ) {
-        let pending_num_txs = pending_tx_list.num_txs();
-
-        let Some(tracked_tx_list) =
-            TrackedTxList::new_from_account_nonce_and_pending(account_nonce, pending_tx_list)
-        else {
-            metrics.pending_drop_low_nonce_addresses += 1;
-            metrics.pending_drop_low_nonce_txs += pending_num_txs as u64;
-
-            return;
-        };
-
-        let tracked_num_txs = tracked_tx_list.num_txs();
-
-        metrics.pending_drop_low_nonce_txs +=
-            pending_num_txs.saturating_sub(tracked_num_txs) as u64;
-
-        v.insert(tracked_tx_list);
-
-        metrics.pending_promote_addresses += 1;
-        metrics.pending_promote_txs += tracked_num_txs as u64;
     }
 }

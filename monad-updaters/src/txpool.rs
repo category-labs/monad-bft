@@ -3,6 +3,8 @@ use std::{
     task::{Poll, Waker},
 };
 
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_rlp::Decodable;
 use bytes::Bytes;
 use futures::Stream;
 use monad_consensus_types::{
@@ -16,7 +18,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
+};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -85,8 +89,10 @@ where
     events: VecDeque<MempoolEvent<SCT, EPT>>,
     waker: Option<Waker>,
 
-    metrics: TxPoolMetrics,
+    metrics: EthTxPoolMetrics,
     executor_metrics: ExecutorMetrics,
+
+    snapshot_manager: EthTxPoolSnapshotManager,
 }
 
 impl<ST, SCT, BPT, SBT> Default for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
@@ -102,8 +108,10 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: TxPoolMetrics::default(),
+            metrics: EthTxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
+
+            snapshot_manager: EthTxPoolSnapshotManager::default(),
         }
     }
 }
@@ -121,8 +129,10 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: TxPoolMetrics::default(),
+            metrics: EthTxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
+
+            snapshot_manager: EthTxPoolSnapshotManager::default(),
         }
     }
 }
@@ -201,6 +211,10 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
+        let mut events = Vec::default();
+        let mut event_tracker =
+            EthTxPoolEventTracker::new(&mut self.metrics, &mut self.snapshot_manager, &mut events);
+
         for command in commands {
             match command {
                 TxPoolCommand::CreateProposal {
@@ -220,6 +234,7 @@ where
                 } => {
                     let proposed_execution_inputs = pool
                         .create_proposal(
+                            &mut event_tracker,
                             seq_num,
                             tx_limit,
                             proposal_gas_limit,
@@ -230,7 +245,6 @@ where
                             extending_blocks,
                             block_policy,
                             state_backend,
-                            &mut self.metrics,
                         )
                         .expect("proposal succeeds");
 
@@ -256,7 +270,7 @@ where
                             block_policy,
                             &committed_block,
                         );
-                        pool.update_committed_block(committed_block, &mut self.metrics);
+                        pool.update_committed_block(&mut event_tracker, committed_block);
                     }
                 }
                 TxPoolCommand::Reset {
@@ -266,10 +280,24 @@ where
                         block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );
-                    pool.reset(last_delay_committed_blocks, &mut self.metrics);
+                    pool.reset(&mut event_tracker, last_delay_committed_blocks);
                 }
                 TxPoolCommand::InsertForwardedTxs { sender: _, txs } => {
-                    pool.insert_txs(txs, block_policy, state_backend, &mut self.metrics);
+                    pool.insert_txs(
+                        &mut event_tracker,
+                        block_policy,
+                        state_backend,
+                        txs.into_iter()
+                            .filter_map(|raw_tx| {
+                                let tx = TxEnvelope::decode(&mut raw_tx.as_ref()).ok()?;
+                                let signer = tx.recover_signer().ok()?;
+                                Some(Recovered::new_unchecked(tx, signer))
+                            })
+                            .collect(),
+                        false,
+                        |_| {},
+                    )
+                    .expect("insert tx suceeds");
                 }
                 // TODO: add chain config to MockTxPoolExecutor if we're testing
                 // param forking with it
@@ -365,9 +393,33 @@ where
     fn send_transaction(&mut self, tx: Bytes) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
-        let valid_txs = pool.insert_txs(vec![tx], block_policy, state_backend, &mut self.metrics);
+        let Ok(tx) = TxEnvelope::decode(&mut tx.as_ref()) else {
+            panic!("MockableTxPool received invalid tx bytes!");
+        };
 
-        self.events.push_back(MempoolEvent::ForwardTxs(valid_txs));
+        let Ok(signer) = tx.recover_signer() else {
+            panic!("MockableTxPool received tx with invalid signer");
+        };
+
+        let tx = Recovered::new_unchecked(tx, signer);
+
+        pool.insert_txs(
+            &mut EthTxPoolEventTracker::new(
+                &mut self.metrics,
+                &mut self.snapshot_manager,
+                &mut Vec::default(),
+            ),
+            block_policy,
+            state_backend,
+            vec![tx],
+            true,
+            |tx| {
+                self.events.push_back(MempoolEvent::ForwardTxs(vec![
+                    alloy_rlp::encode(tx.raw()).into()
+                ]));
+            },
+        )
+        .expect("insert succeeds");
 
         if let Some(waker) = self.waker.take() {
             waker.wake();

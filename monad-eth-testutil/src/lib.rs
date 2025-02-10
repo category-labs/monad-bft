@@ -80,11 +80,11 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
 pub fn generate_block_with_txs(
     round: Round,
     seq_num: SeqNum,
-    txs: Vec<TxEnvelope>,
+    txs: Vec<Recovered<TxEnvelope>>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
-            transactions: txs.clone(),
+            transactions: txs.iter().map(|tx| tx.tx().to_owned()).collect(),
             ommers: Vec::default(),
             withdrawals: Vec::default(),
         },
@@ -105,15 +105,7 @@ pub fn generate_block_with_txs(
         RoundSignature::new(Round(1), &keypair),
     );
 
-    let validated_txns: Vec<_> = txs
-        .into_iter()
-        .map(|tx| {
-            let signer = tx.recover_signer().expect("valid tx");
-            Recovered::new_unchecked(tx, signer)
-        })
-        .collect();
-
-    let nonces = validated_txns.iter().map(|t| (t.signer(), t.nonce())).fold(
+    let nonces = txs.iter().map(|t| (t.signer(), t.nonce())).fold(
         BTreeMap::default(),
         |mut map, (address, nonce)| {
             match map.entry(address) {
@@ -129,7 +121,7 @@ pub fn generate_block_with_txs(
         },
     );
 
-    let txn_fees = validated_txns
+    let txn_fees = txs
         .iter()
         .map(|t| (t.signer(), compute_txn_max_value(t)))
         .fold(BTreeMap::new(), |mut costs, (address, cost)| {
@@ -139,7 +131,7 @@ pub fn generate_block_with_txs(
 
     EthValidatedBlock {
         block: ConsensusFullBlock::new(header, body).expect("header doesn't match body"),
-        validated_txns,
+        validated_txns: txs,
         nonces,
         txn_fees,
     }

@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_primitives::{hex, Address, TxKind, B256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use bytes::Bytes;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::{BlockPolicy, GENESIS_TIMESTAMP},
@@ -13,7 +12,9 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
-use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
+use monad_eth_txpool::{
+    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
+};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -108,11 +109,15 @@ fn run_custom_eth_txpool_test<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
-    let mut metrics = TxPoolMetrics::default();
+    let mut metrics = EthTxPoolMetrics::default();
+    let mut snapshot_manager = EthTxPoolSnapshotManager::default();
+    let mut ipc_events = Vec::default();
+    let mut event_tracker =
+        EthTxPoolEventTracker::new(&mut metrics, &mut snapshot_manager, &mut ipc_events);
 
     pool.update_committed_block(
+        &mut event_tracker,
         generate_block_with_txs(Round(0), SeqNum(0), Vec::default()),
-        &mut metrics,
     );
 
     let mut current_round = 1u64;
@@ -127,18 +132,32 @@ fn run_custom_eth_txpool_test<const N: usize>(
             } => {
                 let pool_previous_num_txs = pool.num_txs();
 
-                for (tx, inserted) in txs {
-                    let inserted_txs = pool.insert_txs(
-                        vec![Bytes::from(alloy_rlp::encode(tx))],
+                for (tx, should_insert) in txs {
+                    let signer = tx.recover_signer().unwrap();
+                    let tx = Recovered::new_unchecked(tx.to_owned(), signer);
+
+                    let mut was_inserted = false;
+
+                    pool.insert_txs(
+                        &mut event_tracker,
                         &eth_block_policy,
                         &state_backend,
-                        &mut metrics,
-                    );
+                        vec![tx.clone()],
+                        true,
+                        |inserted_tx| {
+                            assert_eq!(&tx, inserted_tx.raw());
 
-                    if inserted {
-                        assert_eq!(inserted_txs, vec![Bytes::from(alloy_rlp::encode(tx))]);
-                    } else {
-                        assert!(inserted_txs.is_empty());
+                            if !should_insert {
+                                panic!("tx was inserted when it shouldn't have been!");
+                            }
+
+                            was_inserted = true;
+                        },
+                    )
+                    .unwrap();
+
+                    if should_insert && !was_inserted {
+                        panic!("tx should have been inserted but was not!");
                     }
                 }
 
@@ -158,6 +177,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                 let mock_keypair = NopKeyPair::from_bytes(&mut [5_u8; 32]).unwrap();
                 let encoded_txns = pool
                     .create_proposal(
+                        &mut event_tracker,
                         SeqNum(current_seq_num),
                         tx_limit,
                         gas_limit,
@@ -168,7 +188,6 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
                         &state_backend,
-                        &mut metrics,
                     )
                     .expect("create proposal succeeds");
 
@@ -190,7 +209,13 @@ fn run_custom_eth_txpool_test<const N: usize>(
                     let block = generate_block_with_txs(
                         Round(current_round),
                         SeqNum(current_seq_num),
-                        decoded_txns,
+                        decoded_txns
+                            .into_iter()
+                            .map(|tx| {
+                                let signer = tx.recover_signer().unwrap();
+                                Recovered::new_unchecked(tx, signer)
+                            })
+                            .collect(),
                     );
 
                     current_seq_num += 1;
@@ -214,7 +239,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         &block,
                     );
 
-                    pool.update_committed_block(block, &mut metrics);
+                    pool.update_committed_block(&mut event_tracker, block);
                 }
 
                 assert_eq!(

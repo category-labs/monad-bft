@@ -10,24 +10,28 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
 };
+use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, Nonce, BASE_FEE_PER_GAS};
 use tracing::trace;
 
-use super::error::TxPoolInsertionError;
+use crate::EthTxPoolEventTracker;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
+    owned: bool,
     max_value: u128,
     effective_tip_per_gas: u128,
 }
 
 impl ValidEthTransaction {
     pub fn validate<ST, SCT>(
-        tx: Recovered<TxEnvelope>,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         proposal_gas_limit: u64,
-    ) -> Result<Self, TxPoolInsertionError>
+        tx: Recovered<TxEnvelope>,
+        owned: bool,
+    ) -> Option<Self>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -35,13 +39,15 @@ impl ValidEthTransaction {
         // TODO(andr-dev): Block base fee is hardcoded we need to update
         // this logic once its included in the consensus proposal
         if tx.max_fee_per_gas() < BASE_FEE_PER_GAS.into() {
-            return Err(TxPoolInsertionError::FeeTooLow);
+            event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::FeeTooLow);
+            return None;
         }
 
         if static_validate_transaction(&tx, block_policy.get_chain_id(), proposal_gas_limit)
             .is_err()
         {
-            return Err(TxPoolInsertionError::NotWellFormed);
+            event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::NotWellFormed);
+            return None;
         }
 
         let max_value = compute_txn_max_value_to_u128(&tx);
@@ -49,35 +55,37 @@ impl ValidEthTransaction {
             .effective_tip_per_gas(BASE_FEE_PER_GAS)
             .unwrap_or_default();
 
-        Ok(Self {
+        Some(Self {
             tx,
+            owned,
             max_value,
             effective_tip_per_gas,
         })
     }
 
-    pub fn apply_max_value(
-        &self,
-        account_balance: &Balance,
-    ) -> Result<Balance, TxPoolInsertionError> {
-        let Some(new_account_balance) = account_balance.checked_sub(self.max_value) else {
-            trace!(
-                "AccountBalance insert_tx 2 \
+    pub fn apply_max_value(&self, account_balance: Balance) -> Option<Balance> {
+        if let Some(account_balance) = account_balance.checked_sub(self.max_value) {
+            return Some(account_balance);
+        }
+
+        trace!(
+            "AccountBalance insert_tx 2 \
                             do not add txn to the pool. insufficient balance: {account_balance:?} \
                             max_value: {max_value:?} \
                             for address: {address:?}",
-                max_value = self.max_value,
-                address = self.tx.signer()
-            );
+            max_value = self.max_value,
+            address = self.tx.signer()
+        );
 
-            return Err(TxPoolInsertionError::InsufficientBalance);
-        };
-
-        Ok(new_account_balance)
+        None
     }
 
-    pub fn sender(&self) -> Address {
+    pub const fn signer(&self) -> Address {
         self.tx.signer()
+    }
+
+    pub const fn signer_ref(&self) -> &Address {
+        self.tx.signer_ref()
     }
 
     pub fn nonce(&self) -> Nonce {
@@ -85,7 +93,11 @@ impl ValidEthTransaction {
     }
 
     pub fn hash(&self) -> TxHash {
-        *self.tx.tx_hash()
+        self.tx.tx_hash().to_owned()
+    }
+
+    pub fn hash_ref(&self) -> &TxHash {
+        self.tx.tx_hash()
     }
 
     pub fn gas_limit(&self) -> u64 {
@@ -96,8 +108,12 @@ impl ValidEthTransaction {
         self.tx.length() as u64
     }
 
-    pub fn raw(&self) -> &Recovered<TxEnvelope> {
+    pub const fn raw(&self) -> &Recovered<TxEnvelope> {
         &self.tx
+    }
+
+    pub(crate) fn is_owned(&self) -> bool {
+        self.owned
     }
 }
 

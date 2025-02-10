@@ -1,12 +1,9 @@
-pub use self::{metrics::TxPoolMetrics, pool::EthTxPool};
+pub use self::{
+    context::EthTxPoolEventTracker, metrics::EthTxPoolMetrics, pool::EthTxPool,
+    snapshot::EthTxPoolSnapshotManager,
+};
 
+mod context;
 mod metrics;
 mod pool;
-
-#[cfg(feature = "executor")]
-pub use self::{executor::EthTxPoolExecutor, ipc::EthTxPoolIpcConfig};
-
-#[cfg(feature = "executor")]
-mod executor;
-#[cfg(feature = "executor")]
-mod ipc;
+mod snapshot;

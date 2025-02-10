@@ -6,32 +6,22 @@ edition = "2021"
 [lib]
 bench = false
 
-[features]
-default = ["executor"]
-executor = ["dep:tokio", "dep:tokio-util"]
-
 [dependencies]
-monad-chain-config = { path = "../monad-chain-config" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }
+monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-bytes = { workspace = true }
-futures = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
-rayon = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, optional = true }
-tokio-util = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

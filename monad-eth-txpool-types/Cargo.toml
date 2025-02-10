@@ -1,0 +1,8 @@
+[package]
+name = "monad-eth-txpool-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+serde = { workspace = true }
