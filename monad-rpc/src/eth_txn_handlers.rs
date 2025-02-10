@@ -22,6 +22,7 @@ use crate::{
         BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity,
         UnformattedData,
     },
+    fee::BaseFeePerGas,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -378,6 +379,23 @@ pub struct MonadEthSendRawTransactionParams {
     hex_tx: UnformattedData,
 }
 
+fn base_fee_validation(max_fee_per_gas: u128, base_fee: impl BaseFeePerGas) -> bool {
+    let current_block = 0; // TODO: this can get latest block from triedb in future
+    let block_threshold = 1000; // TODO: configurable range of how many blocks to consider
+
+    let Some(min_potential_base_fee) =
+        base_fee.min_potential_base_fee_in_range(current_block, block_threshold)
+    else {
+        return false;
+    };
+
+    if max_fee_per_gas < min_potential_base_fee {
+        return false;
+    }
+
+    true
+}
+
 // TODO: need to support EIP-4844 transactions
 #[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
 #[allow(non_snake_case)]
@@ -387,6 +405,7 @@ pub struct MonadEthSendRawTransactionParams {
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
     ipc: flume::Sender<TxEnvelope>,
+    base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
@@ -414,6 +433,12 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             if !allow_unprotected_txs && txn.chain_id().is_none() {
                 return Err(JsonRpcError::custom(
                     "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
+                ));
+            }
+
+            if !base_fee_validation(txn.max_fee_per_gas(), base_fee_per_gas) {
+                return Err(JsonRpcError::custom(
+                    "maxFeePerGas too low to be include in upcoming blocks".to_string(),
                 ));
             }
 
@@ -775,7 +800,7 @@ mod tests {
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
     use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::eth_json_types::UnformattedData;
+    use crate::{eth_json_types::UnformattedData, fee::FixedFee};
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -846,9 +871,16 @@ mod tests {
 
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
-                monad_eth_sendRawTransaction(&triedb, tx.clone(), case, 1, true)
-                    .await
-                    .is_err(),
+                monad_eth_sendRawTransaction(
+                    &triedb,
+                    tx.clone(),
+                    FixedFee::new(2000),
+                    case,
+                    1,
+                    true
+                )
+                .await
+                .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );

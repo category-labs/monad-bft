@@ -105,7 +105,9 @@ mod tests {
     use tokio::sync::Semaphore;
     use tracing_actix_web::TracingLogger;
 
-    use crate::{tests::MonadRpcResourcesState, MonadJsonRootSpanBuilder, MonadRpcResources};
+    use crate::{
+        tests::MonadRpcResourcesState, FixedFee, MonadJsonRootSpanBuilder, MonadRpcResources,
+    };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TxEnvelope>();
@@ -113,6 +115,7 @@ mod tests {
             mempool_sender: ipc_sender,
             triedb_reader: None,
             archive_reader: None,
+            base_fee_per_gas: FixedFee::new(2000),
             chain_id: 41454,
             batch_request_limit: 1000,
             max_response_size: 25_000_000,

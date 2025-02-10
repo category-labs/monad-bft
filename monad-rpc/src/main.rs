@@ -8,8 +8,10 @@ use actix_web::{
 use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
+use fee::FixedFee;
 use futures::SinkExt;
 use monad_archive::archive_reader::ArchiveReader;
+use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -72,6 +74,7 @@ mod debug;
 pub mod docs;
 mod eth_json_types;
 mod eth_txn_handlers;
+mod fee;
 mod gas_handlers;
 mod gas_oracle;
 mod hex;
@@ -249,6 +252,7 @@ async fn rpc_select(
             monad_eth_sendRawTransaction(
                 triedb_env,
                 app_state.mempool_sender.clone(),
+                app_state.base_fee_per_gas.clone(),
                 params,
                 app_state.chain_id,
                 app_state.allow_unprotected_txs,
@@ -509,6 +513,7 @@ struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReader>,
+    base_fee_per_gas: FixedFee,
     chain_id: u64,
     batch_request_limit: u16,
     max_response_size: u32,
@@ -529,6 +534,7 @@ impl MonadRpcResources {
         mempool_sender: flume::Sender<TxEnvelope>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReader>,
+        fixed_base_fee: u128,
         chain_id: u64,
         batch_request_limit: u16,
         max_response_size: u32,
@@ -539,6 +545,7 @@ impl MonadRpcResources {
             mempool_sender,
             triedb_reader,
             archive_reader,
+            base_fee_per_gas: FixedFee::new(fixed_base_fee),
             chain_id,
             batch_request_limit,
             max_response_size,
@@ -706,6 +713,7 @@ async fn main() -> std::io::Result<()> {
         ipc_sender.clone(),
         triedb_env,
         archive_reader,
+        BASE_FEE_PER_GAS.into(),
         args.chain_id,
         args.batch_request_limit,
         args.max_response_size,
@@ -813,6 +821,7 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             triedb_reader: None,
             archive_reader: None,
+            base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
