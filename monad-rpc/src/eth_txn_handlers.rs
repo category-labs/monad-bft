@@ -420,7 +420,13 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             let hash = *txn.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            let signer = txn.recover_signer().map_err(|_| {
+            let signer = spawn_rayon_async({
+                let txn = txn.clone();
+                move || txn.recover_signer()
+            })
+            .await
+            .map_err(|_| JsonRpcError::custom("no available task to recover signer".to_string()))?
+            .map_err(|_| {
                 JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
             })?;
 
@@ -744,6 +750,18 @@ async fn get_transaction_from_triedb<T: Triedb>(
         .map(|txn| Some(MonadTransaction(txn))),
         None => Ok(None),
     }
+}
+
+async fn spawn_rayon_async<F, R>(func: F) -> Result<R, tokio::sync::oneshot::error::RecvError>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(|| {
+        let _ = tx.send(func());
+    });
+    rx.await.map_err(Into::into)
 }
 
 #[cfg(test)]
