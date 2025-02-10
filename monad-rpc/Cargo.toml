@@ -61,3 +61,6 @@ alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 reqwest = { workspace = true }
 test-case = { workspace = true }
+
+[build-dependencies]
+vergen-git2 = "1.0.5"

@@ -83,6 +83,8 @@ mod txpool;
 mod vpool;
 mod websocket;
 
+const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
+
 pub async fn rpc_handler(
     root_span: RootSpan,
     body: bytes::Bytes,
@@ -504,7 +506,7 @@ async fn rpc_select(
                 .await
                 .map(serialize_result)?
         }
-        "web3_clientVersion" => serialize_result("monad"),
+        "web3_clientVersion" => serialize_result(WEB3_RPC_CLIENT_VERSION),
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
