@@ -168,7 +168,7 @@ impl Decodable for TxEnvelopeWithSender {
     }
 }
 
-const MAX_QUEUE_BEFORE_POLL: usize = 100;
+const MAX_NOP_POLL_BEFORE_SLEEP: usize = 1_000_000;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 
 fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>) {
@@ -176,27 +176,28 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
     let triedb_handle: TriedbHandle =
         TriedbHandle::try_new(&triedb_path).expect("triedb should exist in path");
 
+    let mut num_nop_poll = 0;
     loop {
-        triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
+        if num_nop_poll >= MAX_NOP_POLL_BEFORE_SLEEP {
+            std::thread::sleep(Duration::from_millis(1));
+        }
 
-        // get next request, or sleep for 1ms
-        let mut maybe_request = receiver.recv_timeout(Duration::from_millis(1)).ok();
-        let mut num_queued = 0_usize;
-        while let Some(triedb_request) = maybe_request {
+        let new_completions = triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
+        if new_completions == 0 {
+            num_nop_poll += 1;
+        } else {
+            num_nop_poll = 0;
+        }
+
+        if let Ok(triedb_request) = receiver.try_recv() {
+            num_nop_poll = 0;
             match triedb_request {
-                TriedbRequest::SyncRequest(sync_request) => {
-                    // poll for completions before initiating sync request
-                    triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
-                    match sync_request {
-                        SyncRequest::BlockNumberRequest(block_num_request) => {
-                            let block_num =
-                                triedb_handle.latest_finalized_block().unwrap_or_default();
-                            let _ = block_num_request.request_sender.send(block_num);
-                        }
+                TriedbRequest::SyncRequest(sync_request) => match sync_request {
+                    SyncRequest::BlockNumberRequest(block_num_request) => {
+                        let block_num = triedb_handle.latest_finalized_block().unwrap_or_default();
+                        let _ = block_num_request.request_sender.send(block_num);
                     }
-                    // this is a sync request, so break out and poll for completions again
-                    break;
-                }
+                },
                 TriedbRequest::AsyncTraverseRequest(traverse_request) => {
                     triedb_handle.traverse_triedb_async(
                         &traverse_request.triedb_key,
@@ -217,12 +218,6 @@ fn polling_thread(triedb_path: PathBuf, receiver: mpsc::Receiver<TriedbRequest>)
                     );
                 }
             }
-            num_queued += 1;
-            if num_queued > MAX_QUEUE_BEFORE_POLL {
-                break;
-            }
-            // check for any other outstanding async requests to queue up before polling
-            maybe_request = receiver.try_recv().ok();
         }
     }
 }
