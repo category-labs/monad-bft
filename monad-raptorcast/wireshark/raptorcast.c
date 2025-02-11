@@ -128,7 +128,7 @@ static enum signature_status recover_author(uint8_t *author, size_t authorlen, c
 	static struct signature_cache_entry cache_entries[256];
 
 	if (ctx == NULL) {
-		ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+		ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
 	}
 
 	struct signature_cache_entry *entry = &cache_entries[msghash32[0]];
