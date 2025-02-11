@@ -1,5 +1,6 @@
 use std::{marker::PhantomData, time::Duration};
 
+use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
@@ -146,6 +147,8 @@ type MonadStateType<ST, SCT> = MonadState<
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockValidator,
+    MockChainConfig,
+    MockChainRevision,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -161,7 +164,7 @@ where
     pub epoch_start_delay: Round,
 
     pub validators: ValidatorSetData<SCT>,
-    pub consensus_config: ConsensusConfig,
+    pub consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
 }
 
 pub fn make_monad_state<ST, SCT>(

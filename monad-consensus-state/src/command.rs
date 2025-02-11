@@ -57,6 +57,8 @@ where
         last_round_tc: Option<TimeoutCertificate<SCT>>,
 
         tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
 

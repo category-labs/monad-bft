@@ -8,6 +8,7 @@ use alloy_rpc_types::{
 use futures::stream::{self, StreamExt};
 use itertools::Either;
 use monad_archive::prelude::{ArchiveReader, BlockDataReader, IndexReader};
+use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -415,7 +416,9 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(txn) => {
             // drop transactions that will fail consensus static validation
-            if let Err(err) = static_validate_transaction(&txn, chain_id) {
+            if let Err(err) =
+                static_validate_transaction(&txn, chain_id, CHAIN_PARAMS_LATEST.proposal_gas_limit)
+            {
                 let error_message = match err {
                     TransactionError::InvalidChainId => "Invalid chain ID",
                     TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",

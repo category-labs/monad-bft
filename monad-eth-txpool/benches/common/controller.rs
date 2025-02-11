@@ -1,5 +1,6 @@
 use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{Uint, B256};
+use alloy_rlp::Encodable;
 use bytes::Bytes;
 use itertools::Itertools;
 use monad_crypto::NopSignature;
@@ -37,7 +38,8 @@ pub struct BenchController<'a> {
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
     pub metrics: TxPoolMetrics,
     pub proposal_tx_limit: usize,
-    pub gas_limit: u64,
+    pub proposal_gas_limit: u64,
+    pub proposal_byte_limit: u64,
 }
 
 impl<'a> BenchController<'a> {
@@ -75,12 +77,18 @@ impl<'a> BenchController<'a> {
                 .collect_vec(),
             metrics,
             proposal_tx_limit,
-            gas_limit: txs
+            proposal_gas_limit: txs
                 .iter()
                 .map(|tx| tx.gas_limit())
                 .sum::<u64>()
                 .checked_add(1)
                 .expect("proposal gas limit does not overflow"),
+            proposal_byte_limit: txs
+                .iter()
+                .map(|tx| tx.length() as u64)
+                .sum::<u64>()
+                .checked_add(1)
+                .expect("proposal size limit does not overflow"),
         }
     }
 

@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-blocksync = { path = "../monad-blocksync" }
 monad-blocktree = { path = "../monad-blocktree" }
+monad-chain-config = { path = "../monad-chain-config" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -29,7 +30,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }
-monad-eth-types = { path = "../monad-eth-types"}
+monad-eth-types = { path = "../monad-eth-types" }
 monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 

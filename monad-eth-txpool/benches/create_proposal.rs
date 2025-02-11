@@ -25,12 +25,14 @@ fn criterion_benchmark(c: &mut Criterion) {
              pending_blocks,
              metrics,
              proposal_tx_limit,
-             gas_limit,
+             proposal_gas_limit,
+             proposal_byte_limit,
          }| {
             pool.create_proposal(
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
-                *gas_limit,
+                *proposal_gas_limit,
+                *proposal_byte_limit,
                 [0_u8; 20],
                 GENESIS_TIMESTAMP
                     + block_policy.get_last_commit().0 as u128

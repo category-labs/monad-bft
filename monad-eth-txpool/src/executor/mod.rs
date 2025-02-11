@@ -1,12 +1,13 @@
-use std::{io, task::Poll, time::Duration};
+use std::{io, marker::PhantomData, task::Poll, time::Duration};
 
 use futures::{Stream, StreamExt};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_types::{EthExecutionProtocol, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -14,29 +15,36 @@ use tokio::sync::mpsc;
 
 use crate::{ipc::EthTxPoolIpc, EthTxPool, EthTxPoolIpcConfig, TxPoolMetrics};
 
-pub struct EthTxPoolExecutor<ST, SCT, SBT>
+pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pool: EthTxPool<ST, SCT, SBT>,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
     ipc: EthTxPoolIpc,
+    chain_config: CCT,
 
     events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
 
     metrics: TxPoolMetrics,
     executor_metrics: ExecutorMetrics,
+
+    _phantom: PhantomData<CRT>,
 }
 
-impl<ST, SCT, SBT> EthTxPoolExecutor<ST, SCT, SBT>
+impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn new(
         block_policy: EthBlockPolicy<ST, SCT>,
@@ -45,29 +53,41 @@ where
         do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
+        chain_config: CCT,
+        proposal_gas_limit: u64,
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
         Ok(Self {
-            pool: EthTxPool::new(do_local_insert, soft_tx_expiry, hard_tx_expiry),
+            pool: EthTxPool::new(
+                do_local_insert,
+                soft_tx_expiry,
+                hard_tx_expiry,
+                proposal_gas_limit,
+            ),
             block_policy,
             state_backend,
             ipc: EthTxPoolIpc::new(ipc_config)?,
+            chain_config,
 
             events_tx,
             events,
 
             metrics: TxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
+
+            _phantom: PhantomData,
         })
     }
 }
 
-impl<ST, SCT, SBT> Executor for EthTxPoolExecutor<ST, SCT, SBT>
+impl<ST, SCT, SBT, CCT, CRT> Executor for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
 
@@ -92,6 +112,8 @@ where
                     round_signature,
                     last_round_tc,
                     tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
                     beneficiary,
                     timestamp_ns,
                     extending_blocks,
@@ -102,7 +124,8 @@ where
                         .create_proposal(
                             seq_num,
                             tx_limit,
-                            PROPOSAL_GAS_LIMIT,
+                            proposal_gas_limit,
+                            proposal_byte_limit,
                             beneficiary,
                             timestamp_ns,
                             round_signature.clone(),
@@ -155,6 +178,14 @@ where
                     self.pool
                         .reset(last_delay_committed_blocks, &mut self.metrics);
                 }
+                TxPoolCommand::EnterRound { epoch: _, round } => {
+                    let proposal_gas_limit = self
+                        .chain_config
+                        .get_chain_revision(round)
+                        .chain_params()
+                        .proposal_gas_limit;
+                    self.pool.set_tx_gas_limit(proposal_gas_limit);
+                }
             }
         }
 
@@ -166,11 +197,13 @@ where
     }
 }
 
-impl<ST, SCT, SBT> Stream for EthTxPoolExecutor<ST, SCT, SBT>
+impl<ST, SCT, SBT, CCT, CRT> Stream for EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
     Self: Unpin,
 {
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
@@ -184,12 +217,14 @@ where
             block_policy,
             state_backend,
             ipc,
+            chain_config: _,
 
             events_tx: _,
             events,
 
             metrics,
             executor_metrics: _,
+            _phantom,
         } = self.get_mut();
 
         if let Poll::Ready(result) = events.poll_recv(cx) {

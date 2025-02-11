@@ -2,6 +2,10 @@ use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
+use monad_chain_config::{
+    revision::{ChainParams, MockChainRevision},
+    MockChainConfig,
+};
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
@@ -35,6 +39,8 @@ impl SwarmRelation for BLSSwarm {
     type ExecutionProtocolType = MockExecutionProtocol;
     type StateBackendType = InMemoryState;
     type BlockPolicyType = PassthruBlockPolicy;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,
@@ -87,12 +93,18 @@ impl SwarmRelation for BLSSwarm {
     >;
 }
 
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(5),
+};
+
 #[test]
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
     let delta = Duration::from_millis(20);
-    let vote_pace = Duration::from_millis(5);
 
     let state_configs = make_state_configs::<BLSSwarm>(
         2, // num_nodes
@@ -101,13 +113,13 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        SeqNum(4),    // execution_delay
-        delta,        // delta
-        vote_pace,    // vote pace
-        0,            // proposal_tx_limit
-        SeqNum(2000), // val_set_update_interval
-        Round(50),    // epoch_start_delay
-        SeqNum(100),  // state_sync_threshold
+        SeqNum(4),                           // execution_delay
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        0,                                   // proposal_tx_limit
+        SeqNum(2000),                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

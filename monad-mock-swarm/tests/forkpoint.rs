@@ -1,6 +1,10 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
+use monad_chain_config::{
+    revision::{ChainParams, MockChainRevision},
+    MockChainConfig,
+};
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -35,6 +39,8 @@ impl SwarmRelation for ForkpointSwarm {
     type ExecutionProtocolType = EthExecutionProtocol;
     type StateBackendType = InMemoryState;
     type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,
@@ -87,6 +93,13 @@ impl SwarmRelation for ForkpointSwarm {
         Self::ExecutionProtocolType,
     >;
 }
+
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(0),
+};
 
 #[test]
 fn test_forkpoint_restart_f_simple_blocksync() {
@@ -209,13 +222,12 @@ fn forkpoint_restart_f(
     fresh_forkpoint: bool,
 ) {
     let delta = Duration::from_millis(100);
-    let vote_pace = Duration::from_millis(0);
     let state_root_delay = SeqNum(4);
     let state_configs = make_state_configs::<ForkpointSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0, 0),
+        || EthValidator::new(0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -225,12 +237,12 @@ fn forkpoint_restart_f(
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
         state_root_delay,
-        delta,               // delta
-        vote_pace,           // vote pace
-        10,                  // proposal_tx_limit
-        epoch_length,        // val_set_update_interval
-        Round(50),           // epoch_start_delay
-        statesync_threshold, // state_sync_threshold
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        10,                                  // proposal_tx_limit
+        epoch_length,                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        statesync_threshold,                 // state_sync_threshold
     );
 
     let create_block_policy = || {
@@ -242,7 +254,7 @@ fn forkpoint_restart_f(
     };
 
     // Enumerate different restarting node id to cover all the leader cases
-    for (i, restart_pubkey) in state_configs
+    for (_i, restart_pubkey) in state_configs
         .iter()
         .enumerate()
         .map(|(i, c)| (i, c.key.pubkey()))
@@ -255,22 +267,22 @@ fn forkpoint_restart_f(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,    // execution_delay
-            delta,               // delta
-            vote_pace,           // vote pace
-            10,                  // proposal_tx_limit
-            epoch_length,        // val_set_update_interval
-            Round(50),           // epoch_start_delay
-            statesync_threshold, // state_sync_threshold
+            state_root_delay,                    // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            10,                                  // proposal_tx_limit
+            epoch_length,                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            statesync_threshold,                 // state_sync_threshold
         );
         let state_configs_dup = make_state_configs::<ForkpointSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             || {
                 EthBlockPolicy::new(
                     GENESIS_SEQ_NUM,
@@ -279,13 +291,13 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,    // execution_delay
-            delta,               // delta
-            vote_pace,           // vote pace
-            10,                  // proposal_tx_limit
-            epoch_length,        // val_set_update_interval
-            Round(50),           // epoch_start_delay
-            statesync_threshold, // state_sync_threshold
+            state_root_delay,                    // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            10,                                  // proposal_tx_limit
+            epoch_length,                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            statesync_threshold,                 // state_sync_threshold
         );
 
         let mut restart_builder = state_configs_dup
@@ -528,13 +540,12 @@ fn forkpoint_restart_below_all(
 ) {
     let num_nodes = 4;
     let delta = Duration::from_millis(100);
-    let vote_pace = Duration::from_millis(0);
     let state_root_delay = SeqNum(4);
     let state_configs = make_state_configs::<ForkpointSwarm>(
         num_nodes,
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        || EthValidator::new(0, 0),
+        || EthValidator::new(0),
         || {
             EthBlockPolicy::new(
                 GENESIS_SEQ_NUM,
@@ -543,13 +554,13 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-        state_root_delay,    // execution_delay
-        delta,               // delta
-        vote_pace,           // vote pace
-        10,                  // proposal_tx_limit
-        epoch_length,        // val_set_update_interval
-        Round(50),           // epoch_start_delay
-        statesync_threshold, // state_sync_threshold
+        state_root_delay,                    // execution_delay
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        10,                                  // proposal_tx_limit
+        epoch_length,                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        statesync_threshold,                 // state_sync_threshold
     );
 
     let pubkey_iter = state_configs
@@ -584,31 +595,31 @@ fn forkpoint_restart_below_all(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,    // execution_delay
-            delta,               // delta
-            vote_pace,           // vote pace
-            10,                  // proposal_tx_limit
-            epoch_length,        // val_set_update_interval
-            Round(50),           // epoch_start_delay
-            statesync_threshold, // state_sync_threshold
+            state_root_delay,                    // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            10,                                  // proposal_tx_limit
+            epoch_length,                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            statesync_threshold,                 // state_sync_threshold
         );
         let mut state_configs_dup = make_state_configs::<ForkpointSwarm>(
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
-            state_root_delay,    // execution_delay
-            delta,               // delta
-            vote_pace,           // vote pace
-            10,                  // proposal_tx_limit
-            epoch_length,        // val_set_update_interval
-            Round(50),           // epoch_start_delay
-            statesync_threshold, // state_sync_threshold
+            state_root_delay,                    // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            10,                                  // proposal_tx_limit
+            epoch_length,                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            statesync_threshold,                 // state_sync_threshold
         );
 
         let all_peers: BTreeSet<_> = state_configs

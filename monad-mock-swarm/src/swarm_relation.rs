@@ -1,4 +1,8 @@
 use bytes::Bytes;
+use monad_chain_config::{
+    revision::{ChainRevision, MockChainRevision},
+    ChainConfig, MockChainConfig,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
@@ -39,6 +43,8 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::BlockValidator,
+    <S as SwarmRelation>::ChainConfigType,
+    <S as SwarmRelation>::ChainRevisionType,
 >;
 pub trait SwarmRelation
 where
@@ -60,6 +66,8 @@ where
         + Sync
         + Unpin;
     type StateBackendType: StateBackend + Send + Sync + Unpin;
+    type ChainConfigType: ChainConfig<Self::ChainRevisionType> + Send + Unpin;
+    type ChainRevisionType: ChainRevision + Send + Unpin;
 
     type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
 
@@ -153,6 +161,8 @@ impl SwarmRelation for DebugSwarmRelation {
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = Bytes;
 
@@ -283,6 +293,8 @@ impl SwarmRelation for NoSerSwarm {
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,
@@ -342,6 +354,8 @@ impl SwarmRelation for BytesSwarm {
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = Bytes;
     type BlockValidator = MockValidator;
@@ -396,6 +410,8 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
     type StateBackendType = InMemoryState;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,

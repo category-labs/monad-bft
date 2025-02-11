@@ -7,6 +7,7 @@ use clap::Parser;
 use executor::{LedgerConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::MockExecutionProtocol,
@@ -89,6 +90,13 @@ enum GossipArgs {
 pub enum LedgerArgs {
     Mock,
 }
+
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(0),
+};
 
 fn make_provider(
     otel_endpoint: String,
@@ -304,8 +312,9 @@ where
                         statesync_to_live_threshold: SeqNum(600),
                         live_to_statesync_threshold: SeqNum(900),
                         start_execution_threshold: SeqNum(300),
-                        vote_pace: Duration::from_millis(0),
+                        chain_config: MockChainConfig::new(&CHAIN_PARAMS),
                         timestamp_latency_estimate_ns: 10_000_000,
+                        _phantom: Default::default(),
                     },
                 },
             }

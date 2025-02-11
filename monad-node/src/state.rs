@@ -5,6 +5,7 @@ use std::{
 
 use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
+use monad_chain_config::MonadChainConfig;
 use monad_keystore::keystore::Keystore;
 use monad_node::config::{ForkpointConfig, NodeConfig};
 use monad_secp::KeyPair;
@@ -16,6 +17,7 @@ pub struct NodeState {
     pub node_config: NodeConfig,
     pub node_config_path: PathBuf,
     pub forkpoint_config: ForkpointConfig,
+    pub chain_config: MonadChainConfig,
 
     pub secp256k1_identity: KeyPair,
     pub router_identity: KeyPair,
@@ -40,6 +42,7 @@ impl NodeState {
             secp_identity,
             node_config: node_config_path,
             forkpoint_config: forkpoint_config_path,
+            devnet_chain_config_override: maybe_devnet_chain_config_override_path,
             genesis_path,
             wal_path,
             ledger_path,
@@ -78,6 +81,16 @@ impl NodeState {
         let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(&forkpoint_config_path)?)?;
+        let devnet_chain_config_override =
+            if let Some(devnet_override_path) = maybe_devnet_chain_config_override_path {
+                Some(toml::from_str(&std::fs::read_to_string(
+                    &devnet_override_path,
+                )?)?)
+            } else {
+                None
+            };
+        let chain_config =
+            MonadChainConfig::new(node_config.chain_id, devnet_chain_config_override)?;
 
         let wal_path = wal_path.with_file_name(format!(
             "{}_{}",
@@ -106,6 +119,7 @@ impl NodeState {
             node_config,
             node_config_path,
             forkpoint_config,
+            chain_config,
 
             secp256k1_identity: secp_key,
             router_identity: router_key,

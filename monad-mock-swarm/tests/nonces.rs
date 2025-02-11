@@ -8,6 +8,10 @@ mod test {
     use alloy_consensus::{Transaction, TxEnvelope};
     use alloy_primitives::{Address, B256};
     use itertools::Itertools;
+    use monad_chain_config::{
+        revision::{ChainParams, MockChainRevision},
+        MockChainConfig,
+    };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -51,6 +55,8 @@ mod test {
         type ExecutionProtocolType = EthExecutionProtocol;
         type StateBackendType = InMemoryState;
         type BlockPolicyType = EthBlockPolicy<Self::SignatureType, Self::SignatureCollectionType>;
+        type ChainConfigType = MockChainConfig;
+        type ChainRevisionType = MockChainRevision;
 
         type TransportMessage = VerifiedMonadMessage<
             Self::SignatureType,
@@ -110,6 +116,13 @@ mod test {
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(0),
+    };
+
     fn generate_eth_swarm(
         num_nodes: u16,
         existing_accounts: impl IntoIterator<Item = Address>,
@@ -125,7 +138,7 @@ mod test {
             num_nodes,
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            || EthValidator::new(10_000, 1337),
+            || EthValidator::new(1337),
             create_block_policy,
             || {
                 InMemoryStateInner::new(
@@ -134,13 +147,13 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
-            execution_delay,          // execution_delay
-            CONSENSUS_DELTA,          // delta
-            Duration::from_millis(0), // vote pace
-            10,                       // proposal_tx_limit
-            SeqNum(2000),             // val_set_update_interval
-            Round(50),                // epoch_start_delay
-            SeqNum(100),              // state_sync_threshold
+            execution_delay,                     // execution_delay
+            CONSENSUS_DELTA,                     // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            10,                                  // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

@@ -14,7 +14,7 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
 use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
-use monad_eth_types::{Balance, BASE_FEE_PER_GAS, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -23,6 +23,8 @@ use tracing_test::traced_test;
 const EXECUTION_DELAY: u64 = 4;
 const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 const GAS_LIMIT: u64 = 30000;
+const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
 
 // pubkey starts with AAA
 const S1: B256 = B256::new(hex!(
@@ -159,6 +161,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         SeqNum(current_seq_num),
                         tx_limit,
                         gas_limit,
+                        PROPOSAL_SIZE_LIMIT,
                         [0_u8; 20],
                         GENESIS_TIMESTAMP + current_seq_num as u128,
                         RoundSignature::new(Round(0), &mock_keypair),

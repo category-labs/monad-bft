@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -29,6 +30,13 @@ criterion_group! {
 }
 criterion_main!(benches);
 
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(0),
+};
+
 fn two_nodes() {
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
@@ -37,13 +45,13 @@ fn two_nodes() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-        SeqNum(4),                // execution_delay
-        Duration::from_millis(2), // delta
-        Duration::from_millis(0), // vote pace
-        5_000,                    // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        SeqNum(100),              // state_sync_threshold
+        SeqNum(4),                           // execution_delay
+        Duration::from_millis(2),            // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        5_000,                               // proposal_tx_limit
+        SeqNum(2000),                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

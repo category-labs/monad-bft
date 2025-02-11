@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -28,6 +29,13 @@ pub fn init() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook))
 }
 
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(5),
+};
+
 #[wasm_bindgen]
 pub fn simulation_make() -> *mut Simulation {
     let config = || {
@@ -38,13 +46,13 @@ pub fn simulation_make() -> *mut Simulation {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
-            SeqNum(4),                 // execution_delay
-            Duration::from_millis(20), // delta
-            Duration::from_millis(5),  // vote pace
-            100,                       // proposal_tx_limit
-            SeqNum(2000),              // val_set_update_interval
-            Round(50),                 // epoch_start_delay
-            SeqNum(100),               // state_sync_threshold
+            SeqNum(4),                           // execution_delay
+            Duration::from_millis(20),           // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            100,                                 // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

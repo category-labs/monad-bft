@@ -4,9 +4,7 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::{Either, Itertools};
-use monad_consensus_types::{
-    payload::PROPOSAL_SIZE_LIMIT, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -107,6 +105,7 @@ where
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
         block_policy: &EthBlockPolicy<ST, SCT>,
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
@@ -165,8 +164,13 @@ where
             "txpool sequencing transactions"
         );
 
-        let (proposal_total_gas, proposal_tx_list) =
-            self.create_proposal_tx_list(tx_limit, proposal_gas_limit, tx_heap, account_balances)?;
+        let (proposal_total_gas, proposal_tx_list) = self.create_proposal_tx_list(
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            tx_heap,
+            account_balances,
+        )?;
 
         let proposal_num_tx = proposal_tx_list.len();
 
@@ -255,6 +259,7 @@ where
         &self,
         tx_limit: usize,
         proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
         mut account_balances: BTreeMap<&Address, u128>,
     ) -> Result<(u64, Vec<Recovered<TxEnvelope>>), StateBackendError> {
@@ -275,7 +280,7 @@ where
             let tx_size = tx.size();
             if total_size
                 .checked_add(tx_size)
-                .map_or(true, |new_total_size| new_total_size > PROPOSAL_SIZE_LIMIT)
+                .map_or(true, |new_total_size| new_total_size > proposal_byte_limit)
             {
                 return TrackedTxHeapDrainAction::Skip;
             }

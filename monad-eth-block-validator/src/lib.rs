@@ -11,7 +11,7 @@ use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::{BlockPolicy, ConsensusBlockHeader, ConsensusFullBlock},
     block_validator::{BlockValidationError, BlockValidator},
-    payload::{ConsensusBlockBody, PROPOSAL_SIZE_LIMIT},
+    payload::ConsensusBlockBody,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
 use monad_crypto::certificate_signature::{
@@ -23,7 +23,6 @@ use monad_eth_block_policy::{
 };
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
-    PROPOSAL_GAS_LIMIT,
 };
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -42,8 +41,6 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    /// max number of txns to fetch
-    pub tx_limit: usize,
     /// chain id
     pub chain_id: u64,
 
@@ -56,9 +53,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    pub fn new(tx_limit: usize, chain_id: u64) -> Self {
+    pub fn new(chain_id: u64) -> Self {
         Self {
-            tx_limit,
             chain_id,
             _phantom: PhantomData,
         }
@@ -67,6 +63,9 @@ where
     fn validate_block_body(
         &self,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
     ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
         let EthBlockBody {
             transactions,
@@ -84,7 +83,7 @@ where
 
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
-        if transactions.len() > self.tx_limit {
+        if transactions.len() > tx_limit {
             return Err(BlockValidationError::TxnError);
         }
 
@@ -103,7 +102,7 @@ where
         let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
 
         for eth_txn in &eth_txns {
-            if static_validate_transaction(eth_txn, self.chain_id).is_err() {
+            if static_validate_transaction(eth_txn, self.chain_id, proposal_gas_limit).is_err() {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -129,12 +128,12 @@ where
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();
-        if total_gas > PROPOSAL_GAS_LIMIT {
+        if total_gas > proposal_gas_limit {
             return Err(BlockValidationError::TxnError);
         }
 
         let proposal_size: usize = eth_txns.iter().map(|tx| tx.length()).sum();
-        if proposal_size as u64 > PROPOSAL_SIZE_LIMIT {
+        if proposal_size as u64 > proposal_byte_limit {
             return Err(BlockValidationError::TxnError);
         }
 
@@ -146,6 +145,7 @@ where
         header: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: &ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+        proposal_gas_limit: u64,
     ) -> Result<(), BlockValidationError> {
         if header.block_body_id != body.get_id() {
             return Err(BlockValidationError::HeaderPayloadMismatchError);
@@ -191,7 +191,7 @@ where
         if number != &header.seq_num.0 {
             return Err(BlockValidationError::HeaderError);
         }
-        if gas_limit != &PROPOSAL_GAS_LIMIT {
+        if gas_limit != &proposal_gas_limit {
             return Err(BlockValidationError::HeaderError);
         }
         if u128::from(*timestamp) != header.timestamp_ns / 1_000_000_000 {
@@ -236,6 +236,9 @@ where
         header: ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
         body: ConsensusBlockBody<EthExecutionProtocol>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit:  u64,
     ) -> Result<
         <EthBlockPolicy<ST, SCT> as BlockPolicy<
             ST,
@@ -245,9 +248,11 @@ where
         >>::ValidatedBlock,
         BlockValidationError,
     >{
-        self.validate_block_header(&header, &body, author_pubkey)?;
+        self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(&body) {
+        if let Ok((validated_txns, nonces, txn_fees)) =
+            self.validate_block_body(&body, tx_limit, proposal_gas_limit, proposal_byte_limit)
+        {
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
@@ -274,13 +279,16 @@ mod test {
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
 
+    const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+    const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
+
     #[test]
     fn test_invalid_block_with_nonce_gap() {
         let block_validator: EthValidator<
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState,
-        > = EthValidator::new(10, 1337);
+        > = EthValidator::new(1337);
 
         // txn1 with nonce 1 while txn2 with nonce 3 (there is a nonce gap)
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -297,7 +305,12 @@ mod test {
         });
 
         // block validation should return error
-        let result = block_validator.validate_block_body(&payload);
+        let result = block_validator.validate_block_body(
+            &payload,
+            10,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+        );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
@@ -307,7 +320,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState,
-        > = EthValidator::new(10, 1337);
+        > = EthValidator::new(1337);
 
         // total gas used is 400_000_000 which is higher than block gas limit
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 200_000_000, 1, 10);
@@ -324,7 +337,12 @@ mod test {
         });
 
         // block validation should return error
-        let result = block_validator.validate_block_body(&payload);
+        let result = block_validator.validate_block_body(
+            &payload,
+            10,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+        );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
@@ -334,7 +352,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState,
-        > = EthValidator::new(1, 1337);
+        > = EthValidator::new(1337);
 
         // tx limit per block is 1
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -351,7 +369,12 @@ mod test {
         });
 
         // block validation should return error
-        let result = block_validator.validate_block_body(&payload);
+        let result = block_validator.validate_block_body(
+            &payload,
+            1,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+        );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 
@@ -361,7 +384,7 @@ mod test {
             NopSignature,
             MockSignatures<NopSignature>,
             InMemoryState,
-        > = EthValidator::new(10, 1337);
+        > = EthValidator::new(1337);
 
         // proposal limit is 4MB
         let txn1 = make_legacy_tx(
@@ -383,7 +406,12 @@ mod test {
         });
 
         // block validation should return error
-        let result = block_validator.validate_block_body(&payload);
+        let result = block_validator.validate_block_body(
+            &payload,
+            10,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+        );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
 

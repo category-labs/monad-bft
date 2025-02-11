@@ -1,5 +1,6 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
@@ -25,13 +26,17 @@ use crate::{
 /// Timeout msgs from other nodes are received and collected into
 /// a Timeout Certificate which will advance the round
 #[derive(PartialEq, Eq, Debug)]
-pub struct Pacemaker<SCT: SignatureCollection> {
+pub struct Pacemaker<SCT, CCT, CRT>
+where
+    SCT: SignatureCollection,
+{
     /// upper transmission delay bound
     /// this is used to calculate the local round timeout duration
     delta: Duration,
 
-    /// the time consensus waits between sending consecutive votes
-    vote_delay: Duration,
+    /// chain config determines vote delay - the time consensus waits between
+    /// sending consecutive votes
+    chain_config: CCT,
 
     /// estimate of time consensus takes to process a proposal
     local_processing: Duration,
@@ -51,6 +56,8 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     /// States for TimeoutMessage handling, ensures we only broadcast
     /// one message at each phase of handling
     phase: PhaseHonest,
+
+    _phantom: PhantomData<CRT>,
 }
 
 /// The different states of TimeoutMessage handling
@@ -86,10 +93,16 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
     ScheduleReset,
 }
 
-impl<SCT: SignatureCollection> Pacemaker<SCT> {
+impl<SCT, CCT, CRT> Pacemaker<SCT, CCT, CRT>
+where
+    SCT: SignatureCollection,
+
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+{
     pub fn new(
         delta: Duration,
-        vote_delay: Duration,
+        chain_config: CCT,
         local_processing: Duration,
         current_epoch: Epoch,
         current_round: Round,
@@ -97,7 +110,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     ) -> Self {
         Self {
             delta,
-            vote_delay,
+            chain_config,
             local_processing,
             current_epoch,
             current_round,
@@ -105,6 +118,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             pending_timeouts: BTreeMap::new(),
 
             phase: PhaseHonest::Zero,
+            _phantom: Default::default(),
         }
     }
 
@@ -120,11 +134,17 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &self.last_round_tc
     }
 
-    fn get_round_timer(&self) -> Duration {
+    fn get_round_timer(&self, round: Round) -> Duration {
         // worse case time is round timer and vote delay start at effectively the same time and so
         // the round needs to accomdate the full vote-delay time and a local processing time
         // estimate
-        self.delta * 3 + self.vote_delay + self.local_processing
+        let vote_delay = self
+            .chain_config
+            .get_chain_revision(round)
+            .chain_params()
+            .vote_pace;
+
+        self.delta * 3 + vote_delay + self.local_processing
     }
 
     /// enter a new round. Phase is set to PhaseHonest::Zero and all
@@ -143,7 +163,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         vec![
             PacemakerCommand::EnterRound((new_epoch, new_round)),
             PacemakerCommand::Schedule {
-                duration: self.get_round_timer(),
+                duration: self.get_round_timer(new_round),
             },
         ]
     }
@@ -180,7 +200,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             });
         cmds.extend(maybe_broadcast);
         cmds.push(PacemakerCommand::Schedule {
-            duration: self.get_round_timer(),
+            duration: self.get_round_timer(self.current_round),
         });
         cmds
     }
@@ -355,6 +375,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 mod test {
     use std::collections::HashSet;
 
+    use monad_chain_config::{
+        revision::{ChainParams, MockChainRevision},
+        MockChainConfig,
+    };
     use monad_consensus_types::{
         timeout::{TimeoutDigest, TimeoutInfo},
         voting::Vote,
@@ -376,6 +400,15 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
+    type ChainConfigType = MockChainConfig;
+    type ChainRevisionType = MockChainRevision;
+
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(0),
+    };
 
     fn get_high_qc<SCT: SignatureCollection>(
         qc_epoch: Epoch,
@@ -435,14 +468,15 @@ mod test {
 
     #[test]
     fn all_honest() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Duration::from_secs(0),
-            Duration::from_secs(0),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType, ChainConfigType, ChainRevisionType>::new(
+                Duration::from_secs(1),
+                MockChainConfig::new(&CHAIN_PARAMS),
+                Duration::from_secs(0),
+                Epoch(1),
+                Round(1),
+                None,
+            );
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -547,14 +581,15 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_no_progress() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Duration::from_secs(0),
-            Duration::from_secs(0),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType, ChainConfigType, ChainRevisionType>::new(
+                Duration::from_secs(1),
+                MockChainConfig::new(&CHAIN_PARAMS),
+                Duration::from_secs(0),
+                Epoch(1),
+                Round(1),
+                None,
+            );
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -631,14 +666,15 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_progress() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Duration::from_secs(0),
-            Duration::from_secs(0),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType, ChainConfigType, ChainRevisionType>::new(
+                Duration::from_secs(1),
+                MockChainConfig::new(&CHAIN_PARAMS),
+                Duration::from_secs(0),
+                Epoch(1),
+                Round(1),
+                None,
+            );
         let mut safety = Safety::default();
 
         let keys = create_keys::<SignatureType>(4);
@@ -764,14 +800,15 @@ mod test {
 
     #[test]
     fn test_advance_epoch_clear() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Duration::from_secs(0),
-            Duration::from_secs(0),
-            Epoch(1),
-            Round(120),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType, ChainConfigType, ChainRevisionType>::new(
+                Duration::from_secs(1),
+                MockChainConfig::new(&CHAIN_PARAMS),
+                Duration::from_secs(0),
+                Epoch(1),
+                Round(120),
+                None,
+            );
 
         let mut epoch_manager = EpochManager::new(SeqNum(100), Round(20), &[(Epoch(1), Round(0))]);
         // first epoch is [0, 100)

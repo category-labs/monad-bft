@@ -11,6 +11,7 @@ default = ["executor"]
 executor = ["dep:tokio", "dep:tokio-util"]
 
 [dependencies]
+monad-chain-config = { path = "../monad-chain-config" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-block-policy = { path = "../monad-eth-block-policy" }

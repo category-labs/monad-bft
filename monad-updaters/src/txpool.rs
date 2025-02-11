@@ -17,7 +17,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, TxPoolMetrics};
-use monad_eth_types::{EthExecutionProtocol, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
@@ -147,6 +147,8 @@ where
                     round_signature,
                     last_round_tc,
                     tx_limit: _,
+                    proposal_gas_limit: _,
+                    proposal_byte_limit: _,
                     beneficiary: _,
                     timestamp_ns,
                     extending_blocks: _,
@@ -177,6 +179,7 @@ where
                         "MockTxPoolExecutor should never recieve txs with MockExecutionProtocol"
                     );
                 }
+                TxPoolCommand::EnterRound { .. } => {}
             }
         }
     }
@@ -208,6 +211,8 @@ where
                     round_signature,
                     last_round_tc,
                     tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
                     beneficiary,
                     timestamp_ns,
                     extending_blocks,
@@ -217,7 +222,8 @@ where
                         .create_proposal(
                             seq_num,
                             tx_limit,
-                            PROPOSAL_GAS_LIMIT,
+                            proposal_gas_limit,
+                            proposal_byte_limit,
                             beneficiary,
                             timestamp_ns,
                             round_signature.clone(),
@@ -265,6 +271,9 @@ where
                 TxPoolCommand::InsertForwardedTxs { sender: _, txs } => {
                     pool.insert_txs(txs, block_policy, state_backend, &mut self.metrics);
                 }
+                // TODO: add chain config to MockTxPoolExecutor if we're testing
+                // param forking with it
+                TxPoolCommand::EnterRound { .. } => {}
             }
         }
 

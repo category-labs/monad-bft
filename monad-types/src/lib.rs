@@ -46,6 +46,11 @@ const SERIALIZE_VERSION: u16 = 1;
 )]
 pub struct Round(pub u64);
 
+impl Round {
+    pub const MIN: Round = Round(u64::MIN);
+    pub const MAX: Round = Round(u64::MAX);
+}
+
 impl AsRef<[u8]> for Round {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()
@@ -552,7 +557,12 @@ pub trait MockableFinalizedHeader: Sized {
 }
 
 pub trait MockableProposedHeader: Sized {
-    fn create(seq_num: SeqNum, timestamp_ns: u128, mix_hash: [u8; 32]) -> Self;
+    fn create(
+        seq_num: SeqNum,
+        timestamp_ns: u128,
+        mix_hash: [u8; 32],
+        proposal_gas_limit: u64,
+    ) -> Self;
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize, RlpEncodable, RlpDecodable)]

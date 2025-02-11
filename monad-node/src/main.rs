@@ -9,6 +9,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -232,6 +233,12 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             // TODO(andr-dev): Add tx_expiry to node config
             Duration::from_secs(15),
             Duration::from_secs(5 * 60),
+            node_state.chain_config,
+            node_state
+                .chain_config
+                .get_chain_revision(node_state.forkpoint_config.high_qc.get_round())
+                .chain_params()
+                .proposal_gas_limit,
         )
         .expect("txpool ipc succeeds"),
         control_panel: ControlPanelIpcReceiver::new(
@@ -288,10 +295,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: WeightedRoundRobin::default(),
-        block_validator: EthValidator::new(
-            node_state.node_config.consensus.block_txn_limit,
-            node_state.node_config.chain_id,
-        ),
+        block_validator: EthValidator::new(node_state.node_config.chain_id),
         block_policy: create_block_policy(),
         state_backend: StateBackendCache::new(
             triedb_handle,
@@ -314,8 +318,9 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             live_to_statesync_threshold: SeqNum(statesync_threshold as u64 * 3 / 2),
             // Live starts execution here
             start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
-            vote_pace: Duration::from_millis(1000),
+            chain_config: node_state.chain_config,
             timestamp_latency_estimate_ns: 20_000_000,
+            _phantom: Default::default(),
         },
         _phantom: PhantomData,
     };

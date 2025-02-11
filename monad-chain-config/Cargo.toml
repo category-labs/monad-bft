@@ -1,0 +1,11 @@
+[package]
+name = "monad-chain-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-types = { path = "../monad-types" }
+
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }

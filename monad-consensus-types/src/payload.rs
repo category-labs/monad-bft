@@ -8,9 +8,6 @@ use monad_crypto::{
 use monad_types::{ExecutionProtocol, Round};
 use serde::{Deserialize, Serialize};
 
-/// Max proposal size in bytes (average transactions ~400 bytes)
-pub const PROPOSAL_SIZE_LIMIT: u64 = 4_000_000;
-
 /// randao_reveal uses a proposer's public key to contribute randomness
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct RoundSignature<CST: CertificateSignature>(pub CST);

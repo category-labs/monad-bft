@@ -6,6 +6,7 @@ members = [
     "monad-blocksync",
     "monad-blocktree",
     "monad-bls",
+    "monad-chain-config",
     "monad-compress",
     "monad-consensus-state",
     "monad-consensus-types",

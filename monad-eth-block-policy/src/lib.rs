@@ -14,7 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce, PROPOSAL_GAS_LIMIT};
+use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
@@ -114,7 +114,11 @@ pub enum TransactionError {
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
-pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(), TransactionError> {
+pub fn static_validate_transaction(
+    tx: &TxEnvelope,
+    chain_id: u64,
+    proposal_gas_limit: u64,
+) -> Result<(), TransactionError> {
     // EIP-155
     // We allow legacy transactions without chain_id specified to pass through
     if let Some(tx_chain_id) = tx.chain_id() {
@@ -142,7 +146,7 @@ pub fn static_validate_transaction(tx: &TxEnvelope, chain_id: u64) -> Result<(),
         return Err(TransactionError::GasLimitTooLow);
     }
 
-    if tx.gas_limit() > PROPOSAL_GAS_LIMIT {
+    if tx.gas_limit() > proposal_gas_limit {
         return Err(TransactionError::GasLimitTooHigh);
     }
 
@@ -957,6 +961,7 @@ mod test {
     fn test_static_validate_transaction() {
         let address = Address(FixedBytes([0x11; 20]));
         const CHAIN_ID: u64 = 1337;
+        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 
         // pre EIP-155 transaction with no chain id is allowed
         let tx_no_chain_id = TxLegacy {
@@ -970,7 +975,7 @@ mod test {
         let signature = sign_tx(&tx_no_chain_id.signature_hash());
         let txn = tx_no_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(result, Ok(())));
 
         // transaction with incorrect chain id
@@ -986,7 +991,7 @@ mod test {
         let signature = sign_tx(&tx_invalid_chain_id.signature_hash());
         let txn = tx_invalid_chain_id.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(result, Err(TransactionError::InvalidChainId)));
 
         // contract deployment transaction with input data larger than 2 * 0x6000 (initcode limit)
@@ -1004,7 +1009,7 @@ mod test {
         let signature = sign_tx(&tx_over_initcode_limit.signature_hash());
         let txn = tx_over_initcode_limit.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(
             result,
             Err(TransactionError::InitCodeLimitExceeded)
@@ -1024,7 +1029,7 @@ mod test {
         let signature = sign_tx(&tx_priority_fee_too_high.signature_hash());
         let txn = tx_priority_fee_too_high.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(
             result,
             Err(TransactionError::MaxPriorityFeeTooHigh)
@@ -1044,7 +1049,7 @@ mod test {
         let signature = sign_tx(&tx_gas_limit_too_low.signature_hash());
         let txn = tx_gas_limit_too_low.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(result, Err(TransactionError::GasLimitTooLow)));
 
         // transaction with gas limit higher than block gas limit
@@ -1061,7 +1066,7 @@ mod test {
         let signature = sign_tx(&tx_gas_limit_too_high.signature_hash());
         let txn = tx_gas_limit_too_high.into_signed(signature);
 
-        let result = static_validate_transaction(&txn.into(), CHAIN_ID);
+        let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT);
         assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
     }
 

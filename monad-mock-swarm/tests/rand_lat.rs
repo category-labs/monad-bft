@@ -1,6 +1,7 @@
-use std::{collections::BTreeSet, env};
+use std::{collections::BTreeSet, env, time::Duration};
 
 use itertools::Itertools;
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
@@ -26,6 +27,13 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
+
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(10),
+};
 
 #[test]
 #[ignore = "cron_test"]
@@ -71,7 +79,6 @@ fn nodes_with_random_latency(latency_seed: u64) {
     use monad_transformer::RandLatencyTransformer;
 
     let delta = Duration::from_millis(200);
-    let vote_pace = Duration::from_millis(10);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -81,13 +88,13 @@ fn nodes_with_random_latency(latency_seed: u64) {
         || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
         // avoid state_root trigger in rand latency setting
         // TODO-1, cover cases with low state_root_delay once state_sync is done
-        SeqNum::MAX,  // execution_delay
-        delta,        // delta
-        vote_pace,    // vote pace
-        0,            // proposal_tx_limit
-        SeqNum(3000), // val_set_update_interval
-        Round(50),    // epoch_start_delay
-        SeqNum(100),  // state_sync_threshold
+        SeqNum::MAX,                         // execution_delay
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        0,                                   // proposal_tx_limit
+        SeqNum(3000),                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

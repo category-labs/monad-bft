@@ -8,6 +8,10 @@ use monad_blocksync::{
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_blocktree::blocktree::BlockTree;
+use monad_chain_config::{
+    revision::{ChainParams, ChainRevision},
+    ChainConfig,
+};
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
@@ -243,7 +247,7 @@ enum DbSyncStatus {
     Done,
 }
 
-enum ConsensusMode<ST, SCT, EPT, BPT, SBT>
+enum ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -263,16 +267,18 @@ where
         // ideally we can deprecate this and update our target synchronously (w/o loopback executor)
         updating_target: bool,
     },
-    Live(ConsensusState<ST, SCT, EPT, BPT, SBT>),
+    Live(ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
 }
 
-impl<ST, SCT, EPT, BPT, SBT> ConsensusMode<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn start_sync(
         high_qc: QuorumCertificate<SCT>,
@@ -300,7 +306,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -309,15 +315,17 @@ where
     SBT: StateBackend,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
     nodeid: NodeId<CertificateSignaturePubKey<ST>>,
 
-    consensus_config: ConsensusConfig,
+    consensus_config: ConsensusConfig<CCT, CRT>,
 
     /// Core consensus algorithm state machine
-    consensus: ConsensusMode<ST, SCT, EPT, BPT, SBT>,
+    consensus: ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
     /// Handles blocksync servicing
     block_sync: BlockSync<ST, SCT, EPT>,
 
@@ -341,7 +349,8 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -350,8 +359,10 @@ where
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT>> {
+    pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         match &self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(consensus),
@@ -633,7 +644,7 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -642,6 +653,8 @@ where
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub validator_set_factory: VTF,
     pub leader_election: LT,
@@ -656,12 +669,13 @@ where
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
-    pub consensus_config: ConsensusConfig,
+    pub consensus_config: ConsensusConfig<CCT, CRT>,
 
     pub _phantom: PhantomData<EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -671,11 +685,13 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
+        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
@@ -758,7 +774,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -768,6 +785,8 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub fn update(
         &mut self,
@@ -1192,6 +1211,16 @@ where
         let last_delay_committed_blocks: Vec<_> = root_parent_chain
             .iter()
             .map(|full_block| {
+                let ChainParams {
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    vote_pace: _,
+                } = self
+                    .consensus_config
+                    .chain_config
+                    .get_chain_revision(full_block.header().round)
+                    .chain_params();
                 self.block_validator
                     .validate(
                         full_block.header().clone(),
@@ -1199,6 +1228,9 @@ where
                         // we don't need to validate bls pubkey fields (randao)
                         // this is because these blocks are already committed by majority
                         None,
+                        *tx_limit,
+                        *proposal_gas_limit,
+                        *proposal_byte_limit,
                     )
                     .expect("majority committed invalid block")
             })

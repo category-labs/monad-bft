@@ -8,6 +8,9 @@ pub enum NodeSetupError {
     Bls12_381(#[from] monad_bls::BlsError),
 
     #[error(transparent)]
+    ChainConfigError(#[from] monad_chain_config::ChainConfigError),
+
+    #[error(transparent)]
     ClapError(#[from] clap::Error),
 
     #[error("{msg}")]
@@ -55,7 +58,8 @@ impl NodeSetupError {
             NodeSetupError::IoError(_)
             | NodeSetupError::RayonPoolBuildError(_)
             | NodeSetupError::SetGlobalDefaultError(_) => ErrorKind::Io,
-            NodeSetupError::FromHexError(_)
+            NodeSetupError::ChainConfigError(_)
+            | NodeSetupError::FromHexError(_)
             | NodeSetupError::Secp256k1(_)
             | NodeSetupError::Bls12_381(_)
             | NodeSetupError::SignatureCollectionError(_)

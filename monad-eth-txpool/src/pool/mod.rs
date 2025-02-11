@@ -16,7 +16,6 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_types::{
     Balance, EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS,
-    PROPOSAL_GAS_LIMIT,
 };
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -34,8 +33,6 @@ mod pending;
 mod tracked;
 mod transaction;
 
-const MAX_PROPOSAL_SIZE: usize = 10_000;
-
 // These constants control how many txs will get promoted from the pending map to the tracked map
 // during other tx insertions. They were set based on intuition and should be changed once we have
 // more data on txpool performance.
@@ -51,6 +48,10 @@ where
     do_local_insert: bool,
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT>,
+    // current proposal_gas_limit. On insert_tx, we validate that tx.gas_limit
+    // <= proposal_gas_limit to reject anything that can't possibly fit in a
+    // block. Create proposal doesn't rely on this value
+    proposal_gas_limit: u64,
 }
 
 impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
@@ -59,16 +60,28 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    pub fn new(do_local_insert: bool, soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
+    pub fn new(
+        do_local_insert: bool,
+        soft_tx_expiry: Duration,
+        hard_tx_expiry: Duration,
+        proposal_gas_limit: u64,
+    ) -> Self {
         Self {
             do_local_insert,
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
+            proposal_gas_limit,
         }
     }
 
     pub fn default_testing() -> Self {
-        Self::new(true, Duration::from_secs(60), Duration::from_secs(60))
+        const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+        Self::new(
+            true,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            PROPOSAL_GAS_LIMIT,
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -82,6 +95,10 @@ where
             .expect("pool size does not overflow")
     }
 
+    pub fn set_tx_gas_limit(&mut self, proposal_gas_limit: u64) {
+        self.proposal_gas_limit = proposal_gas_limit
+    }
+
     fn validate_and_insert_tx(
         &mut self,
         tx: Recovered<TxEnvelope>,
@@ -92,7 +109,7 @@ where
             return Ok(());
         }
 
-        let tx = ValidEthTransaction::validate(tx, block_policy)?;
+        let tx = ValidEthTransaction::validate(tx, block_policy, self.proposal_gas_limit)?;
         tx.apply_max_value(account_balance)?;
 
         // TODO(andr-dev): Should any additional tx validation occur before inserting into mempool
@@ -227,7 +244,8 @@ where
         &mut self,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
-        gas_limit: u64,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
         beneficiary: [u8; 20],
         timestamp_ns: u128,
         round_signature: RoundSignature<SCT::SignatureType>,
@@ -245,8 +263,9 @@ where
 
         let transactions = self.tracked.create_proposal(
             proposed_seq_num,
-            tx_limit.min(MAX_PROPOSAL_SIZE),
-            gas_limit,
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
             block_policy,
             extending_blocks.iter().collect(),
             state_backend,
@@ -275,7 +294,7 @@ where
             beneficiary: beneficiary.into(),
             difficulty: 0,
             number: proposed_seq_num.0,
-            gas_limit: PROPOSAL_GAS_LIMIT,
+            gas_limit: proposal_gas_limit,
             timestamp: timestamp_seconds as u64,
             mix_hash: round_signature.get_hash().0,
             nonce: [0_u8; 8],

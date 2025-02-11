@@ -21,6 +21,10 @@ pub struct Cli {
     #[arg(long)]
     pub forkpoint_config: PathBuf,
 
+    /// Set devnet chain config override path
+    #[arg(long)]
+    pub devnet_chain_config_override: Option<PathBuf>,
+
     /// Set the genesis config path
     #[arg(long)]
     pub genesis_path: PathBuf,

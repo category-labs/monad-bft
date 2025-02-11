@@ -26,6 +26,7 @@ impl ValidEthTransaction {
     pub fn validate<ST, SCT>(
         tx: Recovered<TxEnvelope>,
         block_policy: &EthBlockPolicy<ST, SCT>,
+        proposal_gas_limit: u64,
     ) -> Result<Self, TxPoolInsertionError>
     where
         ST: CertificateSignatureRecoverable,
@@ -37,7 +38,9 @@ impl ValidEthTransaction {
             return Err(TxPoolInsertionError::FeeTooLow);
         }
 
-        if static_validate_transaction(&tx, block_policy.get_chain_id()).is_err() {
+        if static_validate_transaction(&tx, block_policy.get_chain_id(), proposal_gas_limit)
+            .is_err()
+        {
             return Err(TxPoolInsertionError::NotWellFormed);
         }
 

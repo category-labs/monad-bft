@@ -8,6 +8,10 @@ use std::{
 };
 
 use itertools::{izip, Itertools};
+use monad_chain_config::{
+    revision::{ChainParams, ChainRevision, MockChainRevision},
+    ChainConfig, MockChainConfig,
+};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
@@ -53,7 +57,6 @@ struct TwinsTestCaseRaw {
     timeout_ms: u64,
     // delta of protocol
     delta_ms: u64,
-    vote_pace_ms: u64,
     // round partition setting
     partition: Vec<Vec<Vec<String>>>,
     // what's the behaviour of partition outside of defined
@@ -68,7 +71,7 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -78,9 +81,11 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
+    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -92,8 +97,8 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> Clone
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Clone
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -103,6 +108,8 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT> + Clone,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     fn clone(&self) -> Self {
         Self {
@@ -142,8 +149,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> Debug
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Debug
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -153,6 +160,8 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT> + Debug,
+    CRT: ChainRevision + Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -163,7 +172,7 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -173,16 +182,18 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
+    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
-    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>>
-    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>>
+    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -192,8 +203,10 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -232,13 +245,26 @@ where
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::BlockValidator,
+            S::ChainConfigType,
+            S::ChainRevisionType,
         >,
     >,
 }
 
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(5),
+};
+
 pub fn read_twins_test<S>(path: &str) -> TwinsTestCase<S>
 where
-    S: SwarmRelation<StateBackendType = InMemoryState>,
+    S: SwarmRelation<
+        StateBackendType = InMemoryState,
+        ChainConfigType = MockChainConfig,
+        ChainRevisionType = MockChainRevision,
+    >,
     S::ValidatorSetTypeFactory: Default + Clone,
     S::LeaderElection: Default + Clone,
     S::BlockValidator: Default + Clone,
@@ -254,7 +280,6 @@ where
         expected_block,
         timeout_ms,
         delta_ms,
-        vote_pace_ms,
         allow_block_sync,
         liveness,
         partition,
@@ -315,6 +340,8 @@ where
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::BlockValidator,
+            S::ChainConfigType,
+            S::ChainRevisionType,
         > {
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
@@ -341,8 +368,9 @@ where
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),
                 start_execution_threshold: SeqNum(300),
-                vote_pace: Duration::from_millis(vote_pace_ms),
+                chain_config: MockChainConfig::new(&CHAIN_PARAMS),
                 timestamp_latency_estimate_ns: 10_000_000,
+                _phantom: PhantomData,
             },
 
             _phantom: PhantomData,

@@ -1,6 +1,10 @@
-use std::{collections::BTreeMap, fmt::Debug, time::Duration};
+use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
+use monad_chain_config::{
+    revision::{ChainParams, ChainRevision},
+    ChainConfig,
+};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -46,7 +50,7 @@ pub mod command;
 pub mod timestamp;
 
 /// core consensus algorithm
-pub struct ConsensusState<ST, SCT, EPT, BPT, SBT>
+pub struct ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -64,7 +68,7 @@ where
     /// The highest QC (QC height determined by Round) known to this node
     high_qc: QuorumCertificate<SCT>,
     /// Tracks and updates the current round
-    pacemaker: Pacemaker<SCT>,
+    pacemaker: Pacemaker<SCT, CCT, CRT>,
     /// Policy for upholding consensus safety when voting or extending branches
     safety: Safety,
     block_sync_requests: BTreeMap<BlockId, BlockSyncRequestStatus>,
@@ -74,13 +78,16 @@ where
     proposed_execution_results: BTreeMap<Round, ProposedExecutionResult<EPT>>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> PartialEq for ConsensusState<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> PartialEq
+    for ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    CCT: PartialEq,
+    CRT: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -91,13 +98,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Debug for ConsensusState<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    CCT: Debug,
+    CRT: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -122,7 +131,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -132,8 +141,10 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT>,
+    pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
     pub metrics: &'a mut Metrics,
     pub epoch_manager: &'a mut EpochManager,
@@ -156,7 +167,7 @@ where
     /// This nodes public NodeId; what other nodes see in the validator set
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     /// Parameters for consensus algorithm behaviour
-    pub config: &'a ConsensusConfig,
+    pub config: &'a ConsensusConfig<CCT, CRT>,
 
     // TODO-2 deprecate keypairs should probably have a different interface
     // so that users have options for securely storing their keys
@@ -166,7 +177,11 @@ where
 
 /// Consensus algorithm's configurable parameters
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct ConsensusConfig {
+pub struct ConsensusConfig<CCT, CRT>
+where
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
+{
     pub execution_delay: SeqNum,
     /// Maximum number of transactions allowed in a proposal
     pub proposal_txn_limit: usize,
@@ -174,8 +189,9 @@ pub struct ConsensusConfig {
     /// delta should be approximately equal to the upper bound of message
     /// delivery during a broadcast
     pub delta: Duration,
-    /// Vote pacing. Minimum wait-time between sending votes
-    pub vote_pace: Duration,
+    /// Chain config, determines vote pacing (minimum wait-time between sending
+    /// votes) at a given round
+    pub chain_config: CCT,
     /// If the node is lagging over state_sync_threshold blocks behind,
     /// then it should trigger statesync.
     pub live_to_statesync_threshold: SeqNum,
@@ -191,6 +207,8 @@ pub struct ConsensusConfig {
     pub start_execution_threshold: SeqNum,
 
     pub timestamp_latency_estimate_ns: u128,
+
+    pub _phantom: PhantomData<CRT>,
 }
 
 /// Actions after state root validation
@@ -209,13 +227,15 @@ pub enum StateRootAction {
     Defer,
 }
 
-impl<ST, SCT, EPT, BPT, SBT> ConsensusState<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     /// Create the core consensus state
     ///
@@ -224,7 +244,7 @@ where
     /// config - collection of configurable parameters for core consensus algorithm
     pub fn new(
         epoch_manager: &EpochManager,
-        config: &ConsensusConfig,
+        config: &ConsensusConfig<CCT, CRT>,
         root: RootInfo,
         high_qc: QuorumCertificate<SCT>,
     ) -> Self {
@@ -244,7 +264,7 @@ where
             high_qc,
             pacemaker: Pacemaker::new(
                 config.delta,
-                config.vote_pace,
+                config.chain_config,
                 config.delta, // TODO: change this to different value later
                 consensus_epoch,
                 consensus_round,
@@ -292,8 +312,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -303,6 +323,8 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
@@ -435,6 +457,17 @@ where
             return cmds;
         }
 
+        let ChainParams {
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            vote_pace: _,
+        } = self
+            .config
+            .chain_config
+            .get_chain_revision(p.block_header.round)
+            .chain_params();
+
         let author_pubkey = self
             .val_epoch_map
             .get_cert_pubkeys(&epoch)
@@ -442,37 +475,40 @@ where
             .map
             .get(&author)
             .expect("proposal author exists in validator_mapping");
-        let block =
-            match self
-                .block_validator
-                .validate(p.block_header, p.block_body, Some(author_pubkey))
-            {
-                Ok(block) => block,
-                Err(BlockValidationError::TxnError) => {
-                    warn!("Transaction validation failed");
-                    self.metrics.consensus_events.failed_txn_validation += 1;
-                    return cmds;
-                }
-                Err(BlockValidationError::RandaoError) => {
-                    self.metrics
-                        .consensus_events
-                        .failed_verify_randao_reveal_sig += 1;
-                    return cmds;
-                }
-                Err(BlockValidationError::HeaderPayloadMismatchError) => {
-                    // TODO: this is malicious behaviour?
-                    return cmds;
-                }
-                Err(BlockValidationError::PayloadError) => {
-                    return cmds;
-                }
-                Err(BlockValidationError::HeaderError) => {
-                    return cmds;
-                }
-                Err(BlockValidationError::TimestampError) => {
-                    return cmds;
-                }
-            };
+        let block = match self.block_validator.validate(
+            p.block_header,
+            p.block_body,
+            Some(author_pubkey),
+            *tx_limit,
+            *proposal_gas_limit,
+            *proposal_byte_limit,
+        ) {
+            Ok(block) => block,
+            Err(BlockValidationError::TxnError) => {
+                warn!("Transaction validation failed");
+                self.metrics.consensus_events.failed_txn_validation += 1;
+                return cmds;
+            }
+            Err(BlockValidationError::RandaoError) => {
+                self.metrics
+                    .consensus_events
+                    .failed_verify_randao_reveal_sig += 1;
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderPayloadMismatchError) => {
+                // TODO: this is malicious behaviour?
+                return cmds;
+            }
+            Err(BlockValidationError::PayloadError) => {
+                return cmds;
+            }
+            Err(BlockValidationError::HeaderError) => {
+                return cmds;
+            }
+            Err(BlockValidationError::TimestampError) => {
+                return cmds;
+            }
+        };
         let block_round = block.get_round();
 
         // TODO: ts adjustments are disabled anyways. this needs to be moved to
@@ -690,9 +726,28 @@ where
                     .map
                     .get(&header.author)
                     .expect("blocksync'd block author should be in validator set");
+
+                let ChainParams {
+                    tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
+                    vote_pace: _,
+                } = self
+                    .config
+                    .chain_config
+                    .get_chain_revision(header.round)
+                    .chain_params();
+
                 let block = self
                     .block_validator
-                    .validate(header, body, Some(author_pubkey))
+                    .validate(
+                        header,
+                        body,
+                        Some(author_pubkey),
+                        *tx_limit,
+                        *proposal_gas_limit,
+                        *proposal_byte_limit,
+                    )
                     .expect("majority extended invalid block");
                 let res_cmds = self.try_add_and_commit_blocktree(block, None);
                 cmds.extend(res_cmds);
@@ -755,7 +810,12 @@ where
 
         // start the vote-timer for the next round
         let vote_timer_cmd = ConsensusCommand::ScheduleVote {
-            duration: self.config.vote_pace,
+            duration: self
+                .config
+                .chain_config
+                .get_chain_revision(round + Round(1))
+                .chain_params()
+                .vote_pace,
             round: round + Round(1),
         };
 
@@ -1305,7 +1365,24 @@ where
             round_signature,
             last_round_tc,
 
-            tx_limit: self.config.proposal_txn_limit,
+            tx_limit: self
+                .config
+                .chain_config
+                .get_chain_revision(round)
+                .chain_params()
+                .tx_limit,
+            proposal_gas_limit: self
+                .config
+                .chain_config
+                .get_chain_revision(round)
+                .chain_params()
+                .proposal_gas_limit,
+            proposal_byte_limit: self
+                .config
+                .chain_config
+                .get_chain_revision(round)
+                .chain_params()
+                .proposal_byte_limit,
 
             beneficiary: *self.beneficiary,
             timestamp_ns,
@@ -1467,6 +1544,10 @@ mod test {
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
+    use monad_chain_config::{
+        revision::{ChainParams, MockChainRevision},
+        MockChainConfig,
+    };
     use monad_consensus::{
         messages::{
             consensus_message::ProtocolMessage,
@@ -1528,6 +1609,13 @@ mod test {
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
     const GAS_LIMIT: u64 = 30000;
 
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(1000),
+    };
+
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type BlockPolicyType = EthBlockPolicy<SignatureType, SignatureCollectionType>;
@@ -1548,7 +1636,7 @@ mod test {
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT>,
+        consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
 
         metrics: Metrics,
         epoch_manager: EpochManager,
@@ -1563,7 +1651,7 @@ mod test {
         block_timestamp: BlockTimestamp,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
-        consensus_config: ConsensusConfig,
+        consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
 
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
@@ -1582,7 +1670,20 @@ mod test {
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
-        fn wrapped_state(&mut self) -> ConsensusStateWrapper<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT> {
+        fn wrapped_state(
+            &mut self,
+        ) -> ConsensusStateWrapper<
+            ST,
+            SCT,
+            EPT,
+            BPT,
+            SBT,
+            VTF,
+            LT,
+            BVT,
+            MockChainConfig,
+            MockChainRevision,
+        > {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
 
@@ -1680,6 +1781,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 Vec::new(),
+                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
@@ -1694,6 +1796,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 delayed_execution_results,
+                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
@@ -1709,6 +1812,7 @@ mod test {
                 &self.val_epoch_map,
                 &self.election,
                 delayed_execution_results,
+                CHAIN_PARAMS.proposal_gas_limit,
             )
         }
 
@@ -1791,8 +1895,9 @@ mod test {
                     statesync_to_live_threshold: SeqNum(600),
                     live_to_statesync_threshold: SeqNum(900),
                     start_execution_threshold: SeqNum(300),
-                    vote_pace: Duration::from_secs(1),
+                    chain_config: MockChainConfig::new(&CHAIN_PARAMS),
                     timestamp_latency_estimate_ns: 1,
+                    _phantom: Default::default(),
                 };
                 let genesis_qc = QuorumCertificate::genesis_qc();
                 let cs = ConsensusState::new(
@@ -2080,7 +2185,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -2139,7 +2244,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2183,7 +2288,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2244,7 +2349,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2277,7 +2382,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2340,7 +2445,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2431,7 +2536,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2523,7 +2628,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2601,7 +2706,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let (n1, xs) = ctx.split_first_mut().unwrap();
@@ -2812,7 +2917,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut wrapped_state = ctx[0].wrapped_state();
@@ -2859,7 +2964,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -2936,7 +3041,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let node = &mut ctx[0].wrapped_state();
@@ -3002,7 +3107,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -3108,7 +3213,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3178,7 +3283,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3225,7 +3330,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -3348,7 +3453,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let node = &mut ctx[0];
@@ -3419,7 +3524,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3487,7 +3592,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3593,7 +3698,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3690,7 +3795,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -3803,7 +3908,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -3953,7 +4058,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let mut blocks = vec![];
@@ -4073,7 +4178,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
         let p1 = env.next_proposal(Vec::new());
@@ -4119,7 +4224,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -4227,7 +4332,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -4353,7 +4458,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(0, 0),
+            || EthValidator::new(0),
             execution_delay,
         );
 
@@ -4522,7 +4627,7 @@ mod test {
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
             || InMemoryStateInner::genesis(u128::MAX, execution_delay),
-            || EthValidator::new(10000, 1337),
+            || EthValidator::new(1337),
             execution_delay,
         );
 

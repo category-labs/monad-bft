@@ -5,6 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
+use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
@@ -30,6 +31,13 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
+
+static CHAIN_PARAMS: ChainParams = ChainParams {
+    tx_limit: 10_000,
+    proposal_gas_limit: 300_000_000,
+    proposal_byte_limit: 4_000_000,
+    vote_pace: Duration::from_millis(0),
+};
 
 #[test]
 #[ignore = "cron_test"]
@@ -77,13 +85,13 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         //
         // TODO-4?: Make Replay Transformer's stored message not burst
         // within the same Duration
-        SeqNum(1),    // execution_delay
-        delta,        // delta
-        vote_pace,    // vote pace
-        10,           // proposal_tx_limit
-        SeqNum(2000), // val_set_update_interval
-        Round(50),    // epoch_start_delay
-        SeqNum(100),  // state_sync_threshold
+        SeqNum(1),                           // execution_delay
+        delta,                               // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        10,                                  // proposal_tx_limit
+        SeqNum(2000),                        // val_set_update_interval
+        Round(50),                           // epoch_start_delay
+        SeqNum(100),                         // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

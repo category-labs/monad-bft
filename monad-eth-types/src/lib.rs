@@ -14,7 +14,6 @@ pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub const BASE_FEE_PER_GAS: u64 = 50_000_000_000;
-pub const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
 
 pub type Nonce = u64;
 pub type Balance = u128;
@@ -47,7 +46,12 @@ pub struct ProposedEthHeader {
 }
 
 impl MockableProposedHeader for ProposedEthHeader {
-    fn create(seq_num: SeqNum, timestamp_ns: u128, mix_hash: [u8; 32]) -> Self {
+    fn create(
+        seq_num: SeqNum,
+        timestamp_ns: u128,
+        mix_hash: [u8; 32],
+        proposal_gas_limit: u64,
+    ) -> Self {
         Self {
             transactions_root: *EMPTY_TRANSACTIONS,
             ommers_hash: *EMPTY_OMMER_ROOT_HASH,
@@ -55,7 +59,7 @@ impl MockableProposedHeader for ProposedEthHeader {
             beneficiary: Default::default(),
             difficulty: 0,
             number: seq_num.0,
-            gas_limit: PROPOSAL_GAS_LIMIT,
+            gas_limit: proposal_gas_limit,
             timestamp: (timestamp_ns / 1_000_000_000) as u64,
             mix_hash,
             nonce: [0_u8; 8],

@@ -52,6 +52,9 @@ where
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
         author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
@@ -70,6 +73,9 @@ where
         header: ConsensusBlockHeader<ST, SCT, EPT>,
         body: ConsensusBlockBody<EPT>,
         _author_pubkey: Option<&SignatureCollectionPubKeyType<SCT>>,
+        _tx_limit: usize,
+        _proposal_gas_limit: u64,
+        _proposal_byte_limit: u64,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,

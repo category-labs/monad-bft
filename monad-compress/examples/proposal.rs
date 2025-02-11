@@ -20,6 +20,8 @@ use peak_alloc::PeakAlloc;
 #[global_allocator]
 static PEAK_ALLOC: PeakAlloc = PeakAlloc;
 
+const PROPOSAL_GAS_LIMIT: u64 = 150_000_000;
+
 fn main() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
         SecpSignature,
@@ -44,6 +46,7 @@ fn main() {
             &val_epoch_map,
             &election,
             Vec::new(), // delayed_execution_results
+            PROPOSAL_GAS_LIMIT,
         )
         .destructure()
         .2;

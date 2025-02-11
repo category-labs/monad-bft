@@ -1,5 +1,6 @@
 use itertools::Itertools;
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
+use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -44,7 +45,7 @@ use crate::{
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -54,8 +55,10 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
-    consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT>,
+    consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
     metrics: &'a mut Metrics,
     epoch_manager: &'a mut EpochManager,
@@ -70,14 +73,14 @@ where
     block_validator: &'a BVT,
     beneficiary: &'a [u8; 20],
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
-    consensus_config: &'a ConsensusConfig,
+    consensus_config: &'a ConsensusConfig<CCT, CRT>,
 
     keypair: &'a ST::KeyPairType,
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
-    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -87,9 +90,11 @@ where
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
+    CCT: ChainConfig<CRT>,
+    CRT: ChainRevision,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -526,9 +531,15 @@ where
         let mut parent_cmds: Vec<Command<_, _, _, _, _, _, _>> = Vec::new();
 
         match wrapped.command {
-            ConsensusCommand::EnterRound(epoch, round) => parent_cmds.push(Command::RouterCommand(
-                RouterCommand::UpdateCurrentRound(epoch, round),
-            )),
+            ConsensusCommand::EnterRound(epoch, round) => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::UpdateCurrentRound(
+                    epoch, round,
+                )));
+                parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::EnterRound {
+                    epoch,
+                    round,
+                }))
+            }
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,
@@ -554,6 +565,8 @@ where
                 last_round_tc,
 
                 tx_limit,
+                proposal_gas_limit,
+                proposal_byte_limit,
                 beneficiary,
                 timestamp_ns,
 
@@ -569,6 +582,8 @@ where
                     last_round_tc,
 
                     tx_limit,
+                    proposal_gas_limit,
+                    proposal_byte_limit,
                     beneficiary,
                     timestamp_ns,
 

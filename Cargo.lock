@@ -4633,6 +4633,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-chain-config"
+version = "0.1.0"
+dependencies = [
+ "monad-types",
+ "serde",
+ "thiserror 1.0.50",
+ "tracing",
+]
+
+[[package]]
 name = "monad-compress"
 version = "0.1.0"
 dependencies = [
@@ -4659,6 +4669,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "monad-bls",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
@@ -4678,6 +4689,7 @@ dependencies = [
  "alloy-consensus",
  "itertools 0.10.5",
  "monad-blocktree",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
@@ -4808,6 +4820,7 @@ dependencies = [
  "futures",
  "getrandom",
  "hex",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -4945,6 +4958,7 @@ dependencies = [
  "futures",
  "indexmap 2.7.0",
  "itertools 0.10.5",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
@@ -5065,6 +5079,7 @@ dependencies = [
  "itertools 0.10.5",
  "monad-blocksync",
  "monad-bls",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
@@ -5122,6 +5137,7 @@ dependencies = [
  "futures-util",
  "hex",
  "monad-bls",
+ "monad-chain-config",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-control-panel",
@@ -5190,6 +5206,7 @@ name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [
  "inventory",
+ "monad-chain-config",
  "monad-consensus-types",
  "monad-crypto",
  "monad-mock-swarm",
@@ -5288,6 +5305,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "monad-archive",
+ "monad-chain-config",
  "monad-cxx",
  "monad-eth-block-policy",
  "monad-eth-types",
@@ -5359,6 +5377,7 @@ dependencies = [
  "monad-blocksync",
  "monad-blocktree",
  "monad-bls",
+ "monad-chain-config",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -5415,6 +5434,7 @@ dependencies = [
  "clap 4.4.10",
  "futures-util",
  "monad-bls",
+ "monad-chain-config",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-control-panel",
@@ -5529,6 +5549,7 @@ name = "monad-twins-utils"
 version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
+ "monad-chain-config",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",

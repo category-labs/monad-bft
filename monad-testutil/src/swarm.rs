@@ -27,7 +27,7 @@ pub fn make_state_configs<S: SwarmRelation>(
 
     execution_delay: SeqNum,
     delta: Duration,
-    vote_pace: Duration,
+    chain_config: S::ChainConfigType,
     proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
@@ -42,6 +42,8 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::BlockValidator,
+        S::ChainConfigType,
+        S::ChainRevisionType,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -92,8 +94,10 @@ pub fn make_state_configs<S: SwarmRelation>(
                 live_to_statesync_threshold: SeqNum(statesync_threshold.0 * 3 / 2),
                 // Live starts execution here
                 start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
-                vote_pace,
+                chain_config,
                 timestamp_latency_estimate_ns: 10_000_000,
+
+                _phantom: PhantomData,
             },
 
             _phantom: PhantomData,

@@ -86,6 +86,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
+        proposal_gas_limit: u64,
     ) -> Verified<ST, ProposalMessage<ST, SCT, EPT>> {
         // high_qc is the highest qc seen in a proposal
         let (qc, last_seq_num) = if self.last_tc.is_some() {
@@ -123,7 +124,12 @@ where
             self.epoch,
             self.round,
             delayed_execution_results,
-            EPT::ProposedHeader::create(seq_num, self.timestamp, round_signature.get_hash().0),
+            EPT::ProposedHeader::create(
+                seq_num,
+                self.timestamp,
+                round_signature.get_hash().0,
+                proposal_gas_limit,
+            ),
             block_body.get_id(),
             qc.clone(),
             seq_num,

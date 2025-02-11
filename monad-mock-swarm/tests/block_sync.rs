@@ -5,6 +5,7 @@ mod test {
     };
 
     use itertools::Itertools;
+    use monad_chain_config::{revision::ChainParams, MockChainConfig};
     use monad_consensus_types::{
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
     };
@@ -40,10 +41,16 @@ mod test {
     };
     use test_case::test_case;
 
+    static CHAIN_PARAMS: ChainParams = ChainParams {
+        tx_limit: 10_000,
+        proposal_gas_limit: 300_000_000,
+        proposal_byte_limit: 4_000_000,
+        vote_pace: Duration::from_millis(5),
+    };
+
     #[test]
     fn bsync_timeout_recovery() {
         let delta = Duration::from_millis(50);
-        let vote_pace = Duration::from_millis(5);
         let state_configs = make_state_configs::<MonadMessageNoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -51,13 +58,13 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
-            SeqNum::MAX,  // execution_delay
-            delta,        // delta
-            vote_pace,    // vote pace
-            0,            // proposal_tx_limit
-            SeqNum(2000), // val_set_update_interval
-            Round(50),    // epoch_start_delay
-            SeqNum(1000), // state_sync_threshold
+            SeqNum::MAX,                         // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            0,                                   // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(1000),                        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -168,7 +175,6 @@ mod test {
     #[should_panic]
     fn lack_of_progress() {
         let delta = Duration::from_millis(50);
-        let vote_pace = Duration::from_millis(5);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -176,13 +182,13 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
-            SeqNum::MAX,  // execution_delay
-            delta,        // delta
-            vote_pace,    // vote pace
-            0,            // proposal_tx_limit
-            SeqNum(2000), // val_set_update_interval
-            Round(50),    // epoch_start_delay
-            SeqNum(100),  // state_sync_threshold
+            SeqNum::MAX,                         // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            0,                                   // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -254,7 +260,6 @@ mod test {
     #[test]
     fn extreme_delay_recovery_with_block_sync() {
         let delta = Duration::from_millis(50);
-        let vote_pace = Duration::from_millis(5);
 
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
@@ -263,13 +268,13 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
-            SeqNum::MAX,  // execution_delay
-            delta,        // delta
-            vote_pace,    // vote pace
-            0,            // proposal_tx_limit
-            SeqNum(2000), // val_set_update_interval
-            Round(50),    // epoch_start_delay
-            SeqNum(100),  // state_sync_threshold
+            SeqNum::MAX,                         // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            0,                                   // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(100),                         // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -389,7 +394,6 @@ mod test {
         // giving a high delay so state root doesn't trigger
     ) {
         let delta = Duration::from_millis(20);
-        let vote_pace = Duration::from_millis(5);
         assert!(
             from < to
                 && to < until
@@ -405,13 +409,13 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
-            SeqNum::MAX,  // execution_delay
-            delta,        // delta
-            vote_pace,    // vote pace
-            0,            // proposal_tx_limit
-            SeqNum(2000), // val_set_update_interval
-            Round(50),    // epoch_start_delay
-            SeqNum(2000), // state_sync_threshold
+            SeqNum::MAX,                         // execution_delay
+            delta,                               // delta
+            MockChainConfig::new(&CHAIN_PARAMS), // chain config
+            0,                                   // proposal_tx_limit
+            SeqNum(2000),                        // val_set_update_interval
+            Round(50),                           // epoch_start_delay
+            SeqNum(2000),                        // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
