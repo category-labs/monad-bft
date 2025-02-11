@@ -10,8 +10,10 @@ use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
+use monad_crypto::NopPubKey;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
+use monad_node_config::NodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -619,6 +621,9 @@ impl RootSpanBuilder for MonadJsonRootSpanBuilder {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
+    let node_config: NodeConfig<_> =
+        toml::from_str::<NodeConfig<NopPubKey>>(&std::fs::read_to_string(&args.node_config)?)
+            .expect("node toml parse error");
 
     let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
         args.otel_endpoint.as_ref().map(|endpoint| {
@@ -633,16 +638,12 @@ async fn main() -> std::io::Result<()> {
 
     let rt = opentelemetry_sdk::runtime::Tokio;
 
-    let service_name = match args.metrics_service_name {
-        Some(name) => name,
-        None => "monad-rpc".to_string(),
-    };
     let otel_span_telemetry = match otlp_exporter {
         Some(exporter) => {
             let otel_config = opentelemetry_sdk::trace::Config::default().with_resource(
                 opentelemetry_sdk::Resource::new(vec![KeyValue::new(
                     "service.name".to_string(),
-                    service_name.clone(),
+                    node_config.node_name.clone(),
                 )]),
             );
 
@@ -864,7 +865,7 @@ async fn main() -> std::io::Result<()> {
         eth_call_executor,
         archive_reader,
         BASE_FEE_PER_GAS.into(),
-        args.chain_id,
+        node_config.chain_id,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
@@ -876,7 +877,7 @@ async fn main() -> std::io::Result<()> {
         args.otel_endpoint.as_ref().map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
                 endpoint,
-                service_name,
+                node_config.node_name,
                 std::time::Duration::from_secs(5),
             )
             .expect("failed to build otel meter");

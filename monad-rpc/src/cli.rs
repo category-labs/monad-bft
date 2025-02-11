@@ -21,9 +21,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 8080)]
     pub rpc_port: u16,
 
-    /// Set the chain ID
+    /// Set the node config path
     #[arg(long)]
-    pub chain_id: u64,
+    pub node_config: PathBuf,
 
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
@@ -40,10 +40,6 @@ pub struct Cli {
     /// Otel endpoint to collect metrics data
     #[arg(long)]
     pub otel_endpoint: Option<String>,
-
-    /// Service name to set for metrics
-    #[arg(long)]
-    pub metrics_service_name: Option<String>,
 
     /// Allow pre EIP-155 transactions
     #[arg(long, default_value_t = false)]
