@@ -6,7 +6,7 @@ use serde_json::Value;
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_num_from_tag,
+    block_handlers::get_block_key_from_tag,
     eth_json_types::{serialize_result, BlockTags, EthAddress, EthHash, MonadU256},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -26,9 +26,9 @@ pub async fn monad_eth_getBalance<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getBalance: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
     let account = triedb_env
-        .get_account(params.account.0, block_num)
+        .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
@@ -50,14 +50,14 @@ pub async fn monad_eth_getCode<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getCode: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_number.clone()).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number.clone());
     let account = triedb_env
-        .get_account(params.account.0, block_num)
+        .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     triedb_env
-        .get_code(account.code_hash, block_num)
+        .get_code(block_key, account.code_hash)
         .await
         .map_err(JsonRpcError::internal_error)
 }
@@ -78,9 +78,9 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getStorageAt: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
     triedb_env
-        .get_storage_at(params.account.0, B256::from(params.position.0).0, block_num)
+        .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
         .map_err(JsonRpcError::internal_error)
 }
@@ -100,9 +100,9 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_getTransactionCount: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_number).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
     let account = triedb_env
-        .get_account(params.account.0, block_num)
+        .get_account(block_key, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 

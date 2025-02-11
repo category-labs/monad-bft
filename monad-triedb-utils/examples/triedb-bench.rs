@@ -8,7 +8,8 @@ use std::{
 use clap::Parser;
 use futures::{future::LocalBoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
 use monad_triedb::TriedbHandle;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbEnv};
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb, TriedbEnv};
+use monad_types::SeqNum;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rand_distr::Distribution;
 use serde::{Deserialize, Serialize};
@@ -133,21 +134,24 @@ fn main() {
         let tagged_request: TaggedRequest = (Instant::now(), event);
         match event {
             Request::TxTraverse(block_num) => {
-                let fut = triedb_handle.get_transactions(block_num);
+                let fut = triedb_handle
+                    .get_transactions(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))));
                 futs.push(
                     fut.map(move |result| result.map(move |_txs| tagged_request))
                         .boxed_local(),
                 );
             }
             Request::ReceiptsTraverse(block_num) => {
-                let fut = triedb_handle.get_receipts(block_num);
+                let fut = triedb_handle
+                    .get_receipts(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))));
                 futs.push(
                     fut.map(move |result| result.map(move |_receipts| tagged_request))
                         .boxed_local(),
                 );
             }
             Request::BlockByNumber(block_num) => {
-                let fut = triedb_handle.get_block_header(block_num);
+                let fut = triedb_handle
+                    .get_block_header(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))));
                 futs.push(
                     fut.map(move |result| result.map(move |_block| tagged_request))
                         .boxed_local(),

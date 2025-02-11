@@ -379,9 +379,11 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
 #[derive(Clone, Debug, Default, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum BlockTags {
-    Number(Quantity),
+    Number(Quantity), // voted or finalized
     #[default]
-    Latest,
+    Latest, // voted
+    Safe,             // voted
+    Finalized,        // finalized
 }
 
 impl FromStr for BlockTags {
@@ -391,8 +393,8 @@ impl FromStr for BlockTags {
         match s {
             "earliest" => Ok(Self::Latest),
             "latest" => Ok(Self::Latest),
-            "safe" => Ok(Self::Latest),
-            "finalized" => Ok(Self::Latest),
+            "safe" => Ok(Self::Safe),
+            "finalized" => Ok(Self::Finalized),
             "pending" => Ok(Self::Latest),
             _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
         }

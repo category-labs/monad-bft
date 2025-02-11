@@ -17,7 +17,8 @@ struct TestDb
 
     TestDb(std::filesystem::path const &path)
         : path{path}
-        , db{machine, mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}}
+        , db{machine,
+             mpt::OnDiskDbConfig{.append = false, .dbname_paths = {path}}}
         , tdb{db}
     {
     }

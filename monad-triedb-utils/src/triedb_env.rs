@@ -1,12 +1,13 @@
 use std::{
+    collections::BTreeMap,
     fmt::Debug,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
@@ -14,6 +15,7 @@ use alloy_primitives::{keccak256, Address, FixedBytes};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::channel::oneshot;
 use monad_triedb::{TraverseEntry, TriedbHandle};
+use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
 
@@ -38,13 +40,7 @@ enum TriedbRequest {
 }
 
 enum SyncRequest {
-    BlockNumberRequest(BlockNumberRequest),
     TraverseRequest(TraverseRequest),
-}
-
-struct BlockNumberRequest {
-    // a sender to send the block number back to the request handler
-    request_sender: oneshot::Sender<u64>,
 }
 
 struct TraverseRequest {
@@ -53,7 +49,7 @@ struct TraverseRequest {
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
-    block_num: u64,
+    block_key: BlockKey,
 }
 
 // struct that is sent from the request handler to the polling thread
@@ -66,7 +62,7 @@ struct AsyncRequest {
     // triedb_key and key_len_nibbles are used to read items from triedb
     triedb_key: Vec<u8>,
     key_len_nibbles: u8,
-    block_num: u64,
+    block_key: BlockKey,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -171,9 +167,24 @@ impl Decodable for TxEnvelopeWithSender {
 
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
+const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
+    let latest_voted_round_before = Round(triedb_handle.latest_voted_round()?);
+    let latest_voted_seq_num = SeqNum(triedb_handle.latest_voted_block()?);
+    let latest_voted_round_after = Round(triedb_handle.latest_voted_round()?);
+    if latest_voted_round_before != latest_voted_round_after {
+        return None;
+    }
+    Some(ProposedBlockKey(
+        latest_voted_seq_num,
+        latest_voted_round_before,
+    ))
+}
 
 fn polling_thread(
     triedb_path: PathBuf,
+    meta: Arc<Mutex<TriedbEnvMeta>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
     receiver_traverse: mpsc::Receiver<TriedbRequest>,
@@ -186,7 +197,49 @@ fn polling_thread(
     let triedb_async_read_concurrency_tracker: Arc<()> = Arc::new(());
     let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
 
+    let mut last_meta_updated = Instant::now();
+    let (mut last_finalized, mut last_voted) = {
+        let meta = meta.lock().expect("poller mutex poisoned");
+        (meta.latest_finalized, meta.latest_voted)
+    };
+
     loop {
+        if last_meta_updated.elapsed() > META_POLL_INTERVAL {
+            let latest_finalized = FinalizedBlockKey(SeqNum(
+                triedb_handle.latest_finalized_block().unwrap_or_default(),
+            ));
+            let mut latest_voted = BlockKey::Finalized(latest_finalized);
+            for _ in 0..3 {
+                if let Some(voted) = get_latest_voted_block_key(&triedb_handle) {
+                    latest_voted = BlockKey::Proposed(voted);
+                    break;
+                }
+                // retry in case of a race
+            }
+
+            last_meta_updated = Instant::now();
+
+            if last_finalized != latest_finalized || last_voted != latest_voted {
+                last_finalized = latest_finalized;
+                last_voted = latest_voted;
+                let mut meta = meta.lock().expect("triedb poller mutex poisoned");
+                meta.latest_finalized = latest_finalized;
+                meta.latest_voted = latest_voted;
+                while meta
+                    .voted_proposals
+                    .first_key_value()
+                    .is_some_and(|(seq_num, _)| seq_num <= &latest_finalized.0)
+                {
+                    meta.voted_proposals.pop_first();
+                }
+                if let BlockKey::Proposed(ProposedBlockKey(voted_seq_num, voted_round)) =
+                    latest_voted
+                {
+                    meta.voted_proposals.insert(voted_seq_num, voted_round);
+                }
+            }
+        }
+
         triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
 
         // get next request, or sleep for 1ms
@@ -216,16 +269,11 @@ fn polling_thread(
                     // poll for completions before initiating sync request
                     triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
                     match sync_request {
-                        SyncRequest::BlockNumberRequest(block_num_request) => {
-                            let block_num =
-                                triedb_handle.latest_finalized_block().unwrap_or_default();
-                            let _ = block_num_request.request_sender.send(block_num);
-                        }
                         SyncRequest::TraverseRequest(traverse_request) => {
                             triedb_handle.traverse_triedb_sync(
                                 &traverse_request.triedb_key,
                                 traverse_request.key_len_nibbles,
-                                traverse_request.block_num,
+                                traverse_request.block_key.seq_num().0,
                                 traverse_request.request_sender,
                             );
                         }
@@ -237,7 +285,7 @@ fn polling_thread(
                     triedb_handle.traverse_triedb_async(
                         &traverse_request.triedb_key,
                         traverse_request.key_len_nibbles,
-                        traverse_request.block_num,
+                        traverse_request.block_key.seq_num().0,
                         traverse_request.request_sender,
                         triedb_async_traverse_concurrency_tracker.clone(),
                     );
@@ -248,7 +296,7 @@ fn polling_thread(
                     triedb_handle.read_async(
                         &async_request.triedb_key,
                         async_request.key_len_nibbles,
-                        async_request.block_num,
+                        async_request.block_key.seq_num().0,
                         async_request.completed_counter,
                         async_request.request_sender,
                         triedb_async_read_concurrency_tracker.clone(),
@@ -265,66 +313,98 @@ fn polling_thread(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalizedBlockKey(pub SeqNum);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposedBlockKey(pub SeqNum, pub Round);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKey {
+    Finalized(FinalizedBlockKey),
+    Proposed(ProposedBlockKey),
+}
+
+impl BlockKey {
+    pub fn seq_num(&self) -> &SeqNum {
+        match self {
+            BlockKey::Finalized(FinalizedBlockKey(seq_num)) => seq_num,
+            BlockKey::Proposed(ProposedBlockKey(seq_num, _)) => seq_num,
+        }
+    }
+}
+
+impl From<BlockKey> for Version {
+    fn from(key: BlockKey) -> Self {
+        match key {
+            BlockKey::Finalized(FinalizedBlockKey(_)) => Self::Finalized,
+            BlockKey::Proposed(ProposedBlockKey(_, round)) => Self::Proposal(round),
+        }
+    }
+}
+
 pub trait Triedb: Debug {
-    fn get_latest_block(&self) -> impl std::future::Future<Output = Result<u64, String>> + Send;
+    fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey;
+    /// returns a FinalizedBlockKey if latest_voted doesn't exist
+    fn get_latest_voted_block_key(&self) -> BlockKey;
+    fn get_block_key(&self, block_num: SeqNum) -> BlockKey;
+
     fn get_account(
         &self,
+        key: BlockKey,
         addr: EthAddress,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Account, String>> + Send;
     fn get_storage_at(
         &self,
+        key: BlockKey,
         addr: EthAddress,
         at: EthStorageKey,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<String, String>> + Send;
     fn get_code(
         &self,
+        key: BlockKey,
         code_hash: EthCodeHash,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<String, String>> + Send;
     fn get_receipt(
         &self,
+        key: BlockKey,
         txn_index: u64,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<ReceiptWithLogIndex>, String>> + Send;
     fn get_receipts(
         &self,
-        block_num: u64,
+        key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync;
     fn get_transaction(
         &self,
+        key: BlockKey,
         txn_index: u64,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<TxEnvelopeWithSender>, String>> + Send;
     fn get_transactions(
         &self,
-        block_num: u64,
+        key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync;
     fn get_block_header(
         &self,
-        block_num: u64,
+        key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync;
     fn get_transaction_location_by_hash(
         &self,
+        key: BlockKey,
         tx_hash: EthTxHash,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, String>> + Send;
     fn get_block_number_by_hash(
         &self,
+        key: BlockKey,
         block_hash: EthBlockHash,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<u64>, String>> + Send;
 
     fn get_call_frame(
         &self,
+        key: BlockKey,
         txn_index: u64,
-        block_num: u64,
     ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, String>> + Send;
 
     fn get_call_frames(
         &self,
-        block_num: u64,
+        key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send;
 }
 
@@ -337,6 +417,20 @@ pub struct TriedbEnv {
     triedb_path: PathBuf,
     mpsc_sender: mpsc::SyncSender<TriedbRequest>, // sender for tasks
     mpsc_sender_traverse: mpsc::SyncSender<TriedbRequest>,
+
+    meta: Arc<Mutex<TriedbEnvMeta>>,
+}
+
+struct TriedbEnvMeta {
+    latest_finalized: FinalizedBlockKey,
+    latest_voted: BlockKey,
+    voted_proposals: BTreeMap<SeqNum, Round>,
+}
+
+impl TriedbEnvMeta {
+    fn latest_safe_voted(&self) -> SeqNum {
+        self.latest_finalized.0 + SeqNum(1)
+    }
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -355,6 +449,17 @@ impl TriedbEnv {
         max_buffered_traverse_requests: usize,
         max_async_traverse_concurrency: usize,
     ) -> Self {
+        let latest_finalized = {
+            let triedb_handle: TriedbHandle =
+                TriedbHandle::try_new(triedb_path).expect("triedb should exist in path");
+            SeqNum(triedb_handle.latest_finalized_block().unwrap_or_default())
+        };
+        let meta = Arc::new(Mutex::new(TriedbEnvMeta {
+            latest_finalized: FinalizedBlockKey(latest_finalized),
+            latest_voted: BlockKey::Finalized(FinalizedBlockKey(latest_finalized)),
+            voted_proposals: Default::default(),
+        }));
+
         // create mpsc channels where sender are incoming requests, and the receiver is the triedb poller
         let (sender_read, receiver_read) =
             mpsc::sync_channel::<TriedbRequest>(max_buffered_read_requests);
@@ -362,10 +467,12 @@ impl TriedbEnv {
             mpsc::sync_channel::<TriedbRequest>(max_buffered_traverse_requests);
 
         // spawn the polling thread in a dedicated thread
+        let meta_cloned = meta.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
         thread::spawn(move || {
             polling_thread(
                 triedb_path_cloned,
+                meta_cloned,
                 receiver_read,
                 max_async_read_concurrency,
                 receiver_traverse,
@@ -377,6 +484,7 @@ impl TriedbEnv {
             triedb_path: triedb_path.to_path_buf(),
             mpsc_sender: sender_read,
             mpsc_sender_traverse: sender_traverse,
+            meta,
         }
     }
 }
@@ -388,37 +496,39 @@ impl TriedbPath for TriedbEnv {
 }
 
 impl Triedb for TriedbEnv {
-    #[tracing::instrument(level = "debug")]
-    async fn get_latest_block(&self) -> Result<u64, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        if let Err(e) =
-            self.mpsc_sender
-                .try_send(TriedbRequest::SyncRequest(SyncRequest::BlockNumberRequest(
-                    BlockNumberRequest { request_sender },
-                )))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("could not get latest block from triedb"));
+    fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey {
+        let meta = self.meta.lock().expect("mutex poisoned");
+        meta.latest_finalized
+    }
+    fn get_latest_voted_block_key(&self) -> BlockKey {
+        let meta = self.meta.lock().expect("mutex poisoned");
+        let latest_safe_voted = meta.latest_safe_voted();
+        match meta.voted_proposals.get(&latest_safe_voted) {
+            Some(round) => BlockKey::Proposed(ProposedBlockKey(latest_safe_voted, *round)),
+            None => BlockKey::Finalized(meta.latest_finalized),
         }
-
-        match request_receiver.await {
-            Ok(block_num) => Ok(block_num),
-            Err(e) => {
-                error!("Error when receiving response from polling thread: {e}");
-                Err(String::from("could not get latest block from triedb"))
-            }
+    }
+    fn get_block_key(&self, seq_num: SeqNum) -> BlockKey {
+        let meta = self.meta.lock().expect("mutex poisoned");
+        if seq_num > meta.latest_safe_voted() {
+            // this block is not voted on yet, but it's safe to default to finalized
+            BlockKey::Finalized(FinalizedBlockKey(seq_num))
+        } else if let Some(&voted_round) = meta.voted_proposals.get(&seq_num) {
+            // there's an unfinalized, voted proposal with this seq_num
+            BlockKey::Proposed(ProposedBlockKey(seq_num, voted_round))
+        } else {
+            // this seq_num is finalized
+            BlockKey::Finalized(FinalizedBlockKey(seq_num))
         }
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_account(&self, addr: EthAddress, block_num: u64) -> Result<Account, String> {
+    async fn get_account(&self, block_key: BlockKey, addr: EthAddress) -> Result<Account, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::Address(&addr));
+            create_triedb_key(block_key.into(), KeyInput::Address(&addr));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -428,7 +538,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -474,15 +584,15 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_storage_at(
         &self,
+        block_key: BlockKey,
         addr: EthAddress,
         at: EthStorageKey,
-        block_num: u64,
     ) -> Result<String, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::Storage(&addr, &at));
+            create_triedb_key(block_key.into(), KeyInput::Storage(&addr, &at));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -493,7 +603,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -530,12 +640,16 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_code(&self, code_hash: EthCodeHash, block_num: u64) -> Result<String, String> {
+    async fn get_code(
+        &self,
+        block_key: BlockKey,
+        code_hash: EthCodeHash,
+    ) -> Result<String, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::CodeHash(&code_hash));
+            create_triedb_key(block_key.into(), KeyInput::CodeHash(&code_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -545,7 +659,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -576,8 +690,8 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_receipt(
         &self,
+        block_key: BlockKey,
         receipt_index: u64,
-        block_num: u64,
     ) -> Result<Option<ReceiptWithLogIndex>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
@@ -595,7 +709,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -628,13 +742,13 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_receipts(&self, block_num: u64) -> Result<Vec<ReceiptWithLogIndex>, String> {
+    async fn get_receipts(&self, block_key: BlockKey) -> Result<Vec<ReceiptWithLogIndex>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         // receipt_index set to None to indiciate return all receipts
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::ReceiptIndex(None));
+            create_triedb_key(block_key.into(), KeyInput::ReceiptIndex(None));
 
         if let Err(e) = self
             .mpsc_sender_traverse
@@ -642,7 +756,7 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -694,14 +808,14 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_transaction(
         &self,
+        block_key: BlockKey,
         txn_index: u64,
-        block_num: u64,
     ) -> Result<Option<TxEnvelopeWithSender>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::TxIndex(Some(txn_index)));
+            create_triedb_key(block_key.into(), KeyInput::TxIndex(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -712,7 +826,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -749,13 +863,16 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_transactions(&self, block_num: u64) -> Result<Vec<TxEnvelopeWithSender>, String> {
+    async fn get_transactions(
+        &self,
+        block_key: BlockKey,
+    ) -> Result<Vec<TxEnvelopeWithSender>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         // txn_index set to None to indiciate return all transactions
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::TxIndex(None));
+            create_triedb_key(block_key.into(), KeyInput::TxIndex(None));
 
         if let Err(e) = self
             .mpsc_sender_traverse
@@ -763,7 +880,7 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -816,12 +933,12 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_block_header(&self, block_num: u64) -> Result<Option<BlockHeader>, String> {
+    async fn get_block_header(&self, block_key: BlockKey) -> Result<Option<BlockHeader>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::BlockHeader);
+            create_triedb_key(block_key.into(), KeyInput::BlockHeader);
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -832,7 +949,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -872,14 +989,14 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_transaction_location_by_hash(
         &self,
+        block_key: BlockKey,
         tx_hash: EthTxHash,
-        block_num: u64,
     ) -> Result<Option<TransactionLocation>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::TxHash(&tx_hash));
+            create_triedb_key(block_key.into(), KeyInput::TxHash(&tx_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -890,7 +1007,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -931,14 +1048,14 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_block_number_by_hash(
         &self,
+        block_key: BlockKey,
         block_hash: EthBlockHash,
-        block_num: u64,
     ) -> Result<Option<u64>, String> {
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::BlockHash(&block_hash));
+            create_triedb_key(block_key.into(), KeyInput::BlockHash(&block_hash));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -949,7 +1066,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -985,13 +1102,13 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_call_frame(
         &self,
+        block_key: BlockKey,
         txn_index: u64,
-        block_num: u64,
     ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::CallFrame(Some(txn_index)));
+            create_triedb_key(block_key.into(), KeyInput::CallFrame(Some(txn_index)));
         let completed_counter = Arc::new(AtomicUsize::new(0));
 
         if let Err(e) = self
@@ -1002,7 +1119,7 @@ impl Triedb for TriedbEnv {
                 completed_counter: completed_counter.clone(),
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");
@@ -1027,11 +1144,11 @@ impl Triedb for TriedbEnv {
     }
 
     #[tracing::instrument(level = "debug")]
-    async fn get_call_frames(&self, block_num: u64) -> Result<Vec<Vec<u8>>, String> {
+    async fn get_call_frames(&self, block_key: BlockKey) -> Result<Vec<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(Version::Finalized, KeyInput::CallFrame(None));
+            create_triedb_key(block_key.into(), KeyInput::CallFrame(None));
 
         if let Err(e) = self
             .mpsc_sender_traverse
@@ -1039,7 +1156,7 @@ impl Triedb for TriedbEnv {
                 request_sender,
                 triedb_key,
                 key_len_nibbles,
-                block_num,
+                block_key,
             }))
         {
             warn!("Polling thread channel full: {e}");

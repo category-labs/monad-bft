@@ -52,6 +52,16 @@ impl TriedbReader {
         TriedbHandle::try_new(triedb_path).map(|handle| Self { handle })
     }
 
+    pub fn get_latest_voted_block(&self) -> Option<SeqNum> {
+        let latest_voted = self.handle.latest_voted_block()?;
+        Some(SeqNum(latest_voted))
+    }
+
+    pub fn get_latest_voted_round(&self) -> Option<Round> {
+        let latest_voted = self.handle.latest_voted_round()?;
+        Some(Round(latest_voted))
+    }
+
     pub fn get_latest_finalized_block(&self) -> Option<SeqNum> {
         let latest_finalized = self.handle.latest_finalized_block()?;
         Some(SeqNum(latest_finalized))

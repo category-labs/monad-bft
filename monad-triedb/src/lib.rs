@@ -334,6 +334,24 @@ impl TriedbHandle {
         };
     }
 
+    pub fn latest_voted_block(&self) -> Option<u64> {
+        let maybe_latest_voted_block = unsafe { bindings::triedb_latest_voted_block(self.db_ptr) };
+        if maybe_latest_voted_block == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_voted_block)
+        }
+    }
+
+    pub fn latest_voted_round(&self) -> Option<u64> {
+        let maybe_latest_voted_round = unsafe { bindings::triedb_latest_voted_round(self.db_ptr) };
+        if maybe_latest_voted_round == u64::MAX {
+            None
+        } else {
+            Some(maybe_latest_voted_round)
+        }
+    }
+
     pub fn latest_finalized_block(&self) -> Option<u64> {
         let maybe_latest_finalized_block =
             unsafe { bindings::triedb_latest_finalized_block(self.db_ptr) };

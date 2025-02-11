@@ -16,13 +16,15 @@ use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
 use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
-    BlockHeader, ReceiptWithLogIndex, TransactionLocation, Triedb, TxEnvelopeWithSender,
+    BlockHeader, BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, TransactionLocation, Triedb,
+    TxEnvelopeWithSender,
 };
+use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, trace, warn};
 
 use crate::{
-    block_handlers::{block_receipts, get_block_num_from_tag},
+    block_handlers::{block_receipts, get_block_key_from_tag},
     eth_json_types::{
         BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity,
         UnformattedData,
@@ -187,23 +189,15 @@ pub async fn monad_eth_getLogs<T: Triedb>(
             let from_block_tag = into_block_tag(from_block);
             let to_block_tag = into_block_tag(to_block);
 
-            let from_block = get_block_num_from_tag(triedb_env, from_block_tag)
-                .await
-                .map_err(|_| {
-                    JsonRpcError::internal_error("could not get starting block range".to_string())
-                })?;
-            let to_block = get_block_num_from_tag(triedb_env, to_block_tag)
-                .await
-                .map_err(|_| {
-                    JsonRpcError::internal_error("could not get ending block range".to_string())
-                })?;
-            (from_block, to_block)
+            let from_block = get_block_key_from_tag(triedb_env, from_block_tag);
+            let to_block = get_block_key_from_tag(triedb_env, to_block_tag);
+            (from_block.seq_num().0, to_block.seq_num().0)
         }
         FilterBlockOption::AtBlockHash(block_hash) => {
-            let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+            let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
 
             let block = triedb_env
-                .get_block_number_by_hash(block_hash.into(), latest_block_num)
+                .get_block_number_by_hash(latest_block_key, block_hash.into())
                 .await
                 .map_err(|_| {
                     JsonRpcError::internal_error("could not get block hash".to_string())
@@ -245,10 +239,11 @@ pub async fn monad_eth_getLogs<T: Triedb>(
 
     let triedb_stream = stream::iter(block_range)
         .map(|block_num| {
+            let block_key = triedb_env.get_block_key(SeqNum(block_num));
             let filter_clone = filter.clone();
             async move {
                 if let Some(header) = triedb_env
-                    .get_block_header(block_num)
+                    .get_block_header(block_key)
                     .await
                     .map_err(JsonRpcError::internal_error)?
                 {
@@ -259,11 +254,11 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                     ) {
                         // try fetching from triedb
                         let transactions = triedb_env
-                            .get_transactions(block_num)
+                            .get_transactions(block_key)
                             .await
                             .map_err(JsonRpcError::internal_error)?;
                         let bloom_receipts = triedb_env
-                            .get_receipts(block_num)
+                            .get_receipts(block_key)
                             .await
                             .map_err(JsonRpcError::internal_error)?;
                         // successfully fetched from triedb
@@ -475,9 +470,9 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             })?;
 
             // drop transactions with nonce too low
-            let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+            let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
             let account = triedb_env
-                .get_account(signer.into(), latest_block_num)
+                .get_account(latest_block_key, signer.into())
                 .await
                 .map_err(JsonRpcError::internal_error)?;
             if tx.nonce() < account.nonce {
@@ -538,16 +533,17 @@ pub async fn monad_eth_getTransactionReceipt<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     trace!("monad_eth_getTransactionReceipt: {params:?}");
 
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     if let Some(TransactionLocation {
         tx_index,
         block_num,
     }) = triedb_env
-        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        if let Some(receipt) = get_receipt_from_triedb(triedb_env, block_num, tx_index).await? {
+        let block_key = triedb_env.get_block_key(SeqNum(block_num));
+        if let Some(receipt) = get_receipt_from_triedb(triedb_env, block_key, tx_index).await? {
             return Ok(Some(receipt));
         }
     }
@@ -592,16 +588,17 @@ pub async fn monad_eth_getTransactionByHash<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     if let Some(TransactionLocation {
         tx_index,
         block_num,
     }) = triedb_env
-        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        if let Some(tx) = get_transaction_from_triedb(triedb_env, block_num, tx_index).await? {
+        let block_key = triedb_env.get_block_key(SeqNum(block_num));
+        if let Some(tx) = get_transaction_from_triedb(triedb_env, block_key, tx_index).await? {
             return Ok(Some(tx));
         };
     }
@@ -640,13 +637,14 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     if let Some(block_num) = triedb_env
-        .get_block_number_by_hash(params.block_hash.0, latest_block_num)
+        .get_block_number_by_hash(latest_block_key, params.block_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        if let Some(tx) = get_transaction_from_triedb(triedb_env, block_num, params.index.0).await?
+        let block_key = triedb_env.get_block_key(SeqNum(block_num));
+        if let Some(tx) = get_transaction_from_triedb(triedb_env, block_key, params.index.0).await?
         {
             return Ok(Some(tx));
         }
@@ -691,14 +689,16 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block_tag).await?;
-    if let Some(tx) = get_transaction_from_triedb(triedb_env, block_num, params.index.0).await? {
+    let block_key = get_block_key_from_tag(triedb_env, params.block_tag);
+    if let Some(tx) = get_transaction_from_triedb(triedb_env, block_key, params.index.0).await? {
         return Ok(Some(tx));
     }
 
     // try archive if block header not found and archive reader specified
-    if let Some(archive_reader) = archive_reader {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
+    if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
+        (archive_reader, block_key)
+    {
+        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
             if let Some(tx) = block.body.transactions.get(params.index.0 as usize) {
                 return parse_tx_content(
                     block.header.hash_slow(),
@@ -718,11 +718,11 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 #[tracing::instrument(level = "debug")]
 async fn get_receipt_from_triedb<T: Triedb>(
     triedb_env: &T,
-    block_num: u64,
+    block_key: BlockKey,
     tx_index: u64,
 ) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -731,7 +731,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
     };
 
     let tx = match triedb_env
-        .get_transaction(tx_index, block_num)
+        .get_transaction(block_key, tx_index)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -740,7 +740,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
     };
 
     match triedb_env
-        .get_receipt(tx_index, block_num)
+        .get_receipt(block_key, tx_index)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -748,7 +748,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
             // Get the previous receipt's cumulative gas used to calculate gas used
             let gas_used = if tx_index > 0 {
                 match triedb_env
-                    .get_receipt(tx_index - 1, block_num)
+                    .get_receipt(block_key, tx_index - 1)
                     .await
                     .map_err(JsonRpcError::internal_error)?
                 {
@@ -771,7 +771,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 tx,
                 gas_used,
                 receipt,
-                block_num,
+                block_key.seq_num().0,
                 tx_index,
             )?;
 
@@ -784,11 +784,11 @@ async fn get_receipt_from_triedb<T: Triedb>(
 #[tracing::instrument(level = "debug")]
 async fn get_transaction_from_triedb<T: Triedb>(
     triedb_env: &T,
-    block_num: u64,
+    block_key: BlockKey,
     tx_index: u64,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -797,7 +797,7 @@ async fn get_transaction_from_triedb<T: Triedb>(
     };
 
     match triedb_env
-        .get_transaction(tx_index, block_num)
+        .get_transaction(block_key, tx_index)
         .await
         .map_err(JsonRpcError::internal_error)?
     {

@@ -77,6 +77,7 @@ pub fn eth_call(
     block_header: Header,
     sender: Address,
     block_number: u64,
+    block_round: Option<u64>,
     triedb_path: &Path,
     state_override_set: &StateOverrideSet,
 ) -> CallResult {
@@ -223,6 +224,7 @@ pub fn eth_call(
             &cxx_rlp_encoded_block_header,
             &cxx_rlp_encoded_sender,
             block_number,
+            block_round.unwrap_or(u64::MAX),
             &triedb_path,
             &cxx_state_override_set);
     }
@@ -589,6 +591,7 @@ mod tests {
             Header::default(),
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
             0,
+            None,
             Path::new("/home/rgarc/test.db"),
             &StateOverrideSet::new(), // state overrides
         );

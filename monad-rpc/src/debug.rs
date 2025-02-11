@@ -3,11 +3,12 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_rlp::Encodable;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{TransactionLocation, Triedb};
+use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_num_from_tag,
+    block_handlers::get_block_key_from_tag,
     eth_json_types::{BlockTags, EthHash},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -27,10 +28,10 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawBlock: {params:?}");
-    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block);
 
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -42,7 +43,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
         }
     };
     let transactions = triedb_env
-        .get_transactions(block_num)
+        .get_transactions(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
         .into_iter()
@@ -71,9 +72,9 @@ pub async fn monad_debug_getRawHeader<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawHeader: {params:?}");
-    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block);
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -104,9 +105,9 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
     params: DebugBlockParams,
 ) -> JsonRpcResult<MonadDebugGetRawReceiptsResult> {
     trace!("monad_debug_getRawReceipts: {params:?}");
-    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block);
     let receipts: Vec<ReceiptEnvelope> = triedb_env
-        .get_receipts(block_num)
+        .get_receipts(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
         .into_iter()
@@ -138,12 +139,12 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     let Some(TransactionLocation {
         tx_index,
         block_num,
     }) = triedb_env
-        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     else {
@@ -151,7 +152,7 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     };
 
     let Some(tx) = triedb_env
-        .get_transaction(tx_index, block_num)
+        .get_transaction(triedb_env.get_block_key(SeqNum(block_num)), tx_index)
         .await
         .map_err(JsonRpcError::internal_error)?
     else {
@@ -174,8 +175,8 @@ pub struct DebugTraceCallParams {
 #[allow(non_snake_case)]
 /// Returns the tracing result by executing an eth call within the context of the given block execution.
 pub async fn monad_debug_traceCall<T: Triedb>(
-    triedb_env: &T,
-    params: DebugTraceCallParams,
+    _triedb_env: &T,
+    _params: DebugTraceCallParams,
 ) -> JsonRpcResult<String> {
     Err(JsonRpcError::method_not_supported())
 }

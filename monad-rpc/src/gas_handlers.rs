@@ -8,12 +8,15 @@ use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
 use monad_cxx::{CallResult, StateOverrideSet};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
+use monad_triedb_utils::triedb_env::{
+    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
+};
+use monad_types::{Round, SeqNum};
 use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_num_from_tag,
+    block_handlers::get_block_key_from_tag,
     call::{fill_gas_params, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -27,7 +30,7 @@ struct GasEstimator {
     chain_id: u64,
     block_header: Header,
     sender: Address,
-    block_number: u64,
+    block_key: BlockKey,
     triedb_path: PathBuf,
     state_override: StateOverrideSet,
 }
@@ -37,7 +40,7 @@ impl GasEstimator {
         chain_id: u64,
         block_header: Header,
         sender: Address,
-        block_number: u64,
+        block_key: BlockKey,
         triedb_path: PathBuf,
         state_override: StateOverrideSet,
     ) -> Self {
@@ -45,7 +48,7 @@ impl GasEstimator {
             chain_id,
             block_header,
             sender,
-            block_number,
+            block_key,
             triedb_path,
             state_override,
         }
@@ -54,12 +57,17 @@ impl GasEstimator {
 
 impl EthCallProvider for GasEstimator {
     fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+        let (block_number, block_round) = match self.block_key {
+            BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+            BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
+        };
         monad_cxx::eth_call(
             self.chain_id,
             txn,
             self.block_header.clone(),
             self.sender,
-            self.block_number,
+            block_number,
+            block_round,
             self.triedb_path.as_path(),
             &self.state_override,
         )
@@ -165,9 +173,9 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    let block_number = get_block_num_from_tag(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block);
     let mut header = match triedb_env
-        .get_block_header(block_number)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -181,6 +189,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
 
     fill_gas_params(
         triedb_env,
+        block_key,
         &mut params.tx,
         &mut header.header,
         &params.state_override_set,
@@ -202,7 +211,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         tx_chain_id,
         header.header,
         sender,
-        block_number,
+        block_key,
         triedb_env.path(),
         params.state_override_set,
     );
@@ -221,9 +230,9 @@ pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
 pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
-    let block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -280,9 +289,9 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         ));
     }
 
-    let block_num = get_block_num_from_tag(triedb_env, params.newest_block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.newest_block);
     let header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {

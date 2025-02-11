@@ -7,12 +7,13 @@ use alloy_primitives::{
 use alloy_rlp::Decodable;
 use monad_archive::prelude::{ArchiveReader, BlockDataReader, IndexReader};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::Triedb;
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
+use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    block_handlers::get_block_num_from_tag,
+    block_handlers::get_block_key_from_tag,
     eth_json_types::{
         BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity, UnformattedData,
     },
@@ -193,30 +194,31 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByHash: {params:?}");
 
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     if let Some(block_num) = triedb_env
-        .get_block_number_by_hash(params.block_hash.0, latest_block_num)
+        .get_block_number_by_hash(latest_block_key, params.block_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
+        let block_key = triedb_env.get_block_key(SeqNum(block_num));
         let mut resp = Vec::new();
 
         let tx_ids = triedb_env
-            .get_transactions(block_num)
+            .get_transactions(block_key)
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
             .map(|tx| *tx.tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
-            .get_call_frames(block_num)
+            .get_call_frames(block_key)
             .await
             .map_err(JsonRpcError::internal_error)?;
 
         for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
             let rlp_call_frame = &mut call_frame.as_slice();
             let Some(traces) =
-                decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
+                decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer).await?
             else {
                 return Err(JsonRpcError::internal_error("traces not found".to_string()));
             };
@@ -250,7 +252,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
                     let Some(traces) = decode_call_frame(
                         triedb_env,
                         rlp_call_frame,
-                        block.header.number,
+                        BlockKey::Finalized(FinalizedBlockKey(SeqNum(block.header.number))),
                         &params.tracer,
                     )
                     .await?
@@ -273,7 +275,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadDebugTraceBlockByNumberParams {
-    block_number: Quantity,
+    block_number: BlockTags,
     #[serde(default)]
     tracer: TracerObject,
 }
@@ -295,30 +297,30 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
 ) -> JsonRpcResult<Vec<MonadDebugTraceBlockResult>> {
     trace!("monad_debugTraceBlockByNumber: {params:?}");
 
-    let block_num = params.block_number.0;
+    let block_key = get_block_key_from_tag(triedb_env, params.block_number);
     let mut resp = Vec::new();
     if triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
         .is_some()
     {
         let tx_ids = triedb_env
-            .get_transactions(block_num)
+            .get_transactions(block_key)
             .await
             .map_err(JsonRpcError::internal_error)?
             .iter()
             .map(|tx| *tx.tx.tx_hash())
             .collect::<Vec<_>>();
         let call_frames = triedb_env
-            .get_call_frames(block_num)
+            .get_call_frames(block_key)
             .await
             .map_err(JsonRpcError::internal_error)?;
 
         for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
             let rlp_call_frame = &mut call_frame.as_slice();
             let Some(traces) =
-                decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer).await?
+                decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer).await?
             else {
                 return Err(JsonRpcError::internal_error("traces not found".to_string()));
             };
@@ -332,9 +334,11 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     }
 
     // try archive if block number not found and archive reader specified
-    if let Some(archive_reader) = archive_reader {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num).await {
-            if let Ok(call_frames) = archive_reader.get_block_traces(block_num).await {
+    if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
+        (archive_reader, block_key)
+    {
+        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+            if let Ok(call_frames) = archive_reader.get_block_traces(block_num.0).await {
                 let tx_ids = block
                     .body
                     .transactions
@@ -345,7 +349,7 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
                 for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
                     let rlp_call_frame = &mut call_frame.as_slice();
                     let Some(traces) =
-                        decode_call_frame(triedb_env, rlp_call_frame, block_num, &params.tracer)
+                        decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer)
                             .await?
                     else {
                         return Err(JsonRpcError::internal_error("traces not found".to_string()));
@@ -374,20 +378,20 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     trace!("monad_eth_debugTraceTransaction: {params:?}");
 
-    let latest_block_num = get_block_num_from_tag(triedb_env, BlockTags::Latest).await?;
+    let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
     if let Some(tx_loc) = triedb_env
-        .get_transaction_location_by_hash(params.tx_hash.0, latest_block_num)
+        .get_transaction_location_by_hash(latest_block_key, params.tx_hash.0)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
+        let block_key = triedb_env.get_block_key(SeqNum(tx_loc.block_num));
         if let Some(rlp_call_frame) = triedb_env
-            .get_call_frame(tx_loc.tx_index, tx_loc.block_num)
+            .get_call_frame(block_key, tx_loc.tx_index)
             .await
             .map_err(JsonRpcError::internal_error)?
         {
             let rlp_call_frame = &mut rlp_call_frame.as_slice();
-            return decode_call_frame(triedb_env, rlp_call_frame, tx_loc.block_num, &params.tracer)
-                .await;
+            return decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer).await;
         }
     }
 
@@ -399,7 +403,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
             return decode_call_frame(
                 triedb_env,
                 rlp_call_frame,
-                header_subset.block_number,
+                BlockKey::Finalized(FinalizedBlockKey(SeqNum(header_subset.block_number))),
                 &params.tracer,
             )
             .await;
@@ -412,7 +416,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 async fn decode_call_frame<T: Triedb>(
     triedb_env: &T,
     rlp_call_frame: &mut &[u8],
-    block_num: u64,
+    block_key: BlockKey,
     tracer: &TracerObject,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     let mut call_frames = Vec::<Vec<CallFrame>>::decode(rlp_call_frame)
@@ -428,7 +432,7 @@ async fn decode_call_frame<T: Triedb>(
                     Ok(None)
                 } else {
                     let mut call_frame = call_frames.remove(0);
-                    include_code_output(&mut call_frame, triedb_env, block_num).await?;
+                    include_code_output(&mut call_frame, triedb_env, block_key).await?;
                     Ok(Some(MonadCallFrame::from(call_frame)))
                 }
             } else {
@@ -436,7 +440,7 @@ async fn decode_call_frame<T: Triedb>(
                     call_frames
                         .into_iter()
                         .map(|mut frame| async move {
-                            include_code_output(&mut frame, triedb_env, block_num).await?;
+                            include_code_output(&mut frame, triedb_env, block_key).await?;
                             Ok::<_, JsonRpcError>(frame)
                         })
                         .collect::<Vec<_>>(),
@@ -457,7 +461,7 @@ async fn decode_call_frame<T: Triedb>(
 async fn include_code_output<T: Triedb>(
     frame: &mut CallFrame,
     triedb_env: &T,
-    block_num: u64,
+    block_key: BlockKey,
 ) -> JsonRpcResult<()> {
     if matches!(frame.typ, CallKind::Create) || matches!(frame.typ, CallKind::Create2) {
         let Some(contract_addr) = &frame.to else {
@@ -468,11 +472,11 @@ async fn include_code_output<T: Triedb>(
         };
 
         let account = triedb_env
-            .get_account(contract_addr.0.into(), block_num)
+            .get_account(block_key, contract_addr.0.into())
             .await
             .map_err(JsonRpcError::internal_error)?;
         let code = triedb_env
-            .get_code(account.code_hash, block_num)
+            .get_code(block_key, account.code_hash)
             .await
             .map_err(JsonRpcError::internal_error)?;
 

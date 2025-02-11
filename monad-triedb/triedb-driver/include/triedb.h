@@ -50,6 +50,10 @@ size_t triedb_poll(triedb *, bool blocking, size_t count);
 int triedb_finalize(bytes value);
 
 // returns MAX if doesn't exist
+uint64_t triedb_latest_voted_block(triedb *);
+// returns MAX if doesn't exist
+uint64_t triedb_latest_voted_round(triedb *);
+// returns MAX if doesn't exist
 uint64_t triedb_latest_finalized_block(triedb *);
 // returns MAX if doesn't exist
 uint64_t triedb_latest_verified_block(triedb *);

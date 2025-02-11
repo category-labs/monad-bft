@@ -333,6 +333,18 @@ int triedb_finalize(bytes value)
     return 0;
 }
 
+uint64_t triedb_latest_voted_block(triedb *db)
+{
+    uint64_t latest_voted_block_id = db->db_.get_latest_voted_block_id();
+    return latest_voted_block_id;
+}
+
+uint64_t triedb_latest_voted_round(triedb *db)
+{
+    uint64_t latest_round = db->db_.get_latest_voted_round();
+    return latest_round;
+}
+
 uint64_t triedb_latest_finalized_block(triedb *db)
 {
     uint64_t latest_block_id = db->db_.get_latest_finalized_block_id();

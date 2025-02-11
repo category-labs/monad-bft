@@ -29,6 +29,7 @@ mongodb-integration-tests = []
 
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
+monad-types = { path = "../monad-types" }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-rlp = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }

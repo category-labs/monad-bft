@@ -5,12 +5,15 @@ use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8}
 use alloy_rpc_types::AccessList;
 use monad_cxx::StateOverrideSet;
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
+use monad_triedb_utils::triedb_env::{
+    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
+};
+use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_num_from_tag,
+    block_handlers::get_block_key_from_tag,
     eth_json_types::BlockTags,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
@@ -271,6 +274,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
 /// Populate gas limit and gas prices
 pub async fn fill_gas_params<T: Triedb>(
     triedb_env: &T,
+    block_key: BlockKey,
     tx: &mut CallRequest,
     header: &mut Header,
     state_overrides: &StateOverrideSet,
@@ -288,7 +292,8 @@ pub async fn fill_gas_params<T: Triedb>(
 
             if tx.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(triedb_env, header, tx, state_overrides).await?;
+                    sender_gas_allowance(triedb_env, block_key, header, tx, state_overrides)
+                        .await?;
                 tx.gas = Some(U256::from(allowance));
             }
         }
@@ -306,6 +311,7 @@ pub async fn fill_gas_params<T: Triedb>(
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
 pub async fn sender_gas_allowance<T: Triedb>(
     triedb_env: &T,
+    block_key: BlockKey,
     block: &Header,
     request: &CallRequest,
     state_overrides: &StateOverrideSet,
@@ -322,7 +328,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
             Some(balance) => balance,
             None => {
                 let account = triedb_env
-                    .get_account(sender.into(), block.number)
+                    .get_account(block_key, sender.into())
                     .await
                     .map_err(JsonRpcError::internal_error)?;
                 U256::from(account.balance)
@@ -386,9 +392,9 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
-    let block_num = get_block_num_from_tag(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag(triedb_env, params.block);
     let mut header = match triedb_env
-        .get_block_header(block_num)
+        .get_block_header(block_key)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -402,6 +408,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
     fill_gas_params(
         triedb_env,
+        block_key,
         &mut params.transaction,
         &mut header.header,
         &params.state_overrides,
@@ -419,13 +426,17 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         .expect("chain id must be populated")
         .to::<u64>();
     let txn: TxEnvelope = params.transaction.try_into()?;
-    let block_number = header.header.number;
+    let (block_number, block_round) = match block_key {
+        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
+    };
     match monad_cxx::eth_call(
         tx_chain_id,
         txn,
         header.header,
         sender,
         block_number,
+        block_round,
         &triedb_env.path(),
         state_overrides,
     ) {
@@ -443,7 +454,11 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::{Address, U256};
     use monad_cxx::StateOverrideSet;
-    use monad_triedb_utils::mock_triedb::MockTriedb;
+    use monad_triedb_utils::{
+        mock_triedb::MockTriedb,
+        triedb_env::{BlockKey, FinalizedBlockKey},
+    };
+    use monad_types::SeqNum;
     use serde_json::json;
 
     use super::{fill_gas_params, CallRequest, GasPriceDetails};
@@ -564,10 +579,12 @@ mod tests {
             gas_limit: 300_000_000,
             ..Default::default()
         };
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
         let state_overrides = StateOverrideSet::default();
 
         let result = fill_gas_params(
             &mock_triedb,
+            block_key,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -592,6 +609,7 @@ mod tests {
         };
         let result = fill_gas_params(
             &mock_triedb,
+            block_key,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -616,6 +634,7 @@ mod tests {
         };
         let result = fill_gas_params(
             &mock_triedb,
+            block_key,
             &mut call_request,
             &mut header,
             &state_overrides,
