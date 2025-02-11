@@ -148,6 +148,18 @@ impl From<CallFrame> for MonadCallFrame {
             Some(MonadU256(value.value))
         };
 
+        // Status maps to the evmc_status_code enum
+        let error = match value.status.to::<usize>() {
+            0 => None,
+            2 => Some("execution reverted".to_string()),
+            3 => Some("out of gas".to_string()),
+            _ => Some("error".to_string()),
+        };
+
+        let revert_reason = error
+            .as_ref()
+            .map(|_| monad_cxx::decode_revert_message(&value.output));
+
         Self {
             typ: value.typ,
             from: value.from.into(),
@@ -158,8 +170,8 @@ impl From<CallFrame> for MonadCallFrame {
             input: value.input.into(),
             output: value.output.into(),
             depth: value.depth.to::<usize>(),
-            error: None, //TODO
-            revert_reason: None,
+            error,
+            revert_reason,
             calls: Vec::new(),
         }
     }
@@ -502,6 +514,11 @@ async fn build_call_tree(
 
 #[cfg(test)]
 mod tests {
+    use monad_triedb_utils::{
+        mock_triedb,
+        triedb_env::{EthTxHash, TransactionLocation},
+    };
+
     use super::*;
     use crate::hex;
 
@@ -534,5 +551,116 @@ mod tests {
 
                 _ => panic!("unexpected index"),
             });
+
+        assert_eq!(result.borrow().error, None);
+    }
+
+    #[tokio::test]
+    async fn debug_trace_revert() {
+        // Reverted contract call
+        let frame = hex::decode("0xf83ef83c808094f39fd6e51aad88f6f4ce6ab8827279cfffb9226694e7f1725e7734ce288f8367e1bb143e90bb3f0512808307a12082529884b0bea725800280").expect("decode call frame");
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_transaction_location_by_hash(
+            EthTxHash::default(),
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+        );
+
+        mock_triedb.set_call_frame(
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+            frame,
+        );
+
+        let resp = monad_debug_traceTransaction(
+            &mock_triedb,
+            &None,
+            MonadDebugTraceTransactionParams {
+                tx_hash: FixedData::<32>([0u8; 32]),
+                tracer: TracerObject::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(resp.is_some());
+
+        let resp = resp.unwrap();
+        assert_eq!(resp.error, Some("execution reverted".to_string()));
+        assert!(resp.revert_reason.is_some());
+        assert_eq!(resp.calls.len(), 0);
+        assert_eq!(
+            resp.from.0,
+            *hex::decode("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266").unwrap()
+        );
+        assert_eq!(
+            resp.to.unwrap().0,
+            *hex::decode("0xe7f1725e7734ce288f8367e1bb143e90bb3f0512").unwrap()
+        );
+        assert_eq!(resp.gas.0, 500000);
+        assert_eq!(resp.gas_used.0, 21144);
+        assert_eq!(resp.input.0, *hex::decode("0xb0bea725").unwrap());
+        assert_eq!(resp.output.0, [0u8; 0]);
+        assert!(matches!(resp.typ, CallKind::Call));
+        assert_eq!(resp.value.unwrap().0, U256::ZERO);
+    }
+
+    #[tokio::test]
+    async fn debug_trace_create() {
+        // contract creation
+        let frame = hex::decode("0xf901b9f901b6038094f39fd6e51aad88f6f4ce6ab8827279cfffb9226694dc64a140aa3e981100a9beca4e685f962f0cf6c98083018d9583018a75b8976080604052348015600f57600080fd5b5060e48061001e6000396000f3fe608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c63430008000033b8e4608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c6343000800003300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008080").expect("decode call frame");
+        let mut mock_triedb = mock_triedb::MockTriedb::default();
+        mock_triedb.set_transaction_location_by_hash(
+            EthTxHash::default(),
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+        );
+
+        mock_triedb.set_call_frame(
+            TransactionLocation {
+                block_num: 1,
+                tx_index: 0,
+            },
+            frame,
+        );
+
+        mock_triedb.set_code("0x608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c634300080000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string());
+
+        let resp = monad_debug_traceTransaction(
+            &mock_triedb,
+            &None,
+            MonadDebugTraceTransactionParams {
+                tx_hash: FixedData::<32>([0u8; 32]),
+                tracer: TracerObject::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(resp.is_some());
+        let resp = resp.unwrap();
+        assert!(resp.calls.is_empty());
+        assert!(resp.error.is_none());
+        assert!(resp.revert_reason.is_none());
+        assert!(matches!(resp.typ, CallKind::Create));
+        assert_eq!(
+            resp.from.0,
+            *hex::decode("0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266").unwrap()
+        );
+        assert_eq!(
+            resp.to.unwrap().0,
+            *hex::decode("0xdc64a140aa3e981100a9beca4e685f962f0cf6c9").unwrap()
+        );
+        assert_eq!(resp.gas.0, 101781);
+        assert_eq!(resp.gas_used.0, 100981);
+        assert_eq!(resp.input.0, *hex::decode("0x6080604052348015600f57600080fd5b5060e48061001e6000396000f3fe608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c63430008000033").unwrap());
+        assert_eq!(resp.output.0, *hex::decode("0x608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c634300080000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
+        assert_eq!(resp.depth, 0);
     }
 }

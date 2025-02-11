@@ -89,7 +89,7 @@ pub struct BlockHeader {
     pub header: Header,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TransactionLocation {
     pub tx_index: u64,
     pub block_num: u64,

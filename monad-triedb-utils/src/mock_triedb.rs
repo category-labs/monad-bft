@@ -8,6 +8,9 @@ use crate::triedb_env::*;
 pub struct MockTriedb {
     latest_block: u64,
     accounts: HashMap<EthAddress, Account>,
+    tx_locations: HashMap<EthTxHash, TransactionLocation>,
+    call_frames: HashMap<TransactionLocation, Vec<u8>>,
+    code: String,
 }
 
 impl MockTriedb {
@@ -17,6 +20,22 @@ impl MockTriedb {
 
     pub fn set_account(&mut self, address: EthAddress, account: Account) {
         self.accounts.insert(address, account);
+    }
+
+    pub fn set_transaction_location_by_hash(
+        &mut self,
+        tx_hash: EthTxHash,
+        loc: TransactionLocation,
+    ) {
+        self.tx_locations.insert(tx_hash, loc);
+    }
+
+    pub fn set_call_frame(&mut self, loc: TransactionLocation, frame: Vec<u8>) {
+        self.call_frames.insert(loc, frame);
+    }
+
+    pub fn set_code(&mut self, code: String) {
+        self.code = code;
     }
 }
 
@@ -56,7 +75,7 @@ impl Triedb for MockTriedb {
         _block_key: BlockKey,
         _code_hash: EthCodeHash,
     ) -> impl std::future::Future<Output = Result<String, String>> + Send {
-        ready(Ok("".to_string()))
+        ready(Ok(self.code.clone()))
     }
 
     fn get_receipt(
@@ -102,9 +121,14 @@ impl Triedb for MockTriedb {
     fn get_transaction_location_by_hash(
         &self,
         _block_key: BlockKey,
-        _tx_hash: EthTxHash,
+        tx_hash: EthTxHash,
     ) -> impl std::future::Future<Output = Result<Option<TransactionLocation>, String>> + Send {
-        ready(Ok(None))
+        if self.tx_locations.contains_key(&tx_hash) {
+            let loc = self.tx_locations[&tx_hash].clone();
+            ready(Ok(Some(loc)))
+        } else {
+            ready(Ok(None))
+        }
     }
 
     fn get_block_number_by_hash(
@@ -117,10 +141,19 @@ impl Triedb for MockTriedb {
 
     fn get_call_frame(
         &self,
-        _block_key: BlockKey,
-        _txn_index: u64,
+        block_key: BlockKey,
+        txn_index: u64,
     ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, String>> + Send {
-        ready(Ok(None))
+        let key = TransactionLocation {
+            tx_index: txn_index,
+            block_num: block_key.seq_num().0,
+        };
+        if self.call_frames.contains_key(&key) {
+            let frame = self.call_frames[&key].clone();
+            ready(Ok(Some(frame)))
+        } else {
+            ready(Ok(None))
+        }
     }
 
     fn get_call_frames(

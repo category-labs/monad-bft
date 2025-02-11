@@ -255,7 +255,7 @@ pub fn eth_call(
                 let message = String::from("execution reverted");
                 let error_message = decode_revert_message(&output_data);
                 CallResult::Failure(FailureCallResult {
-                    message: message + &error_message,
+                    message: message + ": " + &error_message,
                     data: Some(format!("0x{}", hex::encode(&output_data))),
                 })
             }
@@ -281,11 +281,7 @@ pub fn decode_revert_message(output_data: &[u8]) -> String {
             let message_bytes = &output_data[message_start_index..message_end_index];
 
             // attempt to decode the message bytes as UTF-8
-            let message = match String::from_utf8(message_bytes.to_vec()) {
-                Ok(message) => String::from(": ") + &message,
-                Err(_) => String::new(),
-            };
-            return message;
+            return String::from_utf8(message_bytes.to_vec()).unwrap_or_default();
         }
     }
     String::new()
