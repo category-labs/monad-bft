@@ -448,9 +448,9 @@ where
         .try_into()
         .expect("num_packets doesn't fit in usize");
 
-        if let BuildTarget::Broadcast(epoch_validators) = &build_target {
+        if let BuildTarget::Broadcast(epoch_validators, full_nodes_view) = &build_target {
             num_packets = num_packets
-                .checked_mul(epoch_validators.view().len())
+                .checked_mul(epoch_validators.view().len() + full_nodes_view.view().len())
                 .expect("num_packets doesn't fit in usize")
         }
 
@@ -498,14 +498,19 @@ where
                 *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
-        BuildTarget::Broadcast(epoch_validators) => {
+        BuildTarget::Broadcast(epoch_validators, full_nodes_view) => {
             assert!(is_broadcast && !is_raptor_broadcast);
-            let total_validators = epoch_validators.view().len();
-            let mut running_validator_count = 0;
-            for (node_id, _validator) in epoch_validators.view().iter() {
-                let start_idx: usize = num_packets * running_validator_count / total_validators;
-                running_validator_count += 1;
-                let end_idx: usize = num_packets * running_validator_count / total_validators;
+            let total_destinations = epoch_validators.view().len() + full_nodes_view.view().len();
+            let mut running_destination_count = 0;
+            for node_id in epoch_validators
+                .view()
+                .iter()
+                .map(|(node_id, _validator)| node_id)
+                .chain(full_nodes_view.view().iter())
+            {
+                let start_idx: usize = num_packets * running_destination_count / total_destinations;
+                running_destination_count += 1;
+                let end_idx: usize = num_packets * running_destination_count / total_destinations;
 
                 if start_idx == end_idx {
                     continue;
@@ -1328,6 +1333,7 @@ mod tests {
     fn test_broadcast_chunk_ids() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
+        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
 
@@ -1338,7 +1344,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(epoch_validators),
+            BuildTarget::Broadcast(epoch_validators, full_nodes.view()),
             &known_addresses,
         );
 

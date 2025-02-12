@@ -270,9 +270,10 @@ where
                             let full_nodes_view = self.full_nodes.view();
 
                             let build_target = match &target {
-                                RouterTarget::Broadcast(_) => {
-                                    BuildTarget::Broadcast(epoch_validators_without_self)
-                                }
+                                RouterTarget::Broadcast(_) => BuildTarget::Broadcast(
+                                    epoch_validators_without_self,
+                                    full_nodes_view,
+                                ),
                                 RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(
                                     epoch_validators_without_self,
                                     full_nodes_view,
