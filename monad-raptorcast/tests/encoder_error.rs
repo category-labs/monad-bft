@@ -65,7 +65,7 @@ pub fn encoder_error() {
         1, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+        BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
         &known_addresses,
     );
 }

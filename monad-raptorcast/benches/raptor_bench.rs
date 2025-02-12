@@ -62,7 +62,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 2, // redundancy,
                 0, // epoch_no
                 0, // unix_ts_ms
-                BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+                BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
                 &known_addresses,
             );
         });
@@ -104,7 +104,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             2, // redundancy,
             0, // epoch_no
             0, // unix_ts_ms
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
             &known_addresses,
         )
         .into_iter()

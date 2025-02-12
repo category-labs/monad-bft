@@ -273,10 +273,10 @@ where
                                 RouterTarget::Broadcast(_) => {
                                     BuildTarget::Broadcast(epoch_validators_without_self)
                                 }
-                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast((
+                                RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast(
                                     epoch_validators_without_self,
                                     full_nodes_view,
-                                )),
+                                ),
                                 _ => unreachable!(),
                             };
 

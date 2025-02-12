@@ -424,7 +424,7 @@ where
 
     let is_broadcast = matches!(
         build_target,
-        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_)
+        BuildTarget::Broadcast(..) | BuildTarget::Raptorcast(..)
     );
 
     // TODO make this more sophisticated
@@ -438,7 +438,7 @@ where
     let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
 
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
+    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(..));
 
     let num_packets: usize = {
         let mut num_packets: usize = (app_message_len
@@ -527,7 +527,7 @@ where
                 }
             }
         }
-        BuildTarget::Raptorcast((epoch_validators, full_nodes_view)) => {
+        BuildTarget::Raptorcast(epoch_validators, full_nodes_view) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
             tracing::trace!(
@@ -1219,7 +1219,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
             &known_addresses,
         );
 
@@ -1256,7 +1256,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
             &known_addresses,
         );
 
@@ -1304,7 +1304,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
+            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
             &known_addresses,
         );
 

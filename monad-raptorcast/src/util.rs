@@ -110,12 +110,10 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
         ValidatorsView<'a, ST>,
     ),
     Raptorcast(
-        (
-            // validator stakes for given epoch_no, not including self
-            // this MUST NOT BE EMPTY
-            ValidatorsView<'a, ST>,
-            FullNodesView<'a, CertificateSignaturePubKey<ST>>,
-        ),
+        // validator stakes for given epoch_no, not including self
+        // this MUST NOT BE EMPTY
+        ValidatorsView<'a, ST>,
+        FullNodesView<'a, CertificateSignaturePubKey<ST>>,
     ), // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
 }
