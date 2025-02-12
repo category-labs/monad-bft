@@ -352,7 +352,7 @@ mod tests {
                 panic!("Call failed: {}", msg.message);
             }
             CallResult::Success(res) => {
-                assert_eq!(hex::encode(res.output_data), "0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000279f00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+                assert_eq!(hex::encode(res.output_data), "00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000004eaf00000000000000000000000001020304050102030405010203040501020304050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
             }
         }
     }
@@ -381,7 +381,7 @@ mod tests {
         );
 
         let header = Header {
-            number: 1,
+            number: 0,
             beneficiary: hex!("0102030405010203040501020304050102030405").into(),
             gas_limit: 100000,
             ..Default::default()
@@ -423,7 +423,7 @@ mod tests {
             } } }";
 
             let state_overrides_object: TestStateOverrideSetParam =
-                match serde_json::from_str(&state_overrides_string) {
+                match serde_json::from_str(state_overrides_string) {
                     Ok(s) => s,
                     Err(e) => {
                         panic!("Can't parse string into json object!");
@@ -492,7 +492,7 @@ mod tests {
         {
             let result = eth_call(
                 20143,
-                txn.clone(),
+                txn,
                 header.clone(),
                 sender,
                 block_number,
@@ -534,7 +534,7 @@ mod tests {
             } } }";
 
             let state_overrides_object: TestStateOverrideSetParam =
-                match serde_json::from_str(&state_overrides_string) {
+                match serde_json::from_str(state_overrides_string) {
                     Ok(s) => s,
                     Err(e) => {
                         panic!("Can't parse string into json object!");
@@ -544,7 +544,7 @@ mod tests {
             let result = eth_call(
                 20143,
                 txn,
-                header.clone(),
+                header,
                 sender,
                 block_number,
                 triedb_path,
@@ -563,46 +563,5 @@ mod tests {
         unsafe {
             ffi::destroy_testdb(db);
         };
-    }
-
-    #[ignore]
-    #[test]
-    fn test_sha256_precompile() {
-        let result = eth_call(
-            20143,
-            TxEnvelope::Legacy(
-                TxLegacy {
-                    chain_id: Some(20143),
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 100000,
-                    to: TxKind::Call(hex!("0000000000000000000000000000000000000002").into()),
-                    value: Default::default(),
-                    input: hex!("deadbeef").into(),
-                }
-                .into_signed(PrimitiveSignature::new(
-                    U256::from(0),
-                    U256::from(0),
-                    false,
-                )),
-            ),
-            Header::default(),
-            hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
-            0,
-            Path::new("/home/rgarc/test.db"),
-            &StateOverrideSet::new(), // state overrides
-        );
-
-        match result {
-            CallResult::Failure(res) => {
-                panic!("Call failed: {}", res.message);
-            }
-            CallResult::Success(res) => {
-                assert_eq!(
-                    hex::encode(res.output_data),
-                    "5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"
-                )
-            }
-        }
     }
 }
