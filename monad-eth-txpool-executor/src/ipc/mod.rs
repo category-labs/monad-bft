@@ -8,7 +8,7 @@ use monad_eth_txpool_types::EthTxPoolEvent;
 use pin_project::pin_project;
 use tokio::{
     net::UnixListener,
-    time::{self, Sleep},
+    time::{self, Instant, Sleep},
 };
 use tracing::{info, warn};
 
@@ -114,9 +114,7 @@ impl Stream for EthTxPoolIpcServer {
             }
         }
 
-        if batch.is_empty() {
-            batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
-        }
+        let batch_was_empty = batch.is_empty();
 
         connections.retain_mut(|stream| {
             loop {
@@ -138,8 +136,21 @@ impl Stream for EthTxPoolIpcServer {
             true
         });
 
-        if batch.len() >= MAX_BATCH_LEN || batch_timer.as_mut().poll(cx).is_ready() {
-            batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
+        let batch_is_empty = batch.is_empty();
+
+        if batch_is_empty {
+            return Poll::Pending;
+        }
+
+        if batch_was_empty {
+            batch_timer.as_mut().reset(
+                Instant::now()
+                    .checked_add(Duration::from_millis(BATCH_TIMER_INTERVAL_MS))
+                    .expect("time does not overflow"),
+            );
+        }
+
+        if batch.len() >= MAX_BATCH_LEN || batch_timer.poll(cx).is_ready() {
             return Poll::Ready(Some(std::mem::take(batch)));
         }
 
