@@ -36,7 +36,7 @@ use monad_executor_glue::{
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
     LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
     StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    UpdateFullNodes, UpdatePeers, ValidatorEvent, WriteCommand,
+    ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
@@ -1013,16 +1013,6 @@ where
                         ))]
                     }
                 },
-                ControlPanelEvent::UpdatePeers(req_resp) => match req_resp {
-                    UpdatePeers::Request(vec) => {
-                        vec![Command::RouterCommand(RouterCommand::UpdatePeers(vec))]
-                    }
-                    UpdatePeers::Response => {
-                        vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                            WriteCommand::UpdatePeers(UpdatePeers::Response),
-                        ))]
-                    }
-                },
                 ControlPanelEvent::GetFullNodes(req_resp) => match req_resp {
                     GetFullNodes::Request => {
                         vec![Command::RouterCommand(RouterCommand::GetFullNodes)]
@@ -1030,16 +1020,6 @@ where
                     GetFullNodes::Response(vec) => {
                         vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
                             ReadCommand::GetFullNodes(GetFullNodes::Response(vec)),
-                        ))]
-                    }
-                },
-                ControlPanelEvent::UpdateFullNodes(req_resp) => match req_resp {
-                    UpdateFullNodes::Request(vec) => {
-                        vec![Command::RouterCommand(RouterCommand::UpdateFullNodes(vec))]
-                    }
-                    UpdateFullNodes::Response => {
-                        vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
-                            WriteCommand::UpdateFullNodes(UpdateFullNodes::Response),
                         ))]
                     }
                 },

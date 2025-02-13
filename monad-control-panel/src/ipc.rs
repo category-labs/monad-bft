@@ -12,8 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    GetValidatorSet, MonadEvent, ReadCommand, ReloadConfig, UpdateFullNodes, UpdatePeers,
-    UpdateValidatorSet, WriteCommand,
+    GetValidatorSet, MonadEvent, ReadCommand, ReloadConfig, UpdateValidatorSet, WriteCommand,
 };
 use monad_types::ExecutionProtocol;
 use tokio::{
@@ -230,30 +229,6 @@ where
                             break;
                         };
                     }
-                    WriteCommand::UpdatePeers(update_peers) => match update_peers {
-                        UpdatePeers::Request(vec) => {
-                            let event = MonadEvent::ControlPanelEvent(
-                                ControlPanelEvent::UpdatePeers(UpdatePeers::Request(vec)),
-                            );
-                            let Ok(_) = event_channel.send(event.clone()).await else {
-                                error!("failed to forward request {:?} to executor, closing connection", &event);
-                                break;
-                            };
-                        }
-                        m => error!("unhandled message {:?}", m),
-                    },
-                    WriteCommand::UpdateFullNodes(update_full_nodes) => match update_full_nodes {
-                        UpdateFullNodes::Request(vec) => {
-                            let event = MonadEvent::ControlPanelEvent(
-                                ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Request(vec)),
-                            );
-                            let Ok(_) = event_channel.send(event.clone()).await else {
-                                error!("failed to forward request {:?} to executor, closing connection", &event);
-                                break;
-                            };
-                        }
-                        m => error!("unhandled message {:?}", m),
-                    },
                     WriteCommand::ReloadConfig(reload_config) => match reload_config {
                         ReloadConfig::Request => {
                             let event = MonadEvent::ControlPanelEvent(

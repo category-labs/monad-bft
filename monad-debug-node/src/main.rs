@@ -1,4 +1,4 @@
-use std::{io::Error, net::ToSocketAddrs, path::PathBuf};
+use std::{io::Error, path::PathBuf};
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
@@ -16,7 +16,6 @@ use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
 };
 use monad_secp::SecpSignature;
-use monad_types::NodeId;
 use tokio::net::{
     unix::{OwnedReadHalf, OwnedWriteHalf},
     UnixStream,
@@ -65,20 +64,8 @@ enum Commands {
     UpdateLogFilter(UpdateLogFilter),
     /// Display peer list
     GetPeers,
-    /// Update peer list
-    UpdatePeers {
-        /// Path to the TOML file
-        #[arg(short, long, value_name = "FILE")]
-        path: PathBuf,
-    },
     /// Display full node list
     GetFullNodes,
-    /// Update full node list
-    UpdateFullNodes {
-        /// Path to the TOML file
-        #[arg(short, long, value_name = "FILE")]
-        path: PathBuf,
-    },
     /// Reload node config
     ReloadConfig,
 }
@@ -253,43 +240,6 @@ fn main() -> Result<(), Error> {
                 )
             }
         }
-        Commands::UpdatePeers { path } => {
-            let new_peer_config = toml::from_str::<
-                NodeBootstrapConfig<CertificateSignaturePubKey<SignatureType>>,
-            >(&std::fs::read_to_string(path).unwrap())
-            .map_err(Error::other)?;
-
-            let mut new_peers = Vec::with_capacity(new_peer_config.peers.len());
-
-            for peer in new_peer_config.peers.into_iter() {
-                let node_id = NodeId::new(peer.secp256k1_pubkey);
-                let socket_addr = peer
-                    .address
-                    .to_socket_addrs()
-                    .map_err(Error::other)?
-                    .next()
-                    .ok_or(Error::other("No DNS record found"))?;
-
-                new_peers.push((node_id, socket_addr));
-            }
-
-            rt.block_on(write.send(Command::Write(WriteCommand::UpdatePeers(
-                monad_executor_glue::UpdatePeers::Request(new_peers),
-            ))))?;
-
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
-            if let ControlPanelCommand::Write(WriteCommand::UpdatePeers(
-                monad_executor_glue::UpdatePeers::Response,
-            )) = response
-            {
-                println!("Peer list updated");
-            } else {
-                println!(
-                    "unexpected response{}",
-                    serde_json::to_string(&response).unwrap()
-                )
-            }
-        }
         Commands::GetFullNodes => {
             rt.block_on(write.send(Command::Read(ReadCommand::GetFullNodes(
                 GetFullNodes::Request,
@@ -312,35 +262,6 @@ fn main() -> Result<(), Error> {
                 };
 
                 println!("{}", toml::to_string(&full_node_config).unwrap());
-            } else {
-                println!(
-                    "unexpected response{}",
-                    serde_json::to_string(&response).unwrap()
-                )
-            }
-        }
-        Commands::UpdateFullNodes { path } => {
-            let full_node_config = toml::from_str::<
-                FullNodeConfig<CertificateSignaturePubKey<SignatureType>>,
-            >(&std::fs::read_to_string(path).unwrap())
-            .map_err(Error::other)?;
-
-            let mut new_full_nodes = Vec::with_capacity(full_node_config.identities.len());
-            for node in full_node_config.identities {
-                let node_id = NodeId::new(node.secp256k1_pubkey);
-                new_full_nodes.push(node_id);
-            }
-
-            rt.block_on(write.send(Command::Write(WriteCommand::UpdateFullNodes(
-                monad_executor_glue::UpdateFullNodes::Request(new_full_nodes),
-            ))))?;
-
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
-            if let ControlPanelCommand::Write(WriteCommand::UpdateFullNodes(
-                monad_executor_glue::UpdateFullNodes::Response,
-            )) = response
-            {
-                println!("Full node list updated");
             } else {
                 println!(
                     "unexpected response{}",

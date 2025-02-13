@@ -22,8 +22,7 @@ use monad_dataplane::{
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
-    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand, UpdateFullNodes,
-    UpdatePeers,
+    ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
 };
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
@@ -84,9 +83,7 @@ where
 
 pub enum PeerManagerResponse<P: PubKey> {
     PeerList(Vec<(NodeId<P>, SocketAddr)>),
-    UpdatePeersSuccess,
     FullNodes(Vec<NodeId<P>>),
-    UpdateFullNodesSuccess,
 }
 
 pub enum RaptorCastEvent<E, P: PubKey> {
@@ -334,10 +331,6 @@ where
                 }
                 RouterCommand::UpdatePeers(new_peers) => {
                     self.known_addresses = new_peers.into_iter().collect();
-                    self.pending_events
-                        .push_back(RaptorCastEvent::PeerManagerResponse(
-                            PeerManagerResponse::UpdatePeersSuccess,
-                        ));
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.full_nodes.list.clone();
@@ -348,10 +341,6 @@ where
                 }
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
                     self.full_nodes.list = new_full_nodes;
-                    self.pending_events
-                        .push_back(RaptorCastEvent::PeerManagerResponse(
-                            PeerManagerResponse::UpdateFullNodesSuccess,
-                        ));
                 }
             }
         }
@@ -537,14 +526,8 @@ where
                     PeerManagerResponse::PeerList(peer_list) => MonadEvent::ControlPanelEvent(
                         ControlPanelEvent::GetPeers(GetPeers::Response(peer_list)),
                     ),
-                    PeerManagerResponse::UpdatePeersSuccess => MonadEvent::ControlPanelEvent(
-                        ControlPanelEvent::UpdatePeers(UpdatePeers::Response),
-                    ),
                     PeerManagerResponse::FullNodes(full_nodes) => MonadEvent::ControlPanelEvent(
                         ControlPanelEvent::GetFullNodes(GetFullNodes::Response(full_nodes)),
-                    ),
-                    PeerManagerResponse::UpdateFullNodesSuccess => MonadEvent::ControlPanelEvent(
-                        ControlPanelEvent::UpdateFullNodes(UpdateFullNodes::Response),
                     ),
                 }
             }

@@ -190,20 +190,6 @@ pub enum ClearMetrics {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UpdatePeers<PT: PubKey> {
-    #[serde(bound = "PT: PubKey")]
-    Request(Vec<(NodeId<PT>, SocketAddr)>),
-    Response,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UpdateFullNodes<PT: PubKey> {
-    #[serde(bound = "PT: PubKey")]
-    Request(Vec<NodeId<PT>>),
-    Response,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ReloadConfig {
     Request,
     Response(String),
@@ -215,10 +201,6 @@ pub enum WriteCommand<SCT: SignatureCollection> {
     UpdateValidatorSet(UpdateValidatorSet<SCT>),
     ClearMetrics(ClearMetrics),
     UpdateLogFilter(String),
-    #[serde(bound = "SCT: SignatureCollection")]
-    UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
-    #[serde(bound = "SCT: SignatureCollection")]
-    UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
     ReloadConfig(ReloadConfig),
 }
 
@@ -809,9 +791,7 @@ where
     UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
     UpdateLogFilter(String),
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
-    UpdatePeers(UpdatePeers<SCT::NodeIdPubKey>),
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
-    UpdateFullNodes(UpdateFullNodes<SCT::NodeIdPubKey>),
     ReloadConfig(ReloadConfig),
 }
 

@@ -4805,7 +4805,6 @@ dependencies = [
  "monad-executor-glue",
  "monad-node-config",
  "monad-secp",
- "monad-types",
  "serde_json",
  "tokio",
  "tokio-util",

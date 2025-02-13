@@ -167,19 +167,6 @@ message ProtoGetPeersEvent {
   }
 }
 
-message ProtoUpdatePeersReq {
-  repeated ProtoPeerRecord records = 1;
-}
-
-message ProtoUpdatePeersResp {}
-
-message ProtoUpdatePeersEvent {
-  oneof req_resp {
-    ProtoUpdatePeersReq req = 1;
-    ProtoUpdatePeersResp resp = 2;
-  }
-}
-
 message ProtoGetFullNodeReq {}
 
 message ProtoGetFullNodeResp {
@@ -191,19 +178,6 @@ message ProtoGetFullNodesEvent {
   oneof req_resp {
     ProtoGetFullNodeReq req = 1;
     ProtoGetFullNodeResp resp = 2;
-  }
-}
-
-message ProtoUpdateFullNodesReq {
-  repeated monad_proto.basic.ProtoNodeId node_ids = 1;
-}
-
-message ProtoUpdateFullNodesResp {}
-
-message ProtoUpdateFullNodesEvent {
-  oneof req_resp {
-    ProtoUpdateFullNodesReq req = 1;
-    ProtoUpdateFullNodesResp resp = 2;
   }
 }
 
@@ -221,6 +195,7 @@ message ProtoReloadConfigEvent {
 }
 
 message ProtoControlPanelEvent {
+  reserved 7,9;
   oneof event {
     ProtoGetValidatorSetEvent get_validator_set_event = 1;
     ProtoClearMetricsEvent clear_metrics_event = 2;
@@ -228,9 +203,7 @@ message ProtoControlPanelEvent {
     ProtoUpdateLogFilter update_log_filter = 4;
     ProtoGetMetricsEvent get_metrics_event = 5;
     ProtoGetPeersEvent get_peers_event = 6;
-    ProtoUpdatePeersEvent update_peers_event = 7;
     ProtoGetFullNodesEvent get_full_nodes_event = 8;
-    ProtoUpdateFullNodesEvent update_full_nodes_event = 9;
     ProtoReloadConfigEvent reload_config_event = 10;
   }
 }
