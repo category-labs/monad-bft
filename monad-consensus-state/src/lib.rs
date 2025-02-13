@@ -396,8 +396,25 @@ where
         }
 
         self.metrics.consensus_events.local_timeout += 1;
+
+        let lookup_leader = |round: Round| {
+            let epoch = self
+                .epoch_manager
+                .get_epoch(round)
+                .expect("epoch exists for local round");
+            let validator_set = self
+                .val_epoch_map
+                .get_val_set(&epoch)
+                .expect("validator set exists for local epoch");
+            self.election.get_leader(round, validator_set.get_members())
+        };
+
+        let timeout_round = self.consensus.pacemaker.get_current_round();
+
         debug!(
-            round = ?self.consensus.pacemaker.get_current_round(),
+            round = ?timeout_round,
+            leader = ?lookup_leader(timeout_round),
+            next_leader = ?lookup_leader(timeout_round + Round(1)),
             "local timeout"
         );
         cmds.extend(
