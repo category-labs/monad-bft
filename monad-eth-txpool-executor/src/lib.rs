@@ -18,7 +18,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, warn};
 
 pub use self::ipc::EthTxPoolIpcConfig;
 use self::ipc::EthTxPoolIpcServer;
@@ -26,8 +26,9 @@ use self::ipc::EthTxPoolIpcServer;
 mod ipc;
 mod metrics;
 
-const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
+const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 5;
 const FORWARD_MAX_RETRIES: usize = 2;
+const FORWARD_EVENT_MAX_TXS: usize = 256;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -135,19 +136,17 @@ where
                             continue;
                         };
 
-                        let forwardable_txs = forwardable_txs
+                        for forwardable_tx_chunk in forwardable_txs
                             .cloned()
                             .map(alloy_rlp::encode)
                             .map(Into::into)
-                            .collect_vec();
-
-                        if forwardable_txs.is_empty() {
-                            continue;
+                            .chunks(FORWARD_EVENT_MAX_TXS)
+                            .into_iter()
+                        {
+                            self.events_tx
+                                .send(MempoolEvent::ForwardTxs(forwardable_tx_chunk.collect_vec()))
+                                .expect("events never dropped");
                         }
-
-                        self.events_tx
-                            .send(MempoolEvent::ForwardTxs(forwardable_txs))
-                            .expect("events never dropped");
                     }
                 }
                 TxPoolCommand::CreateProposal {
@@ -197,9 +196,18 @@ where
                         }
                     }
                 }
-                TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                TxPoolCommand::InsertForwardedTxs { sender, mut txs } => {
                     let num_invalid_bytes = AtomicU64::default();
                     let num_invalid_signer = AtomicU64::default();
+
+                    if txs.len() > FORWARD_EVENT_MAX_TXS {
+                        warn!(
+                            ?sender,
+                            forwarded_txs_len = txs.len(),
+                            "invalid forwarded len, truncating event"
+                        );
+                        txs.truncate(FORWARD_EVENT_MAX_TXS);
+                    }
 
                     let txs = txs
                         .into_par_iter()
