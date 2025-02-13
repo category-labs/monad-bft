@@ -16,7 +16,7 @@ pub use self::config::EthTxPoolIpcConfig;
 
 mod config;
 
-const MIN_BATCH_TIMER_LEN: usize = 128;
+const MAX_BATCH_LEN: usize = 128;
 const BATCH_TIMER_INTERVAL_MS: u64 = 10;
 
 #[pin_project(project = EthTxPoolIpcServerProjected)]
@@ -119,7 +119,15 @@ impl Stream for EthTxPoolIpcServer {
         }
 
         connections.retain_mut(|stream| {
-            while let Poll::Ready(result) = stream.poll_next_unpin(cx) {
+            loop {
+                if batch.len() >= MAX_BATCH_LEN {
+                    break;
+                }
+
+                let Poll::Ready(result) = stream.poll_next_unpin(cx) else {
+                    break;
+                };
+
                 let Some(tx) = result else {
                     return false;
                 };
@@ -130,7 +138,7 @@ impl Stream for EthTxPoolIpcServer {
             true
         });
 
-        if batch.len() >= MIN_BATCH_TIMER_LEN || batch_timer.as_mut().poll(cx).is_ready() {
+        if batch.len() >= MAX_BATCH_LEN || batch_timer.as_mut().poll(cx).is_ready() {
             batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
             return Poll::Ready(Some(std::mem::take(batch)));
         }
