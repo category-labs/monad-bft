@@ -10,8 +10,10 @@ pub struct EthTxPoolMetrics {
     pub drop_nonce_too_low: u64,
     pub drop_fee_too_low: u64,
     pub drop_insufficient_balance: u64,
-    pub drop_pool_full: u64,
     pub drop_existing_higher_priority: u64,
+    pub drop_pool_full: u64,
+    pub drop_pool_not_ready: u64,
+    pub drop_internal_state_backend_error: u64,
 
     pub pending: EthTxpoolPendingMetrics,
     pub tracked: EthTxPoolTrackedMetrics,
@@ -26,9 +28,12 @@ impl EthTxPoolMetrics {
         metrics["monad.bft.txpool.pool.drop_nonce_too_low"] = self.drop_nonce_too_low;
         metrics["monad.bft.txpool.pool.drop_fee_too_low"] = self.drop_fee_too_low;
         metrics["monad.bft.txpool.pool.drop_insufficient_balance"] = self.drop_insufficient_balance;
-        metrics["monad.bft.txpool.pool.drop_pool_full"] = self.drop_pool_full;
         metrics["monad.bft.txpool.pool.drop_existing_higher_priority"] =
             self.drop_existing_higher_priority;
+        metrics["monad.bft.txpool.pool.drop_pool_full"] = self.drop_pool_full;
+        metrics["monad.bft.txpool.pool.drop_pool_not_ready"] = self.drop_pool_not_ready;
+        metrics["monad.bft.txpool.pool.drop_internal_state_backend_error"] =
+            self.drop_internal_state_backend_error;
 
         self.pending.update(metrics);
         self.tracked.update(metrics);

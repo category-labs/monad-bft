@@ -1,7 +1,10 @@
 use std::time::Instant;
 
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::TxHash;
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason};
+use monad_eth_txpool_types::{
+    EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
+};
 
 use crate::{EthTxPoolMetrics, EthTxPoolSnapshotManager};
 
@@ -110,15 +113,31 @@ impl<'a> EthTxPoolEventTracker<'a> {
             EthTxPoolDropReason::InsufficientBalance => {
                 self.metrics.drop_insufficient_balance += 1;
             }
+            EthTxPoolDropReason::ExistingHigherPriority => {
+                self.metrics.drop_existing_higher_priority += 1;
+            }
             EthTxPoolDropReason::PoolFull => {
                 self.metrics.drop_pool_full += 1;
             }
-            EthTxPoolDropReason::ExistingHigherPriority => {
-                self.metrics.drop_existing_higher_priority += 1;
+            EthTxPoolDropReason::PoolNotReady => {
+                self.metrics.drop_pool_not_ready += 1;
+            }
+            EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError) => {
+                self.metrics.drop_internal_state_backend_error += 1;
             }
         }
 
         self.events.push(EthTxPoolEvent::Drop { tx_hash, reason });
+    }
+
+    pub fn drop_all(
+        &mut self,
+        txs: impl Iterator<Item = Recovered<TxEnvelope>>,
+        reason: EthTxPoolDropReason,
+    ) {
+        for tx in txs {
+            self.drop(tx.tx_hash().to_owned(), reason);
+        }
     }
 
     pub fn pending_promote(&mut self, tx_hashes: impl Iterator<Item = TxHash>) {

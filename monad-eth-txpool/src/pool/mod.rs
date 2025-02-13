@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -99,13 +99,15 @@ where
         txs: Vec<Recovered<TxEnvelope>>,
         owned: bool,
         mut on_insert: impl FnMut(&ValidEthTransaction),
-    ) -> Result<(), StateBackendError> {
+    ) {
         if !self.do_local_insert {
-            return Ok(());
+            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            return;
         }
 
         let Some(last_commit_seq_num) = self.tracked.last_commit_seq_num() else {
-            return Ok(());
+            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
+            return;
         };
 
         if let Err(state_backend_error) = self.tracked.promote_pending(
@@ -146,12 +148,22 @@ where
 
         let addresses = txs.iter().map(ValidEthTransaction::signer).collect_vec();
 
-        let account_balances = block_policy.compute_account_base_balances(
+        let account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
             state_backend,
             None,
             addresses.iter(),
-        )?;
+        ) {
+            Ok(account_balances) => account_balances,
+            Err(err) => {
+                warn!(?err, "failed to insert transactions");
+                event_tracker.drop_all(
+                    txs.into_iter().map(ValidEthTransaction::into_raw),
+                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                );
+                return;
+            }
+        };
 
         for tx in txs {
             let account_balance = account_balances
@@ -176,8 +188,6 @@ where
         }
 
         self.update_aggregate_metrics(event_tracker);
-
-        Ok(())
     }
 
     pub fn create_proposal(

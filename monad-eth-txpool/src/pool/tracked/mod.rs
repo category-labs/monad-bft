@@ -68,6 +68,11 @@ where
             _phantom: PhantomData,
         }
     }
+
+    pub fn last_commit_seq_num(&self) -> Option<SeqNum> {
+        self.last_commit_seq_num
+    }
+
     pub fn is_empty(&self) -> bool {
         self.txs.is_empty()
     }
@@ -426,9 +431,5 @@ where
         self.last_commit_seq_num = last_delay_committed_blocks
             .last()
             .map(|block| block.get_seq_num())
-    }
-
-    pub fn last_commit_seq_num(&self) -> Option<SeqNum> {
-        self.last_commit_seq_num
     }
 }

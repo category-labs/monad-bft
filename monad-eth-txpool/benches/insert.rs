@@ -47,8 +47,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 txs.to_owned(),
                 true,
                 |_| {},
-            )
-            .unwrap();
+            );
         },
     );
 }

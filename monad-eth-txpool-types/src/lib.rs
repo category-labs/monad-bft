@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use alloy_primitives::{TxHash, B256};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolEvent {
     /// The tx was inserted into the txpool's (pending/tracked) tx list.
     Insert {
@@ -42,17 +42,24 @@ pub enum EthTxPoolEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolDropReason {
     NotWellFormed,
     NonceTooLow,
     FeeTooLow,
     InsufficientBalance,
-    PoolFull,
     ExistingHigherPriority,
+    PoolFull,
+    PoolNotReady,
+    Internal(EthTxPoolInternalDropReason),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum EthTxPoolInternalDropReason {
+    StateBackendError,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolEvictReason {
     Expired,
 }

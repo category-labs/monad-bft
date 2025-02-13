@@ -296,8 +296,7 @@ where
                             .collect(),
                         false,
                         |_| {},
-                    )
-                    .expect("insert tx suceeds");
+                    );
                 }
                 // TODO: add chain config to MockTxPoolExecutor if we're testing
                 // param forking with it
@@ -418,8 +417,7 @@ where
                     alloy_rlp::encode(tx.raw()).into()
                 ]));
             },
-        )
-        .expect("insert succeeds");
+        );
 
         if let Some(waker) = self.waker.take() {
             waker.wake();

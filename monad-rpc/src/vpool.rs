@@ -36,6 +36,8 @@ impl From<TxStatus> for TxPoolStatusResult {
                     EthTxPoolDropReason::ExistingHigherPriority => {
                         "Another transaction has higher priority"
                     }
+                    EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
+                    EthTxPoolDropReason::Internal(_) => "Internal error",
                 }),
             ),
             TxStatus::Evicted { reason } => (

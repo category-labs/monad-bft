@@ -118,6 +118,10 @@ impl ValidEthTransaction {
         &self.tx
     }
 
+    pub fn into_raw(self) -> Recovered<TxEnvelope> {
+        self.tx
+    }
+
     pub(crate) fn is_owned(&self) -> bool {
         self.owned
     }

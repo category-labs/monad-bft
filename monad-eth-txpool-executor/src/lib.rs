@@ -229,16 +229,14 @@ where
                         );
                     }
 
-                    if let Err(err) = self.pool.insert_txs(
+                    self.pool.insert_txs(
                         &mut event_tracker,
                         &self.block_policy,
                         &self.state_backend,
                         txs,
                         false,
                         |_| {},
-                    ) {
-                        error!(?err, "txpool executor failed to insert owned txs");
-                    }
+                    );
                 }
                 TxPoolCommand::EnterRound { epoch: _, round } => {
                     let proposal_gas_limit = self
@@ -318,7 +316,7 @@ where
 
             let mut ipc_projection = ipc.as_mut().project();
 
-            if let Err(err) = pool.insert_txs(
+            pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(
                     &mut metrics.pool,
                     ipc_projection.get_snapshot_manager(),
@@ -332,9 +330,7 @@ where
                     let tx: &TxEnvelope = tx.raw().tx();
                     inserted_txs.push(alloy_rlp::encode(tx).into());
                 },
-            ) {
-                error!(?err, "txpool executor failed to insert forwarded txs");
-            }
+            );
 
             metrics.update(executor_metrics);
 

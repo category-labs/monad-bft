@@ -153,8 +153,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
 
                             was_inserted = true;
                         },
-                    )
-                    .unwrap();
+                    );
 
                     if should_insert && !was_inserted {
                         panic!("tx should have been inserted but was not!");
