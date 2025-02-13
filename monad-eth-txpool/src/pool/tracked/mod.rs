@@ -386,7 +386,7 @@ where
                         account_nonce,
                         pending_tx_list,
                     ) else {
-                        return;
+                        continue;
                     };
 
                     insertable -= 1;
