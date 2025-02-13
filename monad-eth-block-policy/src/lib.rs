@@ -18,7 +18,7 @@ use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use sorted_vector_map::SortedVectorMap;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// Retriever trait for account nonces from block(s)
 pub trait AccountNonceRetrievable {
@@ -677,11 +677,22 @@ where
             };
 
         if block.get_seq_num() != extending_seq_num + SeqNum(1) {
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().round,
+                "block not coherent, doesn't equal parent_seq_num + 1"
+            );
             return Err(BlockPolicyError::BlockNotCoherent);
         }
 
         if block.get_timestamp() <= extending_timestamp {
-            // timestamps must be monotonically increasing
+            warn!(
+                seq_num =? block.header().seq_num,
+                round =? block.header().round,
+                ?extending_timestamp,
+                block_timestamp =? block.get_timestamp(),
+                "block not coherent, timestamp not monotonically increasing"
+            );
             return Err(BlockPolicyError::TimestampError);
         }
 
@@ -715,6 +726,11 @@ where
                 .expect("account_nonces should have been populated");
 
             if &txn_nonce != expected_nonce {
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().round,
+                    "block not coherent, invalid nonce"
+                );
                 return Err(BlockPolicyError::BlockNotCoherent);
             }
 
@@ -749,6 +765,11 @@ where
                     txn_fee,
                     block.get_seq_num(),
                     eth_address
+                );
+                warn!(
+                    seq_num =? block.header().seq_num,
+                    round =? block.header().round,
+                    "block not coherent, invalid balance"
                 );
                 return Err(BlockPolicyError::BlockNotCoherent);
             }

@@ -429,16 +429,18 @@ where
 
         // author, leader, round checks
         let round = self.consensus.pacemaker.get_current_round();
+        let block_round = p.block_header.round;
+        let block_seq_num = p.block_header.seq_num;
         let block_round_leader = self
             .election
-            .get_leader(p.block_header.round, validator_set.get_members());
-        if p.block_header.round > round
+            .get_leader(block_round, validator_set.get_members());
+        if block_round > round
             || author != block_round_leader
             || p.block_header.author != block_round_leader
         {
             debug!(
                 expected_round =? round,
-                round =? p.block_header.round,
+                round =? block_round,
                 expected_leader =? block_round_leader,
                 author =? author,
                 block_author =? p.block_header.author,
@@ -448,12 +450,14 @@ where
             return cmds;
         }
 
-        if self
-            .consensus
-            .pending_block_tree
-            .round_exists(&p.block_header.round)
-        {
+        if self.consensus.pending_block_tree.round_exists(&block_round) {
             // TODO emit evidence if this is a *different* block for the same round
+            warn!(
+                ?round,
+                ?block_round_leader,
+                ?block_seq_num,
+                "dropping proposal, already received for this round"
+            );
             return cmds;
         }
 
@@ -465,7 +469,7 @@ where
         } = self
             .config
             .chain_config
-            .get_chain_revision(p.block_header.round)
+            .get_chain_revision(block_round)
             .chain_params();
 
         let author_pubkey = self
@@ -485,11 +489,22 @@ where
         ) {
             Ok(block) => block,
             Err(BlockValidationError::TxnError) => {
-                warn!("Transaction validation failed");
+                warn!(
+                    ?round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, transaction validation failed"
+                );
                 self.metrics.consensus_events.failed_txn_validation += 1;
                 return cmds;
             }
             Err(BlockValidationError::RandaoError) => {
+                warn!(
+                    ?block_round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, randao validation failed"
+                );
                 self.metrics
                     .consensus_events
                     .failed_verify_randao_reveal_sig += 1;
@@ -497,15 +512,39 @@ where
             }
             Err(BlockValidationError::HeaderPayloadMismatchError) => {
                 // TODO: this is malicious behaviour?
+                warn!(
+                    ?block_round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, header payload mismatch"
+                );
                 return cmds;
             }
             Err(BlockValidationError::PayloadError) => {
+                warn!(
+                    ?block_round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, payload validation failed"
+                );
                 return cmds;
             }
             Err(BlockValidationError::HeaderError) => {
+                warn!(
+                    ?block_round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, header validation failed"
+                );
                 return cmds;
             }
             Err(BlockValidationError::TimestampError) => {
+                warn!(
+                    ?block_round,
+                    ?block_round_leader,
+                    ?block_seq_num,
+                    "dropping proposal, timestamp validation failed"
+                );
                 return cmds;
             }
         };
@@ -1157,6 +1196,7 @@ where
             .blocktree()
             .get_timestamp_of_qc(validated_block.get_qc())
         else {
+            warn!("dropping proposal, no parent timestamp");
             return cmds;
         };
 
@@ -1167,7 +1207,8 @@ where
             .is_none()
         {
             self.metrics.consensus_events.failed_ts_validation += 1;
-            warn!(prev_block_ts = ?parent_timestamp,
+            warn!(
+                prev_block_ts = ?parent_timestamp,
                 curr_block_ts = ?validated_block.get_timestamp(),
                 local_ts = ?self.block_timestamp.get_current_time(),
                 "Timestamp validation failed"
@@ -1181,6 +1222,7 @@ where
             .pending_block_tree
             .is_coherent(&validated_block.get_id())
         {
+            warn!("dropping proposal, is not coherent");
             return cmds;
         }
 
