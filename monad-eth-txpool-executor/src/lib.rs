@@ -25,6 +25,9 @@ use self::ipc::EthTxPoolIpcServer;
 mod ipc;
 mod metrics;
 
+const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
+const FORWARD_MAX_RETRIES: usize = 2;
+
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
@@ -123,6 +126,27 @@ where
                         );
                         self.pool
                             .update_committed_block(&mut event_tracker, committed_block);
+
+                        let Some(forwardable_txs) = self
+                            .pool
+                            .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
+                        else {
+                            continue;
+                        };
+
+                        let forwardable_txs = forwardable_txs
+                            .cloned()
+                            .map(alloy_rlp::encode)
+                            .map(Into::into)
+                            .collect_vec();
+
+                        if forwardable_txs.is_empty() {
+                            continue;
+                        }
+
+                        self.events_tx
+                            .send(MempoolEvent::ForwardTxs(forwardable_txs))
+                            .expect("events never dropped");
                     }
                 }
                 TxPoolCommand::CreateProposal {

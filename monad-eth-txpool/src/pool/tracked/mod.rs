@@ -80,6 +80,10 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
+    pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
+        self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
+    }
+
     /// Produces a reference to the tx if it was inserted, producing None when the tx signer was
     /// tracked but the tx was not inserted. If the tx signer is not tracked or the tracked pool is
     /// not ready to accept txs, an error is produced with the original tx.
@@ -422,5 +426,9 @@ where
         self.last_commit_seq_num = last_delay_committed_blocks
             .last()
             .map(|block| block.get_seq_num())
+    }
+
+    pub fn last_commit_seq_num(&self) -> Option<SeqNum> {
+        self.last_commit_seq_num
     }
 }

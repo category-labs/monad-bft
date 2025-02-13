@@ -56,20 +56,22 @@ impl<'a> BenchController<'a> {
 
         let (pending_block_txs, txs) = Self::generate_txs(accounts, txs, nonce_var, pending_blocks);
 
+        let proposal_gas_limit = txs
+            .iter()
+            .map(|tx| tx.gas_limit())
+            .sum::<u64>()
+            .saturating_add(1);
+        let proposal_byte_limit = txs
+            .iter()
+            .map(|tx| tx.length() as u64)
+            .sum::<u64>()
+            .saturating_add(1);
+
         let state_backend = Self::generate_state_backend_for_txs(&txs);
 
         let mut metrics = EthTxPoolMetrics::default();
         let mut snapshot_manager = EthTxPoolSnapshotManager::default();
-        let mut pool = Self::create_pool(block_policy, &state_backend, &txs, &mut metrics);
-
-        pool.update_committed_block(
-            &mut EthTxPoolEventTracker::new(
-                &mut metrics,
-                &mut snapshot_manager,
-                &mut Vec::default(),
-            ),
-            generate_block_with_txs(Round(0), block_policy.get_last_commit(), Vec::default()),
-        );
+        let pool = Self::create_pool(block_policy, txs, &mut metrics, &mut snapshot_manager);
 
         Self {
             block_policy,
@@ -85,46 +87,23 @@ impl<'a> BenchController<'a> {
             metrics,
             snapshot_manager,
             proposal_tx_limit,
-            proposal_gas_limit: txs
-                .iter()
-                .map(|tx| tx.gas_limit())
-                .sum::<u64>()
-                .checked_add(1)
-                .expect("proposal gas limit does not overflow"),
-            proposal_byte_limit: txs
-                .iter()
-                .map(|tx| tx.length() as u64)
-                .sum::<u64>()
-                .checked_add(1)
-                .expect("proposal size limit does not overflow"),
+            proposal_gas_limit,
+            proposal_byte_limit,
         }
     }
 
     pub fn create_pool(
         block_policy: &BlockPolicyType,
-        state_backend: &StateBackendType,
-        txs: &[Recovered<TxEnvelope>],
+        txs: Vec<Recovered<TxEnvelope>>,
         metrics: &mut EthTxPoolMetrics,
+        snapshot_manager: &mut EthTxPoolSnapshotManager,
     ) -> Pool {
         let mut pool = Pool::default_testing();
 
-        let mut inserted = false;
-
-        pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(
-                metrics,
-                &mut EthTxPoolSnapshotManager::default(),
-                &mut Vec::default(),
-            ),
-            block_policy,
-            state_backend,
-            txs.to_vec(),
-            true,
-            |_| inserted = true,
-        )
-        .unwrap();
-
-        assert!(inserted);
+        pool.update_committed_block(
+            &mut EthTxPoolEventTracker::new(metrics, snapshot_manager, &mut Vec::default()),
+            generate_block_with_txs(Round(0), block_policy.get_last_commit(), txs),
+        );
 
         pool
     }

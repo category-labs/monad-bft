@@ -24,6 +24,10 @@ pub struct TrackedTxList {
 }
 
 impl TrackedTxList {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
+        self.txs.values_mut().map(|(tx, _)| tx)
+    }
+
     pub fn new_from_promote_pending(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         account_nonce: u64,

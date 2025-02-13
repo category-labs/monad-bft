@@ -14,6 +14,10 @@ pub struct PendingTxList {
 }
 
 impl PendingTxList {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
+        self.nonce_map.values_mut()
+    }
+
     pub fn insert_entry<'a>(
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         entry: indexmap::map::VacantEntry<'a, Address, Self>,

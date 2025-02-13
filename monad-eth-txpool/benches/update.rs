@@ -25,25 +25,26 @@ fn criterion_benchmark(c: &mut Criterion) {
             );
             assert!(pending_txs.is_empty());
 
-            let state_backend = BenchController::generate_state_backend_for_txs(&txs);
-
             let mut metrics = EthTxPoolMetrics::default();
-            let pool =
-                BenchController::create_pool(&block_policy, &state_backend, &txs, &mut metrics);
+            let mut snapshot_manager = EthTxPoolSnapshotManager::default();
+
+            let pool = BenchController::create_pool(
+                &block_policy,
+                Vec::default(),
+                &mut metrics,
+                &mut snapshot_manager,
+            );
 
             (
                 pool,
                 metrics,
+                snapshot_manager,
                 generate_block_with_txs(Round(1), SeqNum(1), txs),
             )
         },
-        |(pool, metrics, block)| {
+        |(pool, metrics, snapshot_manager, block)| {
             pool.update_committed_block(
-                &mut EthTxPoolEventTracker::new(
-                    metrics,
-                    &mut EthTxPoolSnapshotManager::default(),
-                    &mut Vec::default(),
-                ),
+                &mut EthTxPoolEventTracker::new(metrics, snapshot_manager, &mut Vec::default()),
                 block.to_owned(),
             );
         },

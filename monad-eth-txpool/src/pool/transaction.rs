@@ -12,6 +12,7 @@ use monad_eth_block_policy::{
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, Nonce, BASE_FEE_PER_GAS};
+use monad_types::SeqNum;
 use tracing::trace;
 
 use crate::EthTxPoolEventTracker;
@@ -20,6 +21,8 @@ use crate::EthTxPoolEventTracker;
 pub struct ValidEthTransaction {
     tx: Recovered<TxEnvelope>,
     owned: bool,
+    forward_last_seqnum: SeqNum,
+    forward_retries: usize,
     max_value: u128,
     effective_tip_per_gas: u128,
 }
@@ -31,6 +34,7 @@ impl ValidEthTransaction {
         proposal_gas_limit: u64,
         tx: Recovered<TxEnvelope>,
         owned: bool,
+        last_commit_seq_num: SeqNum,
     ) -> Option<Self>
     where
         ST: CertificateSignatureRecoverable,
@@ -58,6 +62,8 @@ impl ValidEthTransaction {
         Some(Self {
             tx,
             owned,
+            forward_last_seqnum: last_commit_seq_num,
+            forward_retries: 0,
             max_value,
             effective_tip_per_gas,
         })
@@ -114,6 +120,32 @@ impl ValidEthTransaction {
 
     pub(crate) fn is_owned(&self) -> bool {
         self.owned
+    }
+
+    pub fn get_if_forwardable<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
+        &mut self,
+        last_commit_seq_num: SeqNum,
+    ) -> Option<&TxEnvelope> {
+        if !self.owned {
+            return None;
+        }
+
+        if self.forward_retries >= MAX_RETRIES {
+            return None;
+        }
+
+        let min_forwardable_seqnum = self
+            .forward_last_seqnum
+            .saturating_add(SeqNum(MIN_SEQNUM_DIFF));
+
+        if min_forwardable_seqnum > last_commit_seq_num {
+            return None;
+        }
+
+        self.forward_last_seqnum = last_commit_seq_num;
+        self.forward_retries += 1;
+
+        Some(&self.tx)
     }
 }
 

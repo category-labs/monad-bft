@@ -104,6 +104,10 @@ where
             return Ok(());
         }
 
+        let Some(last_commit_seq_num) = self.tracked.last_commit_seq_num() else {
+            return Ok(());
+        };
+
         if let Err(state_backend_error) = self.tracked.promote_pending(
             event_tracker,
             block_policy,
@@ -129,6 +133,7 @@ where
                     self.proposal_gas_limit,
                     tx,
                     owned,
+                    last_commit_seq_num,
                 )
             })
             .collect_vec();
@@ -256,6 +261,21 @@ where
         self.tracked.evict_expired_txs(event_tracker);
 
         self.update_aggregate_metrics(event_tracker);
+    }
+
+    pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
+        &mut self,
+    ) -> Option<impl Iterator<Item = &TxEnvelope>> {
+        let last_commit_seq_num = self.tracked.last_commit_seq_num()?;
+
+        Some(
+            self.pending
+                .iter_mut_txs()
+                .chain(self.tracked.iter_mut_txs())
+                .filter_map(move |tx| {
+                    tx.get_if_forwardable::<MIN_SEQNUM_DIFF, MAX_RETRIES>(last_commit_seq_num)
+                }),
+        )
     }
 
     pub fn reset(
