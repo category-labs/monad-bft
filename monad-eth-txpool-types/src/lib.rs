@@ -59,7 +59,25 @@ pub enum EthTxPoolInternalDropReason {
     StateBackendError,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+impl EthTxPoolDropReason {
+    pub fn as_user_string(&self) -> String {
+        match self {
+            EthTxPoolDropReason::NotWellFormed => "Transaction not well formed",
+            EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
+            EthTxPoolDropReason::FeeTooLow => "Transaction fee too low",
+            EthTxPoolDropReason::InsufficientBalance => "Signer had insufficient balance",
+            EthTxPoolDropReason::PoolFull => "Transaction pool is full",
+            EthTxPoolDropReason::ExistingHigherPriority => {
+                "Another transaction has higher priority"
+            }
+            EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
+            EthTxPoolDropReason::Internal(_) => "Internal error",
+        }
+        .to_owned()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EthTxPoolEvictReason {
     Expired,
 }

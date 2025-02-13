@@ -249,6 +249,7 @@ async fn rpc_select(
             monad_eth_sendRawTransaction(
                 triedb_env,
                 app_state.mempool_sender.clone(),
+                &app_state.mempool_state,
                 app_state.base_fee_per_gas.clone(),
                 params,
                 app_state.chain_id,

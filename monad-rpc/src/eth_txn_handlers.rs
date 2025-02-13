@@ -1,3 +1,5 @@
+use std::{sync::Arc, time::Duration};
+
 use alloy_consensus::{
     transaction::Recovered, ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
 };
@@ -27,6 +29,7 @@ use crate::{
     },
     fee::BaseFeePerGas,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    txpool::{EthTxPoolBridgeState, TxStatus},
 };
 
 pub fn parse_tx_content(
@@ -399,21 +402,32 @@ fn base_fee_validation(max_fee_per_gas: u128, base_fee: impl BaseFeePerGas) -> b
     true
 }
 
+const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
 #[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug")]
+#[tracing::instrument(level = "debug", skip(txpool_state))]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
     ipc: flume::Sender<Recovered<TxEnvelope>>,
+    txpool_state: &EthTxPoolBridgeState,
     base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
+    let pending_send_raw_tx = Arc::clone(&txpool_state.pending_send_raw_tx);
+    // (strong_count-1) is the total number of pending requests
+    // This is because the Arc is held until the scope is exited.
+    if Arc::strong_count(&pending_send_raw_tx) > MAX_CONCURRENT_SEND_RAW_TX {
+        warn!(MAX_CONCURRENT_SEND_RAW_TX, "txpool overloaded");
+        return Err(JsonRpcError::custom(
+            "overloaded, try again later".to_owned(),
+        ));
+    }
 
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(tx) => {
@@ -474,15 +488,32 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 )));
             }
 
-            match ipc.try_send(Recovered::new_unchecked(tx, signer)) {
-                Ok(_) => Ok(hash.to_string()),
-                Err(err) => {
-                    warn!(?err, "mempool ipc send error");
-                    Err(JsonRpcError::internal_error(
-                        "unable to send to validator".into(),
-                    ))
-                }
+            if let Err(err) = ipc.try_send(Recovered::new_unchecked(tx, signer)) {
+                warn!(?err, "mempool ipc send error");
+                return Err(JsonRpcError::internal_error(
+                    "unable to send to validator".into(),
+                ));
             }
+
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+
+                let response = match txpool_state.get_status_by_hash(&hash) {
+                    None | Some(TxStatus::Unknown) => continue,
+                    Some(
+                        TxStatus::Unknown | TxStatus::Evicted { reason: _ } | TxStatus::Replaced,
+                    ) => Err(JsonRpcError::custom("rejected".to_string())),
+                    Some(TxStatus::Dropped { reason }) => {
+                        Err(JsonRpcError::custom(reason.as_user_string()))
+                    }
+                    Some(TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed) => {
+                        Ok(hash.to_string())
+                    }
+                };
+                return response;
+            }
+            warn!("txpool not responding");
+            return Err(JsonRpcError::custom("txpool not responding".to_string()));
         }
         Err(e) => {
             debug!("eth txn decode failed {:?}", e);
@@ -805,7 +836,7 @@ mod tests {
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
     use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::{eth_json_types::UnformattedData, fee::FixedFee};
+    use crate::{eth_json_types::UnformattedData, fee::FixedFee, txpool::EthTxPoolBridgeState};
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -879,6 +910,7 @@ mod tests {
                 monad_eth_sendRawTransaction(
                     &triedb,
                     tx.clone(),
+                    &EthTxPoolBridgeState::new(),
                     FixedFee::new(2000),
                     case,
                     1,

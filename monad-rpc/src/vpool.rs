@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, TxHash};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvictReason};
+use monad_eth_txpool_types::EthTxPoolEvictReason;
 use monad_rpc_docs::rpc;
 use serde::{Deserialize, Serialize};
 
@@ -25,25 +25,11 @@ impl From<TxStatus> for TxPoolStatusResult {
             TxStatus::Unknown => ("unknown", None),
             TxStatus::Pending => ("pending", None),
             TxStatus::Tracked => ("tracked", None),
-            TxStatus::Dropped { reason } => (
-                "dropped",
-                Some(match reason {
-                    EthTxPoolDropReason::NotWellFormed => "Transaction not well formed",
-                    EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
-                    EthTxPoolDropReason::FeeTooLow => "Transaction fee too low",
-                    EthTxPoolDropReason::InsufficientBalance => "Signer had insufficient balance",
-                    EthTxPoolDropReason::PoolFull => "Transaction pool is full",
-                    EthTxPoolDropReason::ExistingHigherPriority => {
-                        "Another transaction has higher priority"
-                    }
-                    EthTxPoolDropReason::PoolNotReady => "Transaction pool is not ready",
-                    EthTxPoolDropReason::Internal(_) => "Internal error",
-                }),
-            ),
+            TxStatus::Dropped { reason } => ("dropped", Some(reason.as_user_string())),
             TxStatus::Evicted { reason } => (
                 "evicted",
                 Some(match reason {
-                    EthTxPoolEvictReason::Expired => "Transaction expired",
+                    EthTxPoolEvictReason::Expired => "Transaction expired".to_string(),
                 }),
             ),
             TxStatus::Replaced => ("replaced", None),
@@ -52,7 +38,7 @@ impl From<TxStatus> for TxPoolStatusResult {
 
         Self {
             status: status.to_string(),
-            reason: reason.map(ToString::to_string),
+            reason,
         }
     }
 }
