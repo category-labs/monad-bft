@@ -697,7 +697,7 @@ impl Triedb for TriedbEnv {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) = create_triedb_key(
-            Version::Finalized,
+            block_key.into(),
             KeyInput::ReceiptIndex(Some(receipt_index)),
         );
         let completed_counter = Arc::new(AtomicUsize::new(0));
