@@ -26,7 +26,7 @@ use self::ipc::EthTxPoolIpcServer;
 mod ipc;
 mod metrics;
 
-const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 3;
+const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 5;
 const FORWARD_MAX_RETRIES: usize = 2;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>

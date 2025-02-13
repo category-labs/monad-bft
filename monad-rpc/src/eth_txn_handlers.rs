@@ -490,8 +490,8 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
                 ));
             }
 
-            for _ in 0..10 {
-                tokio::time::sleep(Duration::from_millis(2)).await;
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
 
                 let response = match txpool_state.get_status_by_hash(&hash) {
                     None | Some(TxStatus::Unknown) => continue,

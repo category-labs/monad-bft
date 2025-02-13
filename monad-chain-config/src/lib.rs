@@ -93,7 +93,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: TESTNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
-    v_0_8_0_activation: Round::MAX,
+    v_0_8_0_activation: Round(3263000),
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
