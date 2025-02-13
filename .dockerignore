@@ -12,8 +12,8 @@
 /docker/flexnet/logs
 /docker/flexnet/save_logs
 
-# unfortunately some submodules require .git folder to exist...
-/.git
+# unfortunately some submodules and rpc's build script require .git folder to exist...
+!/.git
 
 **/target
 
