@@ -4995,6 +4995,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-state-backend",
  "pin-project",
+ "rayon",
  "serde",
  "tokio",
  "tracing",

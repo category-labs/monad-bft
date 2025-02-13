@@ -1,4 +1,4 @@
-use std::{io, marker::PhantomData, pin::Pin, task::Poll, time::Duration};
+use std::{io, marker::PhantomData, pin::Pin, sync::atomic::AtomicU64, task::Poll, time::Duration};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
@@ -16,6 +16,7 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::mpsc;
 use tracing::error;
 
@@ -197,25 +198,31 @@ where
                     }
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
-                    let mut num_invalid_bytes = 0;
-                    let mut num_invalid_signer = 0;
+                    let num_invalid_bytes = AtomicU64::default();
+                    let num_invalid_signer = AtomicU64::default();
 
                     let txs = txs
-                        .into_iter()
+                        .into_par_iter()
                         .filter_map(|raw_tx| {
                             let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) else {
-                                num_invalid_bytes += 1;
+                                num_invalid_bytes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 return None;
                             };
 
                             let Ok(signer) = tx.recover_signer() else {
-                                num_invalid_signer += 1;
+                                num_invalid_signer
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 return None;
                             };
 
                             Some(Recovered::new_unchecked(tx, signer))
                         })
-                        .collect_vec();
+                        .collect::<Vec<_>>();
+
+                    let num_invalid_bytes =
+                        num_invalid_bytes.load(std::sync::atomic::Ordering::SeqCst);
+                    let num_invalid_signer =
+                        num_invalid_signer.load(std::sync::atomic::Ordering::SeqCst);
 
                     self.metrics.reject_forwarded_invalid_bytes += num_invalid_bytes;
                     self.metrics.reject_forwarded_invalid_signer += num_invalid_signer;
