@@ -93,6 +93,24 @@ impl<S: CertificateSignatureRecoverable, M> AsRef<Unverified<S, M>> for Verified
     }
 }
 
+impl<ST, SCT, EPT> Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn into_inner(
+        self,
+    ) -> (
+        NodeId<CertificateSignaturePubKey<ST>>,
+        ProtocolMessage<ST, SCT, EPT>,
+    ) {
+        let author = self.author;
+        let protocol_message = self.message.obj.into_inner().message;
+        (author, protocol_message)
+    }
+}
+
 /// An unverified message is a message with a signature, but the signature hasn't
 /// been verified. It does not allow access the message content. For safety, a
 /// message received on the wire is only deserializable to an unverified message
@@ -270,7 +288,7 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -280,40 +298,58 @@ where
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        version: u32,
-    ) -> Result<Validated<ProtocolMessage<ST, SCT, EPT>>, Error>
+        self_version: u32,
+    ) -> Result<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        if self.obj.version != version {
-            return Err(Error::InvalidVersion);
-        }
+        let Verified {
+            // author is recovered by self, in Unverified::verify
+            author,
+            message:
+                // destructure to make sure we validate all fields
+                Unverified {
+                    author_signature,
+                    obj:
+                        Unvalidated {
+                            obj: ConsensusMessage { version, message },
+                        },
+                },
+        } = self;
 
-        Ok(match self.obj.message {
+        if version != self_version {
+            return Err(Error::InvalidVersion);
+        };
+
+        match &message {
             ProtocolMessage::Proposal(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Proposal(validated.into_inner())),
-                }
+                m.validate(epoch_manager, val_epoch_map)?;
             }
             ProtocolMessage::Vote(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Vote(validated.into_inner())),
-                }
+                m.validate(epoch_manager)?;
             }
             ProtocolMessage::Timeout(m) => {
-                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
-                Validated {
-                    message: Unvalidated::new(ProtocolMessage::Timeout(validated.into_inner())),
-                }
+                m.validate(epoch_manager, val_epoch_map)?;
             }
+        };
+
+        // put the message back together
+        Ok(Verified {
+            author,
+            message: Unverified {
+                author_signature,
+                obj: Validated {
+                    message: Unvalidated {
+                        obj: ConsensusMessage { version, message },
+                    },
+                },
+            },
         })
     }
 }
 
-impl<ST, SCT, EPT> Unvalidated<ProposalMessage<ST, SCT, EPT>>
+impl<ST, SCT, EPT> ProposalMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -323,10 +359,10 @@ where
     // the present TC or QC, and epoch number is consistent with local records
     // for block.round
     pub fn validate<VTF, VT>(
-        self,
+        &self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
+    ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -336,11 +372,11 @@ where
         verify_certificates(
             epoch_manager,
             val_epoch_map,
-            &self.obj.last_round_tc,
-            &self.obj.block_header.qc,
+            &self.last_round_tc,
+            &self.block_header.qc,
         )?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// A well-formed proposal
@@ -348,52 +384,49 @@ where
     ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
         well_formed(
-            self.obj.block_header.round,
-            self.obj.block_header.qc.get_round(),
-            &self.obj.last_round_tc,
+            self.block_header.round,
+            self.block_header.qc.get_round(),
+            &self.last_round_tc,
         )
     }
 
     /// Check local epoch manager record for block.round is equal to block.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.block_header.round) {
-            Some(epoch) if self.obj.block_header.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.block_header.round) {
+            Some(epoch) if self.block_header.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
+impl<SCT: SignatureCollection> VoteMessage<SCT> {
     /// Verifying
     /// [crate::messages::message::VoteMessage::sig] is deferred until a
     /// signature collection is optimistically aggregated because verifying a
     /// BLS signature is expensive. Verifying every signature on VoteMessage is
     /// infeasible with the block time constraint.
-    pub fn validate(
-        self,
-        epoch_manager: &EpochManager,
-    ) -> Result<Validated<VoteMessage<SCT>>, Error> {
+    pub fn validate(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
         self.verify_epoch(epoch_manager)?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// Check local epoch manager record for vote.round is equal to vote.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.vote.round) {
-            Some(epoch) if self.obj.vote.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.vote.round) {
+            Some(epoch) if self.vote.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
 }
 
-impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
+impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VTF, VT>(
-        self,
+        &self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<TimeoutMessage<SCT>>, Error>
+    ) -> Result<(), Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -404,27 +437,27 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
         verify_certificates(
             epoch_manager,
             val_epoch_map,
-            &self.obj.timeout.last_round_tc,
-            &self.obj.timeout.tminfo.high_qc,
+            &self.timeout.last_round_tc,
+            &self.timeout.tminfo.high_qc,
         )?;
 
-        Ok(Validated { message: self })
+        Ok(())
     }
 
     /// A well-formed timeout carries a QC/TC from r-1, proving that it's timing
     /// out a valid round
     fn well_formed_timeout(&self) -> Result<(), Error> {
         well_formed(
-            self.obj.timeout.tminfo.round,
-            self.obj.timeout.tminfo.high_qc.get_round(),
-            &self.obj.timeout.last_round_tc,
+            self.timeout.tminfo.round,
+            self.timeout.tminfo.high_qc.get_round(),
+            &self.timeout.last_round_tc,
         )
     }
 
     /// Check local epoch manager record for timeout.round is equal to timeout.epoch
     fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
-        match epoch_manager.get_epoch(self.obj.timeout.tminfo.round) {
-            Some(epoch) if self.obj.timeout.tminfo.epoch == epoch => Ok(()),
+        match epoch_manager.get_epoch(self.timeout.tminfo.round) {
+            Some(epoch) if self.timeout.tminfo.epoch == epoch => Ok(()),
             _ => Err(Error::InvalidEpoch),
         }
     }
@@ -678,7 +711,7 @@ mod test {
     use super::{verify_certificates, verify_qc, verify_tc, Verified};
     use crate::{
         messages::message::{ProposalMessage, TimeoutMessage},
-        validation::signing::{Unvalidated, VoteMessage},
+        validation::signing::VoteMessage,
     };
 
     type SignatureType = NopSignature;
@@ -949,10 +982,7 @@ mod test {
             last_round_tc: Some(tc),
         };
 
-        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<SignatureCollectionType>::new(
-            tmo,
-            &certkeys[0],
-        ));
+        let unvalidated_tmo_msg = TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1011,9 +1041,8 @@ mod test {
             last_round_tc: None,
         };
 
-        let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
-            SignatureCollectionType,
-        >::new(tmo, &certkeys[0]));
+        let unvalidated_byzantine_tmo_msg =
+            TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50), &[(Epoch(1), Round(0))]);
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
@@ -1096,9 +1125,7 @@ mod test {
             last_round_tc: None,
         };
 
-        let unvalidated_proposal = Unvalidated::new(proposal);
-
-        let maybe_validated = unvalidated_proposal.validate(&epoch_manager, &val_epoch_map);
+        let maybe_validated = proposal.validate(&epoch_manager, &val_epoch_map);
 
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
@@ -1125,9 +1152,7 @@ mod test {
 
         let vote_message = VoteMessage::<SignatureCollectionType>::new(vote, author_cert_key);
 
-        let unvalidated_vote = Unvalidated::new(vote_message);
-
-        let maybe_validated = unvalidated_vote.validate(&epoch_manager);
+        let maybe_validated = vote_message.validate(&epoch_manager);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 
@@ -1157,9 +1182,7 @@ mod test {
 
         let timeout_message = TimeoutMessage::new(timeout, author_cert_key);
 
-        let unvalidated_timeout = Unvalidated::new(timeout_message);
-
-        let maybe_validated = unvalidated_timeout.validate(&epoch_manager, &val_epoch_map);
+        let maybe_validated = timeout_message.validate(&epoch_manager, &val_epoch_map);
         assert_eq!(maybe_validated, Err(Error::InvalidEpoch));
     }
 

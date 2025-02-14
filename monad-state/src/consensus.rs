@@ -6,7 +6,7 @@ use monad_consensus::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::ProposalMessage,
     },
-    validation::signing::{Unvalidated, Unverified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{command::ConsensusCommand, ConsensusConfig, ConsensusStateWrapper};
 use monad_consensus_types::{
@@ -136,34 +136,35 @@ where
                     unverified_message,
                 } = event.clone()
                 {
-                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
-                        Self::verify_and_validate_consensus_message(
-                            self.epoch_manager,
-                            self.val_epoch_map,
-                            self.version,
-                            self.metrics,
-                            sender,
-                            unverified_message,
-                        )
-                    {
-                        if let Some((new_root, new_high_qc)) =
-                            block_buffer.handle_proposal(author, proposal)
-                        {
-                            if !*updating_target {
-                                // used for deduplication, because RequestStateSync isn't synchronous
-                                *updating_target = true;
-                                info!(
-                                    ?new_root,
-                                    consensus_tip =? new_root.seq_num,
-                                    "setting new statesync target",
-                                );
-                                cmds.push(WrappedConsensusCommand {
-                                    state_root_delay: self.consensus_config.execution_delay,
-                                    command: ConsensusCommand::RequestStateSync {
-                                        root: new_root,
-                                        high_qc: new_high_qc,
-                                    },
-                                });
+                    if let Ok(verified_message) = Self::verify_and_validate_consensus_message(
+                        self.epoch_manager,
+                        self.val_epoch_map,
+                        self.version,
+                        self.metrics,
+                        sender,
+                        unverified_message,
+                    ) {
+                        let (author, protocol_message) = verified_message.into_inner();
+                        if let ProtocolMessage::Proposal(proposal) = protocol_message {
+                            if let Some((new_root, new_high_qc)) =
+                                block_buffer.handle_proposal(author, proposal)
+                            {
+                                if !*updating_target {
+                                    // used for deduplication, because RequestStateSync isn't synchronous
+                                    *updating_target = true;
+                                    info!(
+                                        ?new_root,
+                                        consensus_tip =? new_root.seq_num,
+                                        "setting new statesync target",
+                                    );
+                                    cmds.push(WrappedConsensusCommand {
+                                        state_root_delay: self.consensus_config.execution_delay,
+                                        command: ConsensusCommand::RequestStateSync {
+                                            root: new_root,
+                                            high_qc: new_high_qc,
+                                        },
+                                    });
+                                }
                             }
                         }
                     }
@@ -208,14 +209,19 @@ where
                     sender,
                     unverified_message,
                 ) {
-                    Ok((author, ProtocolMessage::Proposal(msg))) => {
-                        consensus.handle_proposal_message(author, msg)
-                    }
-                    Ok((author, ProtocolMessage::Vote(msg))) => {
-                        consensus.handle_vote_message(author, msg)
-                    }
-                    Ok((author, ProtocolMessage::Timeout(msg))) => {
-                        consensus.handle_timeout_message(author, msg)
+                    Ok(verified_message) => {
+                        let (author, protocol_message) = verified_message.into_inner();
+                        match protocol_message {
+                            ProtocolMessage::Proposal(msg) => {
+                                consensus.handle_proposal_message(author, msg)
+                            }
+                            ProtocolMessage::Vote(msg) => {
+                                consensus.handle_vote_message(author, msg)
+                            }
+                            ProtocolMessage::Timeout(msg) => {
+                                consensus.handle_timeout_message(author, msg)
+                            }
+                        }
                     }
                     Err(evidence) => evidence,
                 }
@@ -467,10 +473,7 @@ where
         sender: NodeId<CertificateSignaturePubKey<ST>>,
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
-        (
-            NodeId<CertificateSignaturePubKey<ST>>,
-            ProtocolMessage<ST, SCT, EPT>,
-        ),
+        Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
         Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
     > {
         let verified_message = message
@@ -481,8 +484,6 @@ where
                 Vec::new()
             })?;
 
-        let (author, _, verified_message) = verified_message.destructure();
-
         // Validated message according to consensus protocol spec
         let validated_mesage = verified_message
             .validate(epoch_manager, val_epoch_map, version.protocol_version)
@@ -492,7 +493,7 @@ where
                 Vec::new()
             })?;
 
-        Ok((author, validated_mesage.into_inner()))
+        Ok(validated_mesage)
     }
 }
 
