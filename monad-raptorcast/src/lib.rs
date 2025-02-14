@@ -30,7 +30,7 @@ use monad_types::{
 
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, FullNodes, Validator};
+use util::{BuildTarget, EpochValidators, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -65,7 +65,7 @@ where
 
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     // TODO support dynamic updating
-    full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
+    full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     current_epoch: Epoch,
@@ -102,7 +102,7 @@ where
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps, config.mtu);
         Self {
             epoch_validators: Default::default(),
-            full_nodes: FullNodes::new(config.full_nodes),
+            full_nodes: config.full_nodes,
             known_addresses: config.known_addresses,
 
             key: config.key,
@@ -264,24 +264,30 @@ where
                                 continue;
                             }
 
-                            let full_nodes_view = self.full_nodes.view();
-
                             let build_target = match &target {
                                 RouterTarget::Raptorcast(_) if app_message.len() > 19520 => {
-                                    BuildTarget::Raptorcast(
-                                        epoch_validators_without_self,
-                                        full_nodes_view,
-                                    )
+                                    BuildTarget::Raptorcast(epoch_validators_without_self)
                                 }
                                 RouterTarget::Raptorcast(_) | RouterTarget::Broadcast(_) => {
                                     BuildTarget::Broadcast(
-                                        epoch_validators_without_self,
-                                        full_nodes_view,
+                                        epoch_validators_without_self.view().keys().collect(),
                                     )
                                 }
                                 _ => unreachable!(),
                             };
 
+                            self.dataplane.udp_write_unicast(udp_build(
+                                epoch,
+                                build_target,
+                                app_message,
+                            ));
+                        }
+                        RouterTarget::FullNodeBroadcast(epoch) => {
+                            if self.full_nodes.is_empty() {
+                                continue;
+                            }
+                            let build_target =
+                                BuildTarget::Broadcast(self.full_nodes.iter().collect());
                             self.dataplane.udp_write_unicast(udp_build(
                                 epoch,
                                 build_target,
@@ -333,14 +339,13 @@ where
                     self.known_addresses = new_peers.into_iter().collect();
                 }
                 RouterCommand::GetFullNodes => {
-                    let full_nodes = self.full_nodes.list.clone();
                     self.pending_events
                         .push_back(RaptorCastEvent::PeerManagerResponse(
-                            PeerManagerResponse::FullNodes(full_nodes),
+                            PeerManagerResponse::FullNodes(self.full_nodes.clone()),
                         ));
                 }
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
-                    self.full_nodes.list = new_full_nodes;
+                    self.full_nodes = new_full_nodes;
                 }
             }
         }
@@ -392,13 +397,6 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
-        let full_node_addrs = this
-            .full_nodes
-            .list
-            .iter()
-            .filter_map(|node_id| this.known_addresses.get(node_id).copied())
-            .collect::<Vec<_>>();
-
         loop {
             // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
@@ -421,14 +419,6 @@ where
                             targets: target_addrs,
                             payload,
                             stride: bcast_stride,
-                        });
-                    },
-                    |payload| {
-                        // callback for forwarding chunks to full nodes
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: local_gso_size,
                         });
                     },
                     message,

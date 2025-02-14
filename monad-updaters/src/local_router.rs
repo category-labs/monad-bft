@@ -125,6 +125,7 @@ where
                             tx.send((now, self.me, message.clone())).unwrap();
                         }
                     }
+                    RouterTarget::FullNodeBroadcast(_epoch) => {}
                     RouterTarget::PointToPoint(peer) | RouterTarget::TcpPointToPoint(peer) => {
                         self.txs
                             .get(&peer)

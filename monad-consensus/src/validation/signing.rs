@@ -596,11 +596,7 @@ fn verify_author<ST: CertificateSignatureRecoverable>(
     let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
     sig.verify(msg.as_ref(), &pubkey)
         .map_err(|_| Error::InvalidSignature)?;
-    if sender != &pubkey {
-        Err(Error::AuthorNotSender)
-    } else {
-        Ok(pubkey)
-    }
+    Ok(pubkey)
 }
 
 /// Extract the PubKey from the secp recoverable signature

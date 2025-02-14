@@ -9,7 +9,7 @@ use monad_dataplane::network::gso_size;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
     udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-    util::{BuildTarget, EpochValidators, FullNodes, Validator},
+    util::{BuildTarget, EpochValidators, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Stake};
@@ -51,8 +51,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
             .collect();
 
-        let full_nodes = FullNodes::new(Vec::new());
-
         b.iter(|| {
             let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
             let _ = build_messages::<SecpSignature>(
@@ -62,7 +60,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 2, // redundancy,
                 0, // epoch_no
                 0, // unix_ts_ms
-                BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+                BuildTarget::Raptorcast(epoch_validators),
                 &known_addresses,
             );
         });
@@ -85,7 +83,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .collect(),
         };
         let epoch_validators = validators.view_without(vec![&NodeId::new(keys[0].pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let known_addresses = keys
             .iter()
@@ -104,7 +101,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             2, // redundancy,
             0, // epoch_no
             0, // unix_ts_ms
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         )
         .into_iter()

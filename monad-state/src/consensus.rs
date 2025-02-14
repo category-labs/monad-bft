@@ -210,10 +210,16 @@ where
                     unverified_message,
                 ) {
                     Ok(verified_message) => {
-                        let (author, protocol_message) = verified_message.into_inner();
+                        let (author, protocol_message) = verified_message.clone().into_inner();
                         match protocol_message {
                             ProtocolMessage::Proposal(msg) => {
-                                consensus.handle_proposal_message(author, msg)
+                                let message_epoch = msg.block_header.epoch;
+                                let mut cmds = consensus.handle_proposal_message(author, msg);
+                                cmds.push(ConsensusCommand::Publish {
+                                    target: RouterTarget::FullNodeBroadcast(message_epoch),
+                                    message: verified_message,
+                                });
+                                cmds
                             }
                             ProtocolMessage::Vote(msg) => {
                                 consensus.handle_vote_message(author, msg)

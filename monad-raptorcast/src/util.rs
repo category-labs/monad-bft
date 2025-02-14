@@ -66,38 +66,6 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct FullNodes<P: PubKey> {
-    pub list: Vec<NodeId<P>>,
-}
-
-impl<P: PubKey> Default for FullNodes<P> {
-    fn default() -> Self {
-        Self {
-            list: Default::default(),
-        }
-    }
-}
-
-impl<P: PubKey> FullNodes<P> {
-    pub fn new(nodes: Vec<NodeId<P>>) -> Self {
-        Self { list: nodes }
-    }
-
-    pub fn view(&self) -> FullNodesView<P> {
-        FullNodesView(&self.list)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FullNodesView<'a, P: PubKey>(&'a Vec<NodeId<P>>);
-
-impl<P: PubKey> FullNodesView<'_, P> {
-    pub fn view(&self) -> &Vec<NodeId<P>> {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct Validator {
     pub stake: Stake,
 }
@@ -107,14 +75,12 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
     Broadcast(
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
-        ValidatorsView<'a, ST>,
-        FullNodesView<'a, CertificateSignaturePubKey<ST>>,
+        Vec<&'a NodeId<CertificateSignaturePubKey<ST>>>,
     ),
     Raptorcast(
         // validator stakes for given epoch_no, not including self
         // this MUST NOT BE EMPTY
         ValidatorsView<'a, ST>,
-        FullNodesView<'a, CertificateSignaturePubKey<ST>>,
     ), // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
 }

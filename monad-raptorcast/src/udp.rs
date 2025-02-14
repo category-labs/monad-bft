@@ -96,15 +96,12 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         epoch_validators: &mut BTreeMap<Epoch, EpochValidators<ST>>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, usize),
-        forward: impl FnMut(Bytes),
         message: RecvMsg,
     ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
         let mut broadcast_batcher = BroadcastBatcher::new(self_id, rebroadcast, &message.payload);
-        // batch packets forwarding to full nodes
-        let mut full_node_forward_batcher = ForwardBatcher::new(self_id, forward, &message.payload);
 
         let mut messages = Vec::new();
 
@@ -114,7 +111,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             //
             // Declaring (validator) batch guard last to give rebroadcast
             // priorities to validators
-            let mut full_node_forward_batch_guard = full_node_forward_batcher.create_flush_guard();
             let mut batch_guard = broadcast_batcher.create_flush_guard();
 
             let payload_end_idx = (payload_start_idx + message.stride).min(message.payload.len());
@@ -170,9 +166,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                         message.stride,
                     )
                 }
-
-                // forward all broadcast packets to full nodes
-                full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
             } else if self_hash != parsed_message.recipient_hash {
                 tracing::debug!(
                     ?self_hash,
@@ -448,9 +441,9 @@ where
         .try_into()
         .expect("num_packets doesn't fit in usize");
 
-        if let BuildTarget::Broadcast(epoch_validators, full_nodes_view) = &build_target {
+        if let BuildTarget::Broadcast(destinations) = &build_target {
             num_packets = num_packets
-                .checked_mul(epoch_validators.view().len() + full_nodes_view.view().len())
+                .checked_mul(destinations.len())
                 .expect("num_packets doesn't fit in usize")
         }
 
@@ -498,16 +491,11 @@ where
                 *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
-        BuildTarget::Broadcast(epoch_validators, full_nodes_view) => {
+        BuildTarget::Broadcast(destinations) => {
             assert!(is_broadcast && !is_raptor_broadcast);
-            let total_destinations = epoch_validators.view().len() + full_nodes_view.view().len();
+            let total_destinations = destinations.len();
             let mut running_destination_count = 0;
-            for node_id in epoch_validators
-                .view()
-                .iter()
-                .map(|(node_id, _validator)| node_id)
-                .chain(full_nodes_view.view().iter())
-            {
+            for node_id in destinations {
                 let start_idx: usize = num_packets * running_destination_count / total_destinations;
                 running_destination_count += 1;
                 let end_idx: usize = num_packets * running_destination_count / total_destinations;
@@ -532,7 +520,7 @@ where
                 }
             }
         }
-        BuildTarget::Raptorcast(epoch_validators, full_nodes_view) => {
+        BuildTarget::Raptorcast(epoch_validators) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
             tracing::trace!(
@@ -575,18 +563,6 @@ where
                     chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
                     *chunk_symbol_id = Some(chunk_idx);
                     chunk_idx += 1;
-                }
-            }
-
-            for node_id in full_nodes_view.view() {
-                // TODO: assign a sub-segment of range to each full node
-                if let Some(addr) = known_addresses.get(node_id) {
-                    full_node_gso_idx.push((*addr, 0..(num_packets * gso_size as usize)));
-                } else {
-                    tracing::warn!(
-                        ?node_id,
-                        "not sending message to full node, address unknown"
-                    );
                 }
             }
         }
@@ -1032,109 +1008,6 @@ where
         }
     }
 }
-struct ForwardBatch {
-    start_idx: usize,
-    end_idx: usize,
-}
-pub(crate) struct ForwardBatcher<'a, F, PT>
-where
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    self_id: NodeId<PT>,
-    forward: F,
-    message: &'a Bytes,
-
-    batch: Option<ForwardBatch>,
-}
-impl<F, PT> Drop for ForwardBatcher<'_, F, PT>
-where
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    fn drop(&mut self) {
-        self.flush()
-    }
-}
-impl<'a, F, PT> ForwardBatcher<'a, F, PT>
-where
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    pub fn new(self_id: NodeId<PT>, forward: F, message: &'a Bytes) -> Self {
-        Self {
-            self_id,
-            forward,
-            message,
-            batch: None,
-        }
-    }
-
-    pub fn create_flush_guard<'g>(&'g mut self) -> ForwardBatcherGuard<'a, 'g, F, PT>
-    where
-        'a: 'g,
-    {
-        ForwardBatcherGuard {
-            batcher: self,
-            flush_batch: true,
-        }
-    }
-
-    fn flush(&mut self) {
-        if let Some(batch) = self.batch.take() {
-            tracing::trace!(
-                self_id =? self.self_id,
-                num_bytes = batch.end_idx - batch.start_idx,
-                "forwarding chunks"
-            );
-            (self.forward)(self.message.slice(batch.start_idx..batch.end_idx));
-        }
-    }
-}
-
-pub(crate) struct ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    batcher: &'g mut ForwardBatcher<'a, F, PT>,
-    flush_batch: bool,
-}
-impl<'a, 'g, F, PT> ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    pub(crate) fn queue_forward(&mut self, payload_start_idx: usize, payload_end_idx: usize) {
-        self.flush_batch = false;
-        // batch any contiguous message
-        if self.batcher.batch.as_ref().is_some() {
-            let batch = self.batcher.batch.as_mut().unwrap();
-            assert_eq!(batch.end_idx, payload_start_idx);
-            batch.end_idx = payload_end_idx;
-        } else {
-            self.batcher.flush();
-            self.batcher.batch = Some(ForwardBatch {
-                start_idx: payload_start_idx,
-                end_idx: payload_end_idx,
-            })
-        }
-    }
-}
-impl<'a, 'g, F, PT> Drop for ForwardBatcherGuard<'a, 'g, F, PT>
-where
-    'a: 'g,
-    F: FnMut(Bytes),
-    PT: PubKey,
-{
-    fn drop(&mut self) {
-        if self.flush_batch {
-            self.batcher.flush();
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1157,7 +1030,7 @@ mod tests {
     use super::UdpState;
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, EpochValidators, FullNodes, Validator},
+        util::{BuildTarget, EpochValidators, Validator},
     };
 
     type SignatureType = SecpSignature;
@@ -1208,7 +1081,6 @@ mod tests {
     fn test_roundtrip() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
         let app_message_hash = {
@@ -1224,7 +1096,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1250,7 +1122,6 @@ mod tests {
     fn test_bit_flip_parse_failure() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 2].into();
 
@@ -1261,7 +1132,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1298,7 +1169,6 @@ mod tests {
     fn test_raptorcast_chunk_ids() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
 
@@ -1309,7 +1179,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast(epoch_validators),
             &known_addresses,
         );
 
@@ -1333,7 +1203,6 @@ mod tests {
     fn test_broadcast_chunk_ids() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
 
@@ -1344,7 +1213,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Broadcast(epoch_validators.view().keys().collect()),
             &known_addresses,
         );
 
@@ -1392,7 +1261,6 @@ mod tests {
         udp_state.handle_message(
             &mut epoch_validators,
             |_targets, _payload, _stride| {},
-            |_payload| {},
             recv_msg,
         );
     }
