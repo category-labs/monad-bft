@@ -1,3 +1,4 @@
+pub mod async_rtrb;
 pub mod epoll;
 pub mod event_loop;
 pub mod network;

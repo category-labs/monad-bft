@@ -10,12 +10,13 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::{
+    async_rtrb::{make_producer_consumer, WakeableConsumer},
     event_loop::{BroadcastMsg, Dataplane, UnicastMsg},
     network::gso_size,
 };
@@ -71,6 +72,7 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
+    decoded_msg_recv: WakeableConsumer<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)>,
     mtu: u16,
 
     dataplane: Dataplane,
@@ -100,6 +102,7 @@ where
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps, config.mtu);
+        let (decoded_msg_sender, decoded_msg_recv) = make_producer_consumer(10000);
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -110,7 +113,8 @@ where
 
             current_epoch: Epoch(0),
 
-            udp_state: udp::UdpState::new(self_id),
+            udp_state: udp::UdpState::new(self_id, decoded_msg_sender),
+            decoded_msg_recv,
             mtu: config.mtu,
 
             dataplane,
@@ -399,71 +403,64 @@ where
             .filter_map(|node_id| this.known_addresses.get(node_id).copied())
             .collect::<Vec<_>>();
 
+        while let Poll::Ready(maybe_decoded_message) = this.decoded_msg_recv.poll_next_unpin(cx) {
+            let (from, decoded_app_message) = maybe_decoded_message.expect("stream never closed");
+            let deserialized_app_message = match handle_message::<ST, M>(&decoded_app_message) {
+                Ok(inbound) => match inbound {
+                    InboundRouterMessage::Application(app_message) => Some(app_message.event(from)),
+                    InboundRouterMessage::Discovery(_) => {
+                        tracing::error!(
+                            ?from,
+                            "receiving discovery messages over UDP is not supported"
+                        );
+                        None
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!(?from, "failed to deserialize message");
+                    None
+                }
+            };
+            this.pending_events
+                .extend(deserialized_app_message.map(RaptorCastEvent::Message));
+            if let Some(event) = this.pending_events.pop_front() {
+                return Poll::Ready(Some(event.into()));
+            }
+        }
+
         loop {
             // while let doesn't compile
             let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
                 break;
             };
 
-            let decoded_app_messages = {
-                // FIXME: pass dataplane as arg to handle_message
-                let dataplane = RefCell::new(&mut this.dataplane);
-                let local_gso_size = gso_size(this.mtu as usize);
-                this.udp_state.handle_message(
-                    &mut this.epoch_validators,
-                    |targets, payload, bcast_stride| {
-                        let target_addrs: Vec<SocketAddr> = targets
-                            .into_iter()
-                            .filter_map(|target| this.known_addresses.get(&target).copied())
-                            .collect();
+            // FIXME: pass dataplane as arg to handle_message
+            let dataplane = RefCell::new(&mut this.dataplane);
+            let local_gso_size = gso_size(this.mtu as usize);
+            this.udp_state.handle_message(
+                &mut this.epoch_validators,
+                |targets, payload, bcast_stride| {
+                    let target_addrs: Vec<SocketAddr> = targets
+                        .into_iter()
+                        .filter_map(|target| this.known_addresses.get(&target).copied())
+                        .collect();
 
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
-                    },
-                    |payload| {
-                        // callback for forwarding chunks to full nodes
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: local_gso_size,
-                        });
-                    },
-                    message,
-                )
-            };
-            let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match handle_message::<ST, M>(&decoded) {
-                    Ok(inbound) => match inbound {
-                        InboundRouterMessage::Application(app_message) => {
-                            Some(app_message.event(from))
-                        }
-                        InboundRouterMessage::Discovery(_) => {
-                            tracing::error!(
-                                ?from,
-                                "receiving discovery messages over UDP is not supported"
-                            );
-                            None
-                        }
-                    },
-                    Err(err) => {
-                        tracing::warn!(
-                            ?from,
-                            ?err,
-                            decoded = hex::encode(&decoded),
-                            "failed to deserialize message"
-                        );
-                        None
-                    }
+                    dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                        targets: target_addrs,
+                        payload,
+                        stride: bcast_stride,
+                    });
                 },
-            );
-            this.pending_events
-                .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
-            if let Some(event) = this.pending_events.pop_front() {
-                return Poll::Ready(Some(event.into()));
-            }
+                |payload| {
+                    // callback for forwarding chunks to full nodes
+                    dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
+                        targets: full_node_addrs.clone(),
+                        payload,
+                        stride: local_gso_size,
+                    });
+                },
+                message,
+            )
         }
 
         while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)

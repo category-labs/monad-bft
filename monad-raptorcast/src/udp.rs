@@ -3,8 +3,11 @@ use std::{
     net::SocketAddr,
     num::NonZero,
     ops::Range,
+    sync::mpsc::{Receiver, Sender},
+    thread,
 };
 
+use bitvec::prelude::*;
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
 use lru::LruCache;
@@ -14,19 +17,21 @@ use monad_crypto::{
     },
     hasher::{Hasher, HasherType},
 };
-use monad_dataplane::event_loop::RecvMsg;
+use monad_dataplane::{async_rtrb::WakeableProducer, event_loop::RecvMsg};
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
+use tracing::warn;
 
 use crate::{
     util::{compute_hash, AppMessageHash, BuildTarget, EpochValidators, HexBytes, NodeIdHash},
     SIGNATURE_SIZE,
 };
 
-pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
-
+pub const MESSAGE_STATE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
 pub const SIGNATURE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
+
+pub const PENDING_MESSAGE_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(1_000) };
 pub const RECENTLY_DECODED_CACHE_SIZE: NonZero<usize> = unsafe { NonZero::new_unchecked(10_000) };
 
 // We assume an MTU of at least 1280 (the IPv6 minimum MTU), which for the maximum Merkle tree
@@ -40,6 +45,16 @@ const MIN_CHUNK_LENGTH: usize = 960;
 // if we have many peers to transmit the message to.
 const MAX_NUM_PACKETS: usize = 65535;
 
+// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
+// encoded symbols.
+//
+// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
+// will be discarded, as a protection against DoS and algorithmic complexity attacks.
+//
+// We pick 7 because that is the largest value that works for all values of K, as K
+// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
+pub const MAX_REDUNDANCY: usize = 7;
+
 // For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
 // Merkle proof section in the constructed RaptorCast packets.
 //
@@ -47,27 +62,6 @@ const MAX_NUM_PACKETS: usize = 65535;
 // Merkle leaf index field is 8 bits wide.
 const MIN_MERKLE_TREE_DEPTH: u8 = 1;
 const MAX_MERKLE_TREE_DEPTH: u8 = 9;
-
-struct DecoderState {
-    decoder: ManagedDecoder,
-    recipient_chunks: BTreeMap<NodeIdHash, usize>,
-}
-
-pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
-    self_id: NodeId<CertificateSignaturePubKey<ST>>,
-
-    // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
-    // can't be induced by spamming broadcast chunks to any given node
-    // TODO we also need to cap the max number chunks that are decoded - because an adversary could
-    // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
-    // TODO strong bound on max amount of memory used per decoder?
-    // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
-    pending_message_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, DecoderState>,
-    signature_cache:
-        LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
-    /// Value in this map represents the # of excess chunks received for a successfully decoded msg
-    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct MessageCacheKey<PT>
@@ -80,14 +74,204 @@ where
     app_message_len: usize,
 }
 
+struct MessageState {
+    symbol_len: usize,
+    encoded_symbol_capacity: usize,
+    seen_esis: BitVec<usize, Lsb0>,
+}
+
+pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+
+    // Used to send validated parsed messages to the decoder thread
+    encoded_symbol_sender: Sender<ValidatedMessage<CertificateSignaturePubKey<ST>>>,
+    // Used to check validity of parsed messages before rebroadcast
+    message_state_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, MessageState>,
+
+    signature_cache:
+        LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+}
+
+struct DecoderState {
+    decoder: ManagedDecoder,
+    recipient_chunks: BTreeMap<NodeIdHash, usize>,
+}
+
+struct DecoderLoop<ST: CertificateSignatureRecoverable> {
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    encoded_symbol_recv: Receiver<ValidatedMessage<CertificateSignaturePubKey<ST>>>,
+    decoded_msg_sender: WakeableProducer<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)>,
+
+    // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
+    // can't be induced by spamming broadcast chunks to any given node
+    // TODO we also need to cap the max number chunks that are decoded - because an adversary could
+    // generate a bunch of linearly dependent chunks and cause unbounded memory usage.
+    // TODO strong bound on max amount of memory used per decoder?
+    // TODO make eviction more sophisticated than LRU - should look at unix_ts_ms as well
+    pending_message_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, DecoderState>,
+
+    // Value in this map represents the # of excess chunks received for a successfully decoded msg
+    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
+}
+
+impl<ST: CertificateSignatureRecoverable> DecoderLoop<ST> {
+    pub fn start(mut self) {
+        thread::spawn(move || {
+            let _entered = tracing::info_span!("raptorcast decoder thread").entered();
+
+            loop {
+                // Blocks thread until a symbol is received
+                // TODO can we exit loop if sender closes channel ?
+                let parsed_message: ValidatedMessage<CertificateSignaturePubKey<ST>> = self
+                    .encoded_symbol_recv
+                    .recv()
+                    .expect("sender never closed");
+
+                let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
+                let key = MessageCacheKey {
+                    unix_ts_ms: parsed_message.unix_ts_ms,
+                    author: parsed_message.author,
+                    app_message_hash: parsed_message.app_message_hash,
+                    app_message_len,
+                };
+
+                if let Some(excess_chunk_count) = self.recently_decoded_cache.get_mut(&key) {
+                    // already decoded
+                    *excess_chunk_count += 1;
+                    continue;
+                }
+
+                let decoder_state_result =
+                    self.pending_message_cache.try_get_or_insert_mut(key, || {
+                        let symbol_len = parsed_message.chunk.len();
+
+                        // symbol_len is always greater than zero, so this division is safe
+                        let num_source_symbols =
+                            app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+                        let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
+
+                        ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
+                            .map(|decoder| DecoderState {
+                                decoder,
+                                recipient_chunks: BTreeMap::new(),
+                            })
+                    });
+
+                let decoder_state = match decoder_state_result {
+                    Ok(decoder_state) => decoder_state,
+                    Err(err) => {
+                        tracing::warn!(?err, "unable to create DecoderState, dropping message");
+                        continue;
+                    }
+                };
+
+                let num_buffers_received = decoder_state.decoder.num_encoded_symbols_received() + 1;
+                let encoding_symbol_id = parsed_message.chunk_id as usize;
+
+                if (num_buffers_received % 100) == 0 {
+                    tracing::debug!(
+                        self_id =? self.self_id,
+                        author =? parsed_message.author,
+                        unix_ts_ms = parsed_message.unix_ts_ms,
+                        app_message_hash =? parsed_message.app_message_hash,
+                        encoding_symbol_id,
+                        num_buffers_received,
+                        "received encoded symbol (100th)"
+                    );
+                }
+
+                // can we assert!(!decoder_state.decoder.decoding_done()) ?
+
+                decoder_state
+                    .decoder
+                    .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id);
+
+                *decoder_state
+                    .recipient_chunks
+                    .entry(parsed_message.recipient_hash)
+                    .or_insert(0) += 1;
+
+                if decoder_state.decoder.try_decode() {
+                    let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data() else {
+                        tracing::error!("failed to reconstruct source data");
+                        continue;
+                    };
+
+                    if app_message_len > 10_000 {
+                        tracing::debug!(
+                            ?self.self_id,
+                            author =? parsed_message.author,
+                            unix_ts_ms = parsed_message.unix_ts_ms,
+                            app_message_hash =? parsed_message.app_message_hash,
+                            encoding_symbol_id,
+                            app_message_len,
+                            "reconstructed large message"
+                        );
+                    }
+
+                    decoded.truncate(app_message_len);
+                    // successfully decoded, so pop out from pending_messages
+                    self.pending_message_cache
+                        .pop(&key)
+                        .expect("decoder exists");
+                    self.recently_decoded_cache.push(key, 0);
+
+                    match self
+                        .decoded_msg_sender
+                        .producer
+                        .push((parsed_message.author, Bytes::from(decoded)))
+                    {
+                        Err(e) => {
+                            warn!(?e, "failed to send reconstructed message");
+                        }
+                        Ok(()) => {
+                            self.decoded_msg_sender.notify.0.wake();
+                        }
+                    }
+                }
+
+                while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
+                    let (key, decoder_state) =
+                        self.pending_message_cache.pop_lru().expect("nonempty");
+                    tracing::debug!(
+                        num_source_symbols = decoder_state.decoder.num_source_symbols(),
+                        num_encoded_symbols_received =
+                            decoder_state.decoder.num_encoded_symbols_received(),
+                        inactivation_symbol_threshold =
+                            decoder_state.decoder.inactivation_symbol_threshold(),
+                        recipient_chunks =? decoder_state.recipient_chunks,
+                        ?key,
+                        "dropped unfinished ManagedDecoder"
+                    )
+                }
+            }
+        });
+    }
+}
+
 impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
-    pub fn new(self_id: NodeId<CertificateSignaturePubKey<ST>>) -> Self {
+    pub fn new(
+        self_id: NodeId<CertificateSignaturePubKey<ST>>,
+        decoded_msg_sender: WakeableProducer<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)>,
+    ) -> Self {
+        let (encoded_symbol_sender, encoded_symbol_recv) = std::sync::mpsc::channel();
+
+        // Spawn decoder thread
+        DecoderLoop::<ST> {
+            self_id,
+            encoded_symbol_recv,
+            decoded_msg_sender,
+            pending_message_cache: LruCache::new(PENDING_MESSAGE_CACHE_SIZE),
+            recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
+        }
+        .start();
+
         Self {
             self_id,
 
-            pending_message_cache: LruCache::unbounded(),
+            encoded_symbol_sender,
+            message_state_cache: LruCache::new(MESSAGE_STATE_CACHE_SIZE),
             signature_cache: LruCache::new(SIGNATURE_CACHE_SIZE),
-            recently_decoded_cache: LruCache::new(RECENTLY_DECODED_CACHE_SIZE),
         }
     }
 
@@ -98,15 +282,13 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, usize),
         forward: impl FnMut(Bytes),
         message: RecvMsg,
-    ) -> Vec<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
+    ) {
         let self_id = self.self_id;
         let self_hash = compute_hash(&self_id);
 
         let mut broadcast_batcher = BroadcastBatcher::new(self_id, rebroadcast, &message.payload);
         // batch packets forwarding to full nodes
         let mut full_node_forward_batcher = ForwardBatcher::new(self_id, forward, &message.payload);
-
-        let mut messages = Vec::new();
 
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
             // scoped variables are dropped in reverse order of declaration.
@@ -141,7 +323,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
 
             if parsed_message.broadcast {
-                let Some(epoch_validators) = epoch_validators.get_mut(&Epoch(parsed_message.epoch))
+                let Some(epoch_validators) = epoch_validators.get(&Epoch(parsed_message.epoch))
                 else {
                     tracing::debug!(
                         epoch =? parsed_message.epoch,
@@ -159,20 +341,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     );
                     continue;
                 }
-                if self_hash == parsed_message.recipient_hash {
-                    let targets =
-                        epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
-                    batch_guard.queue_broadcast(
-                        payload_start_idx,
-                        payload_end_idx,
-                        &parsed_message.author,
-                        || targets.view().keys().copied().collect(),
-                        message.stride,
-                    )
-                }
-
-                // forward all broadcast packets to full nodes
-                full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
             } else if self_hash != parsed_message.recipient_hash {
                 tracing::debug!(
                     ?self_hash,
@@ -201,115 +369,88 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 app_message_len,
             };
 
-            if let Some(excess_chunk_count) = self.recently_decoded_cache.get_mut(&key) {
-                // already decoded
-                *excess_chunk_count += 1;
-                continue;
-            }
+            let message_state = self.message_state_cache.get_or_insert_mut(key, || {
+                let symbol_len = parsed_message.chunk.len();
 
-            let decoder_state_result =
-                self.pending_message_cache.try_get_or_insert_mut(key, || {
-                    let symbol_len = parsed_message.chunk.len();
+                // symbol_len is always greater than zero, so this division is safe
+                let num_source_symbols =
+                    app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+                let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
 
-                    // symbol_len is always greater than zero, so this division is safe
-                    let num_source_symbols =
-                        app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
-
-                    ManagedDecoder::new(num_source_symbols, symbol_len).map(|decoder| {
-                        DecoderState {
-                            decoder,
-                            recipient_chunks: BTreeMap::new(),
-                        }
-                    })
-                });
-
-            let decoder_state = match decoder_state_result {
-                Ok(decoder_state) => decoder_state,
-                Err(err) => {
-                    tracing::warn!(?err, "unable to create DecoderState, dropping message");
-                    continue;
+                MessageState {
+                    symbol_len,
+                    encoded_symbol_capacity,
+                    seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
                 }
-            };
+            });
 
-            let num_buffers_received = decoder_state.decoder.num_encoded_symbols_received() + 1;
-
-            if (num_buffers_received % 100) == 0 {
-                tracing::debug!(
+            if message_state.symbol_len != parsed_message.chunk.len() {
+                // invalid symbol length
+                tracing::warn!(
                     self_id =? self.self_id,
                     author =? parsed_message.author,
                     unix_ts_ms = parsed_message.unix_ts_ms,
                     app_message_hash =? parsed_message.app_message_hash,
                     encoding_symbol_id,
-                    num_buffers_received,
-                    "received encoded symbol (100th)"
+                    expected_len = message_state.symbol_len,
+                    received_len = parsed_message.chunk.len(),
+                    "received invalid symbol len"
                 );
+                continue;
             }
 
-            // can we assert!(!decoder_state.decoder.decoding_done()) ?
+            if encoding_symbol_id >= message_state.encoded_symbol_capacity {
+                // invalid symbol id
+                tracing::warn!(
+                    self_id =? self.self_id,
+                    author =? parsed_message.author,
+                    unix_ts_ms = parsed_message.unix_ts_ms,
+                    app_message_hash =? parsed_message.app_message_hash,
+                    encoded_symbol_capacity = message_state.encoded_symbol_capacity,
+                    encoding_symbol_id,
+                    "received invalid symbol id"
+                );
+                continue;
+            }
 
-            match decoder_state
-                .decoder
-                .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id)
-            {
-                Ok(()) => {
-                    *decoder_state
-                        .recipient_chunks
-                        .entry(parsed_message.recipient_hash)
-                        .or_insert(0) += 1;
+            if message_state.seen_esis[encoding_symbol_id] {
+                // duplicate symbol
+                tracing::warn!(
+                    self_id =? self.self_id,
+                    author =? parsed_message.author,
+                    unix_ts_ms = parsed_message.unix_ts_ms,
+                    app_message_hash =? parsed_message.app_message_hash,
+                    encoding_symbol_id,
+                    "received duplicate symbol"
+                );
+                continue;
+            }
+            message_state.seen_esis.set(encoding_symbol_id, true);
 
-                    if decoder_state.decoder.try_decode() {
-                        let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data()
-                        else {
-                            tracing::error!("failed to reconstruct source data");
-                            continue;
-                        };
-
-                        if app_message_len > 10_000 {
-                            tracing::debug!(
-                                ?self_id,
-                                author =? parsed_message.author,
-                                unix_ts_ms = parsed_message.unix_ts_ms,
-                                app_message_hash =? parsed_message.app_message_hash,
-                                encoding_symbol_id,
-                                app_message_len,
-                                "reconstructed large message"
-                            );
-                        }
-
-                        decoded.truncate(app_message_len);
-                        // successfully decoded, so pop out from pending_messages
-                        self.pending_message_cache
-                            .pop(&key)
-                            .expect("decoder exists");
-                        self.recently_decoded_cache.push(key, 0);
-
-                        messages.push((parsed_message.author, Bytes::from(decoded)));
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        ?err,
-                        ?key,
-                        "ManagedDecoder::received_encoded_symbol returned error",
+            if parsed_message.broadcast {
+                if self_hash == parsed_message.recipient_hash {
+                    let epoch_validators = epoch_validators
+                        .get_mut(&Epoch(parsed_message.epoch))
+                        .expect("parsed message was validated");
+                    let targets =
+                        epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
+                    batch_guard.queue_broadcast(
+                        payload_start_idx,
+                        payload_end_idx,
+                        &parsed_message.author,
+                        || targets.view().keys().copied().collect(),
+                        message.stride,
                     )
                 }
+
+                // forward all broadcast packets to full nodes
+                full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
             }
-        }
 
-        while self.pending_message_cache.len() > PENDING_MESSAGE_CACHE_SIZE.into() {
-            let (key, decoder_state) = self.pending_message_cache.pop_lru().expect("nonempty");
-            tracing::debug!(
-                num_source_symbols = decoder_state.decoder.num_source_symbols(),
-                num_encoded_symbols_received = decoder_state.decoder.num_encoded_symbols_received(),
-                inactivation_symbol_threshold =
-                    decoder_state.decoder.inactivation_symbol_threshold(),
-                recipient_chunks =? decoder_state.recipient_chunks,
-                ?key,
-                "dropped unfinished ManagedDecoder"
-            )
+            self.encoded_symbol_sender
+                .send(parsed_message)
+                .expect("receiver not closed");
         }
-
-        messages
     }
 }
 
