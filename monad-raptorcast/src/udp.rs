@@ -18,6 +18,7 @@ use monad_dataplane::event_loop::RecvMsg;
 use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_raptor::{ManagedDecoder, SOURCE_SYMBOLS_MIN};
 use monad_types::{Epoch, NodeId};
+use rand::seq::SliceRandom;
 
 use crate::{
     util::{compute_hash, AppMessageHash, BuildTarget, EpochValidators, HexBytes, NodeIdHash},
@@ -549,7 +550,9 @@ where
                 .sum();
             let mut running_stake = 0;
             let mut chunk_idx = 0_u16;
-            for (node_id, validator) in epoch_validators.view().iter() {
+            let mut nodes: Vec<_> = epoch_validators.view().iter().collect();
+            nodes.shuffle(&mut rand::thread_rng());
+            for (node_id, validator) in &nodes {
                 let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
                 running_stake += validator.stake.0;
                 let end_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
