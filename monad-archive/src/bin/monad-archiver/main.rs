@@ -26,8 +26,14 @@ async fn main() -> Result<()> {
         Duration::from_secs(15),
     )?;
 
-    let block_data_source = args.block_data_source.build(&metrics).await?;
     let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
+    let block_data_source = args.block_data_source.build(&metrics).await?;
+
+    // Optional fallback
+    let fallback_block_data_source = match args.fallback_block_data_source {
+        Some(source) => Some(source.build(&metrics).await?),
+        None => None,
+    };
 
     // Confirm connectivity
     if !args.skip_connectivity_check {
@@ -87,6 +93,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(archive_worker(
         block_data_source,
+        fallback_block_data_source,
         archive_writer,
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,

@@ -23,6 +23,7 @@ use crate::prelude::*;
 /// * `metrics` - Metrics collection interface
 pub async fn archive_worker(
     block_data_source: (impl BlockDataReader + Sync),
+    fallback_source: Option<(impl BlockDataReader + Sync)>,
     archive_writer: BlockDataArchive,
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
@@ -84,6 +85,7 @@ pub async fn archive_worker(
 
         let latest_uploaded = archive_blocks(
             &block_data_source,
+            &fallback_source,
             start_block..=end_block,
             &archive_writer,
             max_concurrent_blocks,
@@ -100,6 +102,7 @@ pub async fn archive_worker(
 
 async fn archive_blocks(
     reader: &(impl BlockDataReader + Sync),
+    fallback_reader: &Option<impl BlockDataReader + Sync>,
     range: RangeInclusive<u64>,
     archiver: &BlockDataArchive,
     concurrency: usize,
@@ -108,7 +111,7 @@ async fn archive_blocks(
 
     let res: Result<(), u64> = futures::stream::iter(range.clone())
         .map(|block_num: u64| async move {
-            match archive_block(reader, block_num, archiver).await {
+            match archive_block(reader, fallback_reader, block_num, archiver).await {
                 Ok(_) => Ok(block_num),
                 Err(e) => {
                     error!("Failed to handle block: {e:?}");
@@ -149,6 +152,7 @@ async fn archive_blocks(
 
 async fn archive_block(
     reader: &impl BlockDataReader,
+    fallback: &Option<impl BlockDataReader>,
     block_num: u64,
     archiver: &BlockDataArchive,
 ) -> Result<()> {
@@ -156,19 +160,54 @@ async fn archive_block(
 
     try_join!(
         async {
-            // NOTE: is it ok to error out here? Previous behavior returned Ok(())
-            // with a warn if the header was not found.
-            // That seems incorrect, but should investigate
-            let block = reader.get_block_by_number(block_num).await?;
+            let block = match reader.get_block_by_number(block_num).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let Some(fallback) = fallback.as_ref() else {
+                        return Err(e);
+                    };
+                    warn!(
+                        ?e,
+                        block_num, "Failed to read block from primary source, trying fallback..."
+                    );
+                    fallback.get_block_by_number(block_num).await?
+                }
+            };
             num_txs = Some(block.body.transactions.len());
             archiver.archive_block(block).await
         },
         async {
-            let receipts = reader.get_block_receipts(block_num).await?;
+            let receipts = match reader.get_block_receipts(block_num).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let Some(fallback) = fallback.as_ref() else {
+                        return Err(e);
+                    };
+                    warn!(
+                        ?e,
+                        block_num,
+                        "Failed to read block receipts from primary source, trying fallback..."
+                    );
+                    fallback.get_block_receipts(block_num).await?
+                }
+            };
             archiver.archive_receipts(receipts, block_num).await
         },
         async {
-            let traces = reader.get_block_traces(block_num).await?;
+            let traces = match reader.get_block_traces(block_num).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let Some(fallback) = fallback.as_ref() else {
+                        return Err(e);
+                    };
+                    warn!(
+                        ?e,
+                        block_num,
+                        "Failed to read block traces from primary source, trying fallback..."
+                    );
+                    fallback.get_block_traces(block_num).await?
+                }
+            };
             archiver.archive_traces(traces, block_num).await
         },
     )?;
@@ -286,6 +325,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_block_memory_fallback() {
+        let (reader, _) = memory_sink_source();
+        let (fallback_reader, archiver) = memory_sink_source();
+
+        let block_num = 10;
+        let block = mock_block(block_num, vec![mock_tx()]);
+        let receipts = vec![mock_rx()];
+        let traces = vec![vec![], vec![2]];
+
+        mock_source(
+            &fallback_reader,
+            [(block.clone(), receipts.clone(), traces.clone())],
+        )
+        .await;
+
+        let res = archive_block(&reader, &Some(fallback_reader), block_num, &archiver).await;
+        assert!(res.is_ok());
+        assert_eq!(
+            archiver.get_block_by_number(block_num).await.unwrap(),
+            block
+        );
+        assert_eq!(archiver.get_block_traces(block_num).await.unwrap(), traces);
+        assert_eq!(
+            archiver.get_block_receipts(block_num).await.unwrap(),
+            receipts
+        );
+    }
+
+    #[tokio::test]
     async fn archive_block_memory() {
         let (reader, archiver) = memory_sink_source();
 
@@ -296,7 +364,13 @@ mod tests {
 
         mock_source(&reader, [(block.clone(), receipts.clone(), traces.clone())]).await;
 
-        let res = archive_block(&reader, block_num, &archiver).await;
+        let res = archive_block(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            block_num,
+            &archiver,
+        )
+        .await;
         assert!(res.is_ok());
         assert_eq!(
             archiver.get_block_by_number(block_num).await.unwrap(),
@@ -324,7 +398,14 @@ mod tests {
 
         assert_eq!(reader.get_latest(LatestKind::Uploaded).await.unwrap(), 10);
 
-        let end_block = archive_blocks(&reader, 0..=10, &archiver, 3).await;
+        let end_block = archive_blocks(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            0..=10,
+            &archiver,
+            3,
+        )
+        .await;
 
         assert_eq!(end_block, 10);
         assert_eq!(archiver.get_latest(LatestKind::Uploaded).await.unwrap(), 10);
@@ -356,7 +437,14 @@ mod tests {
             latest_source
         );
 
-        let end_block = archive_blocks(&reader, 0..=latest_source, &archiver, 3).await;
+        let end_block = archive_blocks(
+            &reader,
+            &None::<BlockDataReaderErased>,
+            0..=latest_source,
+            &archiver,
+            3,
+        )
+        .await;
 
         assert_eq!(end_block, end_of_first_chunk);
         assert_eq!(
