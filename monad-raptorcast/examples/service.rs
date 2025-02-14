@@ -23,10 +23,6 @@ struct Args {
     /// addresses
     #[arg(short, long, required=true, num_args=1..)]
     addresses: Vec<String>,
-
-    /// full nodes
-    #[arg(short, long, required=false, num_args=1..)]
-    full_nodes: Vec<String>,
 }
 
 pub fn main() {
@@ -41,14 +37,7 @@ pub fn main() {
     let num_rt = 2;
     let threads_per_rt = 2;
 
-    service(
-        num_rt,
-        threads_per_rt,
-        args.addresses,
-        args.full_nodes,
-        1,
-        payload_size,
-    );
+    service(num_rt, threads_per_rt, args.addresses, 1, payload_size);
 }
 
 type SignatureType = SecpSignature;
@@ -58,14 +47,12 @@ fn service(
     num_rt: usize,
     threads_per_rt: usize,
     addresses: Vec<String>,
-    full_nodes: Vec<String>,
     num_broadcast: u32,
     message_len: usize,
 ) {
     assert!(message_len >= 4);
-
-    let num_validators = addresses.len() as u32;
-    let validator_keys: Vec<_> = (0..num_validators)
+    let num_peers = addresses.len() as u32;
+    let keys: Vec<_> = (0..num_peers)
         .map(|idx| {
             let mut privkey: [u8; 32] = [1; 32];
             let idx_bytes = idx.to_le_bytes();
@@ -77,38 +64,19 @@ fn service(
         })
         .collect();
 
-    let validator_node_ids: Vec<NodeId<PubKeyType>> = validator_keys
+    let peers: Vec<NodeId<PubKeyType>> = keys
         .iter()
         .map(|keypair| NodeId::new(keypair.pubkey()))
         .collect();
 
-    let num_full_nodes = full_nodes.len() as u32;
-    let full_node_keys: Vec<_> = (0..num_full_nodes)
-        .map(|idx| {
-            let mut privkey: [u8; 32] = [2; 32];
-            let idx_bytes = idx.to_le_bytes();
-            privkey[0] = idx_bytes[0];
-            privkey[1] = idx_bytes[1];
-            privkey[2] = idx_bytes[2];
-            privkey[3] = idx_bytes[3];
-            <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(&mut privkey).unwrap()
-        })
-        .collect();
-
-    let full_node_node_ids: Vec<NodeId<PubKeyType>> = full_node_keys
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = peers
         .iter()
-        .map(|keypair| NodeId::new(keypair.pubkey()))
-        .collect();
-
-    let all_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = validator_node_ids
-        .iter()
-        .chain(full_node_node_ids.iter())
         .copied()
-        .zip(addresses.iter().chain(full_nodes.iter()))
+        .zip(addresses)
         .map(|(peer, address)| (peer, address.parse().unwrap()))
         .collect();
 
-    let (tx_writer, tx_reader): (BTreeMap<_, _>, Vec<_>) = validator_node_ids
+    let (tx_writer, tx_reader): (BTreeMap<_, _>, Vec<_>) = peers
         .iter()
         .copied()
         .map(|peer| {
@@ -132,22 +100,18 @@ fn service(
 
     rts.iter()
         .cycle()
-        .zip(validator_keys.into_iter().zip(tx_reader))
+        .zip(keys.into_iter().zip(tx_reader))
         .for_each(|(rt, (key, mut tx_reader))| {
             let rx_writer = rx_writer.clone();
             let me = NodeId::new(key.pubkey());
-            let validator_set = validator_node_ids
-                .iter()
-                .map(|peer| (*peer, Stake(0)))
-                .collect();
-            let full_nodes = full_node_node_ids.clone();
-            let server_address = *all_addresses.get(&me).unwrap();
-            let known_addresses = all_addresses.clone();
+            let all_peers = peers.clone();
+            let server_address = *known_addresses.get(&me).unwrap();
+            let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
                 let service_config = RaptorCastConfig {
                     key,
-                    full_nodes,
+                    full_nodes: Default::default(),
                     known_addresses,
                     redundancy: 2,
                     local_addr: server_address,
@@ -163,7 +127,7 @@ fn service(
                 >::new(service_config);
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
-                    validator_set,
+                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),
                 }]);
                 loop {
                     tokio::select! {
@@ -197,7 +161,7 @@ fn service(
                 message,
             })
             .expect("reader should never be dropped");
-        expected_message_ids.insert(message.id, num_validators);
+        expected_message_ids.insert(message.id, num_peers);
     }
     while let Ok((_, MockEvent((tx, msg_id)))) = rx_reader.recv_timeout(Duration::from_secs(100)) {
         if &tx == tx_peer {

@@ -69,7 +69,7 @@ pub fn different_symbol_sizes() {
             2, // redundancy,
             0, // epoch_no
             0, // unix_ts_ms
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         );
 
@@ -126,7 +126,7 @@ pub fn buffer_count_overflow() {
         2, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 
@@ -183,7 +183,7 @@ pub fn oversized_message() {
         2, // redundancy,
         0, // epoch_no
         0, // unix_ts_ms
-        BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+        BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 

@@ -424,7 +424,7 @@ where
 
     let is_broadcast = matches!(
         build_target,
-        BuildTarget::Broadcast(..) | BuildTarget::Raptorcast(..)
+        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_)
     );
 
     // TODO make this more sophisticated
@@ -438,7 +438,7 @@ where
     let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
 
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(..));
+    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
 
     let num_packets: usize = {
         let mut num_packets: usize = (app_message_len
@@ -448,9 +448,9 @@ where
         .try_into()
         .expect("num_packets doesn't fit in usize");
 
-        if let BuildTarget::Broadcast(epoch_validators, full_nodes_view) = &build_target {
+        if let BuildTarget::Broadcast(epoch_validators) = &build_target {
             num_packets = num_packets
-                .checked_mul(epoch_validators.view().len() + full_nodes_view.view().len())
+                .checked_mul(epoch_validators.view().len())
                 .expect("num_packets doesn't fit in usize")
         }
 
@@ -498,19 +498,14 @@ where
                 *chunk_symbol_id = Some(chunk_idx as u16);
             }
         }
-        BuildTarget::Broadcast(epoch_validators, full_nodes_view) => {
+        BuildTarget::Broadcast(epoch_validators) => {
             assert!(is_broadcast && !is_raptor_broadcast);
-            let total_destinations = epoch_validators.view().len() + full_nodes_view.view().len();
-            let mut running_destination_count = 0;
-            for node_id in epoch_validators
-                .view()
-                .iter()
-                .map(|(node_id, _validator)| node_id)
-                .chain(full_nodes_view.view().iter())
-            {
-                let start_idx: usize = num_packets * running_destination_count / total_destinations;
-                running_destination_count += 1;
-                let end_idx: usize = num_packets * running_destination_count / total_destinations;
+            let total_validators = epoch_validators.view().len();
+            let mut running_validator_count = 0;
+            for (node_id, _validator) in epoch_validators.view().iter() {
+                let start_idx: usize = num_packets * running_validator_count / total_validators;
+                running_validator_count += 1;
+                let end_idx: usize = num_packets * running_validator_count / total_validators;
 
                 if start_idx == end_idx {
                     continue;
@@ -532,7 +527,7 @@ where
                 }
             }
         }
-        BuildTarget::Raptorcast(epoch_validators, full_nodes_view) => {
+        BuildTarget::Raptorcast((epoch_validators, full_nodes_view)) => {
             assert!(is_broadcast && is_raptor_broadcast);
 
             tracing::trace!(
@@ -1224,7 +1219,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         );
 
@@ -1261,7 +1256,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         );
 
@@ -1309,7 +1304,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Raptorcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         );
 
@@ -1333,7 +1328,6 @@ mod tests {
     fn test_broadcast_chunk_ids() {
         let (key, mut validators, known_addresses) = validator_set();
         let epoch_validators = validators.view_without(vec![&NodeId::new(key.pubkey())]);
-        let full_nodes = FullNodes::new(Vec::new());
 
         let app_message: Bytes = vec![1_u8; 1024 * 8].into();
 
@@ -1344,7 +1338,7 @@ mod tests {
             2,     // redundancy,
             EPOCH, // epoch_no
             UNIX_TS_MS,
-            BuildTarget::Broadcast(epoch_validators, full_nodes.view()),
+            BuildTarget::Broadcast(epoch_validators),
             &known_addresses,
         );
 
