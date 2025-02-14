@@ -51,6 +51,19 @@ services:
       - ./node:/monad
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    command: |
+      monad-node
+      --secp-identity /monad/config/id-secp
+      --bls-identity /monad/config/id-bls
+      --node-config /monad/config/node.toml
+      --forkpoint-config /monad/config/forkpoint.genesis.toml
+      --genesis-path /monad/config/genesis.json
+      --statesync-ipc-path /monad/statesync.sock
+      --wal-path /monad/wal
+      --mempool-ipc-path /monad/mempool.sock
+      --control-panel-ipc-path /monad/controlpanel.sock
+      --ledger-path /monad/ledger
+      --triedb-path /monad/triedb
 
   monad_rpc:
     build:
@@ -66,6 +79,11 @@ services:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     ports:
       - "8080:8080"
+    command: |
+      monad-rpc
+      --ipc-path /monad/mempool.sock
+      --triedb-path /monad/triedb
+      --chain-id 20143
 
   e2e_tester:
     image: monad-python:latest
