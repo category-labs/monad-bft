@@ -73,9 +73,6 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         validation::Error::InvalidSignature => {
             metrics.validation_errors.invalid_signature += 1;
         }
-        validation::Error::AuthorNotSender => {
-            metrics.validation_errors.author_not_sender += 1;
-        }
         validation::Error::InvalidTcRound => {
             metrics.validation_errors.invalid_tc_round += 1;
         }

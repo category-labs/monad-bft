@@ -147,9 +147,18 @@ impl CertificateSignature for NopSignature {
 impl CertificateSignatureRecoverable for NopSignature {
     fn recover_pubkey(
         &self,
-        _msg: &[u8],
+        msg: &[u8],
     ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
-        Ok(self.pubkey)
+        let id = {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(msg);
+            hasher.finish()
+        };
+        if self.id == id {
+            Ok(self.pubkey)
+        } else {
+            Err("signature doesn't match message")
+        }
     }
 }
 

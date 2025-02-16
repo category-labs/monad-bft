@@ -159,7 +159,7 @@ where
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        sender: &SCT::NodeIdPubKey,
+        _sender: &SCT::NodeIdPubKey,
     ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
@@ -177,12 +177,7 @@ where
             .get_val_set(&epoch)
             .ok_or(Error::ValidatorSetDataUnavailable)?;
 
-        let author = verify_author(
-            validator_set.get_members(),
-            sender,
-            &msg,
-            &self.author_signature,
-        )?;
+        let author = verify_author(validator_set.get_members(), &msg, &self.author_signature)?;
 
         let result = Verified {
             author: NodeId::new(author),
@@ -576,22 +571,13 @@ where
     Ok(())
 }
 
-/// Verify that the message is signed by the sender and that the sender is a
-/// staked validator
+/// Verify that the author is a staked validator
 fn verify_author<ST: CertificateSignatureRecoverable>(
     validators: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
-    sender: &CertificateSignaturePubKey<ST>,
     msg: &Hash,
     sig: &ST,
 ) -> Result<CertificateSignaturePubKey<ST>, Error> {
-    let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
-    sig.verify(msg.as_ref(), &pubkey)
-        .map_err(|_| Error::InvalidSignature)?;
-    if sender != &pubkey {
-        Err(Error::AuthorNotSender)
-    } else {
-        Ok(pubkey)
-    }
+    get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)
 }
 
 /// Extract the PubKey from the secp recoverable signature

@@ -6,8 +6,6 @@ pub enum Error {
     NotWellFormed,
     /// Bad signature
     InvalidSignature,
-    /// Signature author doesn't match sender
-    AuthorNotSender,
     /// There are high qc rounds larger than the TC round
     InvalidTcRound,
     /// The SignatureCollection doesn't have supermajority of the stake signed

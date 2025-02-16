@@ -64,7 +64,6 @@ metrics!(
             invalid_author,
             not_well_formed_sig,
             invalid_signature,
-            author_not_sender,
             invalid_tc_round,
             insufficient_stake,
             invalid_seq_num,

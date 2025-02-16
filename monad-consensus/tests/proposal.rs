@@ -243,7 +243,6 @@ fn define_proposal_with_tc(
 //  - test_verify_incorrect_validator_epoch - Error::ValidatorSetDataUnavailable
 //  - test_verify_invalid_author - Error::InvalidAuthor
 //  - test_verify_invalid_signature - Error::InvalidSignature
-//  - test_verify_author_not_sender - Error::AuthorNotSender
 //  - test_verify_proposal_happy - Success
 
 // epoch determined by block round does not exist in epoch manager
@@ -299,62 +298,6 @@ fn test_verify_incorrect_block_epoch(known_round: Round, block_round: Round) {
     );
 }
 
-// sender is not equivalent to signer
-#[test]
-fn test_verify_author_not_sender() {
-    let known_epoch = Epoch(1);
-    let known_round = Round(0);
-    let val_epoch = Epoch(1);
-
-    let block_epoch = Epoch(1);
-    let block_round = Round(234);
-    let block_seq_num = SeqNum(110);
-
-    let qc_epoch = Epoch(1);
-    let qc_round = Round(233);
-    let qc_parent_round = Round(0);
-    let qc_seq_num = SeqNum(0);
-
-    let (keypairs, _, epoch_manager, val_epoch_map) =
-        setup_val_state(known_epoch, known_round, val_epoch);
-
-    let author_keypair = &keypairs[0];
-    let sender_keypair = &keypairs[1]; // this causes error
-    let author = NodeId::new(author_keypair.pubkey());
-
-    let (block, payload) = setup_block(
-        author,
-        block_epoch,
-        block_round,
-        block_seq_num,
-        qc_epoch,
-        qc_round,
-        qc_parent_round,
-        qc_seq_num,
-        &[
-            keypairs[0].pubkey(),
-            keypairs[1].pubkey(),
-            keypairs[2].pubkey(),
-        ],
-    );
-
-    let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block_header: block,
-        block_body: payload,
-        last_round_tc: None,
-    });
-
-    let conmsg = ConsensusMessage {
-        version: 1,
-        message: proposal,
-    };
-    let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
-    assert_eq!(
-        sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
-            .unwrap_err(),
-        Error::AuthorNotSender
-    );
-}
 // signed message is different than message to verify
 #[test]
 fn test_verify_invalid_signature() {
