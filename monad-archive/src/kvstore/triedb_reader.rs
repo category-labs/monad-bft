@@ -46,7 +46,7 @@ impl BlockDataReader for TriedbReader {
             .db
             .get_transactions(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_num))))
             .await
-            .map_err(|e| eyre!("{e}"))?;
+            .map_err(|e| eyre!("Header exists but not transactions, block {block_num} might be statesynced: {e:?}"))?;
 
         Ok(Block {
             header: header.header,

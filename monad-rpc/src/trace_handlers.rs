@@ -305,35 +305,34 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
         .is_some()
     {
-        let tx_ids = triedb_env
-            .get_transactions(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?
-            .iter()
-            .map(|tx| *tx.tx.tx_hash())
-            .collect::<Vec<_>>();
-        let call_frames = triedb_env
-            .get_call_frames(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
+        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+            let tx_ids = transactions
+                .iter()
+                .map(|tx| *tx.tx.tx_hash())
+                .collect::<Vec<_>>();
+            let call_frames = triedb_env
+                .get_call_frames(block_key)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
 
-        for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
-            let rlp_call_frame = &mut call_frame.as_slice();
-            let Some(traces) =
-                decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer).await?
-            else {
-                return Err(JsonRpcError::internal_error("traces not found".to_string()));
-            };
-            resp.push(MonadDebugTraceBlockResult {
-                tx_hash: FixedData::<32>::from(tx_id),
-                result: traces,
-            });
+            for (call_frame, tx_id) in call_frames.iter().zip(tx_ids.into_iter()) {
+                let rlp_call_frame = &mut call_frame.as_slice();
+                let Some(traces) =
+                    decode_call_frame(triedb_env, rlp_call_frame, block_key, &params.tracer)
+                        .await?
+                else {
+                    return Err(JsonRpcError::internal_error("traces not found".to_string()));
+                };
+                resp.push(MonadDebugTraceBlockResult {
+                    tx_hash: FixedData::<32>::from(tx_id),
+                    result: traces,
+                });
+            }
+            return Ok(resp);
         }
-
-        return Ok(resp);
     }
 
-    // try archive if block number not found and archive reader specified
+    // try archive if block number or transactions not found and archive reader specified
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {

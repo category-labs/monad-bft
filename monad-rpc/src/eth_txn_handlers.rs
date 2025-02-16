@@ -253,16 +253,18 @@ pub async fn monad_eth_getLogs<T: Triedb>(
                         &filter_clone.topics,
                     ) {
                         // try fetching from triedb
-                        let transactions = triedb_env
-                            .get_transactions(block_key)
-                            .await
-                            .map_err(JsonRpcError::internal_error)?;
-                        let bloom_receipts = triedb_env
-                            .get_receipts(block_key)
-                            .await
-                            .map_err(JsonRpcError::internal_error)?;
-                        // successfully fetched from triedb
-                        Ok(Either::Left((header, transactions, bloom_receipts)))
+                        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+                            let bloom_receipts = triedb_env
+                                .get_receipts(block_key)
+                                .await
+                                .map_err(JsonRpcError::internal_error)?;
+                            // successfully fetched from triedb
+                            Ok(Either::Left((header, transactions, bloom_receipts)))
+                        } else {
+                            // header exists but not transactions, block is statesynced
+                            // pass block number to try for archive
+                            Ok(Either::Right(block_num))
+                        }
                     } else {
                         Ok(Either::Left((header, vec![], vec![])))
                     }

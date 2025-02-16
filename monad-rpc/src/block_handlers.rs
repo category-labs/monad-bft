@@ -184,19 +184,18 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let transactions = triedb_env
-            .get_transactions(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        return parse_block_content(
-            header.hash,
-            header.header,
-            transactions,
-            params.return_full_txns,
-        );
+        // if block header is present but transactions are not, the block is statesynced
+        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+            return parse_block_content(
+                header.hash,
+                header.header,
+                transactions,
+                params.return_full_txns,
+            );
+        }
     }
 
-    // try archive if header not found and archive reader specified
+    // try archive if header or transactions not found and archive reader specified
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
@@ -280,14 +279,13 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
         .is_some()
     {
-        let transactions = triedb_env
-            .get_transactions(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        return Ok(Some(format!("0x{:x}", transactions.len())));
+        // if block header is present but transactions are not, the block is statesynced
+        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+            return Ok(Some(format!("0x{:x}", transactions.len())));
+        }
     }
 
-    // try archive if block number not found and archive reader specified
+    // try archive if block number or transactions not found and archive reader specified
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
@@ -398,25 +396,24 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?
     {
-        let transactions = triedb_env
-            .get_transactions(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        let receipts = triedb_env
-            .get_receipts(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        let block_receipts = map_block_receipts(
-            transactions,
-            receipts,
-            &header.header,
-            header.hash,
-            MonadTransactionReceipt,
-        )?;
-        return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+        // if block header is present but transactions are not, the block is statesynced
+        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+            let receipts = triedb_env
+                .get_receipts(block_key)
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            let block_receipts = map_block_receipts(
+                transactions,
+                receipts,
+                &header.header,
+                header.hash,
+                MonadTransactionReceipt,
+            )?;
+            return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+        }
     }
 
-    // try archive if header not found and archive reader specified
+    // try archive if header or transactions not found and archive reader specified
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
