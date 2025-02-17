@@ -792,7 +792,7 @@ async fn main() -> std::io::Result<()> {
             App::new()
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::JsonConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
@@ -804,7 +804,7 @@ async fn main() -> std::io::Result<()> {
         None => HttpServer::new(move || {
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::JsonConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
