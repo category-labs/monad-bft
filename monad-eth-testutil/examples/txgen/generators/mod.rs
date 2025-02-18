@@ -37,14 +37,14 @@ pub fn make_generator(
         GeneratorConfig::FewToMany { tx_type } => Box::new(CreateAccountsGenerator {
             recipient_keys: SeededKeyPool::new(config.recipients, config.recipient_seed),
             tx_type,
-            erc20: deployed_contract.erc20()?,
+            erc20: deployed_contract.erc20().ok(),
             tx_per_sender,
         }),
         GeneratorConfig::ManyToMany { tx_type } => Box::new(ManyToManyGenerator {
             recipient_keys,
             tx_type,
             tx_per_sender,
-            erc20: deployed_contract.erc20()?,
+            erc20: deployed_contract.erc20().ok(),
         }),
         GeneratorConfig::Duplicates => Box::new(DuplicateTxGenerator {
             recipient_keys,

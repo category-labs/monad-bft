@@ -5,7 +5,7 @@ pub struct ManyToManyGenerator {
     pub recipient_keys: SeededKeyPool,
     pub tx_per_sender: usize,
     pub tx_type: TxType,
-    pub erc20: ERC20,
+    pub erc20: Option<ERC20>,
 }
 
 impl Generator for ManyToManyGenerator {
@@ -26,7 +26,15 @@ impl Generator for ManyToManyGenerator {
                 let to = self.recipient_keys.next_addr(); // change sampling strategy?
 
                 let tx = match self.tx_type {
-                    TxType::ERC20 => erc20_transfer(sender, to, U256::from(10), &self.erc20, ctx),
+                    TxType::ERC20 => erc20_transfer(
+                        sender,
+                        to,
+                        U256::from(10),
+                        self.erc20
+                            .as_ref()
+                            .expect("No ERC20 contract found, but tx_type is erc20"),
+                        ctx,
+                    ),
                     TxType::Native => native_transfer(sender, to, U256::from(10), ctx),
                 };
 
