@@ -192,7 +192,11 @@ pub async fn monad_eth_getLogs<T: Triedb>(
 
             let from_block = get_block_key_from_tag(triedb_env, from_block_tag);
             let to_block = get_block_key_from_tag(triedb_env, to_block_tag);
-            (from_block.seq_num().0, to_block.seq_num().0)
+            let latest_block = get_block_key_from_tag(triedb_env, BlockTags::Latest);
+            (
+                from_block.seq_num().0,
+                std::cmp::min(to_block.seq_num().0, latest_block.seq_num().0),
+            )
         }
         FilterBlockOption::AtBlockHash(block_hash) => {
             let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
