@@ -167,6 +167,7 @@ pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 pub async fn monad_eth_getLogs<T: Triedb>(
     triedb_env: &T,
     archive_reader: &Option<ArchiveReader>,
+    max_block_range: u64,
     p: MonadEthGetLogsParams,
 ) -> JsonRpcResult<MonadEthGetLogsResult> {
     trace!("monad_eth_getLogs: {p:?}");
@@ -224,7 +225,7 @@ pub async fn monad_eth_getLogs<T: Triedb>(
     if from_block > to_block {
         return Err(FilterError::InvalidBlockRange.into());
     }
-    if to_block - from_block > 1000 {
+    if to_block - from_block > max_block_range {
         return Err(FilterError::RangeTooLarge.into());
     }
 

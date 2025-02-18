@@ -45,6 +45,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub allow_unprotected_txs: bool,
 
+    /// Set the max block range for eth_getLogs
+    #[arg(long, default_value_t = 1000)]
+    pub eth_get_logs_max_block_range: u64,
+
     /// Set the max concurrent requests for eth_call and eth_estimateGas
     #[arg(long, default_value_t = 1000)]
     pub eth_call_max_concurrent_requests: u32,
@@ -67,6 +71,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 20)]
     pub triedb_max_async_traverse_concurrency: u32,
 
+    /// Set the RPC rayon threadpool size
     #[arg(long, default_value_t = 1)]
     pub compute_threadpool_size: usize,
 

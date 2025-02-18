@@ -262,9 +262,14 @@ async fn rpc_select(
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getLogs(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
+            monad_eth_getLogs(
+                triedb_env,
+                &app_state.archive_reader,
+                app_state.logs_max_block_range,
+                params,
+            )
+            .await
+            .map(serialize_result)?
         }
         "eth_getTransactionByHash" => {
             if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
@@ -521,6 +526,7 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
+    logs_max_block_range: u64,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -543,6 +549,7 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
+        logs_max_block_range: u64,
     ) -> Self {
         Self {
             mempool_sender,
@@ -555,6 +562,7 @@ impl MonadRpcResources {
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
+            logs_max_block_range,
         }
     }
 }
@@ -768,6 +776,7 @@ async fn main() -> std::io::Result<()> {
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
+        args.eth_get_logs_max_block_range,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -877,6 +886,7 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            logs_max_block_range: 1000,
         };
         let app = test::init_service(
             App::new()
