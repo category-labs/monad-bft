@@ -419,16 +419,37 @@ pub enum BlockTagOrHash {
     Hash(EthHash),
 }
 
+// EIP-1898 allows users to pass a block tag or a block hash either as a string or as an object.
+// https://eips.ethereum.org/EIPS/eip-1898
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BlockTagOrHashHelper {
+    BlockTags(BlockTags),
+    Hash(EthHash),
+    WithBlockTags {
+        #[serde(rename = "blockNumber")]
+        tags: BlockTags,
+    },
+
+    WithHash {
+        #[serde(rename = "blockHash")]
+        hash: EthHash,
+        #[serde(default, rename = "camelCase")]
+        require_canonical: bool,
+    },
+}
+
 impl<'de> Deserialize<'de> for BlockTagOrHash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
-        let buf = String::deserialize(deserializer)?;
-        BlockTags::from_str(&buf)
-            .map(BlockTagOrHash::BlockTags)
-            .or_else(|_| EthHash::from_str(&buf).map(BlockTagOrHash::Hash))
-            .map_err(|e| serde::de::Error::custom(format!("BlockTagOrHash parse failed: {e:?}")))
+        match BlockTagOrHashHelper::deserialize(deserializer)? {
+            BlockTagOrHashHelper::BlockTags(tags) => Ok(BlockTagOrHash::BlockTags(tags)),
+            BlockTagOrHashHelper::Hash(hash) => Ok(BlockTagOrHash::Hash(hash)),
+            BlockTagOrHashHelper::WithBlockTags { tags } => Ok(BlockTagOrHash::BlockTags(tags)),
+            BlockTagOrHashHelper::WithHash { hash, .. } => Ok(BlockTagOrHash::Hash(hash)),
+        }
     }
 }
 
