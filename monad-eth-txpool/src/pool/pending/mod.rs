@@ -39,6 +39,10 @@ impl PendingTxMap {
         self.num_txs >= PROMOTE_TXS_WATERMARK
     }
 
+    pub fn iter_txs(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+        self.txs.values().flat_map(PendingTxList::iter)
+    }
+
     pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
         self.txs.values_mut().flat_map(PendingTxList::iter_mut)
     }

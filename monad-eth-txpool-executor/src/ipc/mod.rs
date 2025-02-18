@@ -2,9 +2,14 @@ use std::{future::Future, io, pin::Pin, task::Poll, time::Duration};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use futures::{Stream, StreamExt};
-use monad_eth_txpool::EthTxPoolSnapshotManager;
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
+use monad_eth_txpool::EthTxPool;
 use monad_eth_txpool_ipc::EthTxPoolIpcStream;
-use monad_eth_txpool_types::EthTxPoolEvent;
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
+use monad_state_backend::StateBackend;
 use pin_project::pin_project;
 use tokio::{
     net::UnixListener,
@@ -20,20 +25,30 @@ const MAX_BATCH_LEN: usize = 128;
 const BATCH_TIMER_INTERVAL_MS: u64 = 10;
 
 #[pin_project(project = EthTxPoolIpcServerProjected)]
-pub struct EthTxPoolIpcServer {
+pub struct EthTxPoolIpcServer<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
     #[pin]
     listener: UnixListener,
 
     connections: Vec<EthTxPoolIpcStream>,
 
-    snapshot_manager: EthTxPoolSnapshotManager,
+    pub pool: EthTxPool<ST, SCT, SBT>,
 
     batch: Vec<Recovered<TxEnvelope>>,
     #[pin]
     batch_timer: Sleep,
 }
 
-impl EthTxPoolIpcServer {
+impl<ST, SCT, SBT> EthTxPoolIpcServer<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
     pub fn new(
         EthTxPoolIpcConfig {
             bind_path,
@@ -41,6 +56,7 @@ impl EthTxPoolIpcServer {
             max_queued_batches,
             queued_batches_watermark,
         }: EthTxPoolIpcConfig,
+        pool: EthTxPool<ST, SCT, SBT>,
     ) -> Result<Self, io::Error> {
         assert!(queued_batches_watermark <= max_queued_batches);
 
@@ -51,7 +67,7 @@ impl EthTxPoolIpcServer {
 
             connections: Vec::default(),
 
-            snapshot_manager: EthTxPoolSnapshotManager::default(),
+            pool,
 
             batch: Vec::default(),
             batch_timer: time::sleep(Duration::ZERO),
@@ -75,13 +91,23 @@ impl EthTxPoolIpcServer {
     }
 }
 
-impl EthTxPoolIpcServerProjected<'_> {
-    pub fn get_snapshot_manager(&mut self) -> &mut EthTxPoolSnapshotManager {
-        self.snapshot_manager
+impl<ST, SCT, SBT> EthTxPoolIpcServerProjected<'_, ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
+    pub fn generate_snapshot(&mut self) -> EthTxPoolSnapshot {
+        self.pool.generate_snapshot()
     }
 }
 
-impl Stream for EthTxPoolIpcServer {
+impl<ST, SCT, SBT> Stream for EthTxPoolIpcServer<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
     type Item = Vec<Recovered<TxEnvelope>>;
 
     fn poll_next(
@@ -93,7 +119,7 @@ impl Stream for EthTxPoolIpcServer {
 
             connections,
 
-            snapshot_manager,
+            pool,
 
             batch,
             mut batch_timer,
@@ -106,10 +132,7 @@ impl Stream for EthTxPoolIpcServer {
                     continue;
                 }
                 Ok((stream, _)) => {
-                    connections.push(EthTxPoolIpcStream::new(
-                        stream,
-                        snapshot_manager.generate_snapshot(),
-                    ));
+                    connections.push(EthTxPoolIpcStream::new(stream, pool.generate_snapshot()));
                 }
             }
         }

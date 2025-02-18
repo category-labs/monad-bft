@@ -25,13 +25,12 @@ fn criterion_benchmark(c: &mut Criterion) {
              pool,
              pending_blocks,
              metrics,
-             snapshot_manager,
              proposal_tx_limit,
              proposal_gas_limit,
              proposal_byte_limit,
          }| {
             pool.create_proposal(
-                &mut EthTxPoolEventTracker::new(metrics, snapshot_manager, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
                 block_policy.get_last_commit() + SeqNum(pending_blocks.len() as u64),
                 *proposal_tx_limit,
                 *proposal_gas_limit,

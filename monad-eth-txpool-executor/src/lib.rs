@@ -37,12 +37,10 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pool: EthTxPool<ST, SCT, SBT>,
+    ipc: Pin<Box<EthTxPoolIpcServer<ST, SCT, SBT>>>,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
     chain_config: CCT,
-
-    ipc: Pin<Box<EthTxPoolIpcServer>>,
 
     events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
@@ -73,16 +71,17 @@ where
     ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::unbounded_channel();
 
+        let pool = EthTxPool::new(
+            do_local_insert,
+            soft_tx_expiry,
+            hard_tx_expiry,
+            proposal_gas_limit,
+        );
+
         Ok(Self {
-            pool: EthTxPool::new(
-                do_local_insert,
-                soft_tx_expiry,
-                hard_tx_expiry,
-                proposal_gas_limit,
-            ),
             block_policy,
             state_backend,
-            ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config)?),
+            ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config, pool)?),
             chain_config,
 
             events_tx,
@@ -111,11 +110,7 @@ where
 
         let mut ipc_projection = self.ipc.as_mut().project();
 
-        let mut event_tracker = EthTxPoolEventTracker::new(
-            &mut self.metrics.pool,
-            ipc_projection.get_snapshot_manager(),
-            &mut ipc_events,
-        );
+        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut ipc_events);
 
         for command in commands {
             match command {
@@ -125,10 +120,11 @@ where
                             &mut self.block_policy,
                             &committed_block,
                         );
-                        self.pool
+                        ipc_projection
+                            .pool
                             .update_committed_block(&mut event_tracker, committed_block);
 
-                        let Some(forwardable_txs) = self
+                        let Some(forwardable_txs) = ipc_projection
                             .pool
                             .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                         else {
@@ -165,7 +161,7 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
-                    match self.pool.create_proposal(
+                    match ipc_projection.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
                         tx_limit,
@@ -236,7 +232,7 @@ where
                         );
                     }
 
-                    self.pool.insert_txs(
+                    ipc_projection.pool.insert_txs(
                         &mut event_tracker,
                         &self.block_policy,
                         &self.state_backend,
@@ -251,7 +247,7 @@ where
                         .get_chain_revision(round)
                         .chain_params()
                         .proposal_gas_limit;
-                    self.pool.set_tx_gas_limit(proposal_gas_limit);
+                    ipc_projection.pool.set_tx_gas_limit(proposal_gas_limit);
                 }
                 TxPoolCommand::Reset {
                     last_delay_committed_blocks,
@@ -260,7 +256,8 @@ where
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );
-                    self.pool
+                    ipc_projection
+                        .pool
                         .reset(&mut event_tracker, last_delay_committed_blocks);
                 }
             }
@@ -293,7 +290,6 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let Self {
-            pool,
             block_policy,
             state_backend,
             chain_config: _,
@@ -321,14 +317,10 @@ where
             let mut ipc_events = Vec::default();
             let mut inserted_txs = Vec::default();
 
-            let mut ipc_projection = ipc.as_mut().project();
+            let ipc_projection = ipc.as_mut().project();
 
-            pool.insert_txs(
-                &mut EthTxPoolEventTracker::new(
-                    &mut metrics.pool,
-                    ipc_projection.get_snapshot_manager(),
-                    &mut ipc_events,
-                ),
+            ipc_projection.pool.insert_txs(
+                &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
                 txs,

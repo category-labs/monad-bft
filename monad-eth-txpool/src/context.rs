@@ -6,28 +6,22 @@ use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
 
-use crate::{EthTxPoolMetrics, EthTxPoolSnapshotManager};
+use crate::EthTxPoolMetrics;
 
 pub struct EthTxPoolEventTracker<'a> {
     pub now: Instant,
 
     metrics: &'a mut EthTxPoolMetrics,
-    snapshot_manager: &'a mut EthTxPoolSnapshotManager,
     events: &'a mut Vec<EthTxPoolEvent>,
 }
 
 impl<'a> EthTxPoolEventTracker<'a> {
-    pub fn new(
-        metrics: &'a mut EthTxPoolMetrics,
-        snapshot_manager: &'a mut EthTxPoolSnapshotManager,
-        events: &'a mut Vec<EthTxPoolEvent>,
-    ) -> Self {
+    pub fn new(metrics: &'a mut EthTxPoolMetrics, events: &'a mut Vec<EthTxPoolEvent>) -> Self {
         Self {
             now: Instant::now(),
 
             metrics,
             events,
-            snapshot_manager,
         }
     }
 
@@ -37,8 +31,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         } else {
             self.metrics.insert_forwarded_txs += 1;
         }
-
-        self.snapshot_manager.add_pending(&tx_hash);
 
         self.events.push(EthTxPoolEvent::Insert {
             tx_hash,
@@ -54,8 +46,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
             self.metrics.insert_forwarded_txs += 1;
         }
 
-        self.snapshot_manager.add_tracked(&tx_hash);
-
         self.events.push(EthTxPoolEvent::Insert {
             tx_hash,
             owned,
@@ -69,9 +59,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         } else {
             self.metrics.insert_forwarded_txs += 1;
         }
-
-        self.snapshot_manager.remove_pending(&old_tx_hash);
-        self.snapshot_manager.add_pending(&new_tx_hash);
 
         self.events.push(EthTxPoolEvent::Replace {
             old_tx_hash,
@@ -87,9 +74,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         } else {
             self.metrics.insert_forwarded_txs += 1;
         }
-
-        self.snapshot_manager.remove_tracked(&old_tx_hash);
-        self.snapshot_manager.add_tracked(&new_tx_hash);
 
         self.events.push(EthTxPoolEvent::Replace {
             old_tx_hash,
@@ -146,8 +130,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         for tx_hash in tx_hashes {
             self.metrics.pending.promote_txs += 1;
 
-            self.snapshot_manager.promote(&tx_hash);
-
             self.events.push(EthTxPoolEvent::Promoted {
                 tx_hash: tx_hash.to_owned(),
             });
@@ -159,8 +141,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
         for tx_hash in tx_hashes {
             self.metrics.pending.drop_unknown_txs += 1;
-
-            self.snapshot_manager.remove_pending(&tx_hash);
 
             self.events.push(EthTxPoolEvent::Drop {
                 tx_hash,
@@ -181,8 +161,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
         for tx_hash in tx_hashes {
             self.metrics.pending.drop_low_nonce_txs += 1;
 
-            self.snapshot_manager.remove_pending(&tx_hash);
-
             self.events.push(EthTxPoolEvent::Drop {
                 tx_hash,
                 reason: EthTxPoolDropReason::NonceTooLow,
@@ -197,8 +175,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
         for tx_hash in tx_hashes {
             self.metrics.tracked.remove_committed_txs += 1;
-
-            self.snapshot_manager.remove_tracked(&tx_hash);
 
             self.events.push(EthTxPoolEvent::Commit { tx_hash });
         }
@@ -215,8 +191,6 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
         for tx_hash in tx_hashes {
             self.metrics.tracked.evict_expired_txs += 1;
-
-            self.snapshot_manager.remove_tracked(&tx_hash);
 
             self.events.push(EthTxPoolEvent::Evict {
                 tx_hash,

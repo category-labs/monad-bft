@@ -18,9 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{
-    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
-};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -91,8 +89,6 @@ where
 
     metrics: EthTxPoolMetrics,
     executor_metrics: ExecutorMetrics,
-
-    snapshot_manager: EthTxPoolSnapshotManager,
 }
 
 impl<ST, SCT, BPT, SBT> Default for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
@@ -110,8 +106,6 @@ where
 
             metrics: EthTxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
-
-            snapshot_manager: EthTxPoolSnapshotManager::default(),
         }
     }
 }
@@ -131,8 +125,6 @@ where
 
             metrics: EthTxPoolMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
-
-            snapshot_manager: EthTxPoolSnapshotManager::default(),
         }
     }
 }
@@ -212,8 +204,7 @@ where
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
         let mut events = Vec::default();
-        let mut event_tracker =
-            EthTxPoolEventTracker::new(&mut self.metrics, &mut self.snapshot_manager, &mut events);
+        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics, &mut events);
 
         for command in commands {
             match command {
@@ -403,11 +394,7 @@ where
         let tx = Recovered::new_unchecked(tx, signer);
 
         pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(
-                &mut self.metrics,
-                &mut self.snapshot_manager,
-                &mut Vec::default(),
-            ),
+            &mut EthTxPoolEventTracker::new(&mut self.metrics, &mut Vec::default()),
             block_policy,
             state_backend,
             vec![tx],

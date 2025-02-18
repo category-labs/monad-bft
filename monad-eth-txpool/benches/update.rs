@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::generate_block_with_txs;
-use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager};
+use monad_eth_txpool::{EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
 
 use self::common::{run_txpool_benches, BenchController, EXECUTION_DELAY};
@@ -26,25 +26,18 @@ fn criterion_benchmark(c: &mut Criterion) {
             assert!(pending_txs.is_empty());
 
             let mut metrics = EthTxPoolMetrics::default();
-            let mut snapshot_manager = EthTxPoolSnapshotManager::default();
 
-            let pool = BenchController::create_pool(
-                &block_policy,
-                Vec::default(),
-                &mut metrics,
-                &mut snapshot_manager,
-            );
+            let pool = BenchController::create_pool(&block_policy, Vec::default(), &mut metrics);
 
             (
                 pool,
                 metrics,
-                snapshot_manager,
                 generate_block_with_txs(Round(1), SeqNum(1), txs),
             )
         },
-        |(pool, metrics, snapshot_manager, block)| {
+        |(pool, metrics, block)| {
             pool.update_committed_block(
-                &mut EthTxPoolEventTracker::new(metrics, snapshot_manager, &mut Vec::default()),
+                &mut EthTxPoolEventTracker::new(metrics, &mut Vec::default()),
                 block.to_owned(),
             );
         },

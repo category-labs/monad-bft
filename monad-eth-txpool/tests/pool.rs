@@ -12,9 +12,7 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
-use monad_eth_txpool::{
-    EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics, EthTxPoolSnapshotManager,
-};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
@@ -110,10 +108,8 @@ fn run_custom_eth_txpool_test<const N: usize>(
 
     let mut pool = EthTxPool::default_testing();
     let mut metrics = EthTxPoolMetrics::default();
-    let mut snapshot_manager = EthTxPoolSnapshotManager::default();
     let mut ipc_events = Vec::default();
-    let mut event_tracker =
-        EthTxPoolEventTracker::new(&mut metrics, &mut snapshot_manager, &mut ipc_events);
+    let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
 
     pool.update_committed_block(
         &mut event_tracker,

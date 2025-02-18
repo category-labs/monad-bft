@@ -14,6 +14,10 @@ pub struct PendingTxList {
 }
 
 impl PendingTxList {
+    pub fn iter(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+        self.nonce_map.values()
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
         self.nonce_map.values_mut()
     }

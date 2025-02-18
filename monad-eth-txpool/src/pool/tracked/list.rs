@@ -24,6 +24,10 @@ pub struct TrackedTxList {
 }
 
 impl TrackedTxList {
+    pub fn iter(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+        self.txs.values().map(|(tx, _)| tx)
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
         self.txs.values_mut().map(|(tx, _)| tx)
     }

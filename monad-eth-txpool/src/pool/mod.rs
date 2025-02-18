@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
@@ -305,5 +305,20 @@ where
             self.tracked.num_addresses() as u64,
             self.tracked.num_txs() as u64,
         );
+    }
+
+    pub fn generate_snapshot(&self) -> EthTxPoolSnapshot {
+        EthTxPoolSnapshot {
+            pending: self
+                .pending
+                .iter_txs()
+                .map(ValidEthTransaction::hash)
+                .collect(),
+            tracked: self
+                .tracked
+                .iter_txs()
+                .map(ValidEthTransaction::hash)
+                .collect(),
+        }
     }
 }

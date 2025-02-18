@@ -85,6 +85,10 @@ where
         self.txs.values().map(TrackedTxList::num_txs).sum()
     }
 
+    pub fn iter_txs(&self) -> impl Iterator<Item = &ValidEthTransaction> {
+        self.txs.values().flat_map(TrackedTxList::iter)
+    }
+
     pub fn iter_mut_txs(&mut self) -> impl Iterator<Item = &mut ValidEthTransaction> {
         self.txs.values_mut().flat_map(TrackedTxList::iter_mut)
     }
