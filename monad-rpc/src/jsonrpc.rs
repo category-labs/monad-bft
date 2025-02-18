@@ -205,10 +205,10 @@ impl JsonRpcError {
         }
     }
 
-    pub fn resource_not_found() -> Self {
+    pub fn block_not_found() -> Self {
         Self {
-            code: -32001,
-            message: "Resource not found".into(),
+            code: -32602,
+            message: "Block requested not found".into(),
             data: None,
         }
     }

@@ -161,8 +161,7 @@ mod tests {
     use crate::eth_json_types::{BlockTags, Quantity};
 
     #[test]
-    fn eip_1898_eth_get_storage_at() {
-        // Test cases from eip-1898: https://eips.ethereum.org/EIPS/eip-1898
+    fn params_without_eip_1898() {
         let res: MonadEthGetStorageAtParams = serde_json::from_str(
             r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", "latest"]"#,
         )
@@ -178,6 +177,20 @@ mod tests {
             res.block,
             super::BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(1)))
         ));
+    }
+
+    #[test]
+    fn eip_1898_blockhash() {
+        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"}]"#).unwrap();
+        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
+        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3", "requireCanonical": false}]"#).unwrap();
+        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
+        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3", "requireCanonical": true}]"#).unwrap();
+        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
+    }
+
+    #[test]
+    fn eip_1898_blocknumber() {
         let res: MonadEthGetStorageAtParams = serde_json::from_str(
             r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockNumber": "0x0"}]"#,
         )
@@ -186,12 +199,6 @@ mod tests {
             res.block,
             super::BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(0)))
         ));
-        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"}]"#).unwrap();
-        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
-        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3", "requireCanonical": false}]"#).unwrap();
-        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
-        let res: MonadEthGetStorageAtParams = serde_json::from_str(r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3", "requireCanonical": true}]"#).unwrap();
-        assert!(matches!(res.block, super::BlockTagOrHash::Hash(_)));
         let res: MonadEthGetStorageAtParams = serde_json::from_str(
             r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0", {"blockNumber": "latest"}]"#,
         )

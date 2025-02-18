@@ -37,8 +37,8 @@ pub async fn get_block_key_from_tag_or_hash<T: Triedb>(
             let num = triedb_env
                 .get_block_number_by_hash(triedb_env.get_latest_voted_block_key(), block_hash.0)
                 .await
-                .map_err(|_| JsonRpcError::resource_not_found())?
-                .ok_or(JsonRpcError::resource_not_found())?;
+                .map_err(|_| JsonRpcError::block_not_found())?
+                .ok_or(JsonRpcError::block_not_found())?;
             Ok(triedb_env.get_block_key(SeqNum(num)))
         }
     }
