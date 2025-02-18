@@ -27,5 +27,5 @@ if(CMAKE_BUILD_TARGET STREQUAL "monad_rpc_test")
 
   monad_compile_options(monad_rpc_test)
 
-  target_link_libraries(monad_rpc_test PRIVATE -Wl,--whole-archive monad_rpc -Wl,--no-whole-archive monad_execution)
+  target_link_libraries(monad_rpc_test PRIVATE -Wl,--whole-archive monad_rpc -Wl,--no-whole-archive monad_execution evmc)
 endif()
