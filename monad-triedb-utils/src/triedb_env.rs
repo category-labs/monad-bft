@@ -13,7 +13,7 @@ use std::{
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
-use futures::channel::oneshot;
+use futures::{channel::oneshot, FutureExt};
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
@@ -168,6 +168,9 @@ impl Decodable for TxEnvelopeWithSender {
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_FINALIZED_BLOCK_CACHE_LEN: usize = 200;
+// Unfinalized chains should be very short
+const MAX_VOTED_BLOCK_CACHE_LEN: usize = 3;
 
 fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
     let latest_voted_round_before = Round(triedb_handle.latest_voted_round()?);
@@ -183,6 +186,7 @@ fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBl
 }
 
 fn polling_thread(
+    tokio_handle: tokio::runtime::Handle,
     triedb_path: PathBuf,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
@@ -219,9 +223,30 @@ fn polling_thread(
 
             last_meta_updated = Instant::now();
 
-            if last_finalized != latest_finalized || last_voted != latest_voted {
-                last_finalized = latest_finalized;
-                last_voted = latest_voted;
+            let finalized_is_updated = last_finalized != latest_finalized;
+            let voted_is_updated = last_voted != latest_voted;
+            if finalized_is_updated || voted_is_updated {
+                if finalized_is_updated {
+                    last_finalized = latest_finalized;
+                    populate_cache(
+                        &tokio_handle,
+                        &triedb_handle,
+                        meta.clone(),
+                        BlockKey::Finalized(latest_finalized),
+                    );
+                }
+                if voted_is_updated {
+                    last_voted = latest_voted;
+                    if let BlockKey::Proposed(latest_voted) = latest_voted {
+                        populate_cache(
+                            &tokio_handle,
+                            &triedb_handle,
+                            meta.clone(),
+                            BlockKey::Proposed(latest_voted),
+                        );
+                    }
+                }
+
                 let mut meta = meta.lock().expect("triedb poller mutex poisoned");
                 meta.latest_finalized = latest_finalized;
                 meta.latest_voted = latest_voted;
@@ -313,9 +338,69 @@ fn polling_thread(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn populate_cache(
+    tokio_handle: &tokio::runtime::Handle,
+    handle: &TriedbHandle,
+    meta: Arc<Mutex<TriedbEnvMeta>>,
+    block_key: BlockKey,
+) {
+    let tx_receiver = {
+        let (tx_sender, tx_receiver) = oneshot::channel();
+
+        // txn_index set to None to indiciate return all transactions
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(block_key.into(), KeyInput::TxIndex(None));
+
+        handle.traverse_triedb_async(
+            &triedb_key,
+            key_len_nibbles,
+            block_key.seq_num().0,
+            tx_sender,
+            // don't track concurrency
+            Arc::new(()),
+        );
+
+        tx_receiver.map(|maybe_tx| match maybe_tx {
+            Ok(Some(rlp_transactions)) => parse_rlp_transactions(rlp_transactions),
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
+        })
+    };
+
+    tokio_handle.spawn(async move {
+        if let Ok(txs) = tx_receiver.await {
+            let transactions = Arc::new(txs);
+            let mut meta = meta.lock().expect("mutex poisoned");
+            match block_key {
+                BlockKey::Finalized(finalized) => {
+                    meta.finalized_cache
+                        .insert(finalized, BlockCache { transactions });
+                    while meta.finalized_cache.len() > MAX_FINALIZED_BLOCK_CACHE_LEN {
+                        meta.finalized_cache.pop_first();
+                    }
+                }
+                BlockKey::Proposed(proposed) => {
+                    meta.voted_cache
+                        .insert(proposed, BlockCache { transactions });
+                    while meta.voted_cache.len() > MAX_VOTED_BLOCK_CACHE_LEN {
+                        meta.voted_cache.pop_first();
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FinalizedBlockKey(pub SeqNum);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// Note that SeqNum needs to be first, because this implements Ord/PartialOrd
 pub struct ProposedBlockKey(pub SeqNum, pub Round);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKey {
@@ -425,12 +510,20 @@ struct TriedbEnvMeta {
     latest_finalized: FinalizedBlockKey,
     latest_voted: BlockKey,
     voted_proposals: BTreeMap<SeqNum, Round>,
+
+    finalized_cache: BTreeMap<FinalizedBlockKey, BlockCache>,
+    voted_cache: BTreeMap<ProposedBlockKey, BlockCache>,
 }
 
 impl TriedbEnvMeta {
     fn latest_safe_voted(&self) -> SeqNum {
         self.latest_finalized.0 + SeqNum(1)
     }
+}
+
+#[derive(Clone)]
+struct BlockCache {
+    transactions: Arc<Vec<TxEnvelopeWithSender>>,
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -458,6 +551,8 @@ impl TriedbEnv {
             latest_finalized: FinalizedBlockKey(latest_finalized),
             latest_voted: BlockKey::Finalized(FinalizedBlockKey(latest_finalized)),
             voted_proposals: Default::default(),
+            finalized_cache: Default::default(),
+            voted_cache: Default::default(),
         }));
 
         // create mpsc channels where sender are incoming requests, and the receiver is the triedb poller
@@ -469,8 +564,10 @@ impl TriedbEnv {
         // spawn the polling thread in a dedicated thread
         let meta_cloned = meta.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
+        let tokio_handle = tokio::runtime::Handle::current();
         thread::spawn(move || {
             polling_thread(
+                tokio_handle,
                 triedb_path_cloned,
                 meta_cloned,
                 receiver_read,
@@ -485,6 +582,25 @@ impl TriedbEnv {
             mpsc_sender: sender_read,
             mpsc_sender_traverse: sender_traverse,
             meta,
+        }
+    }
+
+    fn get_block_cache(&self, key: &BlockKey) -> Option<BlockCache> {
+        match key {
+            BlockKey::Finalized(finalized) => self
+                .meta
+                .lock()
+                .expect("mutex poisoned")
+                .finalized_cache
+                .get(finalized)
+                .cloned(),
+            BlockKey::Proposed(voted) => self
+                .meta
+                .lock()
+                .expect("mutex poisoned")
+                .voted_cache
+                .get(voted)
+                .cloned(),
         }
     }
 }
@@ -867,6 +983,11 @@ impl Triedb for TriedbEnv {
         &self,
         block_key: BlockKey,
     ) -> Result<Vec<TxEnvelopeWithSender>, String> {
+        if let Some(txs) = self.get_block_cache(&block_key) {
+            // TODO avoid copy here?
+            return Ok((*txs.transactions).clone());
+        }
+
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -889,38 +1010,7 @@ impl Triedb for TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(Some(rlp_transactions)) => {
-                let mut transactions = rlp_transactions
-                    .into_iter()
-                    .map(|TraverseEntry { key, value }| {
-                        let idx: usize = alloy_rlp::decode_exact(key)?;
-                        let transaction: TxEnvelopeWithSender = alloy_rlp::decode_exact(value)?;
-
-                        Ok((idx, transaction))
-                    })
-                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
-                    .map_err(|err| {
-                        error!(?err, "error decoding result from db");
-                        String::from("error decoding from db")
-                    })?;
-                transactions.sort_by_key(|(idx, _)| *idx);
-                // check that indices are consecutive and start with 0
-                if !transactions
-                    .iter()
-                    .map(|(idx, _)| idx)
-                    .zip(0..)
-                    .all(|(&i, j)| i == j)
-                {
-                    return Err(format!(
-                        "transactions missing from db, indices={:?}",
-                        transactions.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
-                    ));
-                }
-                Ok(transactions
-                    .into_iter()
-                    .map(|(_, transaction)| transaction)
-                    .collect())
-            }
+            Ok(Some(rlp_transactions)) => parse_rlp_transactions(rlp_transactions),
             Ok(None) => {
                 error!("Error traversing db");
                 Err(String::from("error traversing db"))
@@ -1205,4 +1295,39 @@ impl Triedb for TriedbEnv {
             }
         }
     }
+}
+
+fn parse_rlp_transactions(
+    rlp_transactions: Vec<TraverseEntry>,
+) -> Result<Vec<TxEnvelopeWithSender>, String> {
+    let mut transactions = rlp_transactions
+        .into_iter()
+        .map(|TraverseEntry { key, value }| {
+            let idx: usize = alloy_rlp::decode_exact(key)?;
+            let transaction: TxEnvelopeWithSender = alloy_rlp::decode_exact(value)?;
+
+            Ok((idx, transaction))
+        })
+        .collect::<Result<Vec<_>, alloy_rlp::Error>>()
+        .map_err(|err| {
+            error!(?err, "error decoding result from db");
+            String::from("error decoding from db")
+        })?;
+    transactions.sort_by_key(|(idx, _)| *idx);
+    // check that indices are consecutive and start with 0
+    if !transactions
+        .iter()
+        .map(|(idx, _)| idx)
+        .zip(0..)
+        .all(|(&i, j)| i == j)
+    {
+        return Err(format!(
+            "transactions missing from db, indices={:?}",
+            transactions.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+        ));
+    }
+    Ok(transactions
+        .into_iter()
+        .map(|(_, transaction)| transaction)
+        .collect())
 }

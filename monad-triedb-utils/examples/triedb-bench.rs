@@ -67,7 +67,8 @@ fn generate_event_times(rng: impl Rng, test_duration: Duration, rps: f64) -> Vec
     event_times
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     let mut rng = StdRng::seed_from_u64(args.seed);
 
@@ -160,7 +161,10 @@ fn main() {
         }
     }
 
-    while !poll_futs(&mut futs, &mut response_times) {}
+    while let Some(request_result) = futs.next().await {
+        let request = request_result.expect("request failed");
+        response_times.insert(request, Instant::now());
+    }
 
     assert_eq!(num_events, response_times.len());
 
