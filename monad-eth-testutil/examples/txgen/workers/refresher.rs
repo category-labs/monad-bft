@@ -9,14 +9,39 @@ pub struct Refresher {
 
     pub client: ReqwestClient,
     pub metrics: Arc<Metrics>,
+    pub erc20: Option<ERC20>,
 
     pub delay: Duration,
-
-    pub deployed_contract: DeployedContract,
-    pub refresh_erc20_balance: bool,
 }
 
 impl Refresher {
+    pub fn new(
+        rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
+        gen_sender: mpsc::Sender<Accounts>,
+
+        client: ReqwestClient,
+        metrics: Arc<Metrics>,
+
+        delay: Duration,
+
+        deployed_contract: DeployedContract,
+        refresh_erc20_balance: bool,
+    ) -> Result<Refresher> {
+        let erc20 = if refresh_erc20_balance {
+            Some(deployed_contract.erc20().wrap_err("Cannot construct Refresher: refresh_erc20_balance arg requires erc20 contract be deployed or loaded")?)
+        } else {
+            None
+        };
+        Ok(Refresher {
+            rpc_rx,
+            gen_sender,
+            client,
+            metrics,
+            delay,
+            erc20,
+        })
+    }
+
     pub async fn run(mut self) {
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -43,19 +68,7 @@ impl Refresher {
         let client = self.client.clone();
         let metrics = self.metrics.clone();
         let gen_sender = self.gen_sender.clone();
-        let deployed_erc20 = if self.refresh_erc20_balance {
-            match self.deployed_contract {
-                DeployedContract::ERC20(erc20) => erc20,
-                _ => ERC20 {
-                    addr: Address::ZERO,
-                },
-            }
-        } else {
-            // making eth_call to a non-contract address is safe
-            ERC20 {
-                addr: Address::ZERO,
-            }
-        };
+        let deployed_erc20 = self.erc20;
 
         tokio::spawn(async move {
             let mut times_sent = 0;
@@ -84,20 +97,29 @@ pub async fn refresh_batch(
     client: &ReqwestClient,
     accts: &mut Accounts,
     metrics: &Metrics,
-    deployed_erc20: ERC20,
+    deployed_erc20: Option<ERC20>,
 ) -> Result<()> {
     trace!("Refreshing batch...");
 
     let iter = accts.iter().map(|a| &a.addr);
-    let (native_bals, nonces, erc20_bals) = tokio::join!(
+    let (native_bals, nonces, erc20_bals): (_, _, Option<Result<Vec<Result<(Address, U256)>>>>) = tokio::join!(
         client.batch_get_balance(iter.clone()),
         client.batch_get_transaction_count(iter.clone()),
-        client.batch_get_erc20_balance(iter.clone(), deployed_erc20),
+        async {
+            match deployed_erc20 {
+                Some(erc20) => Some(client.batch_get_erc20_balance(iter.clone(), erc20).await),
+                None => None,
+            }
+        }
     );
 
     let native_bals = native_bals?;
     let nonces = nonces?;
-    let erc20_bals = erc20_bals?;
+
+    let erc20_bals = match erc20_bals {
+        Some(b) => Some(b?),
+        None => None,
+    };
 
     metrics
         .total_rpc_calls
@@ -110,8 +132,10 @@ pub async fn refresh_batch(
         if let Ok((_, n)) = &nonces[i] {
             acct.nonce = *n;
         }
-        if let Ok((_, b)) = &erc20_bals[i] {
-            acct.erc20_bal = *b;
+        if let Some(bals) = &erc20_bals {
+            if let Ok((_, b)) = &bals[i] {
+                acct.erc20_bal = *b;
+            }
         }
     }
     trace!("Batch refreshed");

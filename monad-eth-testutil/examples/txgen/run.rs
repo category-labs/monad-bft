@@ -59,15 +59,15 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         config.chain_id,
     );
 
-    let refresher = Refresher {
+    let refresher = Refresher::new(
         rpc_rx,
         gen_sender,
-        client: client.clone(),
-        delay: Duration::from_secs_f64(config.refresh_delay_secs),
-        metrics: Arc::clone(&metrics),
+        client.clone(),
+        Arc::clone(&metrics),
+        Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
-        refresh_erc20_balance: config.erc20_balance_of,
-    };
+        config.erc20_balance_of,
+    )?;
 
     let rpc_sender = RpcSender {
         gen_rx,

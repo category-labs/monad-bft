@@ -66,7 +66,7 @@ impl RpcSender {
 
         tokio::spawn(async move {
             let now = Instant::now();
-            for (tx, to) in &batch {
+            for (tx, _to) in &batch {
                 let _ = sent_txs.insert(*tx.tx_hash(), now);
             }
 
