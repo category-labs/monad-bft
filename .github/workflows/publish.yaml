@@ -3,8 +3,8 @@ name: Create and publish a Docker image
 on:
   push:
     branches:
-      - 'release*'
-      - 'staging*'
+      - 'release**'
+      - 'staging**'
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
