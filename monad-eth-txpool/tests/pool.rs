@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_primitives::{hex, Address, TxKind, B256};
@@ -58,6 +61,7 @@ fn make_test_block_policy() -> EthBlockPolicy<SignatureType, SignatureCollection
     EthBlockPolicy::new(GENESIS_SEQ_NUM, EXECUTION_DELAY, 1337)
 }
 
+#[derive(Clone)]
 enum TxPoolTestEvent<'a> {
     InsertTxs {
         txs: Vec<(&'a TxEnvelope, bool)>,
@@ -73,15 +77,14 @@ enum TxPoolTestEvent<'a> {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Block(
-        Box<dyn FnOnce(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>,
-    ),
+    Block(Arc<dyn Fn(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>),
 }
 
-fn run_custom_eth_txpool_test<const N: usize>(
+fn run_custom_iter<const N: usize>(
     mut eth_block_policy: EthBlockPolicy<SignatureType, SignatureCollectionType>,
     nonces_override: Option<BTreeMap<Address, u64>>,
     events: [TxPoolTestEvent<'_>; N],
+    owned: bool,
 ) {
     let state_backend = {
         let nonces = if let Some(nonces) = nonces_override {
@@ -139,7 +142,7 @@ fn run_custom_eth_txpool_test<const N: usize>(
                         &eth_block_policy,
                         &state_backend,
                         vec![tx.clone()],
-                        true,
+                        owned,
                         |inserted_tx| {
                             assert_eq!(&tx, inserted_tx.raw());
 
@@ -247,8 +250,23 @@ fn run_custom_eth_txpool_test<const N: usize>(
     }
 }
 
-fn run_eth_txpool_test<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
-    run_custom_eth_txpool_test(make_test_block_policy(), None, events);
+fn run_custom<const N: usize>(
+    eth_block_policy_generator: impl Fn() -> EthBlockPolicy<SignatureType, SignatureCollectionType>,
+    nonces_override: Option<BTreeMap<Address, u64>>,
+    events: [TxPoolTestEvent<'_>; N],
+) {
+    for owned in [false, true] {
+        run_custom_iter(
+            eth_block_policy_generator(),
+            nonces_override.clone(),
+            events.clone(),
+            owned,
+        );
+    }
+}
+
+fn run_simple<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
+    run_custom(make_test_block_policy, None, events);
 }
 
 #[test]
@@ -256,7 +274,7 @@ fn run_eth_txpool_test<const N: usize>(events: [TxPoolTestEvent<'_>; N]) {
 fn test_insert_tx_exceeds_gas_limit() {
     let tx = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT + 1, 0, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx, false)],
             expected_pool_size_change: 0,
@@ -275,7 +293,7 @@ fn test_insert_tx_exceeds_gas_limit() {
 fn test_create_proposal_with_insufficient_tx_limit() {
     let tx = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx, true)],
             expected_pool_size_change: 1,
@@ -286,7 +304,7 @@ fn test_create_proposal_with_insufficient_tx_limit() {
             expected_txs: vec![],
             add_to_blocktree: true,
         },
-        TxPoolTestEvent::Block(Box::new(|pool| {
+        TxPoolTestEvent::Block(Arc::new(|pool| {
             assert_eq!(pool.num_txs(), 1);
         })),
     ]);
@@ -299,7 +317,7 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
     let tx2 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 1, 10);
     let tx3 = make_legacy_tx(S1, BASE_FEE, PROPOSAL_GAS_LIMIT / 2, 2, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true), (&tx3, true)],
             expected_pool_size_change: 3,
@@ -310,7 +328,7 @@ fn test_create_partial_proposal_with_insufficient_gas_limit() {
             expected_txs: vec![&tx1, &tx2],
             add_to_blocktree: true,
         },
-        TxPoolTestEvent::Block(Box::new(|pool| {
+        TxPoolTestEvent::Block(Arc::new(|pool| {
             assert_eq!(pool.num_txs(), 3);
         })),
     ]);
@@ -322,7 +340,7 @@ fn test_basic_price_priority() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S2, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true)],
             expected_pool_size_change: 2,
@@ -333,7 +351,7 @@ fn test_basic_price_priority() {
             expected_txs: vec![&tx2, &tx1],
             add_to_blocktree: true,
         },
-        TxPoolTestEvent::Block(Box::new(|pool| {
+        TxPoolTestEvent::Block(Arc::new(|pool| {
             assert_eq!(pool.num_txs(), 2);
         })),
     ]);
@@ -345,7 +363,7 @@ fn test_resubmit_with_better_price() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx2 = make_legacy_tx(S1, 2 * BASE_FEE, 2 * GAS_LIMIT, 0, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true)],
             expected_pool_size_change: 1,
@@ -372,7 +390,7 @@ fn nontrivial_example() {
     let tx8 = make_legacy_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
     let tx9 = make_legacy_tx(S3, 10 * BASE_FEE, GAS_LIMIT, 2, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9]
                 .into_iter()
@@ -399,7 +417,7 @@ fn another_non_trivial_example() {
     let tx5 = make_legacy_tx(S3, 8 * BASE_FEE, GAS_LIMIT, 0, 10);
     let tx6 = make_legacy_tx(S3, 9 * BASE_FEE, GAS_LIMIT, 1, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx6]
                 .into_iter()
@@ -431,7 +449,7 @@ fn attacker_tries_to_include_transaction_with_large_gas_limit_to_exit_proposal_c
     let tx10 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 8, 10);
     let tx11 = make_legacy_tx(S2, BASE_FEE, GAS_LIMIT, 9, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![
                 &tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10, &tx11,
@@ -475,7 +493,7 @@ fn suboptimal_block() {
             txs.reverse();
         }
 
-        run_eth_txpool_test([
+        run_simple([
             TxPoolTestEvent::InsertTxs {
                 txs: txs.into_iter().map(|tx| (tx, true)).collect_vec(),
                 expected_pool_size_change: 11,
@@ -495,7 +513,7 @@ fn suboptimal_block() {
 fn zero_gas_limit() {
     let tx1 = make_legacy_tx(S1, BASE_FEE, 0, 0, 10);
 
-    run_eth_txpool_test([TxPoolTestEvent::InsertTxs {
+    run_simple([TxPoolTestEvent::InsertTxs {
         txs: vec![(&tx1, false)],
         expected_pool_size_change: 0,
     }]);
@@ -515,7 +533,7 @@ fn nondeterminism() {
     let tx9 = make_legacy_tx(S5, BASE_FEE, GAS_LIMIT, 0, 10);
     let tx10 = make_legacy_tx(S5, BASE_FEE, GAS_LIMIT, 1, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![&tx1, &tx2, &tx3, &tx4, &tx5, &tx6, &tx7, &tx8, &tx9, &tx10]
                 .into_iter()
@@ -539,7 +557,7 @@ fn test_zero_nonce_included_in_block() {
 
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
             expected_pool_size_change: 1,
@@ -560,7 +578,7 @@ fn test_nonce_gap() {
 
     let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
             expected_pool_size_change: 1,
@@ -583,7 +601,7 @@ fn test_intermediary_nonce_gap() {
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true), (&tx3, true)],
             expected_pool_size_change: 3,
@@ -609,8 +627,8 @@ fn test_nonce_exists_in_committed_block() {
         .into_iter()
         .collect();
 
-    run_custom_eth_txpool_test(
-        make_test_block_policy(),
+    run_custom(
+        make_test_block_policy,
         Some(nonces),
         [
             TxPoolTestEvent::InsertTxs {
@@ -638,7 +656,7 @@ fn test_nonce_exists_in_pending_block() {
 
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
             expected_pool_size_change: 1,
@@ -671,7 +689,7 @@ fn test_combine_nonces_of_blocks() {
     let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
             expected_pool_size_change: 1,
@@ -717,7 +735,7 @@ fn test_nonce_gap_maintained_across_proposals() {
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
     let tx4 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true), (&tx4, true)],
             expected_pool_size_change: 3,
@@ -762,7 +780,7 @@ fn test_nonce_gap_maintained_across_commit() {
     let tx3 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 2, 10);
     let tx4 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 3, 10);
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true), (&tx2, true), (&tx4, true)],
             expected_pool_size_change: 3,
@@ -832,8 +850,8 @@ fn test_tx_invalid_chain_id() {
         transaction.into_signed(signature).into()
     };
 
-    run_custom_eth_txpool_test(
-        EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
+    run_custom(
+        || EthBlockPolicy::new(GENESIS_SEQ_NUM, 0, 1),
         None,
         [TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx1, true)],
@@ -848,7 +866,7 @@ fn test_same_account_priority_fee_ordering() {
     let tx_lower = make_eip1559_tx(S1, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
 
     for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
-        run_eth_txpool_test([
+        run_simple([
             TxPoolTestEvent::InsertTxs {
                 txs: vec![(tx1, true), (tx2, tx2 == &tx_higher)],
                 expected_pool_size_change: 1,
@@ -872,7 +890,7 @@ fn test_different_account_priority_fee_ordering() {
             make_eip1559_tx(addr2, (BASE_FEE_PER_GAS + 100).into(), 10, GAS_LIMIT, 0, 10);
 
         for (tx1, tx2) in [(&tx_higher, &tx_lower), (&tx_lower, &tx_higher)] {
-            run_eth_txpool_test([
+            run_simple([
                 TxPoolTestEvent::InsertTxs {
                     txs: vec![(tx1, true), (tx2, true)],
                     expected_pool_size_change: 2,
@@ -907,7 +925,7 @@ fn test_missing_chain_id() {
         tx.into_signed(signature).into()
     };
 
-    run_eth_txpool_test([
+    run_simple([
         TxPoolTestEvent::InsertTxs {
             txs: vec![(&tx, true)],
             expected_pool_size_change: 1,
