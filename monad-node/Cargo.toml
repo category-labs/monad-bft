@@ -60,6 +60,12 @@ toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
+[dev-dependencies]
+monad-block-persist = { path = "../monad-block-persist" }
+
+inotify = { workspace = true }
+lru = { workspace = true }
+
 [build-dependencies]
 vergen-git2 = "1.0.5"
 

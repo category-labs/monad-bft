@@ -4072,6 +4072,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "inotify"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f37dccff2791ab604f9babef0ba14fbe0be30bd368dc541e2b08d07c8aa908f3"
+dependencies = [
+ "bitflags 2.4.1",
+ "futures-core",
+ "inotify-sys",
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "inotify-sys"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5275,6 +5288,9 @@ dependencies = [
  "clap 4.4.10",
  "futures-util",
  "hex",
+ "inotify 0.11.0",
+ "lru",
+ "monad-block-persist",
  "monad-bls",
  "monad-chain-config",
  "monad-consensus-state",
@@ -5986,7 +6002,7 @@ dependencies = [
  "crossbeam-channel",
  "filetime",
  "fsevent-sys",
- "inotify",
+ "inotify 0.9.6",
  "kqueue",
  "libc",
  "log",
