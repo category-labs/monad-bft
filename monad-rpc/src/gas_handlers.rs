@@ -6,14 +6,14 @@ use std::{
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
-use monad_cxx::{CallResult, StateOverrideSet};
+use monad_cxx::{CallResult, FailureCallResult, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
 use monad_types::{Round, SeqNum};
 use serde::Deserialize;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::{
     block_handlers::get_block_key_from_tag,
@@ -23,7 +23,7 @@ use crate::{
 };
 
 trait EthCallProvider {
-    fn eth_call(&self, txn: TxEnvelope) -> CallResult;
+    async fn eth_call(&self, txn: TxEnvelope) -> CallResult;
 }
 
 struct GasEstimator {
@@ -56,25 +56,47 @@ impl GasEstimator {
 }
 
 impl EthCallProvider for GasEstimator {
-    fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+    async fn eth_call(&self, txn: TxEnvelope) -> CallResult {
         let (block_number, block_round) = match self.block_key {
             BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
             BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
         };
-        monad_cxx::eth_call(
-            self.chain_id,
-            txn,
-            self.block_header.clone(),
-            self.sender,
-            block_number,
-            block_round,
-            self.triedb_path.as_path(),
-            &self.state_override,
-        )
+
+        let chain_id = self.chain_id;
+        let header = self.block_header.clone();
+        let sender = self.sender;
+        let path = self.triedb_path.clone();
+        let state_override = self.state_override.clone();
+
+        let blocking_eth_call = tokio::task::spawn_blocking(move || {
+            monad_cxx::eth_call(
+                chain_id,
+                txn,
+                header,
+                sender,
+                block_number,
+                block_round,
+                &path,
+                &state_override,
+            )
+        })
+        .await;
+
+        match blocking_eth_call {
+            Ok(res) => res,
+            Err(e) => {
+                let error_string = format!("estimateGas::eth_call task failed: {e}");
+                error!(error_string);
+                CallResult::Failure(FailureCallResult {
+                    message: error_string,
+                    data: None,
+                })
+            }
+        }
     }
 }
 
-fn estimate_gas<T: EthCallProvider>(
+async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
     call_request: &mut CallRequest,
 ) -> Result<Quantity, JsonRpcError> {
@@ -85,7 +107,7 @@ fn estimate_gas<T: EthCallProvider>(
         return Ok(Quantity(21_000));
     }
 
-    let (gas_used, gas_refund) = match provider.eth_call(txn.clone()) {
+    let (gas_used, gas_refund) = match provider.eth_call(txn.clone()).await {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
             gas_used,
             gas_refund,
@@ -102,7 +124,7 @@ fn estimate_gas<T: EthCallProvider>(
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
-            match provider.eth_call(txn.clone()) {
+            match provider.eth_call(txn.clone()).await {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
                     gas_used, ..
                 }) => (gas_used.sub(1), txn.gas_limit()),
@@ -128,7 +150,7 @@ fn estimate_gas<T: EthCallProvider>(
         call_request.gas = Some(U256::from(mid));
         txn = call_request.clone().try_into()?;
 
-        match provider.eth_call(txn) {
+        match provider.eth_call(txn).await {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
             }
@@ -215,7 +237,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         triedb_env.path(),
         params.state_override_set,
     );
-    estimate_gas(&eth_call_provider, &mut params.tx)
+    estimate_gas(&eth_call_provider, &mut params.tx).await
 }
 
 pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
@@ -357,7 +379,7 @@ mod tests {
     }
 
     impl EthCallProvider for MockGasEstimator {
-        fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+        async fn eth_call(&self, txn: TxEnvelope) -> CallResult {
             if txn.gas_limit() >= self.gas_used + self.gas_refund {
                 CallResult::Success(SuccessCallResult {
                     gas_used: self.gas_used,
@@ -372,8 +394,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_gas_limit_too_low() {
+    #[tokio::test]
+    async fn test_gas_limit_too_low() {
         // user specified gas limit lower than actual gas used
         let mut call_request = CallRequest {
             gas: Some(U256::from(30_000)),
@@ -385,12 +407,12 @@ mod tests {
         };
 
         // should return gas estimation failure
-        let result = estimate_gas(&provider, &mut call_request);
+        let result = estimate_gas(&provider, &mut call_request).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_gas_limit_unspecified() {
+    #[tokio::test]
+    async fn test_gas_limit_unspecified() {
         // user did not specify gas limit
         let mut call_request = CallRequest::default();
         let provider = MockGasEstimator {
@@ -399,13 +421,13 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request);
+        let result = estimate_gas(&provider, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
 
-    #[test]
-    fn test_gas_limit_sufficient() {
+    #[tokio::test]
+    async fn test_gas_limit_sufficient() {
         // user specify gas limit that is sufficient
         let mut call_request = CallRequest {
             gas: Some(U256::from(70_000)),
@@ -417,13 +439,13 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request);
+        let result = estimate_gas(&provider, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
 
-    #[test]
-    fn test_gas_limit_just_sufficient() {
+    #[tokio::test]
+    async fn test_gas_limit_just_sufficient() {
         // user specify gas limit that is just sufficient
         let mut call_request = CallRequest {
             gas: Some(U256::from(60_000)),
@@ -435,7 +457,7 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request);
+        let result = estimate_gas(&provider, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
