@@ -54,7 +54,7 @@ pub struct Cli {
     pub eth_get_logs_max_block_range: u64,
 
     /// Set the max concurrent requests for eth_call and eth_estimateGas
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 20)]
     pub eth_call_max_concurrent_requests: u32,
 
     /// Set the max concurrent requests for triedb reads

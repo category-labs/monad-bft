@@ -49,14 +49,14 @@ pub struct FailureCallResult {
 }
 
 // ensure that only one of {State, StateDiff} can be set
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StorageOverride {
     State(HashMap<B256, B256>),
     StateDiff(HashMap<B256, B256>),
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateOverrideObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]

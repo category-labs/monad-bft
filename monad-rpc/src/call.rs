@@ -388,8 +388,6 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    let state_overrides = &params.state_overrides;
-
     // TODO: check duplicate address, duplicate storage key, etc.
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
@@ -430,23 +428,32 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
     };
-    match monad_cxx::eth_call(
-        tx_chain_id,
-        txn,
-        header.header,
-        sender,
-        block_number,
-        block_round,
-        &triedb_env.path(),
-        state_overrides,
-    ) {
-        monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
-            Ok(hex::encode(&output_data))
+
+    let path = triedb_env.path();
+    let state_overrides = params.state_overrides.clone();
+    let blocking_eth_call = tokio::task::spawn_blocking(move || {
+        match monad_cxx::eth_call(
+            tx_chain_id,
+            txn,
+            header.header,
+            sender,
+            block_number,
+            block_round,
+            &path,
+            &state_overrides,
+        ) {
+            monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
+                output_data, ..
+            }) => Ok(hex::encode(&output_data)),
+            monad_cxx::CallResult::Failure(error) => {
+                Err(JsonRpcError::eth_call_error(error.message, error.data))
+            }
         }
-        monad_cxx::CallResult::Failure(error) => {
-            Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
-    }
+    });
+
+    blocking_eth_call
+        .await
+        .map_err(|_| JsonRpcError::custom("eth call task error".to_string()))?
 }
 
 #[cfg(test)]
