@@ -5,9 +5,9 @@ use std::{
 
 use alloy_json_rpc::RpcError;
 use alloy_network::TransactionResponse;
-use alloy_primitives::{Address, BlockNumber, LogData, U256, U64};
+use alloy_primitives::{Address, BlockNumber, Bytes, LogData, U256, U64};
 use alloy_rpc_client::{ClientBuilder, ReqwestClient};
-use alloy_rpc_types::Filter;
+use alloy_rpc_types::{Filter, TransactionRequest};
 use alloy_rpc_types_eth::BlockTransactionHashes;
 use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
@@ -26,6 +26,14 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 use url::Url;
+
+// bytecode for eth_call contract deployment simulation (test contract in flexnet)
+const CONTRACT_BYTECODE: &[u8] = &[
+    0x60, 0x45, 0x80, 0x60, 0x0e, 0x60, 0x00, 0x39, 0x80, 0x60, 0x00, 0xf3, 0x50, 0xfe, 0x7f, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x03, 0x60, 0x16, 0x00, 0x81, 0x60, 0x20,
+    0x82, 0x37, 0x80, 0x35, 0x82, 0x34, 0xf5, 0x80, 0x15, 0x56, 0x03, 0x95, 0x78, 0x18, 0x2f, 0x5b,
+    0x80, 0x82, 0x52, 0x50, 0x50, 0x60, 0x14, 0x60, 0x0c, 0xf3,
+];
 
 pub struct DropTimer<F>
 where
@@ -115,7 +123,7 @@ impl TipRefresher {
                 };
                 self.tip = tip;
             } else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
     }
@@ -393,6 +401,49 @@ impl RpcRequestGenerator {
         }
     }
 
+    async fn eth_call(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+        addrs: Vec<Address>,
+    ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
+        for chunk in addrs.chunks(1000) {
+            let futs = loop {
+                let mut batch = client.new_batch();
+
+                let futs = chunk
+                    .iter()
+                    .map(|addr| {
+                        let call_request = TransactionRequest {
+                            from: Some(*addr),
+                            input: Some(Bytes::from(CONTRACT_BYTECODE)).into(),
+                            ..Default::default()
+                        };
+                        let params = (call_request, U64::from(block_number));
+                        batch
+                            .add_call::<_, Bytes>("eth_call", &params)
+                            .map(|w| async move { w.await })
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+
+                let resp = batch.send().await;
+                match resp {
+                    Ok(_) => break futs,
+                    Err(err) => {
+                        debug!(?err, "eth_call error");
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                }
+            };
+
+            for fut in futs {
+                fut.await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn get_balances(
         client: &ReqwestClient,
         block_number: BlockNumber,
@@ -608,6 +659,7 @@ impl RpcRequestGenerator {
                     return;
                 }
             };
+            let txn_hashes = block.transactions.hashes();
             let duration = start.elapsed();
             info!(
                 ?block_number,
@@ -615,29 +667,36 @@ impl RpcRequestGenerator {
                 "eth_getBlockReceipts, eth_getLogs and debug_traceBlockByNumber duration"
             );
 
-            // account balances
+            // account balances and eth call
             let start = Instant::now();
-            let uniq_addrs = receipts
+            let addrs = receipts
                 .into_iter()
-                .flat_map(|receipt| [Some(receipt.from), receipt.to])
-                .flatten()
-                .unique()
+                .map(|receipt| receipt.from)
                 .collect::<Vec<_>>();
-            debug!(n = uniq_addrs.len(), "reading account balances");
-            if let Err(err) = Self::get_balances(&client, block_number, uniq_addrs.clone()).await {
-                assert!(result_sender
-                    .send(Err(BlockIndexError {
-                        block_number,
-                        error: err
-                    }))
-                    .await
-                    .is_ok());
-                return;
+            debug!(n = addrs.len(), "reading account balances");
+            let (balances_res, eth_call_res, trace_res) = tokio::join!(
+                Self::get_balances(&client, block_number, addrs.clone()),
+                Self::eth_call(&client, block_number, addrs.clone()),
+                Self::debug_trace_transaction(&client, txn_hashes),
+            );
+            if let Err(ref err) = balances_res {
+                warn!(?block_number, ?err, "Error fetching balances");
+            }
+            if let Err(ref err) = eth_call_res {
+                warn!(?block_number, ?err, "Error in eth_call");
+            }
+            if let Err(ref err) = trace_res {
+                warn!(?block_number, ?err, "Error tracing transaction");
             }
             let duration = start.elapsed();
-            let num_addr = uniq_addrs.len();
-            info!(?block_number, ?duration, ?num_addr, "eth_getBalance");
-            uniq_addrs
+            let num_addr = addrs.len();
+            info!(
+                ?block_number,
+                ?duration,
+                ?num_addr,
+                "eth_getBalance, eth_call and debug_traceTransaction"
+            );
+            addrs.into_iter().unique().collect()
         } else {
             Vec::new()
         };
