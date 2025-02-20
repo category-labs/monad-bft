@@ -347,7 +347,7 @@ fn populate_cache(
     let tx_receiver = {
         let (tx_sender, tx_receiver) = oneshot::channel();
 
-        // txn_index set to None to indiciate return all transactions
+        // txn_index set to None to indicate return all transactions
         let (triedb_key, key_len_nibbles) =
             create_triedb_key(block_key.into(), KeyInput::TxIndex(None));
 
@@ -361,7 +361,36 @@ fn populate_cache(
         );
 
         tx_receiver.map(|maybe_tx| match maybe_tx {
-            Ok(Some(rlp_transactions)) => parse_rlp_transactions(rlp_transactions),
+            Ok(Some(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
+        })
+    };
+
+    let receipt_receiver = {
+        let (receipt_sender, receipt_receiver) = oneshot::channel();
+
+        // receipt_index set to None to indicate return all receipts
+        let (triedb_key, key_len_nibbles) =
+            create_triedb_key(block_key.into(), KeyInput::ReceiptIndex(None));
+
+        handle.traverse_triedb_async(
+            &triedb_key,
+            key_len_nibbles,
+            block_key.seq_num().0,
+            receipt_sender,
+            // don't track concurrency
+            Arc::new(()),
+        );
+
+        receipt_receiver.map(|maybe_receipts| match maybe_receipts {
+            Ok(Some(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
             Ok(None) => {
                 error!("Error traversing db");
                 Err(String::from("error traversing db"))
@@ -374,20 +403,34 @@ fn populate_cache(
     };
 
     tokio_handle.spawn(async move {
-        if let Ok(txs) = tx_receiver.await {
+        let transactions = tx_receiver.await;
+        let receipts = receipt_receiver.await;
+
+        if let (Ok(txs), Ok(rcpts)) = (transactions, receipts) {
             let transactions = Arc::new(txs);
+            let receipts = Arc::new(rcpts);
             let mut meta = meta.lock().expect("mutex poisoned");
             match block_key {
                 BlockKey::Finalized(finalized) => {
-                    meta.finalized_cache
-                        .insert(finalized, BlockCache { transactions });
+                    meta.finalized_cache.insert(
+                        finalized,
+                        BlockCache {
+                            transactions,
+                            receipts,
+                        },
+                    );
                     while meta.finalized_cache.len() > MAX_FINALIZED_BLOCK_CACHE_LEN {
                         meta.finalized_cache.pop_first();
                     }
                 }
                 BlockKey::Proposed(proposed) => {
-                    meta.voted_cache
-                        .insert(proposed, BlockCache { transactions });
+                    meta.voted_cache.insert(
+                        proposed,
+                        BlockCache {
+                            transactions,
+                            receipts,
+                        },
+                    );
                     while meta.voted_cache.len() > MAX_VOTED_BLOCK_CACHE_LEN {
                         meta.voted_cache.pop_first();
                     }
@@ -524,6 +567,7 @@ impl TriedbEnvMeta {
 #[derive(Clone)]
 struct BlockCache {
     transactions: Arc<Vec<TxEnvelopeWithSender>>,
+    receipts: Arc<Vec<ReceiptWithLogIndex>>,
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -859,6 +903,11 @@ impl Triedb for TriedbEnv {
     }
 
     async fn get_receipts(&self, block_key: BlockKey) -> Result<Vec<ReceiptWithLogIndex>, String> {
+        if let Some(receipts) = self.get_block_cache(&block_key) {
+            // TODO avoid copy here?
+            return Ok((*receipts.receipts).clone());
+        }
+
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -881,35 +930,7 @@ impl Triedb for TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(Some(rlp_receipts)) => {
-                let mut receipts = rlp_receipts
-                    .into_iter()
-                    .map(|TraverseEntry { key, value }| {
-                        let idx: usize = alloy_rlp::decode_exact(key)?;
-                        let receipt: ReceiptWithLogIndex = alloy_rlp::decode_exact(value)?;
-
-                        Ok((idx, receipt))
-                    })
-                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
-                    .map_err(|err| {
-                        error!(?err, "error decoding result from db");
-                        String::from("error decoding from db")
-                    })?;
-                receipts.sort_by_key(|(idx, _)| *idx);
-                // check that indices are consecutive and start with 0
-                if !receipts
-                    .iter()
-                    .map(|(idx, _)| idx)
-                    .zip(0..)
-                    .all(|(&i, j)| i == j)
-                {
-                    return Err(format!(
-                        "receipts missing from db, indices={:?}",
-                        receipts.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
-                    ));
-                }
-                Ok(receipts.into_iter().map(|(_, receipt)| receipt).collect())
-            }
+            Ok(Some(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
             Ok(None) => {
                 error!("Error traversing db");
                 Err(String::from("error traversing db"))
@@ -1010,7 +1031,7 @@ impl Triedb for TriedbEnv {
 
         // await the result using request_receiver
         match request_receiver.await {
-            Ok(Some(rlp_transactions)) => parse_rlp_transactions(rlp_transactions),
+            Ok(Some(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
             Ok(None) => {
                 error!("Error traversing db");
                 Err(String::from("error traversing db"))
@@ -1297,37 +1318,35 @@ impl Triedb for TriedbEnv {
     }
 }
 
-fn parse_rlp_transactions(
-    rlp_transactions: Vec<TraverseEntry>,
-) -> Result<Vec<TxEnvelopeWithSender>, String> {
-    let mut transactions = rlp_transactions
+fn parse_rlp_entries<T>(rlp_entries: Vec<TraverseEntry>) -> Result<Vec<T>, String>
+where
+    T: alloy_rlp::Decodable,
+{
+    let mut entries = rlp_entries
         .into_iter()
         .map(|TraverseEntry { key, value }| {
             let idx: usize = alloy_rlp::decode_exact(key)?;
-            let transaction: TxEnvelopeWithSender = alloy_rlp::decode_exact(value)?;
+            let entry: T = alloy_rlp::decode_exact(value)?;
 
-            Ok((idx, transaction))
+            Ok((idx, entry))
         })
         .collect::<Result<Vec<_>, alloy_rlp::Error>>()
         .map_err(|err| {
             error!(?err, "error decoding result from db");
             String::from("error decoding from db")
         })?;
-    transactions.sort_by_key(|(idx, _)| *idx);
+    entries.sort_by_key(|(idx, _)| *idx);
     // check that indices are consecutive and start with 0
-    if !transactions
+    if !entries
         .iter()
         .map(|(idx, _)| idx)
         .zip(0..)
         .all(|(&i, j)| i == j)
     {
         return Err(format!(
-            "transactions missing from db, indices={:?}",
-            transactions.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+            "entries missing from db, indices={:?}",
+            entries.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
         ));
     }
-    Ok(transactions
-        .into_iter()
-        .map(|(_, transaction)| transaction)
-        .collect())
+    Ok(entries.into_iter().map(|(_, entry)| entry).collect())
 }
