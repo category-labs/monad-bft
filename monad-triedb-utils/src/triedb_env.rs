@@ -168,9 +168,6 @@ impl Decodable for TxEnvelopeWithSender {
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
 const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const MAX_FINALIZED_BLOCK_CACHE_LEN: usize = 200;
-// Unfinalized chains should be very short
-const MAX_VOTED_BLOCK_CACHE_LEN: usize = 3;
 
 fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
     let latest_voted_round_before = Round(triedb_handle.latest_voted_round()?);
@@ -193,6 +190,8 @@ fn polling_thread(
     max_async_read_concurrency: usize,
     receiver_traverse: mpsc::Receiver<TriedbRequest>,
     max_async_traverse_concurrency: usize,
+    max_finalized_block_cache_len: usize,
+    max_voted_block_cache_len: usize,
 ) {
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
@@ -233,6 +232,8 @@ fn polling_thread(
                         &triedb_handle,
                         meta.clone(),
                         BlockKey::Finalized(latest_finalized),
+                        max_finalized_block_cache_len,
+                        max_voted_block_cache_len,
                     );
                 }
                 if voted_is_updated {
@@ -243,6 +244,8 @@ fn polling_thread(
                             &triedb_handle,
                             meta.clone(),
                             BlockKey::Proposed(latest_voted),
+                            max_finalized_block_cache_len,
+                            max_voted_block_cache_len,
                         );
                     }
                 }
@@ -343,6 +346,8 @@ fn populate_cache(
     handle: &TriedbHandle,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     block_key: BlockKey,
+    max_finalized_block_cache_len: usize,
+    max_voted_block_cache_len: usize,
 ) {
     let tx_receiver = {
         let (tx_sender, tx_receiver) = oneshot::channel();
@@ -419,7 +424,7 @@ fn populate_cache(
                             receipts,
                         },
                     );
-                    while meta.finalized_cache.len() > MAX_FINALIZED_BLOCK_CACHE_LEN {
+                    while meta.finalized_cache.len() > max_finalized_block_cache_len {
                         meta.finalized_cache.pop_first();
                     }
                 }
@@ -431,7 +436,7 @@ fn populate_cache(
                             receipts,
                         },
                     );
-                    while meta.voted_cache.len() > MAX_VOTED_BLOCK_CACHE_LEN {
+                    while meta.voted_cache.len() > max_voted_block_cache_len {
                         meta.voted_cache.pop_first();
                     }
                 }
@@ -585,6 +590,8 @@ impl TriedbEnv {
         max_async_read_concurrency: usize,
         max_buffered_traverse_requests: usize,
         max_async_traverse_concurrency: usize,
+        max_finalized_block_cache_len: usize,
+        max_voted_block_cache_len: usize,
     ) -> Self {
         let latest_finalized = {
             let triedb_handle: TriedbHandle =
@@ -618,6 +625,8 @@ impl TriedbEnv {
                 max_async_read_concurrency,
                 receiver_traverse,
                 max_async_traverse_concurrency,
+                max_finalized_block_cache_len,
+                max_voted_block_cache_len,
             );
         });
 
@@ -853,6 +862,10 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         receipt_index: u64,
     ) -> Result<Option<ReceiptWithLogIndex>, String> {
+        if let Some(cache) = self.get_block_cache(&block_key) {
+            return Ok(cache.receipts.get(receipt_index as usize).cloned());
+        }
+
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 
@@ -948,6 +961,10 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         txn_index: u64,
     ) -> Result<Option<TxEnvelopeWithSender>, String> {
+        if let Some(cache) = self.get_block_cache(&block_key) {
+            return Ok(cache.transactions.get(txn_index as usize).cloned());
+        }
+
         // create a one shot channel to retrieve the triedb result from the polling thread
         let (request_sender, request_receiver) = oneshot::channel();
 

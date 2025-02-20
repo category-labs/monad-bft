@@ -101,4 +101,10 @@ pub struct Cli {
 
     #[arg(long)]
     pub mongo_db_name: Option<String>,
+
+    #[arg(long, default_value_t = 200)]
+    pub max_finalized_block_cache_len: u64,
+
+    #[arg(long, default_value_t = 3)]
+    pub max_voted_block_cache_len: u64,
 }

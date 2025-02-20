@@ -37,6 +37,10 @@ struct Args {
     pub max_buffered_traverse_requests: usize,
     #[arg(long, default_value_t = 20)]
     pub max_async_traverse_concurrency: usize,
+    #[arg(long, default_value_t = 200)]
+    pub max_finalized_block_cache_len: usize,
+    #[arg(long, default_value_t = 3)]
+    pub max_voted_block_cache_len: usize,
 
     #[arg(long, default_value_t = 0.0)]
     pub tx_traverse_rps: f64,
@@ -91,6 +95,8 @@ async fn main() {
         args.max_async_read_concurrency,
         args.max_buffered_traverse_requests,
         args.max_async_traverse_concurrency,
+        args.max_finalized_block_cache_len,
+        args.max_voted_block_cache_len,
     );
 
     let test_duration = Duration::from_secs_f64(args.duration_s);

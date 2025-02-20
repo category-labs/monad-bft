@@ -720,6 +720,8 @@ async fn main() -> std::io::Result<()> {
             args.triedb_max_async_read_concurrency as usize,
             args.triedb_max_buffered_traverse_requests as usize,
             args.triedb_max_async_traverse_concurrency as usize,
+            args.max_finalized_block_cache_len as usize,
+            args.max_voted_block_cache_len as usize,
         )
     });
 

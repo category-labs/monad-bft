@@ -23,6 +23,8 @@ impl TriedbReader {
                 args.max_triedb_async_read_concurrency,
                 args.max_buffered_traverse_requests,
                 args.max_triedb_async_traverse_concurrency,
+                args.max_finalized_block_cache_len,
+                args.max_voted_block_cache_len,
             ),
         }
     }

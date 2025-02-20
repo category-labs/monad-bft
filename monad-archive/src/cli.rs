@@ -277,6 +277,8 @@ pub struct TrieDbCliArgs {
     pub max_triedb_async_read_concurrency: usize,
     pub max_buffered_traverse_requests: usize,
     pub max_triedb_async_traverse_concurrency: usize,
+    pub max_finalized_block_cache_len: usize,
+    pub max_voted_block_cache_len: usize,
 }
 
 impl TrieDbCliArgs {
@@ -289,6 +291,8 @@ impl TrieDbCliArgs {
             max_triedb_async_read_concurrency: 10000,
             max_buffered_traverse_requests: 40,
             max_triedb_async_traverse_concurrency: 20,
+            max_finalized_block_cache_len: 200,
+            max_voted_block_cache_len: 3,
         })
     }
 }
