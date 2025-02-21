@@ -1,6 +1,6 @@
 use std::{future::Future, io, pin::Pin, task::Poll, time::Duration};
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use futures::{Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
@@ -38,7 +38,7 @@ where
 
     pub pool: EthTxPool<ST, SCT, SBT>,
 
-    batch: Vec<Recovered<TxEnvelope>>,
+    batch: Vec<TxEnvelope>,
     #[pin]
     batch_timer: Sleep,
 }
@@ -108,7 +108,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    type Item = Vec<Recovered<TxEnvelope>>;
+    type Item = Vec<TxEnvelope>;
 
     fn poll_next(
         self: Pin<&mut Self>,

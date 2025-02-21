@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use tokio::{net::UnixStream, sync::mpsc};
@@ -20,7 +20,7 @@ pub struct EthTxPoolIpcStream {
     // TODO(andr-dev): Remove tokio_util and write a custom sync framer/codec
     // implementation simlar to LengthDelimnitedCodec
     tx: mpsc::Sender<Vec<EthTxPoolEvent>>,
-    rx: ReceiverStream<Recovered<TxEnvelope>>,
+    rx: ReceiverStream<TxEnvelope>,
 
     handle: tokio::task::JoinHandle<io::Result<()>>,
 }
@@ -41,7 +41,7 @@ impl EthTxPoolIpcStream {
     async fn run(
         stream: UnixStream,
         snapshot: EthTxPoolSnapshot,
-        tx_sender: mpsc::Sender<Recovered<TxEnvelope>>,
+        tx_sender: mpsc::Sender<TxEnvelope>,
         mut event_rx: mpsc::Receiver<Vec<EthTxPoolEvent>>,
     ) -> io::Result<()> {
         let mut stream = Framed::new(stream, LengthDelimitedCodec::default());
@@ -63,15 +63,6 @@ impl EthTxPoolIpcStream {
                             "EthTxPoolIpcStream received invalid tx serialized bytes!"
                         ));
                     };
-
-                    let Ok(signer) = tx.recover_signer() else {
-                        return Err(io::Error::new(
-                            ErrorKind::InvalidData,
-                            "EthTxPoolIpcStream received tx with invalid signer!"
-                        ));
-                    };
-
-                    let tx = Recovered::new_unchecked(tx, signer);
 
                     let Err(error) = tx_sender.try_send(tx) else {
                         continue;
@@ -111,7 +102,7 @@ impl EthTxPoolIpcStream {
 }
 
 impl Stream for EthTxPoolIpcStream {
-    type Item = Recovered<TxEnvelope>;
+    type Item = TxEnvelope;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Poll::Ready(result) = self.handle.poll_unpin(cx) {

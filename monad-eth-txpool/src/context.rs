@@ -25,7 +25,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert_pending(&mut self, tx_hash: TxHash, owned: bool) {
+    pub fn insert_pending(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs += 1;
         } else {
@@ -33,13 +33,14 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
 
         self.events.push(EthTxPoolEvent::Insert {
-            tx_hash,
+            tx_hash: *tx.tx_hash(),
+            address: tx.signer(),
             owned,
             tracked: false,
         });
     }
 
-    pub fn insert_tracked(&mut self, tx_hash: TxHash, owned: bool) {
+    pub fn insert_tracked(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs += 1;
         } else {
@@ -47,7 +48,8 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
 
         self.events.push(EthTxPoolEvent::Insert {
-            tx_hash,
+            tx_hash: *tx.tx_hash(),
+            address: tx.signer(),
             owned,
             tracked: true,
         });
@@ -87,6 +89,9 @@ impl<'a> EthTxPoolEventTracker<'a> {
         match reason {
             EthTxPoolDropReason::NotWellFormed => {
                 self.metrics.drop_not_well_formed += 1;
+            }
+            EthTxPoolDropReason::InvalidSignature => {
+                self.metrics.drop_invalid_signature += 1;
             }
             EthTxPoolDropReason::NonceTooLow => {
                 self.metrics.drop_nonce_too_low += 1;

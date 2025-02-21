@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use alloy_primitives::{TxHash, B256};
+use alloy_primitives::{Address, TxHash, B256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -8,6 +8,7 @@ pub enum EthTxPoolEvent {
     /// The tx was inserted into the txpool's (pending/tracked) tx list.
     Insert {
         tx_hash: B256,
+        address: Address,
         owned: bool,
         tracked: bool,
     },
@@ -45,6 +46,7 @@ pub enum EthTxPoolEvent {
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolDropReason {
     NotWellFormed,
+    InvalidSignature,
     NonceTooLow,
     FeeTooLow,
     InsufficientBalance,
@@ -63,6 +65,7 @@ impl EthTxPoolDropReason {
     pub fn as_user_string(&self) -> String {
         match self {
             EthTxPoolDropReason::NotWellFormed => "Transaction not well formed",
+            EthTxPoolDropReason::InvalidSignature => "Transaction signature is invalid",
             EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
             EthTxPoolDropReason::FeeTooLow => "Transaction fee too low",
             EthTxPoolDropReason::InsufficientBalance => "Signer had insufficient balance",

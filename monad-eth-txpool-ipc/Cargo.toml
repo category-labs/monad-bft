@@ -10,7 +10,7 @@ alloy-consensus = { workspace = true }
 alloy-rlp = { workspace = true }
 bincode = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt"] }
 tokio-stream = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }

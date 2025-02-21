@@ -100,7 +100,7 @@ impl TrackedTxList {
 
         match self.txs.entry(tx.nonce()) {
             btree_map::Entry::Vacant(v) => {
-                event_tracker.insert_pending(tx.hash(), tx.is_owned());
+                event_tracker.insert_pending(tx.raw(), tx.is_owned());
                 Some(&v.insert((tx, event_tracker.now)).0)
             }
             btree_map::Entry::Occupied(mut entry) => {

@@ -7,6 +7,7 @@ pub struct EthTxPoolMetrics {
     pub insert_forwarded_txs: u64,
 
     pub drop_not_well_formed: u64,
+    pub drop_invalid_signature: u64,
     pub drop_nonce_too_low: u64,
     pub drop_fee_too_low: u64,
     pub drop_insufficient_balance: u64,

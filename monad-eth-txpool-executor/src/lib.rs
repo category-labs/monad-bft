@@ -12,6 +12,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvent};
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
@@ -108,7 +109,7 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut ipc_events = Vec::default();
 
-        let mut ipc_projection = self.ipc.as_mut().project();
+        let ipc_projection = self.ipc.as_mut().project();
 
         let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut ipc_events);
 
@@ -312,10 +313,25 @@ where
         };
 
         if let Poll::Ready(result) = ipc.as_mut().poll_next(cx) {
-            let txs = result.expect("txpool executor ipc server is alive");
-
             let mut ipc_events = Vec::default();
             let mut inserted_txs = Vec::default();
+
+            let recovered_txs = {
+                let unvalidated_txs = result.expect("txpool executor ipc server is alive");
+                let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
+                    .into_par_iter()
+                    .partition_map(|tx| match tx.recover_signer() {
+                        Ok(signer) => {
+                            rayon::iter::Either::Left(Recovered::new_unchecked(tx, signer))
+                        }
+                        Err(_) => rayon::iter::Either::Right(EthTxPoolEvent::Drop {
+                            tx_hash: *tx.tx_hash(),
+                            reason: EthTxPoolDropReason::InvalidSignature,
+                        }),
+                    });
+                ipc_events.extend_from_slice(&dropped_txs);
+                recovered_txs
+            };
 
             let ipc_projection = ipc.as_mut().project();
 
@@ -323,7 +339,7 @@ where
                 &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
-                txs,
+                recovered_txs,
                 true,
                 |tx| {
                     let tx: &TxEnvelope = tx.raw().tx();

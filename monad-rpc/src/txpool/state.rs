@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use dashmap::DashMap;
 use monad_eth_txpool_types::{
@@ -34,18 +34,11 @@ impl EthTxPoolBridgeState {
         })
     }
 
-    pub fn add_tx(&self, tx: &Recovered<TxEnvelope>) {
+    pub fn add_tx(&self, tx: &TxEnvelope) {
         let hash = tx.tx_hash();
-        let address = tx.signer();
-
         self.status
             .entry(*hash)
             .insert(TxStatusEntry::new(TxStatus::Unknown, Instant::now()));
-        self.hash_address.entry(*hash).insert(address);
-        self.address_hashes
-            .entry(address)
-            .or_default()
-            .insert(*hash);
     }
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
@@ -105,6 +98,8 @@ impl EthTxPoolBridgeState {
             self.status
                 .insert(tx_hash, TxStatusEntry::new(TxStatus::Tracked, now));
         }
+
+        // note that self.hash_addresses and self.address_hashes aren't populated for snapshots
     }
 
     pub fn handle_events(&self, events: Vec<EthTxPoolEvent>) {
@@ -116,6 +111,7 @@ impl EthTxPoolBridgeState {
             match event {
                 EthTxPoolEvent::Insert {
                     tx_hash,
+                    address,
                     owned: _,
                     tracked,
                 } => {
@@ -127,6 +123,11 @@ impl EthTxPoolBridgeState {
                         },
                         now,
                     ));
+                    self.hash_address.entry(tx_hash).insert(address);
+                    self.address_hashes
+                        .entry(address)
+                        .or_default()
+                        .insert(tx_hash);
                 }
                 EthTxPoolEvent::Replace {
                     old_tx_hash,

@@ -7,7 +7,7 @@ use std::{
     task::Poll,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use futures::{executor::block_on, ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
@@ -132,7 +132,7 @@ impl Future for SocketWatcher {
     }
 }
 
-impl<'a> Sink<&'a Recovered<TxEnvelope>> for EthTxPoolBridge {
+impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
     type Error = io::Error;
 
     fn poll_ready(
@@ -144,9 +144,9 @@ impl<'a> Sink<&'a Recovered<TxEnvelope>> for EthTxPoolBridge {
 
     fn start_send(
         mut self: std::pin::Pin<&mut Self>,
-        tx: &'a Recovered<TxEnvelope>,
+        tx: &'a TxEnvelope,
     ) -> Result<(), Self::Error> {
-        self.client.start_send_unpin(tx.tx())
+        self.client.start_send_unpin(tx)
     }
 
     fn poll_flush(

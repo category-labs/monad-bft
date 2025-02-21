@@ -1,8 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use alloy_consensus::{
-    transaction::Recovered, ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope,
-};
+use alloy_consensus::{ReceiptEnvelope, ReceiptWithBloom, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, Bloom, FixedBytes, TxKind, B256};
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{
@@ -413,7 +411,7 @@ const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
-    ipc: flume::Sender<Recovered<TxEnvelope>>,
+    ipc: flume::Sender<TxEnvelope>,
     txpool_state: &EthTxPoolBridgeState,
     base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
@@ -466,31 +464,7 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             let hash = *tx.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            let signer = spawn_rayon_async({
-                let txn = tx.clone();
-                move || txn.recover_signer()
-            })
-            .await
-            .map_err(|_| JsonRpcError::custom("no available task to recover signer".to_string()))?
-            .map_err(|_| {
-                JsonRpcError::custom("cannot ec recover sender from transaction".to_string())
-            })?;
-
-            // drop transactions with nonce too low
-            let latest_block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
-            let account = triedb_env
-                .get_account(latest_block_key, signer.into())
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            if tx.nonce() < account.nonce {
-                return Err(JsonRpcError::custom(format!(
-                    "Nonce too low: next nonce {}, tx nonce {}",
-                    account.nonce,
-                    tx.nonce()
-                )));
-            }
-
-            if let Err(err) = ipc.try_send(Recovered::new_unchecked(tx, signer)) {
+            if let Err(err) = ipc.try_send(tx) {
                 warn!(?err, "mempool ipc send error");
                 return Err(JsonRpcError::internal_error(
                     "unable to send to validator".into(),

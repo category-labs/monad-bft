@@ -31,7 +31,7 @@ impl PendingTxList {
 
         let nonce = tx.nonce();
 
-        event_tracker.insert_pending(tx.hash(), tx.is_owned());
+        event_tracker.insert_pending(tx.raw(), tx.is_owned());
         nonce_map.insert(nonce, tx);
 
         let entry = entry.insert(Self { nonce_map });
@@ -52,7 +52,7 @@ impl PendingTxList {
     ) -> Option<&ValidEthTransaction> {
         match self.nonce_map.entry(tx.nonce()) {
             Entry::Vacant(v) => {
-                event_tracker.insert_pending(tx.hash(), tx.is_owned());
+                event_tracker.insert_pending(tx.raw(), tx.is_owned());
                 Some(v.insert(tx))
             }
             Entry::Occupied(mut entry) => {

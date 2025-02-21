@@ -5,7 +5,7 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
@@ -518,7 +518,7 @@ async fn rpc_select(
 
 #[derive(Clone)]
 struct MonadRpcResources {
-    mempool_sender: flume::Sender<Recovered<TxEnvelope>>,
+    mempool_sender: flume::Sender<TxEnvelope>,
     mempool_state: Arc<EthTxPoolBridgeState>,
     triedb_reader: Option<TriedbEnv>,
     archive_reader: Option<ArchiveReader>,
@@ -541,7 +541,7 @@ impl Handler<Disconnect> for MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        mempool_sender: flume::Sender<Recovered<TxEnvelope>>,
+        mempool_sender: flume::Sender<TxEnvelope>,
         mempool_state: Arc<EthTxPoolBridgeState>,
         triedb_reader: Option<TriedbEnv>,
         archive_reader: Option<ArchiveReader>,
@@ -667,7 +667,7 @@ async fn main() -> std::io::Result<()> {
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send
-    let (ipc_sender, ipc_receiver) = flume::bounded::<Recovered<TxEnvelope>>(
+    let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(
         // TODO configurable
         10_000,
     );
@@ -870,7 +870,7 @@ mod tests {
     use super::*;
 
     pub struct MonadRpcResourcesState {
-        pub ipc_receiver: flume::Receiver<Recovered<TxEnvelope>>,
+        pub ipc_receiver: flume::Receiver<TxEnvelope>,
     }
 
     pub async fn init_server() -> (
