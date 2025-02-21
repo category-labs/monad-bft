@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 100)]
     pub max_blocks_per_iteration: u64,
 
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 15)]
     pub max_concurrent_blocks: usize,
 
     /// Override block number to start at

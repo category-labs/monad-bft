@@ -289,7 +289,7 @@ impl TrieDbCliArgs {
                 "args missing max_buffered_read_requests",
             )?)?,
             max_triedb_async_read_concurrency: 10000,
-            max_buffered_traverse_requests: 40,
+            max_buffered_traverse_requests: 200,
             max_triedb_async_traverse_concurrency: 20,
             max_finalized_block_cache_len: 200,
             max_voted_block_cache_len: 3,
