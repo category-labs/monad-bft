@@ -29,8 +29,8 @@ pub struct Cli {
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,
 
-    /// Set the max request size in bytes
-    #[arg(long, default_value_t = 10_000)]
+    /// Set the max request size in bytes (default 256kB)
+    #[arg(long, default_value_t = 262_144)]
     pub max_request_size: usize,
 
     /// Set the max response size in bytes

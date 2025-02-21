@@ -805,7 +805,7 @@ async fn main() -> std::io::Result<()> {
             App::new()
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::JsonConfig::default().limit(args.max_request_size))
+                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
@@ -817,7 +817,7 @@ async fn main() -> std::io::Result<()> {
         None => HttpServer::new(move || {
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::JsonConfig::default().limit(args.max_request_size))
+                .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
@@ -857,7 +857,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use actix_http::Request;
+    use actix_http::{Request, StatusCode};
     use actix_web::{
         body::{to_bytes, MessageBody},
         dev::{Service, ServiceResponse},
@@ -895,7 +895,7 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::JsonConfig::default().limit(8192))
+                .app_data(web::PayloadConfig::default().limit(2_000_000))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
@@ -913,6 +913,48 @@ mod tests {
                 println!("failed to serialize {:?}", &b);
             })
             .unwrap()
+    }
+
+    #[actix_web::test]
+    async fn test_rpc_request_size() {
+        let (app, _) = init_server().await;
+
+        // payload within limit
+        let payload = json!(
+            {
+                "jsonrpc": "2.0",
+                "method": "subtract",
+                "params": vec![1; 950_000],
+                "id": 1
+            }
+        );
+        let req = test::TestRequest::post()
+            .uri("/")
+            .set_payload(payload.to_string())
+            .to_request();
+        let resp = app.call(req).await.unwrap();
+        let resp: jsonrpc::Response =
+            serde_json::from_value(recover_response_body(resp).await).unwrap();
+        match resp.error {
+            Some(e) => assert_eq!(e.code, -32601),
+            None => panic!("expected error in response"),
+        }
+
+        // payload too large
+        let payload = json!(
+            {
+                "jsonrpc": "2.0",
+                "method": "subtract",
+                "params": vec![1; 1_000_000],
+                "id": 1
+            }
+        );
+        let req = test::TestRequest::post()
+            .uri("/")
+            .set_payload(payload.to_string())
+            .to_request();
+        let resp = app.call(req).await.unwrap();
+        assert_eq!(resp.response().status(), StatusCode::from_u16(413).unwrap());
     }
 
     #[actix_web::test]

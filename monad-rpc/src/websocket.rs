@@ -129,7 +129,7 @@ mod tests {
             actix_test::start(move || {
                 App::new()
                     .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                    .app_data(web::JsonConfig::default().limit(8192))
+                    .app_data(web::PayloadConfig::default().limit(8192))
                     .app_data(web::Data::new(resources.clone()))
                     .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
                     .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
