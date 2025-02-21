@@ -2,7 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use eyre::Result;
-use opentelemetry::metrics::{Counter, Gauge, Meter, MeterProvider};
+use opentelemetry::{
+    metrics::{Counter, Gauge, Meter, MeterProvider},
+    KeyValue,
+};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
@@ -48,25 +51,33 @@ impl Metrics {
         self.counter(metric, 1)
     }
 
-    pub fn counter(&self, metric: &'static str, val: u64) {
+    pub fn counter_with_attrs(&self, metric: &'static str, val: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
             let counter = inner
                 .counters
                 .entry(metric)
                 .or_insert_with(|| inner.meter.u64_counter(metric).init());
 
-            counter.add(val, &[])
+            counter.add(val, attributes)
         }
     }
 
-    pub fn gauge(&self, metric: &'static str, val: u64) {
+    pub fn counter(&self, metric: &'static str, val: u64) {
+        self.counter_with_attrs(metric, val, &[]);
+    }
+
+    pub fn gauge_with_attrs(&self, metric: &'static str, value: u64, attributes: &[KeyValue]) {
         if let Some(inner) = &self.0 {
             let gauge = inner
                 .gauges
                 .entry(metric)
                 .or_insert_with(|| inner.meter.u64_gauge(metric).init());
-            gauge.record(val, &[]);
+            gauge.record(value, attributes);
         }
+    }
+
+    pub fn gauge(&self, metric: &'static str, value: u64) {
+        self.gauge_with_attrs(metric, value, &[]);
     }
 }
 

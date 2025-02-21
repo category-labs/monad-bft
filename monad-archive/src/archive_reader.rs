@@ -117,7 +117,7 @@ impl ArchiveReader {
 }
 
 impl IndexReader for ArchiveReader {
-    async fn get_latest_indexed(&self) -> Result<u64> {
+    async fn get_latest_indexed(&self) -> Result<Option<u64>> {
         self.index_fallback_logic(|idx| idx.get_latest_indexed())
             .await
     }
@@ -167,7 +167,7 @@ impl BlockDataReader for ArchiveReader {
         self.block_data_reader.get_bucket()
     }
 
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64> {
+    async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>> {
         self.bdr_fallback_logic(|bdr| bdr.get_latest(latest_kind))
             .await
     }
@@ -182,18 +182,36 @@ impl BlockDataReader for ArchiveReader {
             .await
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
         self.bdr_fallback_logic(|bdr| bdr.get_block_receipts(block_number))
             .await
     }
 
-    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
+    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
         self.bdr_fallback_logic(|bdr| bdr.get_block_traces(block_number))
             .await
     }
 
     async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets> {
         self.bdr_fallback_logic(|bdr| bdr.get_block_data_with_offsets(block_num))
+            .await
+    }
+
+    #[doc = " Get a block by its number, or return None if not found"]
+    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
+        self.bdr_fallback_logic(|bdr| bdr.try_get_block_by_number(block_num))
+            .await
+    }
+
+    #[doc = " Get receipts for a block, or return None if not found"]
+    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
+        self.bdr_fallback_logic(|bdr| bdr.try_get_block_receipts(block_number))
+            .await
+    }
+
+    #[doc = " Get execution traces for a block, or return None if not found"]
+    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
+        self.bdr_fallback_logic(|bdr| bdr.try_get_block_traces(block_number))
             .await
     }
 }

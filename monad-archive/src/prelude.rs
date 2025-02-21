@@ -10,7 +10,7 @@ pub use std::{
 pub use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
 pub use alloy_primitives::{U128, U256, U64};
 pub use eyre::{bail, eyre, Context, ContextCompat, Result};
-pub use futures::{try_join, StreamExt, TryStreamExt};
+pub use futures::{try_join, StreamExt, TryStream, TryStreamExt};
 pub use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 pub use tokio::time::sleep;
 pub use tracing::{debug, error, info, warn, Level};

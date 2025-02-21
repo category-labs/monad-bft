@@ -28,7 +28,11 @@ pub async fn index_worker(
     let mut start_block = match start_block_override {
         Some(start_block) => start_block,
         None => {
-            let mut latest = indexer.get_latest_indexed().await.unwrap_or(0);
+            let mut latest = indexer
+                .get_latest_indexed()
+                .await
+                .unwrap_or(Some(0))
+                .unwrap();
             if latest != 0 {
                 latest += 1
             }
@@ -41,7 +45,7 @@ pub async fn index_worker(
 
         // query latest
         let latest_source = match block_data_reader.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number,
+            Ok(number) => number.unwrap(),
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
                 continue;
@@ -307,7 +311,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verify we stopped at block 2
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap();
+        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(latest_indexed, 2);
 
         // Now add the missing block 3
@@ -324,7 +328,7 @@ mod tests {
         worker_handle.await.unwrap();
 
         // Verify all blocks were eventually indexed
-        let final_indexed = index_archiver.get_latest_indexed().await.unwrap();
+        let final_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(final_indexed, 5);
 
         // Verify all transactions were indexed properly
@@ -395,7 +399,7 @@ mod tests {
         worker_handle.await.unwrap();
 
         // Verify all blocks were indexed
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap();
+        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(latest_indexed, 10);
 
         // Verify each block's transaction was indexed
@@ -445,7 +449,7 @@ mod tests {
         worker_handle.await.unwrap();
 
         // Verify all blocks were indexed
-        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap();
+        let latest_indexed = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(latest_indexed, 5);
 
         // Verify each block's transactions were indexed
@@ -490,7 +494,7 @@ mod tests {
         assert_eq!(result, 15);
 
         // Verify checkpoint was created at block 10
-        let checkpoint = index_archiver.get_latest_indexed().await.unwrap();
+        let checkpoint = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(checkpoint, 15);
 
         // Verify all transactions were indexed
@@ -539,7 +543,7 @@ mod tests {
         }
 
         // Verify latest indexed checkpoint is correct
-        let latest = index_archiver.get_latest_indexed().await.unwrap();
+        let latest = index_archiver.get_latest_indexed().await.unwrap().unwrap();
         assert_eq!(latest, 1);
     }
 
@@ -624,8 +628,8 @@ mod tests {
 
         // Prepare empty block test data
         let block = mock_block(block_num, vec![]);
-        let receipts: Vec<ReceiptWithLogIndex> = vec![];
-        let traces: Vec<Vec<u8>> = vec![];
+        let receipts: BlockReceipts = vec![];
+        let traces: BlockTraces = vec![];
 
         // Store test data in reader
         reader.archive_block(block.clone()).await.unwrap();

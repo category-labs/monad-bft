@@ -3,16 +3,16 @@ use std::str::FromStr;
 use aws_config::{
     meta::region::RegionProviderChain, timeout::TimeoutConfig, BehaviorVersion, Region, SdkConfig,
 };
-use clap::Parser;
 use eyre::{bail, OptionExt};
 use futures::join;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     kvstore::{mongo::MongoDbStorage, rocksdb_storage::RocksDbClient},
     prelude::*,
 };
 
-async fn get_aws_config(region: Option<String>) -> SdkConfig {
+pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(
         region
             .map(Region::new)
@@ -33,6 +33,7 @@ async fn get_aws_config(region: Option<String>) -> SdkConfig {
         .timeout_config(
             TimeoutConfig::builder()
                 .operation_timeout(Duration::from_secs(5))
+                .operation_attempt_timeout(Duration::from_millis(1500))
                 .read_timeout(Duration::from_secs(2))
                 .build(),
         )
@@ -40,7 +41,7 @@ async fn get_aws_config(region: Option<String>) -> SdkConfig {
         .await
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
@@ -48,7 +49,7 @@ pub enum BlockDataReaderArgs {
     MongoDb(MongoDbCliArgs),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
     RocksDb(RocksDbCliArgs),
@@ -214,7 +215,7 @@ impl ArchiveArgs {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct AwsCliArgs {
     pub bucket: String,
     pub concurrency: usize,
@@ -225,7 +226,7 @@ impl AwsCliArgs {
     pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
         Ok(Self {
             bucket: next("args missing bucket")?,
-            concurrency: usize::from_str(&next("args missing concurrency")?)?,
+            concurrency: usize::from_str(&next("").unwrap_or_else(|_| "50".to_string()))?,
             region: next("").ok(),
         })
     }
@@ -253,7 +254,7 @@ impl AwsCliArgs {
     }
 }
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct RocksDbCliArgs {
     pub db_path: String,
 }
@@ -270,7 +271,7 @@ impl RocksDbCliArgs {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct TrieDbCliArgs {
     pub triedb_path: String,
     pub max_buffered_read_requests: usize,
@@ -297,7 +298,7 @@ impl TrieDbCliArgs {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct MongoDbCliArgs {
     pub url: String,
     pub db: String,

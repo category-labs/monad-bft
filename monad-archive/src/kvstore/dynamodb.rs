@@ -88,6 +88,10 @@ impl KVStore for DynamoDBArchive {
 
         self.upload_to_db(vec![request]).await
     }
+
+    async fn delete(&self, _key: impl AsRef<str>) -> Result<()> {
+        unimplemented!()
+    }
 }
 
 impl DynamoDBArchive {

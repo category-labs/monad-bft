@@ -70,4 +70,8 @@ impl KVStore for RocksDbClient {
 
         Ok(objects)
     }
+
+    async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
+        self.db.delete(key.as_ref()).map_err(Into::into)
+    }
 }

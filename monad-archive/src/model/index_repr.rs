@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
 
-    fn create_test_data() -> (InlineV0, Block, Vec<ReceiptWithLogIndex>) {
+    fn create_test_data() -> (InlineV0, Block, BlockReceipts) {
         let tx = mock_tx(123);
         let block = mock_block(251, vec![tx.clone()]);
         let rx = mock_rx(100, 21000);

@@ -1,9 +1,7 @@
 use alloy_consensus::BlockBody;
 use alloy_primitives::BlockHash;
 use eyre::{eyre, OptionExt, Result};
-use monad_triedb_utils::triedb_env::{
-    BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, Triedb, TriedbEnv,
-};
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb, TriedbEnv};
 use monad_types::SeqNum;
 
 use super::BlockDataWithOffsets;
@@ -31,9 +29,9 @@ impl TriedbReader {
 }
 
 impl BlockDataReader for TriedbReader {
-    async fn get_latest(&self, _latest_kind: LatestKind) -> Result<u64> {
+    async fn get_latest(&self, _latest_kind: LatestKind) -> Result<Option<u64>> {
         let seq_num = self.db.get_latest_finalized_block_key().0;
-        Ok(seq_num.0)
+        Ok(Some(seq_num.0))
     }
 
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
@@ -60,14 +58,14 @@ impl BlockDataReader for TriedbReader {
         })
     }
 
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>> {
+    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
         self.db
             .get_receipts(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_number))))
             .await
             .map_err(|e| eyre!("{e}"))
     }
 
-    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>> {
+    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
         self.db
             .get_call_frames(BlockKey::Finalized(FinalizedBlockKey(SeqNum(block_number))))
             .await
@@ -104,5 +102,20 @@ impl BlockDataReader for TriedbReader {
             // do sectional reads from that store
             offsets: None,
         })
+    }
+
+    #[doc = " Get a block by its number, or return None if not found"]
+    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>> {
+        self.get_block_by_number(block_num).await.map(Some)
+    }
+
+    #[doc = " Get receipts for a block, or return None if not found"]
+    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>> {
+        self.get_block_receipts(block_number).await.map(Some)
+    }
+
+    #[doc = " Get execution traces for a block, or return None if not found"]
+    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>> {
+        self.get_block_traces(block_number).await.map(Some)
     }
 }

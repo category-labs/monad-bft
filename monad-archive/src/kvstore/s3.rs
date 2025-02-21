@@ -1,9 +1,10 @@
 use core::str;
 
 use aws_config::SdkConfig;
-use aws_sdk_s3::{primitives::ByteStream, Client};
+use aws_sdk_s3::{error::SdkError, primitives::ByteStream, Client};
 use bytes::Bytes;
 use eyre::{Context, Result};
+use tracing::trace;
 
 use super::retry;
 use crate::{metrics::Metrics, prelude::*};
@@ -35,17 +36,30 @@ impl S3Bucket {
 
 impl KVReader for S3Bucket {
     async fn get(&self, key: &str) -> Result<Option<Bytes>> {
+        trace!(key, "S3 get");
         let resp = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
             .send()
-            .await
-            .wrap_err_with(|| {
+            .await;
+        trace!(key, "S3 get, got response");
+
+        let resp = match resp {
+            Ok(resp) => resp,
+            Err(SdkError::ServiceError(service_err)) => match service_err.err() {
+                aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => return Ok(None),
+                _ => Err(SdkError::ServiceError(service_err)).wrap_err_with(|| {
+                    self.metrics.inc_counter(AWS_S3_ERRORS);
+                    format!("Failed to read key from s3 {key}")
+                })?,
+            },
+            _ => resp.wrap_err_with(|| {
                 self.metrics.inc_counter(AWS_S3_ERRORS);
                 format!("Failed to read key from s3 {key}")
-            })?;
+            })?,
+        };
 
         let data = resp.body.collect().await.wrap_err_with(|| {
             self.metrics.inc_counter(AWS_S3_ERRORS);
@@ -121,7 +135,8 @@ impl KVStore for S3Bucket {
 
             // Process objects
             if let Some(contents) = response.contents {
-                objects.extend(contents.into_iter().filter_map(|obj| obj.key));
+                let keys = contents.into_iter().filter_map(|obj| obj.key);
+                objects.extend(keys);
             }
 
             // Check if we need to continue
@@ -132,5 +147,32 @@ impl KVStore for S3Bucket {
         }
 
         Ok(objects)
+    }
+
+    async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
+        retry(|| {
+            let client = &self.client;
+            let bucket = &self.bucket;
+            let key = key.as_ref().to_string();
+            let metrics = &self.metrics;
+
+            async move {
+                client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                    .wrap_err_with(|| {
+                        metrics.inc_counter(AWS_S3_ERRORS);
+                        format!("Failed to delete {}. Retrying...", key)
+                    })
+            }
+        })
+        .await
+        .map(|_| ())
+        .wrap_err_with(|| format!("Failed to delete {}. Retrying...", key.as_ref()))?;
+
+        Ok(())
     }
 }

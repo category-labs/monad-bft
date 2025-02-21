@@ -38,7 +38,8 @@ pub async fn archive_worker(
             let latest_uploaded = archive_writer
                 .get_latest(LatestKind::Uploaded)
                 .await
-                .unwrap_or(0);
+                .unwrap_or(Some(0))
+                .unwrap();
             if latest_uploaded == 0 {
                 0
             } else {
@@ -52,7 +53,7 @@ pub async fn archive_worker(
 
         // query latest
         let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number,
+            Ok(number) => number.unwrap_or(0),
             Err(e) => {
                 warn!("Error getting latest source block: {e:?}");
                 continue;
@@ -279,7 +280,7 @@ mod tests {
 
     async fn mock_source(
         archive: &BlockDataArchive,
-        data: impl IntoIterator<Item = (Block, Vec<ReceiptWithLogIndex>, Vec<Vec<u8>>)>,
+        data: impl IntoIterator<Item = (Block, BlockReceipts, BlockTraces)>,
     ) {
         let mut max_block_num = u64::MIN;
         for (block, receipts, traces) in data {
@@ -388,7 +389,10 @@ mod tests {
         };
         mock_source(&reader, (0..=10).map(row)).await;
 
-        assert_eq!(reader.get_latest(LatestKind::Uploaded).await.unwrap(), 10);
+        assert_eq!(
+            reader.get_latest(LatestKind::Uploaded).await.unwrap(),
+            Some(10)
+        );
 
         let end_block = archive_blocks(
             &reader,
@@ -400,7 +404,10 @@ mod tests {
         .await;
 
         assert_eq!(end_block, 10);
-        assert_eq!(archiver.get_latest(LatestKind::Uploaded).await.unwrap(), 10);
+        assert_eq!(
+            archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
+            Some(10)
+        );
     }
 
     #[tokio::test]
@@ -426,7 +433,7 @@ mod tests {
 
         assert_eq!(
             reader.get_latest(LatestKind::Uploaded).await.unwrap(),
-            latest_source
+            Some(latest_source)
         );
 
         let end_block = archive_blocks(
@@ -441,7 +448,7 @@ mod tests {
         assert_eq!(end_block, end_of_first_chunk);
         assert_eq!(
             archiver.get_latest(LatestKind::Uploaded).await.unwrap(),
-            end_of_first_chunk
+            Some(end_of_first_chunk)
         );
     }
 }

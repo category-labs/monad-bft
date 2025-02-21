@@ -58,6 +58,11 @@ impl KVStore for MemoryStorage {
             })
             .collect())
     }
+
+    async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
+        self.db.lock().await.remove(key.as_ref());
+        Ok(())
+    }
 }
 
 #[cfg(test)]

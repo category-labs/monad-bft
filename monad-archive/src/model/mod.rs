@@ -5,7 +5,7 @@ pub mod tx_index_archive;
 use alloy_primitives::BlockHash;
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use enum_dispatch::enum_dispatch;
-use eyre::Result;
+use eyre::{OptionExt, Result};
 use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use serde::{Deserialize, Serialize};
 
@@ -22,19 +22,40 @@ pub trait BlockDataReader: Clone {
     async fn get_block_data_with_offsets(&self, block_num: u64) -> Result<BlockDataWithOffsets>;
 
     /// Get the latest block number for the given type (uploaded or indexed)
-    async fn get_latest(&self, latest_kind: LatestKind) -> Result<u64>;
+    async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>>;
 
-    /// Get a block by its number
-    async fn get_block_by_number(&self, block_num: u64) -> Result<Block>;
+    /// Get a block by its number, or return None if not found
+    async fn try_get_block_by_number(&self, block_num: u64) -> Result<Option<Block>>;
+
+    /// Get receipts for a block, or return None if not found
+    async fn try_get_block_receipts(&self, block_number: u64) -> Result<Option<BlockReceipts>>;
+
+    /// Get execution traces for a block, or return None if not found
+    async fn try_get_block_traces(&self, block_number: u64) -> Result<Option<BlockTraces>>;
 
     /// Get a block by its hash
     async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block>;
 
+    /// Get a block by its number
+    async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
+        self.try_get_block_by_number(block_num)
+            .await
+            .and_then(|opt| opt.ok_or_eyre("Block not found"))
+    }
+
     /// Get receipts for a block
-    async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<ReceiptWithLogIndex>>;
+    async fn get_block_receipts(&self, block_number: u64) -> Result<BlockReceipts> {
+        self.try_get_block_receipts(block_number)
+            .await
+            .and_then(|opt| opt.ok_or_eyre("Receipt not found"))
+    }
 
     /// Get execution traces for a block
-    async fn get_block_traces(&self, block_number: u64) -> Result<Vec<Vec<u8>>>;
+    async fn get_block_traces(&self, block_number: u64) -> Result<BlockTraces> {
+        self.try_get_block_traces(block_number)
+            .await
+            .and_then(|opt| opt.ok_or_eyre("Traces not found"))
+    }
 }
 
 #[enum_dispatch(BlockDataReader)]
@@ -50,9 +71,9 @@ pub struct BlockDataWithOffsets {
     /// The full block including header and transactions
     pub block: Block,
     /// Transaction receipts with log indices
-    pub receipts: Vec<ReceiptWithLogIndex>,
+    pub receipts: BlockReceipts,
     /// Execution traces for each transaction
-    pub traces: Vec<Vec<u8>>,
+    pub traces: BlockTraces,
     /// RLP encoding byte offsets for efficient partial reads
     pub offsets: Option<Vec<TxByteOffsets>>,
 }

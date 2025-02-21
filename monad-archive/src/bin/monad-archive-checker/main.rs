@@ -1,355 +1,152 @@
-#![allow(async_fn_in_trait)]
+//! Monad Archive Checker System
+//!
+//! This module implements a blockchain data consistency checker that verifies
+//! blocks, receipts, and traces across multiple archival replicas. It detects
+//! and reports inconsistencies, missing data, and corrupted blocks.
 
 use clap::Parser;
-use futures::{future::join_all, join};
-use monad_archive::{
-    fault::{BlockCheckResult, Fault, FaultWriter},
-    prelude::*,
-};
-use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
-use tokio::sync::Semaphore;
+use eyre::Result;
+use model::CheckerModel;
+use monad_archive::{cli::get_aws_config, prelude::*};
+use tracing_subscriber::EnvFilter;
 
+mod checker;
 mod cli;
+mod fault_fixer;
+mod model;
+mod rechecker;
+
+/// Number of blocks to check per iteration
+/// Also the number of blocks per stored object
+pub const CHUNK_SIZE: u64 = 1000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-    let args = cli::Cli::parse();
-    info!("Args: {args:?}");
+    // Initialize logging
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive("monad_archive_checker=debug".parse()?)
+                .from_env_lossy(),
+        )
+        .init();
+
+    // Parse command line arguments
+    let args = cli::Cli::parse();
+    info!("Starting monad-archive-checker with mode: {:?}", args.mode);
+
+    if let Some(max_compute_threads) = args.max_compute_threads.as_ref() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(*max_compute_threads)
+            .build_global()?;
+    }
+
+    // Initialize metrics
+    info!(
+        "Initializing metrics with endpoint: {:?}",
+        args.otel_endpoint
+    );
     let metrics = Metrics::new(
         args.otel_endpoint,
-        "monad-archive-checker",
-        args.sources
-            .first()
-            .map_or("".to_owned(), |s| s.replica_name()), // TODO: improve naming
+        "monad_archive_checker",
+        "",
         Duration::from_secs(15),
     )?;
 
-    let mut s3_archive_readers = Vec::new();
-    for arg in args.sources {
-        s3_archive_readers.push(arg.build(&metrics).await?);
-    }
+    // Get AWS configuration
+    info!("Configuring AWS with region: {:?}", args.region);
+    let aws_config = get_aws_config(args.region.clone()).await;
 
-    if args.max_blocks_per_iteration == 0 {
-        panic!("Max blocks per iteration can't be 0. Suggested value: 200");
-    }
+    // Initialize S3 bucket
+    info!("Initializing S3 bucket: {}", args.bucket);
+    let s3 = S3Bucket::new(args.bucket.clone(), &aws_config, metrics.clone());
 
-    let concurrent_block_semaphore = Arc::new(Semaphore::new(args.max_concurrent_blocks));
-
-    // Initialize fault writer
-    let fault_writer = FaultWriter::new(&args.checker_path).await?;
-    info!("Writing S3 checking result at {:?}", &args.checker_path);
-
-    let mut start_block_number = args.start_block;
-
-    loop {
-        let latest_block_number = latest_uploaded_block(&s3_archive_readers, &args.max_lag).await;
-        let end_block_number =
-            latest_block_number.min(start_block_number + args.max_blocks_per_iteration - 1);
-
-        info!(
-            "Start block: {}, end block: {}, latest block: {}",
-            start_block_number, end_block_number, latest_block_number
-        );
-
-        if let Some(stop_block_override) = args.stop_block {
-            if start_block_number > stop_block_override {
-                info!("Reached stop block override, stopping...");
-                return Ok(());
-            }
-        }
-
-        if end_block_number <= start_block_number {
-            info!("Nothing to do. Sleeping for 10s");
-            sleep(Duration::from_secs(10)).await;
-            continue;
-        }
-
-        let join_handles = (start_block_number..=end_block_number).map(|current_block: u64| {
-            let mut fault_writer = fault_writer.clone();
-            let s3_archive_readers = s3_archive_readers.clone();
-            let metrics = metrics.clone();
-
-            let semaphore = concurrent_block_semaphore.clone();
-
-            tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .expect("Got permit to check a new block");
-                let blocks_data = get_block_data(&s3_archive_readers, current_block).await;
-                pairwise_check(&blocks_data, current_block, &mut fault_writer, &metrics).await
-            })
-        });
-
-        let block_check_results = join_all(join_handles).await;
-        let mut current_block = start_block_number;
-        for block_check_result in block_check_results {
-            match block_check_result {
-                Ok(block_faults_cnt) => {
-                    if block_faults_cnt == 0 {
-                        info!("Block {} is consistent across buckets", current_block);
-                    } else {
-                        error!(
-                            "Block {} is inconsistent across buckets. Number of faults: {}",
-                            current_block, block_faults_cnt
-                        );
-                    }
-                }
-                Err(e) => {
-                    // TODO: should be abort here??
-                    error!("Critical: Unable to join futures!, {e}");
-                }
-            }
-            current_block += 1;
-        }
-
-        start_block_number = end_block_number;
-
-        // sleep for 10s
-        info!("Sleeping for 10s...");
-        sleep(Duration::from_secs(10)).await;
-    }
-}
-
-async fn latest_uploaded_block(readers: &[impl BlockDataReader], max_lag: &u64) -> u64 {
-    let latest_futures = readers.iter().map(|reader| async {
-        match reader.get_latest(LatestKind::Uploaded).await {
-            Ok(block_number) => block_number,
-            Err(e) => {
-                // This is not necessarily an error. It might be that the latest is not there yet
-                warn!(
-                    "Failed to get latest block number for bucket '{}': {:?}",
-                    reader.get_bucket(),
-                    e
-                );
-                0
-            }
-        }
-    });
-
-    let results = join_all(latest_futures).await;
-
-    let max_block_number = results.iter().cloned().max().unwrap_or(0);
-    let mut min_block_number = max_block_number;
-
-    for (i, &bucket_latest_block) in results.iter().enumerate() {
-        if bucket_latest_block + max_lag <= max_block_number {
-            error!(
-                "Bucket '{}' falling behind. Tip: {}, Current: {}",
-                &readers[i].get_bucket(),
-                max_block_number,
-                bucket_latest_block
-            );
-        } else {
-            // We only update min when it's not too behind
-            min_block_number = min_block_number.min(bucket_latest_block);
-        }
-    }
-
-    min_block_number
-}
-
-struct BlockData {
-    pub bucket: String,
-    pub block: Option<Block>,
-    pub receipts: Option<Vec<ReceiptWithLogIndex>>,
-    pub traces: Option<Vec<Vec<u8>>>,
-}
-
-async fn get_block_data(readers: &[impl BlockDataReader], block_number: u64) -> Vec<BlockData> {
-    join_all(readers.iter().map(|reader| {
-        let bucket = reader.get_bucket();
-        async move {
-            let (block_result, receipts_result, traces_result) = join!(
-                reader.get_block_by_number(block_number),
-                reader.get_block_receipts(block_number),
-                reader.get_block_traces(block_number)
+    match args.mode {
+        cli::Mode::Checker(checker_args) => {
+            info!(
+                "Starting in checker mode with min_lag_from_tip: {}",
+                checker_args.min_lag_from_tip
             );
 
-            let block_data = BlockData {
-                bucket: bucket.to_owned(),
-                block: block_result.ok(),
-                receipts: receipts_result.ok(),
-                traces: traces_result.ok(),
+            // Create the checker model and synchonize replicas to check
+            let init_replicas = checker_args.init_replicas.map(|list| {
+                info!("Using initial replicas: {:?}", list);
+                list.into_iter().collect()
+            });
+
+            info!("Initializing checker model");
+            let model = CheckerModel::new(s3, &metrics, init_replicas).await?;
+            let recheck_freq = Duration::from_secs_f64(checker_args.recheck_freq_min * 60.);
+            info!("Recheck frequency set to {:?}", recheck_freq);
+
+            // Start the checker worker task
+            let checker_handle = tokio::spawn(checker::checker_worker(
+                model.clone(),
+                checker_args.min_lag_from_tip,
+            ));
+
+            // Start the rechecker worker if enabled
+            let rechecker_handle = if !checker_args.disable_rechecker {
+                tokio::spawn(rechecker::recheck_worker(
+                    recheck_freq,
+                    model.clone(),
+                    metrics.clone(),
+                ))
+            } else {
+                // Dummy task for type compatibility
+                tokio::spawn(async { Ok(()) })
             };
 
-            if block_data.block.is_none() {
-                error!(
-                    "Failed to get block {} for bucket '{}'",
-                    block_number, bucket
-                );
-            }
-            if block_data.receipts.is_none() {
-                error!(
-                    "Failed to get receipts {} for bucket '{}'",
-                    block_number, bucket
-                );
-            }
-            if block_data.traces.is_none() {
-                error!(
-                    "Failed to get traces {} for bucket '{}'",
-                    block_number, bucket
-                );
-            }
-
-            block_data
+            checker_handle.await??;
+            rechecker_handle.await??;
         }
-    }))
-    .await
-}
+        cli::Mode::Rechecker(rechecker_args) => {
+            info!(
+                "Starting in rechecker mode with recheck_freq_min: {}",
+                rechecker_args.recheck_freq_min
+            );
 
-async fn pairwise_check(
-    blocks_data: &[BlockData],
-    block_number: u64,
-    fault_writer: &mut FaultWriter,
-    metrics: &Metrics,
-) -> usize {
-    let mut faults = Vec::new();
+            let model = CheckerModel::new(s3, &metrics, None).await?;
+            let recheck_freq = Duration::from_secs_f64(rechecker_args.recheck_freq_min * 60.);
+            info!("Recheck frequency set to {:?}", recheck_freq);
 
-    let mut missing_block = Vec::new();
-    let mut missing_receipts = Vec::new();
-    let mut missing_traces = Vec::new();
-
-    // checking for missing stuff
-    for block_data in blocks_data {
-        let bucket = &block_data.bucket;
-
-        if block_data.block.is_none() {
-            missing_block.push(bucket.clone());
+            info!("Starting rechecker worker");
+            tokio::spawn(rechecker::recheck_worker(recheck_freq, model, metrics)).await??;
         }
+        cli::Mode::FaultFixer(fixer_args) => {
+            info!(
+                "Starting in fault fixer mode [dry_run: {}, verify: {}]",
+                fixer_args.dry_run, fixer_args.verify
+            );
 
-        if block_data.receipts.is_none() {
-            missing_receipts.push(bucket.clone());
-        }
+            let model = CheckerModel::new(s3, &metrics, None).await?;
 
-        if block_data.traces.is_none() {
-            missing_traces.push(bucket.clone());
-        }
-    }
+            info!("Running fault fixer on replicas: {:?}", fixer_args.replicas);
 
-    if !missing_block.is_empty() {
-        faults.push(Fault::S3MissingBlock {
-            buckets: missing_block,
-        });
-    }
-    if !missing_receipts.is_empty() {
-        faults.push(Fault::S3MissingReceipts {
-            buckets: missing_receipts,
-        });
-    }
-    if !missing_traces.is_empty() {
-        faults.push(Fault::S3MissingTraces {
-            buckets: missing_traces,
-        });
-    }
+            let (total_fixed, total_failed) = fault_fixer::run_fixer(
+                &model,
+                &metrics,
+                fixer_args.dry_run,
+                fixer_args.verify,
+                fixer_args.replicas,
+            )
+            .await?;
 
-    // pairwise comparison
-    for i in 0..blocks_data.len() {
-        for j in i + 1..blocks_data.len() {
-            let bucket1 = &blocks_data[i].bucket;
-            let bucket2 = &blocks_data[j].bucket;
-
-            // TODO: Should we still log if one of them is "Missing"
-            if blocks_data[i].block != blocks_data[j].block {
-                error!(
-                    "Block {} is different between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
+            if fixer_args.dry_run {
+                info!(
+                    "DRY RUN SUMMARY: Would fix {} faults ({} would fail)",
+                    total_fixed, total_failed
                 );
-                faults.push(Fault::S3InconsistentBlock {
-                    bucket1: bucket1.clone(),
-                    bucket2: bucket2.clone(),
-                });
             } else {
-                debug!(
-                    "Block {} is same between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
-                );
-            }
-
-            if blocks_data[i].receipts != blocks_data[j].receipts {
-                error!(
-                    "Receipts {} is different between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
-                );
-                faults.push(Fault::S3InconsistentReceipts {
-                    bucket1: bucket1.clone(),
-                    bucket2: bucket2.clone(),
-                });
-            } else {
-                debug!(
-                    "Receipts {} is same between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
-                );
-            }
-
-            if blocks_data[i].traces != blocks_data[j].traces {
-                error!(
-                    "Traces {} is different between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
-                );
-                faults.push(Fault::S3InconsistentTraces {
-                    bucket1: bucket1.clone(),
-                    bucket2: bucket2.clone(),
-                });
-            } else {
-                debug!(
-                    "Traces {} is same between bucket '{}' and bucket '{}'",
-                    block_number, bucket1, bucket2
+                info!(
+                    "SUMMARY: Fixed {} faults ({} failed)",
+                    total_fixed, total_failed
                 );
             }
         }
     }
 
-    let faults_cnt = faults.len();
-
-    if !faults.is_empty() {
-        metrics.counter("faults_blocks_with_faults", 1);
-    }
-
-    let block_check_result = BlockCheckResult::new(block_number, faults);
-    for fault in &block_check_result.faults {
-        match fault {
-            Fault::ErrorChecking { .. } => metrics.counter("faults_error_checking", 1),
-            Fault::S3MissingBlock { buckets } => {
-                metrics.counter("faults_s3_missing_block", 1);
-                metrics.counter("faults_s3_missing_block_buckets", buckets.len() as u64);
-            }
-            Fault::S3MissingReceipts { buckets } => {
-                metrics.counter("faults_s3_missing_receipts", 1);
-                metrics.counter("faults_s3_missing_receipts_buckets", buckets.len() as u64);
-            }
-            Fault::S3MissingTraces { buckets } => {
-                metrics.counter("faults_s3_missing_traces", 1);
-                metrics.counter("faults_s3_missing_traces_buckets", buckets.len() as u64);
-            }
-            // TODO: Should we use increment?
-            Fault::S3InconsistentBlock { .. } => {
-                metrics.inc_counter("faults_s3_inconsistent_block")
-            }
-            Fault::S3InconsistentReceipts { .. } => {
-                metrics.inc_counter("faults_s3_inconsistent_receipts")
-            }
-            Fault::S3InconsistentTraces { .. } => {
-                metrics.inc_counter("faults_s3_inconsistent_traces")
-            }
-
-            // Other faults are not S3 faults
-            _ => (),
-        }
-    }
-
-    if let Err(e) = fault_writer.write_fault(block_check_result.clone()).await {
-        error!(
-            "Failed to write results for block {}: {:?}",
-            block_number, e
-        );
-        error!(
-            "BlockCheckResults should be written: {:?}",
-            block_check_result
-        );
-    }
-
-    faults_cnt
+    info!("monad-archive-checker completed successfully");
+    Ok(())
 }

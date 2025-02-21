@@ -154,6 +154,14 @@ impl KVStore for MongoDbStorage {
 
         Ok(keys)
     }
+
+    async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
+        self.collection
+            .delete_one(doc! { "_id": key.as_ref() })
+            .await
+            .wrap_err_with(|| format!("Failed to delete key {}", key.as_ref()))?;
+        Ok(())
+    }
 }
 
 #[cfg(all(test, feature = "mongodb-integration-tests"))]

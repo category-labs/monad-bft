@@ -28,7 +28,7 @@ impl Deref for TxIndexArchiver {
 }
 
 pub trait IndexReader {
-    async fn get_latest_indexed(&self) -> Result<u64>;
+    async fn get_latest_indexed(&self) -> Result<Option<u64>>;
     async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
     async fn get_tx_indexed_data_bulk(
         &self,
@@ -68,7 +68,7 @@ impl IndexReaderImpl {
 }
 
 impl IndexReader for IndexReaderImpl {
-    async fn get_latest_indexed(&self) -> Result<u64> {
+    async fn get_latest_indexed(&self) -> Result<Option<u64>> {
         self.block_data_reader.get_latest(LatestKind::Indexed).await
     }
 
@@ -150,8 +150,8 @@ impl TxIndexArchiver {
     pub async fn index_block(
         &self,
         block: Block,
-        traces: Vec<Vec<u8>>,
-        receipts: Vec<ReceiptWithLogIndex>,
+        traces: BlockTraces,
+        receipts: BlockReceipts,
         offsets: Option<Vec<TxByteOffsets>>,
     ) -> Result<()> {
         let block_number = block.header.number;
@@ -234,8 +234,8 @@ mod tests {
 
     fn offsets_helper(
         block: &Block,
-        traces: &Vec<Vec<u8>>,
-        receipts: &Vec<ReceiptWithLogIndex>,
+        traces: &BlockTraces,
+        receipts: &BlockReceipts,
     ) -> Result<Option<Vec<TxByteOffsets>>> {
         let mut block_rlp = Vec::new();
         block.encode(&mut block_rlp);

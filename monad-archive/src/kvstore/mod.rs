@@ -68,6 +68,7 @@ pub trait KVStore: KVReader {
         Ok(())
     }
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>>;
+    async fn delete(&self, key: impl AsRef<str>) -> Result<()>;
     fn bucket_name(&self) -> &str;
 }
 

@@ -5,7 +5,6 @@ use monad_archive::{
     fault::{get_timestamp, BlockCheckResult, Fault, FaultWriter},
     prelude::*,
 };
-use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
 use tokio::join;
 
 mod cli;
@@ -36,7 +35,7 @@ async fn main() -> Result<()> {
 
         // get latest indexed and indexed from s3
         let latest_indexed = match reader.get_latest(LatestKind::Uploaded).await {
-            Ok(number) => number,
+            Ok(number) => number.unwrap_or(0),
             Err(e) => {
                 warn!("Error getting latest uploaded block: {e:?}");
                 continue;
@@ -257,7 +256,7 @@ async fn handle_block(reader: ArchiveReader, block_num: u64) -> Result<BlockChec
 async fn get_block_data(
     reader: &ArchiveReader,
     block_num: u64,
-) -> std::result::Result<(Block, Vec<Vec<u8>>, Vec<ReceiptWithLogIndex>), BlockCheckResult> {
+) -> std::result::Result<(Block, BlockTraces, BlockReceipts), BlockCheckResult> {
     let (block, traces, receipts) = join!(
         reader.get_block_by_number(block_num),
         reader.get_block_traces(block_num),

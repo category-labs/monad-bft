@@ -24,8 +24,8 @@ bench = false
 bench = false
 
 [features]
-default = []  
-mongodb-integration-tests = []  
+default = []
+mongodb-integration-tests = []
 
 [dependencies]
 monad-triedb-utils = { path = "../monad-triedb-utils" }
