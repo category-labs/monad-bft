@@ -98,7 +98,7 @@ async fn index_blocks(
     let res: Result<usize, u64> = futures::stream::iter(block_range.clone())
         .map(|block_num: u64| async move {
             match handle_block(block_data_reader, indexer, block_num).await {
-                Ok(num_txs) => Ok((num_txs, block_num)),
+                Ok(num_txs) => Ok(num_txs),
                 Err(e) => {
                     error!("Failed to handle block: {e:?}");
                     Err(block_num)
@@ -106,14 +106,6 @@ async fn index_blocks(
             }
         })
         .buffered(concurrency)
-        .then(|r| async move {
-            if let Ok((_, block_num)) = &r {
-                if block_num % 10 == 0 {
-                    checkpoint_latest(indexer, *block_num).await;
-                }
-            }
-            r.map(|(num_txs, _)| num_txs)
-        })
         .try_fold(0, |total_txs, block_txs| async move {
             Ok(total_txs + block_txs)
         })

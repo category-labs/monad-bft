@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
         metrics,
         args.start_block,
         args.stop_block,
-        Duration::from_millis(100),
+        Duration::from_millis(500),
     ))
     .await
     .map_err(Into::into)

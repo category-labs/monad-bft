@@ -48,7 +48,7 @@ pub async fn archive_worker(
     };
 
     loop {
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(500)).await;
 
         // query latest
         let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
@@ -112,7 +112,7 @@ async fn archive_blocks(
     let res: Result<(), u64> = futures::stream::iter(range.clone())
         .map(|block_num: u64| async move {
             match archive_block(reader, fallback_reader, block_num, archiver).await {
-                Ok(_) => Ok(block_num),
+                Ok(_) => Ok(()),
                 Err(e) => {
                     error!("Failed to handle block: {e:?}");
                     Err(block_num)
@@ -120,14 +120,6 @@ async fn archive_blocks(
             }
         })
         .buffered(concurrency)
-        .then(|r| async move {
-            if let Ok(block_num) = &r {
-                if block_num % 10 == 0 {
-                    checkpoint_latest(archiver, *block_num).await;
-                }
-            }
-            r.map(|_| ())
-        })
         .try_collect()
         .await;
 

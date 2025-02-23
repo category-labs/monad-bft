@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
+const MAX_CONNECTION_POOL_SIZE: u32 = 50;
+
 #[derive(Clone)]
 pub struct MongoDbStorage {
     collection: Collection<KeyValueDocument>,
@@ -56,8 +58,10 @@ impl MongoDbStorage {
         collection_name: &str,
         create_with_capped_size: Option<u64>,
     ) -> Result<Self> {
-        let client_options = ClientOptions::parse(connection_string).await?;
+        let mut client_options = ClientOptions::parse(connection_string).await?;
+        client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
         let client = Client::with_options(client_options)?;
+
         let db = client.database(database);
 
         if !db
@@ -126,31 +130,6 @@ impl KVStore for MongoDbStorage {
             .upsert(true)
             .await
             .wrap_err("MongoDB put operation failed")?;
-
-        Ok(())
-    }
-
-    async fn bulk_put(&self, kvs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<()> {
-        let documents: Vec<KeyValueDocument> = kvs
-            .into_iter()
-            .map(|(key, value)| KeyValueDocument {
-                _id: key,
-                value: Binary {
-                    subtype: mongodb::bson::spec::BinarySubtype::Generic,
-                    bytes: value,
-                },
-            })
-            .collect();
-
-        if documents.is_empty() {
-            return Ok(());
-        }
-
-        self.collection
-            .insert_many(documents)
-            .ordered(false)
-            .await
-            .wrap_err("MongoDB bulk insert operation failed")?;
 
         Ok(())
     }
