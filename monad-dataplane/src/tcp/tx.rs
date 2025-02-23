@@ -153,9 +153,9 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
 
             conn_cork(raw_fd, false);
 
-            let num_unacked_bytes = num_unacked_bytes(raw_fd);
-
             if enabled!(Level::DEBUG) {
+                let num_unacked_bytes = num_unacked_bytes(raw_fd);
+
                 let duration = Instant::now() - connect_time;
 
                 let duration_ms = duration.as_millis();
