@@ -15,7 +15,7 @@ use monoio::{
     time::timeout,
 };
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
@@ -140,7 +140,11 @@ async fn read_message(
     message_id: u64,
     tcp_stream: &mut TcpStream,
 ) -> Option<Bytes> {
-    let start_time = Instant::now();
+    let start_time = if enabled!(Level::DEBUG) {
+        Some(Instant::now())
+    } else {
+        None
+    };
 
     let header_bytes = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
 
@@ -251,30 +255,32 @@ async fn read_message(
         }
     };
 
-    let duration = Instant::now() - start_time;
+    if let Some(start_time) = start_time {
+        let duration = Instant::now() - start_time;
 
-    let duration_ms = duration.as_millis();
+        let duration_ms = duration.as_millis();
 
-    let bytes_per_second = {
-        let bytes_received = std::mem::size_of::<TcpMsgHdr>() + message_length;
-        let duration_f64 = duration.as_secs_f64();
+        let bytes_per_second = {
+            let bytes_received = std::mem::size_of::<TcpMsgHdr>() + message_length;
+            let duration_f64 = duration.as_secs_f64();
 
-        if duration_f64 >= 0.01 {
-            (bytes_received as f64) / duration_f64
-        } else {
-            f64::NAN
-        }
-    };
+            if duration_f64 >= 0.01 {
+                (bytes_received as f64) / duration_f64
+            } else {
+                f64::NAN
+            }
+        };
 
-    debug!(
-        conn_id,
-        ?addr,
-        message_id,
-        ?header,
-        duration_ms,
-        bytes_per_second,
-        "received message on TCP connection"
-    );
+        debug!(
+            conn_id,
+            ?addr,
+            message_id,
+            ?header,
+            duration_ms,
+            bytes_per_second,
+            "received message on TCP connection"
+        );
+    }
 
     Some(message.freeze())
 }

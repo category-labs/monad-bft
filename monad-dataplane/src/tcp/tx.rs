@@ -141,7 +141,11 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
         Ok(mut stream) => {
             trace!(conn_id, ?addr, "outbound TCP connection established");
 
-            let connect_time = Instant::now();
+            let connect_time = if enabled!(Level::DEBUG) {
+                Some(Instant::now())
+            } else {
+                None
+            };
 
             let raw_fd = stream.as_raw_fd();
             conn_cork(raw_fd, true);
@@ -177,7 +181,7 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
 
             conn_cork(raw_fd, false);
 
-            if enabled!(Level::DEBUG) {
+            if let Some(connect_time) = connect_time {
                 let num_unacked_bytes = num_unacked_bytes(raw_fd);
 
                 let duration = Instant::now() - connect_time;
