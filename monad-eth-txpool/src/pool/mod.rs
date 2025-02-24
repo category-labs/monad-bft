@@ -25,11 +25,10 @@ mod pending;
 mod tracked;
 mod transaction;
 
-// These constants control how many txs will get promoted from the pending map to the tracked map
-// during other tx insertions. They were set based on intuition and should be changed once we have
-// more data on txpool performance.
-const INSERT_TXS_MIN_PROMOTE: usize = 32;
-const INSERT_TXS_MAX_PROMOTE: usize = 128;
+// This constants controls the maximum number of addresses that get promoted during the tx insertion
+// process. It was set based on intuition and should be changed once we have more data on txpool
+// performance.
+const INSERT_TXS_MAX_PROMOTE: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool<ST, SCT, SBT>
@@ -110,22 +109,6 @@ where
             return;
         };
 
-        if let Err(state_backend_error) = self.tracked.promote_pending(
-            event_tracker,
-            block_policy,
-            state_backend,
-            &mut self.pending,
-            INSERT_TXS_MIN_PROMOTE,
-            INSERT_TXS_MAX_PROMOTE,
-        ) {
-            if self.pending.is_at_promote_txs_watermark() {
-                warn!(
-                    ?state_backend_error,
-                    "txpool failed to promote at pending promote txs watermark"
-                );
-            }
-        }
-
         let txs = txs
             .into_iter()
             .filter_map(|tx| {
@@ -185,6 +168,22 @@ where
             };
 
             on_insert(tx);
+        }
+
+        if let Err(state_backend_error) = self.tracked.promote_pending(
+            event_tracker,
+            block_policy,
+            state_backend,
+            &mut self.pending,
+            0,
+            INSERT_TXS_MAX_PROMOTE,
+        ) {
+            if self.pending.is_at_promote_txs_watermark() {
+                warn!(
+                    ?state_backend_error,
+                    "txpool failed to promote at pending promote txs watermark"
+                );
+            }
         }
 
         self.update_aggregate_metrics(event_tracker);
