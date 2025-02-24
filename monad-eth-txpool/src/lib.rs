@@ -1,5 +1,5 @@
-pub use self::{context::EthTxPoolEventTracker, metrics::EthTxPoolMetrics, pool::EthTxPool};
+pub use self::{event_tracker::EthTxPoolEventTracker, metrics::EthTxPoolMetrics, pool::EthTxPool};
 
-mod context;
+mod event_tracker;
 mod metrics;
 mod pool;
