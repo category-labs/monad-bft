@@ -262,6 +262,7 @@ where
     EnterRound {
         epoch: Epoch,
         round: Round,
+        upcoming_leader_rounds: Vec<Round>,
     },
 
     // Emitted after statesync is completed

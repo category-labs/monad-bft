@@ -316,7 +316,11 @@ where
                         .project()
                         .add_ingress_txs(recovered_txs);
                 }
-                TxPoolCommand::EnterRound { epoch: _, round } => {
+                TxPoolCommand::EnterRound {
+                    epoch: _,
+                    round,
+                    upcoming_leader_rounds: _,
+                } => {
                     let proposal_gas_limit = self
                         .chain_config
                         .get_chain_revision(round)
