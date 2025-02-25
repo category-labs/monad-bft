@@ -122,13 +122,14 @@ where
     fn tcp_build_and_send(
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
-        app_message: Bytes,
+        make_app_message: impl FnOnce() -> Bytes,
     ) {
         match self.known_addresses.get(to) {
             None => {
                 tracing::warn!(?to, "not sending message, address unknown");
             }
             Some(address) => {
+                let app_message = make_app_message();
                 // TODO make this more sophisticated
                 // include timestamp, etc
                 let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
@@ -202,10 +203,8 @@ where
                     }
                 }
                 RouterCommand::Publish { target, message } => {
-                    let app_message = message.serialize();
-                    let app_message_len = app_message.len();
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
-                        tracing::warn!(?elapsed, app_message_len, "long time to publish message")
+                        tracing::warn!(?elapsed, "long time to publish message")
                     });
 
                     let udp_build = |epoch: &Epoch,
@@ -250,6 +249,8 @@ where
                                 continue;
                             };
 
+                            let app_message = message.serialize();
+
                             if epoch_validators.validators.contains_key(&self_id) {
                                 let message: M = message.into();
                                 self.pending_events
@@ -293,6 +294,7 @@ where
                                     waker.wake()
                                 }
                             } else {
+                                let app_message = message.serialize();
                                 self.dataplane.udp_write_unicast(udp_build(
                                     &self.current_epoch,
                                     BuildTarget::PointToPoint(to),
@@ -309,7 +311,7 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                self.tcp_build_and_send(to, app_message)
+                                self.tcp_build_and_send(to, || message.serialize())
                             }
                         }
                     };
