@@ -238,6 +238,10 @@ mod tests {
                 .args(["stop", &self.container_id])
                 .output()
                 .expect("Failed to stop MongoDB container");
+            Command::new("docker")
+                .args(["rm", &self.container_id])
+                .output()
+                .expect("Failed to remove MongoDB container");
         }
     }
 
