@@ -96,6 +96,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 start_execution_threshold: SeqNum(statesync_threshold.0 / 2),
                 chain_config,
                 timestamp_latency_estimate_ns: 10_000_000,
+                timestamp_no_bounds_check: Default::default(),
 
                 _phantom: PhantomData,
             },

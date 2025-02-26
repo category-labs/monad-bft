@@ -208,6 +208,9 @@ where
 
     pub timestamp_latency_estimate_ns: u128,
 
+    /// Knob to turn off timestamp bounds validation.
+    pub timestamp_no_bounds_check: bool,
+
     pub _phantom: PhantomData<CRT>,
 }
 
@@ -1939,6 +1942,7 @@ mod test {
                     start_execution_threshold: SeqNum(300),
                     chain_config: MockChainConfig::new(&CHAIN_PARAMS),
                     timestamp_latency_estimate_ns: 1,
+                    timestamp_no_bounds_check: Default::default(),
                     _phantom: Default::default(),
                 };
                 let genesis_qc = QuorumCertificate::genesis_qc();
@@ -1968,7 +1972,7 @@ mod test {
                     block_validator: block_validator(),
                     block_policy: block_policy(),
                     state_backend: state_backend(),
-                    block_timestamp: BlockTimestamp::new(1000, 1),
+                    block_timestamp: BlockTimestamp::new(1000, 1, true),
                     beneficiary: Default::default(),
                     nodeid: NodeId::new(keys[i as usize].pubkey()),
                     consensus_config,

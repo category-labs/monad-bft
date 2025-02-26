@@ -319,6 +319,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             start_execution_threshold: SeqNum(statesync_threshold as u64 / 2),
             chain_config: node_state.chain_config,
             timestamp_latency_estimate_ns: 20_000_000,
+            timestamp_no_bounds_check: node_state.node_config.consensus.timestamp_no_bounds_check,
             _phantom: Default::default(),
         },
         _phantom: PhantomData,

@@ -721,6 +721,8 @@ where
         let block_timestamp = BlockTimestamp::new(
             5 * self.consensus_config.delta.as_nanos(),
             self.consensus_config.timestamp_latency_estimate_ns,
+            // inverting the config boolean value which defaults to false when absent.
+            !self.consensus_config.timestamp_no_bounds_check,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
         let mut monad_state = MonadState {

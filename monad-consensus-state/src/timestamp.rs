@@ -10,15 +10,18 @@ pub struct BlockTimestamp {
 
     /// TODO: this needs an upper-bound
     latency_estimate_ns: u128,
+
+    validate_bounds: bool,
 }
 
 impl BlockTimestamp {
-    pub fn new(max_delta_ns: u128, latency_estimate_ns: u128) -> Self {
+    pub fn new(max_delta_ns: u128, latency_estimate_ns: u128, validate_bounds: bool) -> Self {
         assert!(latency_estimate_ns > 0);
         Self {
             local_time_ns: 0,
             max_delta_ns,
             latency_estimate_ns,
+            validate_bounds,
         }
     }
 
@@ -57,7 +60,7 @@ impl BlockTimestamp {
             Some(0) => None,
             // check that its not higher than the valid upper bound
             Some(_) => {
-                if !self.valid_bounds(curr_block_ts) {
+                if self.validate_bounds && !self.valid_bounds(curr_block_ts) {
                     None
                 } else {
                     // return the delta between local time and block time for adjustment
@@ -91,7 +94,7 @@ mod test {
 
     #[test]
     fn test_block_timestamp_validate() {
-        let mut b = BlockTimestamp::new(10, 1);
+        let mut b = BlockTimestamp::new(10, 1, true);
         b.update_time(0);
 
         assert!(b.valid_block_timestamp(1, 1).is_none());
@@ -107,6 +110,48 @@ mod test {
         ));
 
         b.update_time(10);
+
+        assert!(matches!(
+            b.valid_block_timestamp(5, 8),
+            Some(TimestampAdjustment {
+                delta: 1,
+                direction: TimestampAdjustmentDirection::Backward
+            })
+        ));
+    }
+    #[test]
+    fn test_block_timestamp_do_not_validate_bounds() {
+        let mut b = BlockTimestamp::new(10, 1, false);
+        b.update_time(0);
+
+        assert!(b.valid_block_timestamp(1, 1).is_none());
+        assert!(b.valid_block_timestamp(2, 1).is_none());
+
+        assert!(matches!(
+            b.valid_block_timestamp(0, 11),
+            Some(TimestampAdjustment {
+                delta: 10,
+                direction: TimestampAdjustmentDirection::Forward
+            })
+        ));
+
+        assert!(matches!(
+            b.valid_block_timestamp(1, 2),
+            Some(TimestampAdjustment {
+                delta: 1,
+                direction: TimestampAdjustmentDirection::Forward
+            })
+        ));
+
+        b.update_time(10);
+
+        assert!(matches!(
+            b.valid_block_timestamp(1, 2),
+            Some(TimestampAdjustment {
+                delta: 7,
+                direction: TimestampAdjustmentDirection::Backward
+            })
+        ));
 
         assert!(matches!(
             b.valid_block_timestamp(5, 8),

@@ -315,6 +315,7 @@ where
                         start_execution_threshold: SeqNum(300),
                         chain_config: MockChainConfig::new(&CHAIN_PARAMS),
                         timestamp_latency_estimate_ns: 10_000_000,
+                        timestamp_no_bounds_check: Default::default(),
                         _phantom: Default::default(),
                     },
                 },
