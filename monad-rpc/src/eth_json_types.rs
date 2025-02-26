@@ -412,7 +412,7 @@ impl<'de> Deserialize<'de> for BlockTags {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum BlockTagOrHash {
     BlockTags(BlockTags),

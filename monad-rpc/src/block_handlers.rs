@@ -393,36 +393,47 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
-
-    if let Some(header) = triedb_env
-        .get_block_header(block_key)
-        .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        // if block header is present but transactions are not, the block is statesynced
-        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
-            let receipts = triedb_env
-                .get_receipts(block_key)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            let block_receipts = map_block_receipts(
-                transactions,
-                receipts,
-                &header.header,
-                header.hash,
-                MonadTransactionReceipt,
-            )?;
-            return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+    if let Ok(block_key) = get_block_key_from_tag_or_hash(triedb_env, params.block.clone()).await {
+        if let Some(header) = triedb_env
+            .get_block_header(block_key)
+            .await
+            .map_err(JsonRpcError::internal_error)?
+        {
+            // if block header is present but transactions are not, the block is statesynced
+            if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+                let receipts = triedb_env
+                    .get_receipts(block_key)
+                    .await
+                    .map_err(JsonRpcError::internal_error)?;
+                let block_receipts = map_block_receipts(
+                    transactions,
+                    receipts,
+                    &header.header,
+                    header.hash,
+                    MonadTransactionReceipt,
+                )?;
+                return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+            }
         }
     }
 
     // try archive if header or transactions not found and archive reader specified
-    if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
-        (archive_reader, block_key)
-    {
-        if let Ok(receipts_with_log_index) = archive_reader.get_block_receipts(block_num.0).await {
-            if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+    if let Some(archive_reader) = archive_reader {
+        let block = match params.block {
+            BlockTagOrHash::BlockTags(tag) => match get_block_key_from_tag(triedb_env, tag) {
+                BlockKey::Finalized(FinalizedBlockKey(block_num)) => {
+                    archive_reader.get_block_by_number(block_num.0).await.ok()
+                }
+                BlockKey::Proposed(_) => None,
+            },
+            BlockTagOrHash::Hash(hash) => {
+                archive_reader.get_block_by_hash(&hash.0.into()).await.ok()
+            }
+        };
+        if let Some(block) = block {
+            if let Ok(receipts_with_log_index) =
+                archive_reader.get_block_receipts(block.header.number).await
+            {
                 let block_receipts = map_block_receipts(
                     block.body.transactions,
                     receipts_with_log_index,
