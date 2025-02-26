@@ -1203,7 +1203,16 @@ where
         // verify timestamp here
         if self
             .block_timestamp
-            .valid_block_timestamp(parent_timestamp, validated_block.get_timestamp())
+            .valid_block_timestamp(
+                parent_timestamp,
+                validated_block.get_timestamp(),
+                self.config
+                    .chain_config
+                    .get_chain_revision(round)
+                    .chain_params()
+                    .vote_pace
+                    .as_nanos(),
+            )
             .is_none()
         {
             self.metrics.consensus_events.failed_ts_validation += 1;

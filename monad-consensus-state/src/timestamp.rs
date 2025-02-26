@@ -38,9 +38,11 @@ impl BlockTimestamp {
         }
     }
 
-    fn valid_bounds(&self, timestamp: u128) -> bool {
-        let lower_bound = self.local_time_ns.saturating_sub(self.max_delta_ns);
-        let upper_bound = self.local_time_ns.saturating_add(self.max_delta_ns);
+    fn valid_bounds(&self, timestamp: u128, vote_delay_ns: u128) -> bool {
+        let max_delta_ns = self.max_delta_ns.saturating_add(vote_delay_ns);
+
+        let lower_bound = self.local_time_ns.saturating_sub(max_delta_ns);
+        let upper_bound = self.local_time_ns.saturating_add(max_delta_ns);
 
         lower_bound <= timestamp && timestamp <= upper_bound
     }
@@ -49,6 +51,7 @@ impl BlockTimestamp {
         &self,
         prev_block_ts: u128,
         curr_block_ts: u128,
+        vote_delay_ns: u128,
     ) -> Option<TimestampAdjustment> {
         let delta = curr_block_ts.checked_sub(prev_block_ts);
         match delta {
@@ -57,7 +60,7 @@ impl BlockTimestamp {
             Some(0) => None,
             // check that its not higher than the valid upper bound
             Some(_) => {
-                if !self.valid_bounds(curr_block_ts) {
+                if !self.valid_bounds(curr_block_ts, vote_delay_ns) {
                     None
                 } else {
                     // return the delta between local time and block time for adjustment
@@ -94,12 +97,20 @@ mod test {
         let mut b = BlockTimestamp::new(10, 1);
         b.update_time(0);
 
-        assert!(b.valid_block_timestamp(1, 1).is_none());
-        assert!(b.valid_block_timestamp(2, 1).is_none());
-        assert!(b.valid_block_timestamp(0, 11).is_none());
+        assert!(b.valid_block_timestamp(1, 1, 0).is_none());
+        assert!(b.valid_block_timestamp(2, 1, 0).is_none());
+        assert!(b.valid_block_timestamp(0, 11, 0).is_none());
 
         assert!(matches!(
-            b.valid_block_timestamp(1, 2),
+            b.valid_block_timestamp(0, 11, 20),
+            Some(TimestampAdjustment {
+                delta: 10,
+                direction: TimestampAdjustmentDirection::Forward
+            })
+        ));
+
+        assert!(matches!(
+            b.valid_block_timestamp(1, 2, 0),
             Some(TimestampAdjustment {
                 delta: 1,
                 direction: TimestampAdjustmentDirection::Forward
@@ -109,7 +120,7 @@ mod test {
         b.update_time(10);
 
         assert!(matches!(
-            b.valid_block_timestamp(5, 8),
+            b.valid_block_timestamp(5, 8, 0),
             Some(TimestampAdjustment {
                 delta: 1,
                 direction: TimestampAdjustmentDirection::Backward
