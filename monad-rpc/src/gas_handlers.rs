@@ -37,6 +37,7 @@ struct GasEstimator {
     sender: Address,
     block_key: BlockKey,
     state_override: StateOverrideSet,
+    is_latest: bool,
 }
 
 impl GasEstimator {
@@ -46,6 +47,7 @@ impl GasEstimator {
         sender: Address,
         block_key: BlockKey,
         state_override: StateOverrideSet,
+        is_latest: bool,
     ) -> Self {
         Self {
             chain_id,
@@ -53,6 +55,7 @@ impl GasEstimator {
             sender,
             block_key,
             state_override,
+            is_latest,
         }
     }
 }
@@ -72,6 +75,7 @@ impl EthCallProvider for GasEstimator {
         let header = self.block_header.clone();
         let sender = self.sender;
         let state_override = self.state_override.clone();
+        let is_latest = self.is_latest;
 
         monad_ethcall::eth_call(
             chain_id,
@@ -82,6 +86,7 @@ impl EthCallProvider for GasEstimator {
             block_round,
             eth_call_executor.unwrap(),
             &state_override,
+            is_latest,
         )
         .await
     }
@@ -199,6 +204,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
+    let is_latest = matches!(params.block, BlockTags::Latest);
     let block_key = get_block_key_from_tag(triedb_env, params.block);
     let version_exist = triedb_env
         .get_state_availability(block_key)
@@ -247,6 +253,7 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         sender,
         block_key,
         params.state_override_set,
+        is_latest,
     );
     estimate_gas(&eth_call_provider, Some(eth_call_executor), &mut params.tx).await
 }

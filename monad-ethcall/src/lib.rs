@@ -122,6 +122,7 @@ pub async fn eth_call(
     block_round: Option<u64>,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
+    is_latest: bool,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
     if transaction.gas_limit() > block_header.gas_limit {
@@ -245,6 +246,7 @@ pub async fn eth_call(
             block_number,
             block_round.unwrap_or(u64::MAX),
             override_ctx,
+            is_latest,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
         )

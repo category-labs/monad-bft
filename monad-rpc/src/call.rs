@@ -15,7 +15,7 @@ use tracing::trace;
 
 use crate::{
     block_handlers::get_block_key_from_tag_or_hash,
-    eth_json_types::BlockTagOrHash,
+    eth_json_types::{BlockTagOrHash, BlockTags},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
@@ -392,6 +392,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
+    let is_latest = matches!(params.block, BlockTagOrHash::BlockTags(BlockTags::Latest));
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
     let version_exist = triedb_env
         .get_state_availability(block_key)
@@ -449,6 +450,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         block_round,
         eth_call_executor,
         &state_overrides,
+        is_latest,
     )
     .await
     {
