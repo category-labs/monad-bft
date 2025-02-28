@@ -43,6 +43,10 @@ bool triedb_traverse(
 void triedb_async_traverse(
     triedb *, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void *context, callback_func callback);
+void triedb_async_ranged_get(
+    triedb *, bytes min_key, uint8_t min_len_nibbles, bytes max_key,
+    uint8_t max_len_nibbles, uint64_t block_id, void *context,
+    callback_func callback);
 // pumps async reads, processing no
 // more than count maximum, returning
 // how many were processed.

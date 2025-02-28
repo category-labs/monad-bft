@@ -11,6 +11,7 @@
 #include <monad/mpt/db.hpp>
 #include <monad/mpt/ondisk_db_config.hpp>
 #include <monad/mpt/traverse.hpp>
+#include <monad/mpt/traverse_util.hpp>
 
 #include "triedb.h"
 
@@ -209,44 +210,7 @@ namespace detail
             return std::make_unique<Traverse>(*this);
         }
     };
-}
 
-bool triedb_traverse(
-    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback)
-{
-    auto prefix = monad::mpt::NibblesView{0, key_len_nibbles, key};
-    auto cursor = db->db_.find(prefix, block_id);
-    if (!cursor.has_value()) {
-        callback(
-            triedb_async_traverse_callback_finished_early,
-            context,
-            nullptr,
-            0,
-            nullptr,
-            0);
-        return false;
-    }
-
-    detail::Traverse machine(context, callback, monad::mpt::NibblesView{});
-
-    bool const completed = db->db_.traverse(cursor.value(), machine, block_id);
-
-    callback(
-        completed ? triedb_async_traverse_callback_finished_normally
-                  : triedb_async_traverse_callback_finished_early,
-        context,
-        nullptr,
-        0,
-        nullptr,
-        0);
-    return completed;
-}
-
-void triedb_async_traverse(
-    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
-    void *context, callback_func callback)
-{
     struct TraverseReceiver
     {
         void *context;
@@ -308,13 +272,89 @@ void triedb_async_traverse(
             delete state; // deletes this
         }
     };
+}
 
+bool triedb_traverse(
+    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void *context, callback_func callback)
+{
+    auto prefix = monad::mpt::NibblesView{0, key_len_nibbles, key};
+    auto cursor = db->db_.find(prefix, block_id);
+    if (!cursor.has_value()) {
+        callback(
+            triedb_async_traverse_callback_finished_early,
+            context,
+            nullptr,
+            0,
+            nullptr,
+            0);
+        return false;
+    }
+
+    detail::Traverse machine(context, callback, monad::mpt::NibblesView{});
+
+    bool const completed = db->db_.traverse(cursor.value(), machine, block_id);
+
+    callback(
+        completed ? triedb_async_traverse_callback_finished_normally
+                  : triedb_async_traverse_callback_finished_early,
+        context,
+        nullptr,
+        0,
+        nullptr,
+        0);
+    return completed;
+}
+
+void triedb_async_ranged_get(
+    triedb *db, bytes min_key, uint8_t min_len_nibbles, bytes max_key,
+    uint8_t max_len_nibbles, uint64_t block_id, void *context,
+    callback_func callback)
+{
+    monad::mpt::NibblesView const min{0, min_len_nibbles, min_key};
+    monad::mpt::NibblesView const max{0, max_len_nibbles, max_key};
+    auto machine = std::make_unique<monad::mpt::RangedGetMachine>(
+        min,
+        max,
+        [&](monad::mpt::NibblesView const key, monad::byte_string_view value) {
+            size_t key_len_nibbles = key.nibble_size();
+            unsigned char *key_data =
+                new uint8_t[key_len_nibbles + (key_len_nibbles & 1)];
+
+            for (unsigned n = 0; n < (unsigned)key_len_nibbles; ++n) {
+                set_nibble(key_data, n, key.get(n));
+            }
+            callback(
+                triedb_async_traverse_callback_value,
+                context,
+                key_data,
+                key_len_nibbles,
+                value.data(),
+                value.size());
+
+            delete[] key_data;
+        });
+    (new auto(monad::async::connect(
+         monad::mpt::make_get_node_sender(
+             db->ctx_.get(), monad::mpt::NibblesView{}, block_id),
+         detail::GetNodeReceiver(
+             context,
+             callback,
+             monad::mpt::make_traverse_sender(
+                 db->ctx_.get(), {}, std::move(machine), block_id)))))
+        ->initiate();
+}
+
+void triedb_async_traverse(
+    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void *context, callback_func callback)
+{
     auto prefix = monad::mpt::NibblesView{0, key_len_nibbles, key};
     auto machine = std::make_unique<detail::Traverse>(
         context, callback, monad::mpt::NibblesView{});
     (new auto(monad::async::connect(
          monad::mpt::make_get_node_sender(db->ctx_.get(), prefix, block_id),
-         GetNodeReceiver(
+         detail::GetNodeReceiver(
              context,
              callback,
              monad::mpt::make_traverse_sender(
