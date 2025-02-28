@@ -43,9 +43,20 @@ pub enum EthTxPoolEvent {
     },
 }
 
+// allow for more fine grain debugging if needed
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum TransactionError {
+    InvalidChainId,
+    MaxPriorityFeeTooHigh,
+    InitCodeLimitExceeded,
+    GasLimitTooLow,
+    GasLimitTooHigh,
+    UnsupportedTransactionType,
+}
+
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum EthTxPoolDropReason {
-    NotWellFormed,
+    NotWellFormed(TransactionError),
     InvalidSignature,
     NonceTooLow,
     FeeTooLow,
@@ -64,7 +75,16 @@ pub enum EthTxPoolInternalDropReason {
 impl EthTxPoolDropReason {
     pub fn as_user_string(&self) -> String {
         match self {
-            EthTxPoolDropReason::NotWellFormed => "Transaction not well formed",
+            EthTxPoolDropReason::NotWellFormed(err) => match err {
+                TransactionError::InvalidChainId => "Invalid chain ID",
+                TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
+                TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
+                TransactionError::GasLimitTooLow => "Gas limit too low",
+                TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
+                TransactionError::UnsupportedTransactionType => {
+                    "EIP4844 and EIP7702 transactions unsupported"
+                }
+            },
             EthTxPoolDropReason::InvalidSignature => "Transaction signature is invalid",
             EthTxPoolDropReason::NonceTooLow => "Transaction nonce too low",
             EthTxPoolDropReason::FeeTooLow => "Transaction fee too low",

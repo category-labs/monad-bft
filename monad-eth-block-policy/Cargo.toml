@@ -9,6 +9,7 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state-backend = { path = "../monad-state-backend" }
 monad-types = { path = "../monad-types" }

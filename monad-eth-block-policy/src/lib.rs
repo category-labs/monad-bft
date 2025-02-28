@@ -14,6 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_txpool_types::TransactionError;
 use monad_eth_types::{Balance, EthAccount, EthExecutionProtocol, Nonce};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
@@ -100,17 +101,6 @@ pub fn compute_txn_max_value_to_u128(txn: &TxEnvelope) -> u128 {
         txn_value
     );
     checked_from(txn_value)
-}
-
-// allow for more fine grain debugging if needed
-#[derive(Debug)]
-pub enum TransactionError {
-    InvalidChainId,
-    MaxPriorityFeeTooHigh,
-    InitCodeLimitExceeded,
-    GasLimitTooLow,
-    GasLimitTooHigh,
-    UnsupportedTransactionType,
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction

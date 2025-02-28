@@ -87,7 +87,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
     pub fn drop(&mut self, tx_hash: TxHash, reason: EthTxPoolDropReason) {
         match reason {
-            EthTxPoolDropReason::NotWellFormed => {
+            EthTxPoolDropReason::NotWellFormed(_) => {
                 self.metrics.drop_not_well_formed += 1;
             }
             EthTxPoolDropReason::InvalidSignature => {

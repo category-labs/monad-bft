@@ -47,10 +47,13 @@ impl ValidEthTransaction {
             return None;
         }
 
-        if static_validate_transaction(&tx, block_policy.get_chain_id(), proposal_gas_limit)
-            .is_err()
+        if let Err(err) =
+            static_validate_transaction(&tx, block_policy.get_chain_id(), proposal_gas_limit)
         {
-            event_tracker.drop(tx.tx_hash().to_owned(), EthTxPoolDropReason::NotWellFormed);
+            event_tracker.drop(
+                tx.tx_hash().to_owned(),
+                EthTxPoolDropReason::NotWellFormed(err),
+            );
             return None;
         }
 

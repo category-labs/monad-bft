@@ -10,8 +10,6 @@ use alloy_rpc_types::{
 use futures::stream::{self, StreamExt};
 use itertools::Either;
 use monad_archive::prelude::{ArchiveReader, BlockDataReader, IndexReader};
-use monad_chain_config::revision::CHAIN_PARAMS_LATEST;
-use monad_eth_block_policy::{static_validate_transaction, TransactionError};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockHeader, BlockKey, FinalizedBlockKey, ReceiptWithLogIndex, TransactionLocation, Triedb,
@@ -431,23 +429,6 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
 
     match TxEnvelope::decode(&mut &params.hex_tx.0[..]) {
         Ok(tx) => {
-            // drop transactions that will fail consensus static validation
-            if let Err(err) =
-                static_validate_transaction(&tx, chain_id, CHAIN_PARAMS_LATEST.proposal_gas_limit)
-            {
-                let error_message = match err {
-                    TransactionError::InvalidChainId => "Invalid chain ID",
-                    TransactionError::MaxPriorityFeeTooHigh => "Max priority fee too high",
-                    TransactionError::InitCodeLimitExceeded => "Init code size limit exceeded",
-                    TransactionError::GasLimitTooLow => "Gas limit too low",
-                    TransactionError::GasLimitTooHigh => "Exceeds block gas limit",
-                    TransactionError::UnsupportedTransactionType => {
-                        "EIP4844 and EIP7702 transactions unsupported"
-                    }
-                };
-                return Err(JsonRpcError::custom(error_message.to_string()));
-            }
-
             // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
             if !allow_unprotected_txs && tx.chain_id().is_none() {
                 return Err(JsonRpcError::custom(
