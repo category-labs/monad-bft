@@ -18,7 +18,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 use tracing::error;
 
 pub use self::ipc::EthTxPoolIpcConfig;
@@ -162,6 +162,8 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    let create_proposal_start = Instant::now();
+
                     match ipc_projection.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
@@ -175,20 +177,30 @@ where
                         &self.block_policy,
                         &self.state_backend,
                     ) {
-                        Ok(proposed_execution_inputs) => self
-                            .events_tx
-                            .send(MempoolEvent::Proposal {
-                                epoch,
-                                round,
-                                seq_num,
-                                high_qc,
-                                timestamp_ns,
-                                round_signature,
-                                delayed_execution_results,
-                                proposed_execution_inputs,
-                                last_round_tc,
-                            })
-                            .expect("events never dropped"),
+                        Ok(proposed_execution_inputs) => {
+                            let elapsed = create_proposal_start.elapsed();
+
+                            self.metrics.create_proposal += 1;
+                            self.metrics.create_proposal_elapsed_ns += elapsed.as_nanos() as u64;
+                            self.metrics.create_proposal_txs +=
+                                proposed_execution_inputs.body.transactions.len() as u64;
+                            self.metrics.create_proposal_available_txs +=
+                                ipc_projection.pool.num_txs() as u64;
+
+                            self.events_tx
+                                .send(MempoolEvent::Proposal {
+                                    epoch,
+                                    round,
+                                    seq_num,
+                                    high_qc,
+                                    timestamp_ns,
+                                    round_signature,
+                                    delayed_execution_results,
+                                    proposed_execution_inputs,
+                                    last_round_tc,
+                                })
+                                .expect("events never dropped");
+                        }
                         Err(err) => {
                             error!(?err, "txpool executor failed to create proposal");
                         }

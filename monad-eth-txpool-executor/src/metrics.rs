@@ -7,6 +7,11 @@ pub struct EthTxPoolExecutorMetrics {
     pub reject_forwarded_invalid_bytes: u64,
     pub reject_forwarded_invalid_signer: u64,
 
+    pub create_proposal: u64,
+    pub create_proposal_elapsed_ns: u64,
+    pub create_proposal_txs: u64,
+    pub create_proposal_available_txs: u64,
+
     pub pool: EthTxPoolMetrics,
 }
 
@@ -16,6 +21,12 @@ impl EthTxPoolExecutorMetrics {
             self.reject_forwarded_invalid_bytes;
         metrics["monad.bft.txpool.reject_forwarded_invalid_signer"] =
             self.reject_forwarded_invalid_signer;
+
+        metrics["monad.bft.txpool.create_proposal"] = self.create_proposal;
+        metrics["monad.bft.txpool.create_proposal_elapsed_ns"] = self.create_proposal_elapsed_ns;
+        metrics["monad.bft.txpool.create_proposal_txs"] = self.create_proposal_txs;
+        metrics["monad.bft.txpool.create_proposal_available_txs"] =
+            self.create_proposal_available_txs;
 
         self.pool.update(metrics);
     }
