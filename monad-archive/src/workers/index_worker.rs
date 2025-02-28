@@ -41,8 +41,6 @@ pub async fn index_worker(
     };
 
     loop {
-        sleep(poll_frequency).await;
-
         // query latest
         let latest_source = match block_data_reader.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number.unwrap(),
@@ -63,6 +61,7 @@ pub async fn index_worker(
 
         if end_block < start_block {
             info!(start_block, end_block, latest_source, "Nothing to process");
+            sleep(poll_frequency).await;
             continue;
         }
         info!(

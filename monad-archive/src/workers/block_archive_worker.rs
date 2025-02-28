@@ -49,8 +49,6 @@ pub async fn archive_worker(
     };
 
     loop {
-        sleep(Duration::from_millis(500)).await;
-
         // query latest
         let latest_source = match block_data_source.get_latest(LatestKind::Uploaded).await {
             Ok(number) => number.unwrap_or(0),
@@ -70,6 +68,7 @@ pub async fn archive_worker(
         let end_block = latest_source.min(start_block + max_blocks_per_iteration - 1);
         if end_block < start_block {
             info!(start_block, end_block, "Nothing to process");
+            sleep(Duration::from_millis(500)).await;
             continue;
         }
 

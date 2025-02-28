@@ -107,22 +107,22 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
         );
 
         // Update metrics with current fault counts
-        metrics.gauge_with_attrs(
+        metrics.periodic_gauge_with_attrs(
             "replica_faults__total",
             total_faults as u64,
-            &[KeyValue::new("replica", replica.to_owned())],
+            vec![KeyValue::new("replica", replica.to_owned())],
         );
 
-        metrics.gauge_with_attrs(
+        metrics.periodic_gauge_with_attrs(
             "replica_faults__missing_block",
             total_missing as u64,
-            &[KeyValue::new("replica", replica.to_owned())],
+            vec![KeyValue::new("replica", replica.to_owned())],
         );
 
-        metrics.gauge_with_attrs(
+        metrics.periodic_gauge_with_attrs(
             "replica_faults__inconsistent_block",
             total_inconsistent as u64,
-            &[KeyValue::new("replica", replica.to_owned())],
+            vec![KeyValue::new("replica", replica.to_owned())],
         );
     }
 

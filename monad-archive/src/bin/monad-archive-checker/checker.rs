@@ -16,7 +16,11 @@ use crate::{
 /// 2. Performs validation on individual blocks
 /// 3. Compares data across replicas to find inconsistencies
 /// 4. Records good blocks and faults in S3
-pub async fn checker_worker(model: CheckerModel, min_lag_from_tip: u64) -> Result<()> {
+pub async fn checker_worker(
+    model: CheckerModel,
+    min_lag_from_tip: u64,
+    metrics: Metrics,
+) -> Result<()> {
     info!(min_lag_from_tip, "Starting checker worker");
 
     let mut next_to_check = model.min_latest_checked().await?;
@@ -29,6 +33,9 @@ pub async fn checker_worker(model: CheckerModel, min_lag_from_tip: u64) -> Resul
     loop {
         let latest_to_check = model.latest_to_check().await?;
         let required_blocks = next_to_check + min_lag_from_tip + CHUNK_SIZE;
+
+        metrics.gauge("latest_to_check", latest_to_check);
+        metrics.gauge("next_to_check", next_to_check);
 
         if latest_to_check < required_blocks {
             info!(

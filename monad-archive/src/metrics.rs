@@ -15,6 +15,7 @@ pub struct Metrics(Option<Arc<MetricsInner>>);
 #[derive(Clone)]
 pub struct MetricsInner {
     pub gauges: Arc<DashMap<&'static str, Gauge<u64>>>,
+    pub periodic_gauges: Arc<DashMap<&'static str, (u64, Vec<KeyValue>)>>,
     pub counters: Arc<DashMap<&'static str, Counter<u64>>>,
     pub provider: SdkMeterProvider,
     pub meter: Meter,
@@ -35,12 +36,32 @@ impl Metrics {
         )?;
         let meter = provider.meter("opentelemetry");
 
-        Ok(Metrics(Some(Arc::new(MetricsInner {
+        let metrics = Metrics(Some(Arc::new(MetricsInner {
             counters: Arc::new(DashMap::with_capacity(100)),
             gauges: Arc::new(DashMap::with_capacity(100)),
             provider,
             meter,
-        }))))
+            periodic_gauges: Arc::new(DashMap::with_capacity(100)),
+        })));
+
+        {
+            let metrics = metrics.clone();
+            // Background worker to prevent no data for sparsely published gauges
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval / 2).await;
+
+                    let inner = metrics.0.as_ref().unwrap();
+                    for map_ref in inner.periodic_gauges.iter() {
+                        let metric = map_ref.key();
+                        let (value, attributes) = map_ref.value();
+                        metrics.gauge_with_attrs(metric, *value, attributes);
+                    }
+                }
+            });
+        }
+
+        Ok(metrics)
     }
 
     pub fn none() -> Metrics {
@@ -64,6 +85,18 @@ impl Metrics {
 
     pub fn counter(&self, metric: &'static str, val: u64) {
         self.counter_with_attrs(metric, val, &[]);
+    }
+
+    pub fn periodic_gauge_with_attrs(
+        &self,
+        metric: &'static str,
+        value: u64,
+        attributes: Vec<KeyValue>,
+    ) {
+        self.gauge_with_attrs(metric, value, &attributes);
+        if let Some(inner) = &self.0 {
+            inner.periodic_gauges.insert(metric, (value, attributes));
+        }
     }
 
     pub fn gauge_with_attrs(&self, metric: &'static str, value: u64, attributes: &[KeyValue]) {

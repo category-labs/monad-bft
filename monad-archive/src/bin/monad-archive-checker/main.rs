@@ -23,7 +23,6 @@ pub const CHUNK_SIZE: u64 = 1000;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -84,6 +83,7 @@ async fn main() -> Result<()> {
             let checker_handle = tokio::spawn(checker::checker_worker(
                 model.clone(),
                 checker_args.min_lag_from_tip,
+                metrics.clone(),
             ));
 
             // Start the rechecker worker if enabled
