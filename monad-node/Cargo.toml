@@ -60,5 +60,8 @@ toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
+[build-dependencies]
+vergen-git2 = "1.0.5"
+
 [features]
 full-node = ["monad-router-filter"]

@@ -59,6 +59,8 @@ mod state;
 type ReloadHandle =
     tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
 
+const CLIENT_VERSION: &str = env!("VERGEN_GIT_DESCRIBE");
+
 fn main() {
     let mut cmd = Cli::command();
 
@@ -551,6 +553,10 @@ fn build_otel_meter_provider(
             opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
                 service_name,
+            ),
+            opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                CLIENT_VERSION,
             ),
         ]));
 

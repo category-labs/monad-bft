@@ -5310,6 +5310,7 @@ dependencies = [
  "toml 0.7.8",
  "tracing",
  "tracing-subscriber",
+ "vergen-git2",
 ]
 
 [[package]]
