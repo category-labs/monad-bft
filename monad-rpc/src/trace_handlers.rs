@@ -158,7 +158,7 @@ impl From<CallFrame> for MonadCallFrame {
 
         let revert_reason = error
             .as_ref()
-            .map(|_| monad_cxx::decode_revert_message(&value.output));
+            .map(|_| monad_ethcall::decode_revert_message(&value.output));
 
         Self {
             typ: value.typ,

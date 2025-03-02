@@ -1,19 +1,20 @@
 use std::{
     ops::{Div, Sub},
-    path::PathBuf,
+    sync::Arc,
 };
 
 use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
-use monad_cxx::{CallResult, FailureCallResult, StateOverrideSet};
+use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
 use monad_types::{Round, SeqNum};
 use serde::Deserialize;
-use tracing::{error, trace};
+use tokio::sync::Mutex;
+use tracing::trace;
 
 use crate::{
     block_handlers::get_block_key_from_tag,
@@ -23,7 +24,11 @@ use crate::{
 };
 
 trait EthCallProvider {
-    async fn eth_call(&self, txn: TxEnvelope) -> CallResult;
+    async fn eth_call(
+        &self,
+        txn: TxEnvelope,
+        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+    ) -> CallResult;
 }
 
 struct GasEstimator {
@@ -31,7 +36,6 @@ struct GasEstimator {
     block_header: Header,
     sender: Address,
     block_key: BlockKey,
-    triedb_path: PathBuf,
     state_override: StateOverrideSet,
 }
 
@@ -41,7 +45,6 @@ impl GasEstimator {
         block_header: Header,
         sender: Address,
         block_key: BlockKey,
-        triedb_path: PathBuf,
         state_override: StateOverrideSet,
     ) -> Self {
         Self {
@@ -49,14 +52,17 @@ impl GasEstimator {
             block_header,
             sender,
             block_key,
-            triedb_path,
             state_override,
         }
     }
 }
 
 impl EthCallProvider for GasEstimator {
-    async fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+    async fn eth_call(
+        &self,
+        txn: TxEnvelope,
+        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+    ) -> CallResult {
         let (block_number, block_round) = match self.block_key {
             BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
             BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
@@ -65,39 +71,25 @@ impl EthCallProvider for GasEstimator {
         let chain_id = self.chain_id;
         let header = self.block_header.clone();
         let sender = self.sender;
-        let path = self.triedb_path.clone();
         let state_override = self.state_override.clone();
 
-        let blocking_eth_call = tokio::task::spawn_blocking(move || {
-            monad_cxx::eth_call(
-                chain_id,
-                txn,
-                header,
-                sender,
-                block_number,
-                block_round,
-                &path,
-                &state_override,
-            )
-        })
-        .await;
-
-        match blocking_eth_call {
-            Ok(res) => res,
-            Err(e) => {
-                let error_string = format!("estimateGas::eth_call task failed: {e}");
-                error!(error_string);
-                CallResult::Failure(FailureCallResult {
-                    message: error_string,
-                    data: None,
-                })
-            }
-        }
+        monad_ethcall::eth_call(
+            chain_id,
+            txn,
+            header,
+            sender,
+            block_number,
+            block_round,
+            eth_call_executor.unwrap(),
+            &state_override,
+        )
+        .await
     }
 }
 
 async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
+    eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
     call_request: &mut CallRequest,
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
@@ -107,13 +99,16 @@ async fn estimate_gas<T: EthCallProvider>(
         return Ok(Quantity(21_000));
     }
 
-    let (gas_used, gas_refund) = match provider.eth_call(txn.clone()).await {
-        monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
+    let (gas_used, gas_refund) = match provider
+        .eth_call(txn.clone(), eth_call_executor.clone())
+        .await
+    {
+        monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
             gas_used,
             gas_refund,
             ..
         }) => (gas_used, gas_refund),
-        monad_cxx::CallResult::Failure(error) => {
+        monad_ethcall::CallResult::Failure(error) => {
             return Err(JsonRpcError::eth_call_error(error.message, error.data))
         }
     };
@@ -124,11 +119,15 @@ async fn estimate_gas<T: EthCallProvider>(
 
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
-            match provider.eth_call(txn.clone()).await {
-                monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
-                    gas_used, ..
+            match provider
+                .eth_call(txn.clone(), eth_call_executor.clone())
+                .await
+            {
+                monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
+                    gas_used,
+                    ..
                 }) => (gas_used.sub(1), txn.gas_limit()),
-                monad_cxx::CallResult::Failure(_error_message) => {
+                monad_ethcall::CallResult::Failure(_error_message) => {
                     (txn.gas_limit(), upper_bound_gas_limit)
                 }
             }
@@ -150,11 +149,11 @@ async fn estimate_gas<T: EthCallProvider>(
         call_request.gas = Some(U256::from(mid));
         txn = call_request.clone().try_into()?;
 
-        match provider.eth_call(txn).await {
-            monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
+        match provider.eth_call(txn, eth_call_executor.clone()).await {
+            monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
             }
-            monad_cxx::CallResult::Failure(_error_message) => {
+            monad_ethcall::CallResult::Failure(_error_message) => {
                 lower_bound_gas_limit = mid;
             }
         };
@@ -173,11 +172,16 @@ pub struct MonadEthEstimateGasParams {
     state_override_set: StateOverrideSet,
 }
 
-#[rpc(method = "eth_estimateGas", ignore = "chain_id")]
+#[rpc(
+    method = "eth_estimateGas",
+    ignore = "chain_id",
+    ignore = "eth_call_executor"
+)]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
 pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     triedb_env: &T,
+    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
@@ -242,10 +246,9 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         header.header,
         sender,
         block_key,
-        triedb_env.path(),
         params.state_override_set,
     );
-    estimate_gas(&eth_call_provider, &mut params.tx).await
+    estimate_gas(&eth_call_provider, Some(eth_call_executor), &mut params.tx).await
 }
 
 pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
@@ -377,7 +380,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
-    use monad_cxx::{FailureCallResult, SuccessCallResult};
+    use monad_ethcall::{FailureCallResult, SuccessCallResult};
 
     use super::*;
 
@@ -387,7 +390,11 @@ mod tests {
     }
 
     impl EthCallProvider for MockGasEstimator {
-        async fn eth_call(&self, txn: TxEnvelope) -> CallResult {
+        async fn eth_call(
+            &self,
+            txn: TxEnvelope,
+            _: Option<Arc<Mutex<EthCallExecutor>>>,
+        ) -> CallResult {
             if txn.gas_limit() >= self.gas_used + self.gas_refund {
                 CallResult::Success(SuccessCallResult {
                     gas_used: self.gas_used,
@@ -415,7 +422,7 @@ mod tests {
         };
 
         // should return gas estimation failure
-        let result = estimate_gas(&provider, &mut call_request).await;
+        let result = estimate_gas(&provider, None, &mut call_request).await;
         assert!(result.is_err());
     }
 
@@ -429,7 +436,7 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request).await;
+        let result = estimate_gas(&provider, None, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
@@ -447,7 +454,7 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request).await;
+        let result = estimate_gas(&provider, None, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
@@ -465,7 +472,7 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, &mut call_request).await;
+        let result = estimate_gas(&provider, None, &mut call_request).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }

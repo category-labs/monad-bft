@@ -12,7 +12,7 @@ bench = false
 
 [dependencies]
 monad-archive = { path = "../monad-archive" }
-monad-cxx = { path = "../monad-cxx" }
+monad-ethcall = { path = "../monad-ethcall" }
 monad-eth-txpool-ipc = { path = "../monad-eth-txpool-ipc" }
 monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
 monad-eth-types = { path = "../monad-eth-types" }

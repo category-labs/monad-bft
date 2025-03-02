@@ -11,11 +11,12 @@ use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
+use monad_ethcall::EthCallExecutor;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, info, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
@@ -234,6 +235,9 @@ async fn rpc_select(
         }
         "eth_call" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+                return Err(JsonRpcError::method_not_supported());
+            };
 
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
@@ -241,9 +245,14 @@ async fn rpc_select(
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(triedb_env, app_state.chain_id, params)
-                .await
-                .map(serialize_result)?
+            monad_eth_call(
+                triedb_env,
+                eth_call_executor.clone(),
+                app_state.chain_id,
+                params,
+            )
+            .await
+            .map(serialize_result)?
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
@@ -414,6 +423,9 @@ async fn rpc_select(
             let Some(triedb_env) = &app_state.triedb_reader else {
                 return Err(JsonRpcError::method_not_supported());
             };
+            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+                return Err(JsonRpcError::method_not_supported());
+            };
 
             // acquire the concurrent requests permit
             let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
@@ -421,9 +433,14 @@ async fn rpc_select(
             })?;
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(triedb_env, app_state.chain_id, params)
-                .await
-                .map(serialize_result)?
+            monad_eth_estimateGas(
+                triedb_env,
+                eth_call_executor.clone(),
+                app_state.chain_id,
+                params,
+            )
+            .await
+            .map(serialize_result)?
         }
         "eth_gasPrice" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
@@ -521,6 +538,7 @@ struct MonadRpcResources {
     mempool_sender: flume::Sender<TxEnvelope>,
     mempool_state: Arc<EthTxPoolBridgeState>,
     triedb_reader: Option<TriedbEnv>,
+    eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
     archive_reader: Option<ArchiveReader>,
     base_fee_per_gas: FixedFee,
     chain_id: u64,
@@ -544,6 +562,7 @@ impl MonadRpcResources {
         mempool_sender: flume::Sender<TxEnvelope>,
         mempool_state: Arc<EthTxPoolBridgeState>,
         triedb_reader: Option<TriedbEnv>,
+        eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
         archive_reader: Option<ArchiveReader>,
         fixed_base_fee: u128,
         chain_id: u64,
@@ -557,6 +576,7 @@ impl MonadRpcResources {
             mempool_sender,
             mempool_state,
             triedb_reader,
+            eth_call_executor,
             archive_reader,
             base_fee_per_gas: FixedFee::new(fixed_base_fee),
             chain_id,
@@ -769,10 +789,17 @@ async fn main() -> std::io::Result<()> {
         _ => aws_archive_reader,
     };
 
+    let eth_call_executor = args
+        .triedb_path
+        .clone()
+        .as_deref()
+        .map(|path| Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(1, path))));
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         txpool_state,
         triedb_env,
+        eth_call_executor,
         archive_reader,
         BASE_FEE_PER_GAS.into(),
         args.chain_id,
@@ -883,6 +910,7 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             mempool_state: EthTxPoolBridgeState::new(),
             triedb_reader: None,
+            eth_call_executor: None,
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,

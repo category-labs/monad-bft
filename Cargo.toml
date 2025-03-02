@@ -13,10 +13,10 @@ members = [
     "monad-consensus",
     "monad-control-panel",
     "monad-crypto",
-    "monad-cxx",
     "monad-dataplane",
     "monad-debug-node",
     "monad-debugger",
+    "monad-ethcall",
     "monad-eth-block-policy",
     "monad-eth-block-validator",
     "monad-eth-ledger",
@@ -96,8 +96,6 @@ aes = "0.8.3"
 as-any = "0.3.1"
 async-graphql = "7.0"
 auto_impl = "1.2"
-autocxx = "0.26"
-autocxx-build = "0.26"
 aws-config = "1.5.9"
 aws-sdk-dynamodb = "1.54.0"
 aws-sdk-s3 = "1.58.0"
@@ -116,7 +114,6 @@ console_error_panic_hook = "0.1"
 criterion = { version = "0.4", features = ["html_reports"] }
 crossterm = "0.27.0"
 ctr = "0.9.2"
-cxx = "1.0"
 dashmap = "6.1.0"
 dialoguer = "0.10"
 env_logger = "0.10"
@@ -128,7 +125,6 @@ futures-util = "0.3"
 getrandom = "0.2"
 hdwallet = "0.4.1"
 hex = "0.4"
-hex-literal = "0.4"
 indexmap = "2.4.0"
 inotify = "0.11"
 inventory = "0.3"
