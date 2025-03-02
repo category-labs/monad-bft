@@ -62,8 +62,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
 RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
-ARG ETH_CALL_TARGET=monad_rpc_test
-ARG TRIEDB_TARGET=triedb_driver
+ENV TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
@@ -74,8 +73,8 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -
     cp `ls -Lt $(find target/release | grep -e "libkeccak.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libsecp256k1.so") | awk -F/ '!seen[$NF]++'` . && \
     cp `ls -Lt $(find target/release | grep -e "libsilkpre.so") | awk -F/ '!seen[$NF]++'` . && \
-    cp `ls -Lt $(find target/release | grep -e "lib${TRIEDB_TARGET}.so") | awk -F/ '!seen[$NF]++'` . && \
-    cp `ls -Lt $(find target/release | grep -e "lib${ETH_CALL_TARGET}.so") | awk -F/ '!seen[$NF]++'` .
+    cp `ls -Lt $(find target/release | grep -e "libmonad_rpc.so") | awk -F/ '!seen[$NF]++'` . && \
+    cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so") | awk -F/ '!seen[$NF]++'` .
 
 # Debug runner
 FROM base AS runner-debug

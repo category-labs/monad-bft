@@ -1,26 +1,24 @@
 [package]
-name = "monad-cxx"
+name = "monad-ethcall"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true }
-autocxx = { workspace = true }
-cxx = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-hex-literal = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
 
 [build-dependencies]
-autocxx-build = { workspace = true }
+bindgen = { workspace = true }
 cmake = { workspace = true }
+

@@ -115,6 +115,7 @@ mod tests {
             mempool_sender: ipc_sender,
             mempool_state: EthTxPoolBridgeState::new(),
             triedb_reader: None,
+            eth_call_executor: None,
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 41454,

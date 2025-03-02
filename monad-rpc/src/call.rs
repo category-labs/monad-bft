@@ -1,15 +1,16 @@
-use std::cmp::min;
+use std::{cmp::min, sync::Arc};
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
-use monad_cxx::StateOverrideSet;
+use monad_ethcall::{eth_call, CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::trace;
 
 use crate::{
@@ -366,9 +367,10 @@ pub struct MonadEthCallParams {
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
 #[tracing::instrument(level = "debug")]
-#[rpc(method = "eth_call", ignore = "chain_id")]
+#[rpc(method = "eth_call", ignore = "chain_id", ignore = "eth_call_executor")]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
+    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -437,38 +439,31 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
     };
 
-    let path = triedb_env.path();
     let state_overrides = params.state_overrides.clone();
-    let blocking_eth_call = tokio::task::spawn_blocking(move || {
-        match monad_cxx::eth_call(
-            tx_chain_id,
-            txn,
-            header.header,
-            sender,
-            block_number,
-            block_round,
-            &path,
-            &state_overrides,
-        ) {
-            monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
-                output_data, ..
-            }) => Ok(hex::encode(&output_data)),
-            monad_cxx::CallResult::Failure(error) => {
-                Err(JsonRpcError::eth_call_error(error.message, error.data))
-            }
+    match eth_call(
+        tx_chain_id,
+        txn,
+        header.header,
+        sender,
+        block_number,
+        block_round,
+        eth_call_executor,
+        &state_overrides,
+    )
+    .await
+    {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+            Ok(hex::encode(&output_data))
         }
-    });
-
-    blocking_eth_call
-        .await
-        .map_err(|_| JsonRpcError::custom("eth call task error".to_string()))?
+        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::{Address, U256};
-    use monad_cxx::StateOverrideSet;
+    use monad_ethcall::StateOverrideSet;
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
         triedb_env::{BlockKey, FinalizedBlockKey},
