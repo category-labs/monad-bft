@@ -34,13 +34,20 @@ pub type EthTxHash = [u8; 32];
 pub type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
-    SyncRequest(SyncRequest),
+    AsyncRangeGetRequest(RangeGetRequest),
     AsyncRequest(AsyncRequest),
     AsyncTraverseRequest(TraverseRequest),
 }
 
-enum SyncRequest {
-    TraverseRequest(TraverseRequest),
+struct RangeGetRequest {
+    // a sender for the polling thread to send the result back to the request handler
+    request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
+    // triedb_key and key_len_nibbles are used to read items from triedb
+    min_triedb_key: Vec<u8>,
+    min_key_len_nibbles: u8,
+    max_triedb_key: Vec<u8>,
+    max_key_len_nibbles: u8,
+    block_key: BlockKey,
 }
 
 struct TraverseRequest {
@@ -293,21 +300,16 @@ fn polling_thread(
         let mut num_queued = 0_usize;
         while let Some(triedb_request) = maybe_request {
             match triedb_request {
-                TriedbRequest::SyncRequest(sync_request) => {
-                    // poll for completions before initiating sync request
-                    triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
-                    match sync_request {
-                        SyncRequest::TraverseRequest(traverse_request) => {
-                            triedb_handle.traverse_triedb_sync(
-                                &traverse_request.triedb_key,
-                                traverse_request.key_len_nibbles,
-                                traverse_request.block_key.seq_num().0,
-                                traverse_request.request_sender,
-                            );
-                        }
-                    }
-                    // this is a sync request, so break out and poll for completions again
-                    break;
+                TriedbRequest::AsyncRangeGetRequest(range_request) => {
+                    triedb_handle.range_get_triedb_async(
+                        &range_request.min_triedb_key,
+                        range_request.min_key_len_nibbles,
+                        &range_request.max_triedb_key,
+                        range_request.max_key_len_nibbles,
+                        range_request.block_key.seq_num().0,
+                        range_request.request_sender,
+                        triedb_async_read_concurrency_tracker.clone(),
+                    );
                 }
                 TriedbRequest::AsyncTraverseRequest(traverse_request) => {
                     triedb_handle.traverse_triedb_async(
@@ -1235,18 +1237,21 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) =
+        // TODO: refactor
+        let (min_triedb_key, min_key_len_nibbles) =
             create_triedb_key(block_key.into(), KeyInput::CallFrame(Some(txn_index)));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
+        let (max_triedb_key, max_key_len_nibbles) =
+            create_triedb_key(block_key.into(), KeyInput::CallFrame(Some(txn_index + 1)));
 
         if let Err(e) = self
             .mpsc_sender
             .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+            .try_send(TriedbRequest::AsyncRangeGetRequest(RangeGetRequest {
                 request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
+                min_triedb_key,
+                min_key_len_nibbles,
+                max_triedb_key,
+                max_key_len_nibbles,
                 block_key,
             }))
         {
@@ -1255,15 +1260,14 @@ impl Triedb for TriedbEnv {
         }
 
         match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
+            Ok(Some(rlp_call_frames)) => {
+                // just testing, TODO for actual logic
+                if let Some(TraverseEntry { value, .. }) = rlp_call_frames.into_iter().next() {
+                    return Ok(Some(value));
                 }
-
-                Ok(result)
+                Ok(None)
             }
+            Ok(None) => Ok(None),
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))

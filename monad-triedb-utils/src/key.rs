@@ -131,12 +131,10 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
             key_nibbles.push(CALL_FRAME_NIBBLE);
 
             if let Some(index) = tx_index {
-                let mut rlp_buf = vec![];
-                index.encode(&mut rlp_buf);
-
-                for byte in rlp_buf {
+                let bytes = index.to_be_bytes();
+                for byte in bytes {
                     key_nibbles.push(byte >> 4);
-                    key_nibbles.push(byte & 0xF);
+                    key_nibbles.push(byte & 0xF)
                 }
             }
         }
