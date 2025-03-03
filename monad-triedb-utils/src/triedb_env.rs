@@ -1293,35 +1293,51 @@ impl Triedb for TriedbEnv {
 
         match request_receiver.await {
             Ok(Some(rlp_call_frames)) => {
-                let mut call_frames = rlp_call_frames
-                    .into_iter()
-                    .map(|TraverseEntry { key, value }| {
-                        let idx: usize = alloy_rlp::decode_exact(key)?;
-
-                        Ok((idx, value))
-                    })
-                    .collect::<Result<Vec<_>, alloy_rlp::Error>>()
-                    .map_err(|err| {
-                        error!(?err, "error decoding result from db");
-                        String::from("error decoding from db")
-                    })?;
-                call_frames.sort_by_key(|(idx, _)| *idx);
-                // check that indices are consecutive and start with 0
-                if !call_frames
-                    .iter()
-                    .map(|(idx, _)| idx)
-                    .zip(0..)
-                    .all(|(&i, j)| i == j)
-                {
+                // txn_index => (chunk_index, rlp_call_frame)
+                let mut grouped_frames: BTreeMap<u32, BTreeMap<u8, Vec<u8>>> = BTreeMap::new();
+                for TraverseEntry { key, value } in rlp_call_frames {
+                    // decode the key as a tuple of (txn_index, chunk_index)
+                    if key.len() != 5 {
+                        return Err(String::from("error decoding from db"));
+                    }
+                    // first 4 bytes is txn_index
+                    let txn_index = u32::from_be_bytes(key[0..4].try_into().unwrap_or_default());
+                    // 5th byte is chunk_index (u8)
+                    let chunk_index = key[4];
+                    grouped_frames
+                        .entry(txn_index)
+                        .or_default()
+                        .insert(chunk_index, value);
+                }
+                // check that transaction indices are consecutive and start with 0
+                if !grouped_frames.keys().copied().zip(0..).all(|(i, j)| i == j) {
                     return Err(format!(
-                        "call frames missing from db, indices={:?}",
-                        call_frames.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
+                        "call frames missing from db, transaction indices={:?}",
+                        grouped_frames.keys().collect::<Vec<_>>()
                     ));
                 }
-                Ok(call_frames
+                let call_frames = grouped_frames
                     .into_iter()
-                    .map(|(_, call_frame)| call_frame)
-                    .collect())
+                    .map(|(txn_idx, chunks)| {
+                        // check that chunk indices are consecutive and start with 0
+                        if !chunks.keys().copied().zip(0..).all(|(i, j)| i == j) {
+                            return Err(format!(
+                                "chunks missing for transaction {}, chunk indices={:?}",
+                                txn_idx,
+                                chunks.keys().collect::<Vec<_>>()
+                            ));
+                        }
+
+                        // concatenate chunks in order
+                        let mut complete_call_frame = Vec::new();
+                        for (_, chunk_data) in chunks {
+                            complete_call_frame.extend(chunk_data);
+                        }
+                        Ok(complete_call_frame)
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                Ok(call_frames)
             }
             Ok(None) => {
                 error!("Error traversing db");
