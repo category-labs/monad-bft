@@ -80,6 +80,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    SBT: StateBackend,
 {
     // This field is only populated when the execution protocol is EthExecutionProtocol
     eth: Option<(EthTxPool<ST, SCT, SBT>, BPT, SBT)>,

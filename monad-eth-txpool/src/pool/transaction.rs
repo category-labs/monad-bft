@@ -3,7 +3,9 @@ use std::cmp::Ordering;
 use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxHash};
 use alloy_rlp::Encodable;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -11,7 +13,7 @@ use monad_eth_block_policy::{
     compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
 };
 use monad_eth_txpool_types::EthTxPoolDropReason;
-use monad_eth_types::{Balance, Nonce, BASE_FEE_PER_GAS};
+use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
 use monad_types::SeqNum;
 use tracing::trace;
 
@@ -34,7 +36,7 @@ impl ValidEthTransaction {
         proposal_gas_limit: u64,
         tx: Recovered<TxEnvelope>,
         owned: bool,
-        last_commit_seq_num: SeqNum,
+        last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
     ) -> Option<Self>
     where
         ST: CertificateSignatureRecoverable,
@@ -65,7 +67,7 @@ impl ValidEthTransaction {
         Some(Self {
             tx,
             owned,
-            forward_last_seqnum: last_commit_seq_num,
+            forward_last_seqnum: last_commit.seq_num,
             forward_retries: 0,
             max_value,
             effective_tip_per_gas,

@@ -4,11 +4,14 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::Address;
 use indexmap::{map::Entry as IndexMapEntry, IndexMap};
 use itertools::Itertools;
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_types::{
+    block::ConsensusBlockHeader, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_types::EthExecutionProtocol;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
@@ -39,8 +42,13 @@ const MAX_PROMOTABLE_ON_CREATE_PROPOSAL: usize = 1024 * 10;
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
 /// account_nonce for the seqnum stored in last_commit_seq_num.
 #[derive(Clone, Debug)]
-pub struct TrackedTxMap<ST, SCT, SBT> {
-    last_commit_seq_num: Option<SeqNum>,
+pub struct TrackedTxMap<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
+    last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
     soft_tx_expiry: Duration,
     hard_tx_expiry: Duration,
 
@@ -59,7 +67,7 @@ where
 {
     pub fn new(soft_tx_expiry: Duration, hard_tx_expiry: Duration) -> Self {
         Self {
-            last_commit_seq_num: None,
+            last_commit: None,
             soft_tx_expiry,
             hard_tx_expiry,
 
@@ -69,8 +77,8 @@ where
         }
     }
 
-    pub fn last_commit_seq_num(&self) -> Option<SeqNum> {
-        self.last_commit_seq_num
+    pub fn last_commit(&self) -> Option<&ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>> {
+        self.last_commit.as_ref()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -101,7 +109,7 @@ where
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         tx: ValidEthTransaction,
     ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
-        if self.last_commit_seq_num.is_none() {
+        if self.last_commit.is_none() {
             return Err(tx);
         }
 
@@ -124,9 +132,10 @@ where
         state_backend: &SBT,
         pending: &mut PendingTxMap,
     ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
-        let Some(last_commit_seq_num) = self.last_commit_seq_num else {
+        let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
         };
+        let last_commit_seq_num = last_commit.seq_num;
 
         assert!(
             block_policy.get_last_commit().ge(&last_commit_seq_num),
@@ -211,9 +220,10 @@ where
         min_promotable: usize,
         max_promotable: usize,
     ) -> Result<(), StateBackendError> {
-        let Some(last_commit_seq_num) = self.last_commit_seq_num else {
+        let Some(last_commit) = &self.last_commit else {
             return Ok(());
         };
+        let last_commit_seq_num = last_commit.seq_num;
 
         let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
             return Ok(());
@@ -354,14 +364,14 @@ where
             debug!(?seqnum, "txpool updating committed block");
         }
 
-        if let Some(last_commit_seq_num) = self.last_commit_seq_num {
+        if let Some(last_commit) = &self.last_commit {
             assert_eq!(
                 committed_block.get_seq_num(),
-                last_commit_seq_num + SeqNum(1),
+                last_commit.seq_num + SeqNum(1),
                 "txpool received out of order committed block"
             );
         }
-        self.last_commit_seq_num = Some(committed_block.get_seq_num());
+        self.last_commit = Some(committed_block.header().clone());
 
         let mut insertable = MAX_ADDRESSES.saturating_sub(self.txs.len());
 
@@ -432,8 +442,8 @@ where
 
     pub fn reset(&mut self, last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>) {
         self.txs.clear();
-        self.last_commit_seq_num = last_delay_committed_blocks
+        self.last_commit = last_delay_committed_blocks
             .last()
-            .map(|block| block.get_seq_num())
+            .map(|block| block.header().clone())
     }
 }

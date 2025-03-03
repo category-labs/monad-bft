@@ -35,6 +35,7 @@ pub struct EthTxPool<ST, SCT, SBT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
 {
     do_local_insert: bool,
     pending: PendingTxMap,
@@ -104,7 +105,7 @@ where
             return;
         }
 
-        let Some(last_commit_seq_num) = self.tracked.last_commit_seq_num() else {
+        let Some(last_commit) = self.tracked.last_commit() else {
             event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
             return;
         };
@@ -118,7 +119,7 @@ where
                     self.proposal_gas_limit,
                     tx,
                     owned,
-                    last_commit_seq_num,
+                    last_commit,
                 )
             })
             .collect_vec();
@@ -275,7 +276,7 @@ where
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
     ) -> Option<impl Iterator<Item = &TxEnvelope>> {
-        let last_commit_seq_num = self.tracked.last_commit_seq_num()?;
+        let last_commit_seq_num = self.tracked.last_commit()?.seq_num;
 
         Some(
             self.pending
