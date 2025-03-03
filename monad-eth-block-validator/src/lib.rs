@@ -66,6 +66,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        max_code_size: usize,
     ) -> Result<(ValidatedTxns, NonceMap, TxnFeeMap), BlockValidationError> {
         let EthBlockBody {
             transactions,
@@ -102,7 +103,14 @@ where
         let mut txn_fees: BTreeMap<Address, U256> = BTreeMap::new();
 
         for eth_txn in &eth_txns {
-            if static_validate_transaction(eth_txn, self.chain_id, proposal_gas_limit).is_err() {
+            if static_validate_transaction(
+                eth_txn,
+                self.chain_id,
+                proposal_gas_limit,
+                max_code_size,
+            )
+            .is_err()
+            {
                 return Err(BlockValidationError::TxnError);
             }
 
@@ -239,6 +247,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit:  u64,
+        max_code_size: usize,
     ) -> Result<
         <EthBlockPolicy<ST, SCT> as BlockPolicy<
             ST,
@@ -250,9 +259,13 @@ where
     >{
         self.validate_block_header(&header, &body, author_pubkey, proposal_gas_limit)?;
 
-        if let Ok((validated_txns, nonces, txn_fees)) =
-            self.validate_block_body(&body, tx_limit, proposal_gas_limit, proposal_byte_limit)
-        {
+        if let Ok((validated_txns, nonces, txn_fees)) = self.validate_block_body(
+            &body,
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            max_code_size,
+        ) {
             let block = ConsensusFullBlock::new(header, body)?;
             Ok(EthValidatedBlock {
                 block,
@@ -310,6 +323,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -342,6 +356,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -374,6 +389,7 @@ mod test {
             1,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }
@@ -411,6 +427,7 @@ mod test {
             10,
             PROPOSAL_GAS_LIMIT,
             PROPOSAL_SIZE_LIMIT,
+            0x6000,
         );
         assert!(matches!(result, Err(BlockValidationError::TxnError)));
     }

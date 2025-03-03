@@ -1,9 +1,11 @@
+use execution_revision::MonadExecutionRevision;
 use monad_types::Round;
 use revision::{ChainParams, ChainRevision, MockChainRevision, MonadChainRevision};
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::{info, warn};
 
+pub mod execution_revision;
 pub mod revision;
 
 /// CHAIN_ID
@@ -15,6 +17,7 @@ pub const DEVNET_CHAIN_ID: u64 = 20143;
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
     fn get_chain_revision(&self, round: Round) -> CR;
+    fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +26,9 @@ pub struct MonadChainConfig {
     pub chain_id: u64,
     pub v_0_7_0_activation: Round,
     pub v_0_8_0_activation: Round,
+
+    pub execution_v_one_activation: u64,
+    pub execution_v_two_activation: u64,
 }
 
 #[derive(Debug, Error)]
@@ -82,18 +88,34 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
             MonadChainRevision::V_0_7_0
         }
     }
+
+    fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision {
+        if execution_timestamp_s >= self.execution_v_two_activation {
+            MonadExecutionRevision::V_TWO
+        } else if execution_timestamp_s >= self.execution_v_one_activation {
+            MonadExecutionRevision::V_ONE
+        } else {
+            MonadExecutionRevision::V_ZERO
+        }
+    }
 }
 
 const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: DEVNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round::MIN,
+
+    execution_v_one_activation: 0,
+    execution_v_two_activation: 0,
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: TESTNET_CHAIN_ID,
     v_0_7_0_activation: Round::MIN,
     v_0_8_0_activation: Round(3263000),
+
+    execution_v_one_activation: 1739559600, // 2025-02-14T19:00:00.000Z
+    execution_v_two_activation: 1741978800, // 2025-03-14T19:00:00.000Z
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,5 +138,9 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
         MockChainRevision {
             chain_params: self.chain_params,
         }
+    }
+
+    fn get_execution_chain_revision(&self, _execution_timestamp_s: u64) -> MonadExecutionRevision {
+        MonadExecutionRevision::LATEST
     }
 }

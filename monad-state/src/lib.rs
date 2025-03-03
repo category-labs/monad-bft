@@ -9,6 +9,7 @@ use monad_blocksync::{
 };
 use monad_blocktree::blocktree::BlockTree;
 use monad_chain_config::{
+    execution_revision::ExecutionChainParams,
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
@@ -1201,6 +1202,16 @@ where
                     .chain_config
                     .get_chain_revision(full_block.header().round)
                     .chain_params();
+                let ExecutionChainParams { max_code_size } = {
+                    // u64::MAX seconds is ~500 Billion years
+                    let timestamp_s: u64 = (full_block.header().timestamp_ns / 1_000_000_000)
+                        .try_into()
+                        .unwrap();
+                    self.consensus_config
+                        .chain_config
+                        .get_execution_chain_revision(timestamp_s)
+                        .execution_chain_params()
+                };
                 self.block_validator
                     .validate(
                         full_block.header().clone(),
@@ -1211,6 +1222,7 @@ where
                         *tx_limit,
                         *proposal_gas_limit,
                         *proposal_byte_limit,
+                        *max_code_size,
                     )
                     .expect("majority committed invalid block")
             })

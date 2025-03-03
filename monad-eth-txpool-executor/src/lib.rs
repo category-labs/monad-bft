@@ -77,6 +77,8 @@ where
             soft_tx_expiry,
             hard_tx_expiry,
             proposal_gas_limit,
+            // it's safe to default max_code_size to zero because it gets set on commit + reset
+            0,
         );
 
         Ok(Self {
@@ -121,6 +123,14 @@ where
                             &mut self.block_policy,
                             &committed_block,
                         );
+
+                        let execution_revision = self.chain_config.get_execution_chain_revision(
+                            committed_block.header().execution_inputs.timestamp,
+                        );
+                        ipc_projection.pool.set_max_code_size(
+                            execution_revision.execution_chain_params().max_code_size,
+                        );
+
                         ipc_projection
                             .pool
                             .update_committed_block(&mut event_tracker, committed_block);
@@ -269,6 +279,15 @@ where
                         &mut self.block_policy,
                         last_delay_committed_blocks.iter().collect(),
                     );
+
+                    if let Some(block) = last_delay_committed_blocks.last() {
+                        let execution_revision = self.chain_config.get_execution_chain_revision(
+                            block.header().execution_inputs.timestamp,
+                        );
+                        ipc_projection.pool.set_max_code_size(
+                            execution_revision.execution_chain_params().max_code_size,
+                        );
+                    }
                     ipc_projection
                         .pool
                         .reset(&mut event_tracker, last_delay_committed_blocks);

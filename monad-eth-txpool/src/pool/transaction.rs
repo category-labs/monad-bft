@@ -34,6 +34,7 @@ impl ValidEthTransaction {
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         proposal_gas_limit: u64,
+        max_code_size: usize,
         tx: Recovered<TxEnvelope>,
         owned: bool,
         last_commit: &ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>,
@@ -49,9 +50,12 @@ impl ValidEthTransaction {
             return None;
         }
 
-        if let Err(err) =
-            static_validate_transaction(&tx, block_policy.get_chain_id(), proposal_gas_limit)
-        {
+        if let Err(err) = static_validate_transaction(
+            &tx,
+            block_policy.get_chain_id(),
+            proposal_gas_limit,
+            max_code_size,
+        ) {
             event_tracker.drop(
                 tx.tx_hash().to_owned(),
                 EthTxPoolDropReason::NotWellFormed(err),

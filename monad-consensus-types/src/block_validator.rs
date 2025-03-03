@@ -55,6 +55,7 @@ where
         tx_limit: usize,
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
+        max_code_size: usize,
     ) -> Result<BPT::ValidatedBlock, BlockValidationError>;
 }
 
@@ -76,6 +77,7 @@ where
         _tx_limit: usize,
         _proposal_gas_limit: u64,
         _proposal_byte_limit: u64,
+        _max_code_size: usize,
     ) -> Result<
         <PassthruBlockPolicy as BlockPolicy<ST, SCT, EPT, InMemoryState>>::ValidatedBlock,
         BlockValidationError,

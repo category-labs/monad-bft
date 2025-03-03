@@ -44,6 +44,8 @@ where
     // <= proposal_gas_limit to reject anything that can't possibly fit in a
     // block. Create proposal doesn't rely on this value
     proposal_gas_limit: u64,
+
+    max_code_size: usize,
 }
 
 impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
@@ -57,22 +59,26 @@ where
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
+        max_code_size: usize,
     ) -> Self {
         Self {
             do_local_insert,
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
+            max_code_size,
         }
     }
 
     pub fn default_testing() -> Self {
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
+        const MAX_CODE_SIZE: usize = 0x6000;
         Self::new(
             true,
             Duration::from_secs(60),
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
+            MAX_CODE_SIZE,
         )
     }
 
@@ -89,6 +95,10 @@ where
 
     pub fn set_tx_gas_limit(&mut self, proposal_gas_limit: u64) {
         self.proposal_gas_limit = proposal_gas_limit
+    }
+
+    pub fn set_max_code_size(&mut self, max_code_size: usize) {
+        self.max_code_size = max_code_size
     }
 
     pub fn insert_txs(
@@ -117,6 +127,7 @@ where
                     event_tracker,
                     block_policy,
                     self.proposal_gas_limit,
+                    self.max_code_size,
                     tx,
                     owned,
                     last_commit,
