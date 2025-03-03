@@ -138,7 +138,7 @@ impl<'s> GraphQLNode<'s> {
 
 struct GraphQLMetrics<'s>(&'s Metrics);
 #[Object]
-impl<'s> GraphQLMetrics<'s> {
+impl GraphQLMetrics<'_> {
     async fn consensus_created_qc(&self) -> u32 {
         self.0.consensus_events.created_qc.try_into().unwrap()
     }
@@ -179,7 +179,7 @@ struct GraphQLPendingMessage<'s> {
 }
 
 #[Object]
-impl<'s> GraphQLPendingMessage<'s> {
+impl GraphQLPendingMessage<'_> {
     async fn from_id(&self) -> GraphQLNodeId {
         self.from.get_peer_id().into()
     }
@@ -252,7 +252,7 @@ struct GraphQLConsensusEvent<'s>(
     &'s ConsensusEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
 );
 #[Object]
-impl<'s> GraphQLConsensusEvent<'s> {
+impl GraphQLConsensusEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -262,7 +262,7 @@ struct GraphQLBlockSyncEvent<'s>(
     &'s BlockSyncEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
 );
 #[Object]
-impl<'s> GraphQLBlockSyncEvent<'s> {
+impl GraphQLBlockSyncEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -270,7 +270,7 @@ impl<'s> GraphQLBlockSyncEvent<'s> {
 
 struct GraphQLValidatorEvent<'s>(&'s ValidatorEvent<SignatureCollectionType>);
 #[Object]
-impl<'s> GraphQLValidatorEvent<'s> {
+impl GraphQLValidatorEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -278,7 +278,7 @@ impl<'s> GraphQLValidatorEvent<'s> {
 
 struct GraphQLMempoolEvent<'s>(&'s MempoolEvent<SignatureCollectionType, ExecutionProtocolType>);
 #[Object]
-impl<'s> GraphQLMempoolEvent<'s> {
+impl GraphQLMempoolEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -286,7 +286,7 @@ impl<'s> GraphQLMempoolEvent<'s> {
 
 struct GraphQLExecutionResultEvent<'s>(&'s ExecutionResult<ExecutionProtocolType>);
 #[Object]
-impl<'s> GraphQLExecutionResultEvent<'s> {
+impl GraphQLExecutionResultEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -295,7 +295,7 @@ impl<'s> GraphQLExecutionResultEvent<'s> {
 struct GraphQLControlPanelEvent<'s>(&'s ControlPanelEvent<SignatureCollectionType>);
 
 #[Object]
-impl<'s> GraphQLControlPanelEvent<'s> {
+impl GraphQLControlPanelEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -314,7 +314,7 @@ struct GraphQLStateSyncEvent<'s>(
     &'s StateSyncEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
 );
 #[Object]
-impl<'s> GraphQLStateSyncEvent<'s> {
+impl GraphQLStateSyncEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }
@@ -323,7 +323,7 @@ impl<'s> GraphQLStateSyncEvent<'s> {
 struct GraphQLConfigEvent<'s>(&'s ConfigEvent<SignatureCollectionType>);
 
 #[Object]
-impl<'s> GraphQLConfigEvent<'s> {
+impl GraphQLConfigEvent<'_> {
     async fn debug(&self) -> String {
         format!("{:?}", self.0)
     }

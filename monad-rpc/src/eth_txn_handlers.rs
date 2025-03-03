@@ -784,7 +784,7 @@ where
     rayon::spawn(|| {
         let _ = tx.send(func());
     });
-    rx.await.map_err(Into::into)
+    rx.await
 }
 
 #[cfg(test)]

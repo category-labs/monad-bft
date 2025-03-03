@@ -388,7 +388,7 @@ impl BwWindow {
         while self
             .window
             .front()
-            .map_or(false, |&(tick, _)| tick + sampling_period < now)
+            .is_some_and(|&(tick, _)| tick + sampling_period < now)
         {
             let (_, bitlen) = self.window.pop_front().unwrap();
             self.total_bits -= bitlen;
@@ -400,7 +400,7 @@ impl BwWindow {
         assert!(self
             .window
             .back()
-            .map_or(true, |&(tick, _)| msg.from_tick >= tick));
+            .is_none_or(|&(tick, _)| msg.from_tick >= tick));
         let bit_len = msg.message.len() * 8;
         if self.total_bits + bit_len > burst_size {
             false

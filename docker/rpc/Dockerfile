@@ -60,6 +60,7 @@ RUN apt update && apt install -y \
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
+RUN rustup toolchain install 1.85.0-x86_64-unknown-linux-gnu
 
 ARG ETH_CALL_TARGET=monad_rpc_test
 ARG TRIEDB_TARGET=triedb_driver

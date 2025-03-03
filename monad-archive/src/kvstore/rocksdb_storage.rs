@@ -39,7 +39,6 @@ impl KVReader for RocksDbClient {
         self.db
             .get(key)
             .wrap_err_with(|| format!("Failed to read key from rocks_db: {key}"))
-            .map_err(Into::into)
             .map(|opt| opt.map(Into::into))
     }
 }

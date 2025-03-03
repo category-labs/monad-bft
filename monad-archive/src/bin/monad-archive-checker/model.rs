@@ -68,9 +68,9 @@ impl CheckerModel {
     /// Retrieves replica configuration from S3
     async fn get_replica_args(s3: &impl KVStore) -> Result<HashSet<ArchiveArgs>> {
         match s3.get(REPLICAS_KEY).await? {
-            Some(data) => serde_json::from_slice(&data)
-                .wrap_err("Failed to deserialize replica list")
-                .map_err(Into::into),
+            Some(data) => {
+                serde_json::from_slice(&data).wrap_err("Failed to deserialize replica list")
+            }
             None => Ok(HashSet::new()),
         }
     }

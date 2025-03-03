@@ -301,7 +301,7 @@ where
         tx_heap.drain_in_order_while(|sender, tx| {
             if total_gas
                 .checked_add(tx.gas_limit())
-                .map_or(true, |new_total_gas| new_total_gas > proposal_gas_limit)
+                .is_none_or(|new_total_gas| new_total_gas > proposal_gas_limit)
             {
                 return TrackedTxHeapDrainAction::Skip;
             }
@@ -309,7 +309,7 @@ where
             let tx_size = tx.size();
             if total_size
                 .checked_add(tx_size)
-                .map_or(true, |new_total_size| new_total_size > proposal_byte_limit)
+                .is_none_or(|new_total_size| new_total_size > proposal_byte_limit)
             {
                 return TrackedTxHeapDrainAction::Skip;
             }
