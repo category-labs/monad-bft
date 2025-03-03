@@ -105,7 +105,7 @@ pub enum EthTxPoolEvictReason {
     Expired,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EthTxPoolSnapshot {
     pub pending: HashSet<TxHash>,
     pub tracked: HashSet<TxHash>,

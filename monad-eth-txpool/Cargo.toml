@@ -36,6 +36,7 @@ alloy-signer-local = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+rayon = { workspace = true }
 tracing-test = { workspace = true }
 
 [[bench]]

@@ -5078,6 +5078,7 @@ dependencies = [
  "monad-types",
  "rand",
  "rand_chacha",
+ "rayon",
  "serde",
  "tracing",
  "tracing-test",

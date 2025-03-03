@@ -4,7 +4,8 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEnvelope, TxLegacy};
-use alloy_primitives::{hex, Address, TxKind, B256};
+use alloy_primitives::{hex, Address, TxKind, B256, U256};
+use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use itertools::Itertools;
@@ -16,10 +17,12 @@ use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSig
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
 
 const EXECUTION_DELAY: u64 = 4;
@@ -67,6 +70,10 @@ enum TxPoolTestEvent<'a> {
         txs: Vec<(&'a TxEnvelope, bool)>,
         expected_pool_size_change: usize,
     },
+    InsertTxBatch {
+        txs: Vec<&'a TxEnvelope>,
+        should_insert: bool,
+    },
     CreateProposal {
         tx_limit: usize,
         gas_limit: u64,
@@ -99,7 +106,14 @@ fn run_custom_iter<const N: usize>(
                     } => txs
                         .iter()
                         .map(|(tx, _)| tx.recover_signer().expect("signer is recoverable"))
-                        .collect::<Vec<_>>(),
+                        .collect_vec(),
+                    TxPoolTestEvent::InsertTxBatch {
+                        txs,
+                        should_insert: _,
+                    } => txs
+                        .into_par_iter()
+                        .map(|tx| tx.recover_signer().expect("signer is recoverable"))
+                        .collect(),
                     _ => vec![],
                 })
                 .map(|address| (address, 0))
@@ -155,7 +169,10 @@ fn run_custom_iter<const N: usize>(
                     );
 
                     if should_insert && !was_inserted {
-                        panic!("tx should have been inserted but was not!");
+                        panic!(
+                            "tx should have been inserted but was not! last event: {:?}",
+                            ipc_events.last()
+                        );
                     }
                 }
 
@@ -164,6 +181,42 @@ fn run_custom_iter<const N: usize>(
                     pool_previous_num_txs
                         .checked_add(expected_pool_size_change)
                         .expect("pool size change does not overflow"),
+                );
+            }
+            TxPoolTestEvent::InsertTxBatch { txs, should_insert } => {
+                let pool_previous_num_txs = pool.num_txs();
+
+                let mut num_inserted = 0;
+                let num_expected = should_insert.then_some(txs.len()).unwrap_or_default();
+
+                pool.insert_txs(
+                    &mut event_tracker,
+                    &eth_block_policy,
+                    &state_backend,
+                    txs.into_iter()
+                        .map(|tx| {
+                            let signer = tx.recover_signer().unwrap();
+                            Recovered::new_unchecked(tx.to_owned(), signer)
+                        })
+                        .collect(),
+                    owned,
+                    |_| {
+                        if !should_insert {
+                            panic!("tx inserted when it shouldn't have been!");
+                        }
+
+                        num_inserted += 1;
+                    },
+                );
+
+                assert_eq!(num_inserted, num_expected, "tx insertion count mismatch");
+
+                assert_eq!(
+                    pool.num_txs(),
+                    pool_previous_num_txs
+                        .checked_add(num_expected)
+                        .expect("pool size change does not overflow"),
+                    "pool size tx insertion count mismatch"
                 );
             }
             TxPoolTestEvent::CreateProposal {
@@ -647,6 +700,32 @@ fn test_nonce_exists_in_committed_block() {
 
 #[test]
 #[traced_test]
+fn test_unknown_account() {
+    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 0, 10);
+
+    run_custom(
+        make_test_block_policy,
+        Some(BTreeMap::default()),
+        [
+            TxPoolTestEvent::InsertTxs {
+                txs: vec![(&tx1, false)],
+                expected_pool_size_change: 0,
+            },
+            TxPoolTestEvent::Block(Arc::new(|pool| {
+                assert!(pool.is_empty());
+            })),
+            TxPoolTestEvent::CreateProposal {
+                tx_limit: 1,
+                gas_limit: GAS_LIMIT,
+                expected_txs: vec![],
+                add_to_blocktree: true,
+            },
+        ],
+    );
+}
+
+#[test]
+#[traced_test]
 fn test_nonce_exists_in_pending_block() {
     // A transaction with nonce 0 should not be included in the block if the latest nonce of the account is 0
 
@@ -934,6 +1013,71 @@ fn test_missing_chain_id() {
             tx_limit: 1,
             gas_limit: GAS_LIMIT,
             expected_txs: vec![&tx],
+            add_to_blocktree: true,
+        },
+    ]);
+}
+
+#[test]
+#[traced_test]
+fn test_large_batch_many_senders() {
+    let txs: Vec<_> = (0..1024)
+        .into_par_iter()
+        .map(|idx| {
+            let sender = B256::new(U256::from(idx as u64 + 1).to_be_bytes());
+            make_legacy_tx(sender, BASE_FEE, GAS_LIMIT, 0, 10)
+        })
+        .collect();
+
+    run_simple([
+        TxPoolTestEvent::InsertTxBatch {
+            txs: txs.iter().collect(),
+            should_insert: true,
+        },
+        TxPoolTestEvent::Block(Arc::new({
+            let txs = txs.clone();
+
+            move |pool| {
+                let EthTxPoolSnapshot { pending, tracked } = pool.generate_snapshot();
+
+                let mut txs = txs.clone();
+                txs.retain(|tx| !pending.contains(tx.tx_hash()) && !tracked.contains(tx.tx_hash()));
+
+                assert!(txs.is_empty())
+            }
+        })),
+    ]);
+}
+
+#[test]
+#[traced_test]
+fn test_exceed_byte_limit() {
+    let tx1 = make_legacy_tx(
+        S1,
+        BASE_FEE,
+        100_000_000,
+        0,
+        PROPOSAL_SIZE_LIMIT as usize - 111,
+    );
+    assert_eq!(tx1.length() as u64, PROPOSAL_SIZE_LIMIT);
+
+    let tx2 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
+
+    run_simple([
+        TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx1, true), (&tx2, true)],
+            expected_pool_size_change: 2,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 2,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            expected_txs: vec![&tx1],
+            add_to_blocktree: true,
+        },
+        TxPoolTestEvent::CreateProposal {
+            tx_limit: 2,
+            gas_limit: PROPOSAL_GAS_LIMIT,
+            expected_txs: vec![&tx2],
             add_to_blocktree: true,
         },
     ]);
