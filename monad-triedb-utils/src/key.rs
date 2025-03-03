@@ -34,7 +34,7 @@ pub enum KeyInput<'a> {
     BlockHeader,
     TxHash(&'a [u8; 32]),
     BlockHash(&'a [u8; 32]),
-    CallFrame(Option<u64>),
+    CallFrame,
     BftBlock,
 }
 
@@ -127,20 +127,45 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
                 key_nibbles.push(byte & 0xF);
             }
         }
-        KeyInput::CallFrame(tx_index) => {
-            key_nibbles.push(CALL_FRAME_NIBBLE);
-
-            if let Some(index) = tx_index {
-                let mut rlp_buf = vec![];
-                index.encode(&mut rlp_buf);
-
-                for byte in rlp_buf {
-                    key_nibbles.push(byte >> 4);
-                    key_nibbles.push(byte & 0xF);
-                }
-            }
-        }
+        KeyInput::CallFrame => key_nibbles.push(CALL_FRAME_NIBBLE),
         KeyInput::BftBlock => key_nibbles.push(BFT_BLOCK_NIBBLE),
+    }
+
+    let num_nibbles: u8 = match key_nibbles.len().try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            warn!("Key too big, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+
+    if num_nibbles % 2 != 0 {
+        key_nibbles.push(0);
+    }
+
+    let key: Vec<_> = key_nibbles
+        .chunks(2)
+        .map(|chunk| (chunk[0] << 4) | chunk[1])
+        .collect();
+
+    (key, num_nibbles)
+}
+
+pub fn create_range_key(tx_index: u64) -> (Vec<u8>, u8) {
+    let mut key_nibbles: Vec<u8> = vec![];
+    // call frame key takes tx index as 4 bytes
+    // downcast index to u32
+    let index: u32 = match tx_index.try_into() {
+        Ok(value) => value,
+        Err(_) => {
+            warn!("Tx index too large, returning an empty key");
+            return (vec![], 0);
+        }
+    };
+    let bytes = index.to_be_bytes();
+    for byte in bytes {
+        key_nibbles.push(byte >> 4);
+        key_nibbles.push(byte & 0xF)
     }
 
     let num_nibbles: u8 = match key_nibbles.len().try_into() {

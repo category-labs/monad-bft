@@ -24,7 +24,7 @@ use crate::{
         rlp_decode_account, rlp_decode_block_num, rlp_decode_storage_slot,
         rlp_decode_transaction_location,
     },
-    key::{create_triedb_key, KeyInput, Version},
+    key::{create_range_key, create_triedb_key, KeyInput, Version},
 };
 
 pub type EthAddress = [u8; 20];
@@ -34,13 +34,24 @@ pub type EthTxHash = [u8; 32];
 pub type EthBlockHash = [u8; 32];
 
 enum TriedbRequest {
-    SyncRequest(SyncRequest),
+    AsyncRangeGetRequest(RangeGetRequest),
     AsyncRequest(AsyncRequest),
     AsyncTraverseRequest(TraverseRequest),
 }
 
-enum SyncRequest {
-    TraverseRequest(TraverseRequest),
+struct RangeGetRequest {
+    // a sender for the polling thread to send the result back to the request handler
+    request_sender: oneshot::Sender<Option<Vec<TraverseEntry>>>,
+    // prefix key is used to get the root of the subtrie
+    prefix_key: Vec<u8>,
+    prefix_key_len_nibbles: u8,
+    // min key is inclusive in the range we want to retrieve
+    min_triedb_key: Vec<u8>,
+    min_key_len_nibbles: u8,
+    // max key is not inclusive in the range we want to retrieve
+    max_triedb_key: Vec<u8>,
+    max_key_len_nibbles: u8,
+    block_key: BlockKey,
 }
 
 struct TraverseRequest {
@@ -293,21 +304,18 @@ fn polling_thread(
         let mut num_queued = 0_usize;
         while let Some(triedb_request) = maybe_request {
             match triedb_request {
-                TriedbRequest::SyncRequest(sync_request) => {
-                    // poll for completions before initiating sync request
-                    triedb_handle.triedb_poll(false, MAX_POLL_COMPLETIONS);
-                    match sync_request {
-                        SyncRequest::TraverseRequest(traverse_request) => {
-                            triedb_handle.traverse_triedb_sync(
-                                &traverse_request.triedb_key,
-                                traverse_request.key_len_nibbles,
-                                traverse_request.block_key.seq_num().0,
-                                traverse_request.request_sender,
-                            );
-                        }
-                    }
-                    // this is a sync request, so break out and poll for completions again
-                    break;
+                TriedbRequest::AsyncRangeGetRequest(range_request) => {
+                    triedb_handle.range_get_triedb_async(
+                        &range_request.prefix_key,
+                        range_request.prefix_key_len_nibbles,
+                        &range_request.min_triedb_key,
+                        range_request.min_key_len_nibbles,
+                        &range_request.max_triedb_key,
+                        range_request.max_key_len_nibbles,
+                        range_request.block_key.seq_num().0,
+                        range_request.request_sender,
+                        triedb_async_read_concurrency_tracker.clone(),
+                    );
                 }
                 TriedbRequest::AsyncTraverseRequest(traverse_request) => {
                     triedb_handle.traverse_triedb_async(
@@ -1235,18 +1243,22 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<Vec<u8>>, String> {
         let (request_sender, request_receiver) = oneshot::channel();
 
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::CallFrame(Some(txn_index)));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
+        let (prefix_key, prefix_key_len_nibbles) =
+            create_triedb_key(block_key.into(), KeyInput::CallFrame);
+        let (min_triedb_key, min_key_len_nibbles) = create_range_key(txn_index);
+        let (max_triedb_key, max_key_len_nibbles) = create_range_key(txn_index + 1);
 
         if let Err(e) = self
             .mpsc_sender
             .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+            .try_send(TriedbRequest::AsyncRangeGetRequest(RangeGetRequest {
                 request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
+                prefix_key,
+                prefix_key_len_nibbles,
+                min_triedb_key,
+                min_key_len_nibbles,
+                max_triedb_key,
+                max_key_len_nibbles,
                 block_key,
             }))
         {
@@ -1255,15 +1267,31 @@ impl Triedb for TriedbEnv {
         }
 
         match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
+            Ok(Some(rlp_call_frames)) => {
+                if rlp_call_frames.is_empty() {
+                    return Ok(None);
                 }
 
-                Ok(result)
+                let grouped_frames = parse_call_frames(rlp_call_frames)?;
+
+                // we should only have one transaction index that is equivalent to txn_index
+                if grouped_frames.len() != 1 {
+                    warn!("Incorrect key length");
+                    return Err(String::from("error decoding from db"));
+                }
+                match grouped_frames.into_iter().next() {
+                    Some((idx, chunks)) => {
+                        if idx as u64 != txn_index {
+                            warn!("Incorrect transaction index");
+                            return Err(String::from("error decoding from db"));
+                        }
+                        let complete_call_frame = process_call_frame_chunks(chunks)?;
+                        Ok(Some(complete_call_frame))
+                    }
+                    None => Err(String::from("error decoding from db")),
+                }
             }
+            Ok(None) => Ok(None),
             Err(e) => {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))
@@ -1276,7 +1304,7 @@ impl Triedb for TriedbEnv {
         let (request_sender, request_receiver) = oneshot::channel();
 
         let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::CallFrame(None));
+            create_triedb_key(block_key.into(), KeyInput::CallFrame);
 
         if let Err(e) = self
             .mpsc_sender_traverse
@@ -1294,21 +1322,8 @@ impl Triedb for TriedbEnv {
         match request_receiver.await {
             Ok(Some(rlp_call_frames)) => {
                 // txn_index => (chunk_index, rlp_call_frame)
-                let mut grouped_frames: BTreeMap<u32, BTreeMap<u8, Vec<u8>>> = BTreeMap::new();
-                for TraverseEntry { key, value } in rlp_call_frames {
-                    // decode the key as a tuple of (txn_index, chunk_index)
-                    if key.len() != 5 {
-                        return Err(String::from("error decoding from db"));
-                    }
-                    // first 4 bytes is txn_index
-                    let txn_index = u32::from_be_bytes(key[0..4].try_into().unwrap_or_default());
-                    // 5th byte is chunk_index (u8)
-                    let chunk_index = key[4];
-                    grouped_frames
-                        .entry(txn_index)
-                        .or_default()
-                        .insert(chunk_index, value);
-                }
+                let grouped_frames = parse_call_frames(rlp_call_frames)?;
+
                 // check that transaction indices are consecutive and start with 0
                 if !grouped_frames.keys().copied().zip(0..).all(|(i, j)| i == j) {
                     return Err(format!(
@@ -1319,21 +1334,9 @@ impl Triedb for TriedbEnv {
                 let call_frames = grouped_frames
                     .into_iter()
                     .map(|(txn_idx, chunks)| {
-                        // check that chunk indices are consecutive and start with 0
-                        if !chunks.keys().copied().zip(0..).all(|(i, j)| i == j) {
-                            return Err(format!(
-                                "chunks missing for transaction {}, chunk indices={:?}",
-                                txn_idx,
-                                chunks.keys().collect::<Vec<_>>()
-                            ));
-                        }
-
-                        // concatenate chunks in order
-                        let mut complete_call_frame = Vec::new();
-                        for (_, chunk_data) in chunks {
-                            complete_call_frame.extend(chunk_data);
-                        }
-                        Ok(complete_call_frame)
+                        process_call_frame_chunks(chunks).map_err(|e| {
+                            format!("chunks missing for transaction {}: {}", txn_idx, e)
+                        })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
 
@@ -1382,4 +1385,43 @@ where
         ));
     }
     Ok(entries.into_iter().map(|(_, entry)| entry).collect())
+}
+
+fn parse_call_frames(
+    entries: Vec<TraverseEntry>,
+) -> Result<BTreeMap<u32, BTreeMap<u8, Vec<u8>>>, String> {
+    let mut grouped_frames: BTreeMap<u32, BTreeMap<u8, Vec<u8>>> = BTreeMap::new();
+
+    for TraverseEntry { key, value } in entries {
+        // decode the key as a tuple of (txn_index, chunk_index)
+        if key.len() != 5 {
+            warn!("Incorrect key length");
+            return Err(String::from("error decoding from db"));
+        }
+
+        // first 4 bytes is txn_index
+        let txn_index = u32::from_be_bytes(key[0..4].try_into().unwrap_or_default());
+        // 5th byte is chunk_index
+        let chunk_index = key[4];
+
+        grouped_frames
+            .entry(txn_index)
+            .or_default()
+            .insert(chunk_index, value);
+    }
+
+    Ok(grouped_frames)
+}
+
+fn process_call_frame_chunks(chunks: BTreeMap<u8, Vec<u8>>) -> Result<Vec<u8>, String> {
+    // check that chunk indices are consecutive and start with 0
+    if !chunks.keys().copied().zip(0..).all(|(i, j)| i == j) {
+        return Err(format!(
+            "chunk indices={:?}",
+            chunks.keys().collect::<Vec<_>>()
+        ));
+    }
+
+    // concatenate chunks in order
+    Ok(chunks.into_values().flatten().collect())
 }

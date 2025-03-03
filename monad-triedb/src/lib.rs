@@ -334,6 +334,59 @@ impl TriedbHandle {
         };
     }
 
+    pub fn range_get_triedb_async(
+        &self,
+        prefix_key: &[u8],
+        prefix_key_len_nibbles: u8,
+        min_key: &[u8],
+        min_key_len_nibbles: u8,
+        max_key: &[u8],
+        max_key_len_nibbles: u8,
+        block_id: u64,
+        sender: Sender<Option<Vec<TraverseEntry>>>,
+        concurrency_tracker: Arc<()>,
+    ) {
+        // make sure doesn't overflow
+        if min_key_len_nibbles >= u8::MAX - 1 {
+            error!("Min key length nibbles exceeds maximum allowed value");
+            return;
+        }
+        if (min_key_len_nibbles as usize + 1) / 2 > min_key.len() {
+            error!("Min key length is insufficient for the given nibbles");
+            return;
+        }
+        if max_key_len_nibbles >= u8::MAX - 1 {
+            error!("Max key length nibbles exceeds maximum allowed value");
+            return;
+        }
+        if (max_key_len_nibbles as usize + 1) / 2 > max_key.len() {
+            error!("Max key length is insufficient for the given nibbles");
+            return;
+        }
+
+        let traverse_context = Box::new(TraverseContext {
+            data: std::sync::Mutex::new(Default::default()),
+            sender,
+            concurrency_tracker,
+        });
+
+        unsafe {
+            let context = Box::into_raw(traverse_context) as *mut std::ffi::c_void;
+            bindings::triedb_async_ranged_get(
+                self.db_ptr,
+                prefix_key.as_ptr(),
+                prefix_key_len_nibbles,
+                min_key.as_ptr(),
+                min_key_len_nibbles,
+                max_key.as_ptr(),
+                max_key_len_nibbles,
+                block_id,
+                context,
+                Some(traverse_callback),
+            );
+        };
+    }
+
     pub fn latest_voted_block(&self) -> Option<u64> {
         let maybe_latest_voted_block = unsafe { bindings::triedb_latest_voted_block(self.db_ptr) };
         if maybe_latest_voted_block == u64::MAX {
