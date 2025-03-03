@@ -19,9 +19,9 @@ use monad_types::ExecutionProtocol;
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent, StateSyncNetworkMessage,
-    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, StateSyncVersion,
-    ValidatorEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent,
+    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsert,
+    StateSyncUpsertType, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -980,19 +980,6 @@ impl<SCT: SignatureCollection> From<&ConfigEvent<SCT>> for ProtoConfigEvent {
             ConfigEvent::ConfigUpdate(config_update) => {
                 let full_nodes = config_update.full_nodes.iter().map(Into::into).collect();
 
-                let maybe_known_peers =
-                    config_update.maybe_known_peers.as_ref().map(|known_peers| {
-                        ProtoConfigKnownPeers {
-                            known_peers: known_peers
-                                .iter()
-                                .map(|(node_id, addr)| ProtoPeerRecord {
-                                    node_id: Some(node_id.into()),
-                                    addr: Some(socket_addr_to_proto(addr)),
-                                })
-                                .collect(),
-                        }
-                    });
-
                 let blocksync_override_peers = config_update
                     .blocksync_override_peers
                     .iter()
@@ -1002,9 +989,7 @@ impl<SCT: SignatureCollection> From<&ConfigEvent<SCT>> for ProtoConfigEvent {
                 Self {
                     event: Some(proto_config_event::Event::Update(ProtoConfigUpdate {
                         full_nodes,
-                        maybe_known_peers,
                         blocksync_override_peers,
-                        error_message: config_update.error_message.clone(),
                     })),
                 }
             }
@@ -1012,6 +997,20 @@ impl<SCT: SignatureCollection> From<&ConfigEvent<SCT>> for ProtoConfigEvent {
                 event: Some(proto_config_event::Event::Error(ProtoConfigLoadError {
                     msg: msg.into(),
                 })),
+            },
+            ConfigEvent::KnownPeersUpdate(known_peers_update) => Self {
+                event: Some(proto_config_event::Event::KnownPeersUpdate(
+                    ProtoKnownPeersUpdate {
+                        known_peers: known_peers_update
+                            .known_peers
+                            .iter()
+                            .map(|(node_id, addr)| ProtoPeerRecord {
+                                node_id: Some(node_id.into()),
+                                addr: Some(socket_addr_to_proto(addr)),
+                            })
+                            .collect(),
+                    },
+                )),
             },
         }
     }
@@ -1030,31 +1029,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
                     full_nodes.push(proto_node_id.try_into()?);
                 }
 
-                let maybe_known_peers = if let Some(proto_known_peers) =
-                    proto_config_update.maybe_known_peers
-                {
-                    let mut known_peers = Vec::with_capacity(proto_known_peers.known_peers.len());
-                    for proto_record in proto_known_peers.known_peers {
-                        let record = (
-                            proto_record
-                                .node_id
-                                .ok_or(ProtoError::MissingRequiredField(
-                                    "ControlPanel::GetPeersEvent.resp.record.node_id".to_owned(),
-                                ))?
-                                .try_into()?,
-                            proto_to_socket_addr(proto_record.addr.ok_or(
-                                ProtoError::MissingRequiredField(
-                                    "ControlPanel::GetPeersEvent.resp.record.addr".to_owned(),
-                                ),
-                            )?)?,
-                        );
-                        known_peers.push(record);
-                    }
-                    Some(known_peers)
-                } else {
-                    None
-                };
-
                 let mut blocksync_override_peers =
                     Vec::with_capacity(proto_config_update.blocksync_override_peers.len());
                 for proto_node_id in proto_config_update.blocksync_override_peers {
@@ -1063,13 +1037,32 @@ impl<SCT: SignatureCollection> TryFrom<ProtoConfigEvent> for ConfigEvent<SCT> {
 
                 ConfigEvent::ConfigUpdate(ConfigUpdate {
                     full_nodes,
-                    maybe_known_peers,
                     blocksync_override_peers,
-                    error_message: proto_config_update.error_message,
                 })
             }
             proto_config_event::Event::Error(proto_config_load_error) => {
                 ConfigEvent::LoadError(proto_config_load_error.msg)
+            }
+            proto_config_event::Event::KnownPeersUpdate(proto_known_peers_update) => {
+                let mut known_peers =
+                    Vec::with_capacity(proto_known_peers_update.known_peers.len());
+                for proto_record in proto_known_peers_update.known_peers {
+                    let record = (
+                        proto_record
+                            .node_id
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ControlPanel::GetPeersEvent.resp.record.node_id".to_owned(),
+                            ))?
+                            .try_into()?,
+                        proto_to_socket_addr(proto_record.addr.ok_or(
+                            ProtoError::MissingRequiredField(
+                                "ControlPanel::GetPeersEvent.resp.record.addr".to_owned(),
+                            ),
+                        )?)?,
+                    );
+                    known_peers.push(record);
+                }
+                ConfigEvent::KnownPeersUpdate(KnownPeersUpdate { known_peers })
             }
         };
         Ok(event)

@@ -1049,32 +1049,20 @@ where
                         config_update.full_nodes,
                     )));
 
-                    // maybe_known_peers is None when domain fails to resolve.
-                    // Skip updating known_peers
-                    if let Some(known_peers) = config_update.maybe_known_peers {
-                        cmds.push(Command::RouterCommand(RouterCommand::UpdatePeers(
-                            known_peers,
-                        )));
-                    }
+                    cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
+                        WriteCommand::ReloadConfig(ReloadConfig::Response("Success".to_string())),
+                    )));
 
-                    if config_update.error_message.is_empty() {
-                        cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
-                            WriteCommand::ReloadConfig(ReloadConfig::Response(
-                                "Success".to_string(),
-                            )),
-                        )));
-                    } else {
-                        cmds.push(Command::ControlPanelCommand(ControlPanelCommand::Write(
-                            WriteCommand::ReloadConfig(ReloadConfig::Response(
-                                config_update.error_message,
-                            )),
-                        )));
-                    }
                     cmds
                 }
                 ConfigEvent::LoadError(err_msg) => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
                         WriteCommand::ReloadConfig(ReloadConfig::Response(err_msg)),
+                    ))]
+                }
+                ConfigEvent::KnownPeersUpdate(known_peers_update) => {
+                    vec![Command::RouterCommand(RouterCommand::UpdatePeers(
+                        known_peers_update.known_peers,
                     ))]
                 }
             },

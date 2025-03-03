@@ -23,7 +23,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
-use monad_node_config::{FullNodeIdentityConfig, NodeBootstrapPeerConfig, NodeNetworkConfig};
+use monad_node_config::{FullNodeIdentityConfig, NodeNetworkConfig};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
@@ -122,6 +122,19 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .expect("no validator sets")
         .clone();
 
+    let known_addresses: Vec<_> = node_state
+        .node_config
+        .bootstrap
+        .peers
+        .iter()
+        .map(|peer| {
+            (
+                NodeId::new(peer.secp256k1_pubkey),
+                resolve_domain(&peer.address),
+            )
+        })
+        .collect();
+
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
@@ -131,7 +144,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         >(
             node_state.node_config.network.clone(),
             node_state.router_identity,
-            &node_state.node_config.bootstrap.peers,
+            known_addresses.clone(),
             &node_state.node_config.fullnode.identities,
         )
         .await;
@@ -265,7 +278,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        config_loader: ConfigLoader::new(node_state.node_config_path),
+        config_loader: ConfigLoader::new(
+            node_state.node_config_path,
+            node_state.node_config.bootstrap.peers,
+            known_addresses,
+        ),
     };
 
     let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _, _>> = WALoggerConfig::new(
@@ -458,7 +475,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 async fn build_raptorcast_router<ST, SCT, M, OM>(
     network_config: NodeNetworkConfig,
     identity: ST::KeyPairType,
-    peers: &[NodeBootstrapPeerConfig<CertificateSignaturePubKey<ST>>],
+    known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
 ) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
 where
@@ -475,15 +492,7 @@ where
 {
     RaptorCast::new(RaptorCastConfig {
         key: identity,
-        known_addresses: peers
-            .iter()
-            .map(|peer| {
-                (
-                    NodeId::new(peer.secp256k1_pubkey),
-                    resolve_domain(&peer.address),
-                )
-            })
-            .collect(),
+        known_addresses: known_addresses.into_iter().collect(),
         full_nodes: full_nodes
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))

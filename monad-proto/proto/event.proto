@@ -237,25 +237,25 @@ message ProtoStateSyncEvent {
   }
 }
 
-message ProtoConfigKnownPeers {
-  repeated ProtoPeerRecord known_peers = 1;
-}
-
 message ProtoConfigUpdate {
+  reserved 2,4;
   repeated monad_proto.basic.ProtoNodeId full_nodes = 1;
-  optional ProtoConfigKnownPeers maybe_known_peers = 2;
   repeated monad_proto.basic.ProtoNodeId blocksync_override_peers = 3;
-  string error_message = 4;
 }
 
 message ProtoConfigLoadError {
   string msg = 1;
 }
 
+message ProtoKnownPeersUpdate {
+  repeated ProtoPeerRecord known_peers = 1;
+}
+
 message ProtoConfigEvent {
   oneof event {
     ProtoConfigUpdate update = 1;
     ProtoConfigLoadError error = 2;
+    ProtoKnownPeersUpdate known_peers_update = 3;
   }
 }
 

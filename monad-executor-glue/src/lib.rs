@@ -801,9 +801,15 @@ where
     SCT: SignatureCollection,
 {
     pub full_nodes: Vec<NodeId<SCT::NodeIdPubKey>>,
-    pub maybe_known_peers: Option<Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>>,
     pub blocksync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
-    pub error_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownPeersUpdate<SCT>
+where
+    SCT: SignatureCollection,
+{
+    pub known_peers: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -812,6 +818,7 @@ where
     SCT: SignatureCollection,
 {
     ConfigUpdate(ConfigUpdate<SCT>),
+    KnownPeersUpdate(KnownPeersUpdate<SCT>),
     LoadError(String),
 }
 
