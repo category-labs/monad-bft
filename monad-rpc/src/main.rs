@@ -737,9 +737,16 @@ async fn main() -> std::io::Result<()> {
                     result = ipc_receiver.recv_async() => {
                         let tx = result.unwrap();
 
-                        txpool_state.add_tx(&tx);
-                        if let Err(e) = txpool_bridge.send(&tx).await {
-                            warn!("IPC send failed, monad-bft likely crashed: {}", e);
+                        for tx in std::iter::once(tx).chain(ipc_receiver.drain()) {
+                            txpool_state.add_tx(&tx);
+
+                            if let Err(e) = txpool_bridge.feed(&tx).await {
+                                warn!("IPC feed failed, monad-bft likely crashed: {}", e);
+                            }
+                        }
+
+                        if let Err(e) = txpool_bridge.flush().await {
+                            warn!("IPC flush failed, monad-bft likely crashed: {}", e);
                         }
                     }
 
