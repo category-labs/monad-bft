@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{btree_map::Entry, BTreeMap, VecDeque},
     io::Error,
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
@@ -15,6 +15,8 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
 use super::{TcpMsgHdr, TCP_MESSAGE_TIMEOUT};
+
+const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
 
 #[derive(Clone)]
 struct TxState {
@@ -44,9 +46,21 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>) {
         let peer_task_exists = {
             let mut inner_ref = tx_state.inner.borrow_mut();
 
-            let peer_task_exists = inner_ref.messages.contains_key(&addr);
+            let entry = inner_ref.messages.entry(addr);
 
-            inner_ref.messages.entry(addr).or_default().push_back(bytes);
+            let peer_task_exists = matches!(entry, Entry::Occupied(..));
+
+            let queued_messages = entry.or_default();
+
+            queued_messages.push_back(bytes);
+
+            if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                warn!(
+                    ?addr,
+                    message_count = queued_messages.len(),
+                    "excessive number of messages queued for peer"
+                );
+            }
 
             peer_task_exists
         };
@@ -66,7 +80,17 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
         let (conn_id, message) = {
             let mut inner_ref = tx_state.inner.borrow_mut();
 
-            if let Some(message) = inner_ref.messages.get_mut(&addr).unwrap().pop_front() {
+            let queued_messages = inner_ref.messages.get_mut(&addr).unwrap();
+
+            if let Some(message) = queued_messages.pop_front() {
+                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                    warn!(
+                        ?addr,
+                        message_count = queued_messages.len(),
+                        "excessive number of messages queued for peer"
+                    );
+                }
+
                 let conn_id = inner_ref.conn_id;
                 inner_ref.conn_id += 1;
 
