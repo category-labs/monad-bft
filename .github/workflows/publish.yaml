@@ -52,17 +52,6 @@ jobs:
           submodules: recursive
           token: ${{ steps.generate_token.outputs.token }}
 
-      - name: configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v4.0.2
-        with:
-          role-to-assume: ${{ secrets.AWS_ECR_GITHUB_ACTION_ROLE }}
-          role-session-name: GitHub_to_AWS_via_FederatedOIDC
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Log in to the Peach10 Container registry
         uses: docker/login-action@v3.1.0
         with:
@@ -75,7 +64,6 @@ jobs:
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            ${{ secrets.AWS_ECR_REGISTRY }}/category-labs/${{ matrix.dockerfile.name }}
             peach10.devcore4.com/category-labs/${{ matrix.dockerfile.name }}
           tags: |
             type=ref,event=branch
