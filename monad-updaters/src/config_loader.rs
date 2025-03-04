@@ -235,9 +235,10 @@ where
     }
 }
 
-struct PeersTable<SCT: SignatureCollection>(
-    BTreeMap<NodeId<SCT::NodeIdPubKey>, (String, Option<SocketAddr>)>,
-);
+struct PeersTable<SCT: SignatureCollection> {
+    peers: BTreeMap<NodeId<SCT::NodeIdPubKey>, (String, Option<SocketAddr>)>,
+    pending_update: bool,
+}
 
 impl<SCT: SignatureCollection> PeersTable<SCT> {
     fn new(
@@ -255,7 +256,10 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
                 .expect("all peers are resolved on startup");
             peers_table.insert(node_id, (peer.address, Some(*addr)));
         }
-        Self(peers_table)
+        Self {
+            peers: peers_table,
+            pending_update: false,
+        }
     }
 
     async fn resolve_domain(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
@@ -290,9 +294,8 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             debug!(?elapsed, "refreshing dns record done")
         });
         // refresh dns for peer table
-        let mut should_update = false;
         let peers = self
-            .0
+            .peers
             .iter()
             .map(|(node_id, (hostname, _))| (*node_id, hostname))
             .collect::<Vec<_>>();
@@ -301,21 +304,22 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             // retain old record if hostname fails to resolve
             if let Some(new_addr) = maybe_addr {
                 let (_, maybe_last_resolved) = self
-                    .0
+                    .peers
                     .get_mut(&node_id)
                     .expect("peers table is immutable during lookup");
                 if maybe_last_resolved.is_none()
                     || maybe_last_resolved.is_some_and(|last_resolved| last_resolved != new_addr)
                 {
                     info!(?node_id, old_addr=?maybe_last_resolved, ?new_addr, "update dns record");
-                    should_update = true;
+                    self.pending_update = true;
                     *maybe_last_resolved = Some(new_addr);
                 }
             }
         }
-        if should_update {
+        if self.pending_update {
+            self.pending_update = false;
             let response = self
-                .0
+                .peers
                 .iter()
                 .filter_map(|(&node_id, (_, maybe_addr))| maybe_addr.map(|addr| (node_id, addr)))
                 .collect::<Vec<_>>();
@@ -328,17 +332,20 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
     }
 
     fn set_peers(&mut self, new_peers: Vec<(NodeId<SCT::NodeIdPubKey>, String)>) {
+        let mut new_table = BTreeMap::new();
         for (node_id, hostname) in new_peers {
-            self.0
-                .entry(node_id)
-                .and_modify(|(old_hostname, maybe_resolved)| {
-                    if old_hostname != &hostname {
-                        debug!(?node_id, ?old_hostname, new_hostname=?hostname, "hostname changed");
-                        *old_hostname = hostname.clone();
-                        *maybe_resolved = None;
-                    }
-                })
-                .or_insert((hostname, None));
+            let new_table_entry = new_table.entry(node_id).or_insert((hostname.clone(), None));
+            if let Some((old_hostname, maybe_resolved)) = self.peers.get(&node_id) {
+                // copy last resolved address if hostname is unchanged
+                if old_hostname == &hostname {
+                    new_table_entry.1 = *maybe_resolved;
+                } else {
+                    debug!(?node_id, ?old_hostname, new_hostname=?hostname, "hostname changed");
+                }
+            }
         }
+        self.peers = new_table;
+        // always update peers if config is reloaded
+        self.pending_update = true;
     }
 }
