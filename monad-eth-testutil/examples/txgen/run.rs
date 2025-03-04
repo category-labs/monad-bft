@@ -69,15 +69,16 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         config.erc20_balance_of,
     )?;
 
-    let rpc_sender = RpcSender {
+    let rpc_sender = RpcSender::new(
         gen_rx,
-        recipient_sender,
         refresh_sender,
-        client: client.clone(),
-        target_tps: config.tps,
-        metrics: Arc::clone(&metrics),
+        recipient_sender,
+        client.clone(),
+        config.tps,
+        Arc::clone(&metrics),
         sent_txs,
-    };
+        !config.use_static_tps_interval,
+    );
 
     let mut tasks = FuturesUnordered::new();
 

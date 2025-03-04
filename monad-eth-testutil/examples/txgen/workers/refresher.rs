@@ -43,7 +43,7 @@ impl Refresher {
     }
 
     pub async fn run(mut self) {
-        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        let mut interval = tokio::time::interval(Duration::from_millis(5));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         info!("Starting refresher loop");

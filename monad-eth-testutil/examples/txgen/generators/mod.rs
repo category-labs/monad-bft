@@ -11,7 +11,7 @@ use storage_deletes::StorageDeletesTxGenerator;
 use uniswap::UniswapGenerator;
 
 use crate::{
-    cli::{Config, DeployedContract, GeneratorConfig},
+    cli::{Config, DeployedContract, GenMode},
     prelude::*,
     shared::erc20::ERC20,
 };
@@ -32,53 +32,59 @@ pub fn make_generator(
 ) -> Result<Box<dyn Generator + Send + Sync>> {
     let recipient_keys = SeededKeyPool::new(config.recipients, config.recipient_seed);
     let tx_per_sender = config.tx_per_sender();
-    Ok(match config.generator_config {
-        GeneratorConfig::NullGen => Box::new(NullGen),
-        GeneratorConfig::FewToMany { tx_type } => Box::new(CreateAccountsGenerator {
+    Ok(match config.gen_mode {
+        GenMode::NullGen => Box::new(NullGen),
+        GenMode::FewToMany { tx_type } => Box::new(CreateAccountsGenerator {
             recipient_keys: SeededKeyPool::new(config.recipients, config.recipient_seed),
             tx_type,
             erc20: deployed_contract.erc20().ok(),
             tx_per_sender,
         }),
-        GeneratorConfig::ManyToMany { tx_type } => Box::new(ManyToManyGenerator {
+        GenMode::ManyToMany { tx_type } => Box::new(ManyToManyGenerator {
             recipient_keys,
             tx_type,
             tx_per_sender,
             erc20: deployed_contract.erc20().ok(),
         }),
-        GeneratorConfig::Duplicates => Box::new(DuplicateTxGenerator {
+        GenMode::Duplicates => Box::new(DuplicateTxGenerator {
             recipient_keys,
             tx_per_sender,
             random_priority_fee: false,
         }),
-        GeneratorConfig::RandomPriorityFee => Box::new(DuplicateTxGenerator {
+        GenMode::RandomPriorityFee => Box::new(DuplicateTxGenerator {
             recipient_keys,
             tx_per_sender,
             random_priority_fee: true,
         }),
-        GeneratorConfig::HighCallData => Box::new(HighCallDataTxGenerator {
+        GenMode::HighCallData => Box::new(HighCallDataTxGenerator {
             recipient_keys,
             tx_per_sender,
+            gas_limit: 800_000,
         }),
-        GeneratorConfig::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
+        GenMode::HighCallDataLowGasLimit => Box::new(HighCallDataTxGenerator {
+            recipient_keys,
+            tx_per_sender,
+            gas_limit: 100_000,
+        }),
+        GenMode::NonDeterministicStorage => Box::new(NonDeterministicStorageTxGenerator {
             recipient_keys,
             tx_per_sender,
             erc20: deployed_contract.erc20()?,
         }),
-        GeneratorConfig::StorageDeletes => Box::new(StorageDeletesTxGenerator {
+        GenMode::StorageDeletes => Box::new(StorageDeletesTxGenerator {
             recipient_keys,
             tx_per_sender,
             erc20: deployed_contract.erc20()?,
         }),
-        GeneratorConfig::SelfDestructs => Box::new(SelfDestructTxGenerator {
+        GenMode::SelfDestructs => Box::new(SelfDestructTxGenerator {
             tx_per_sender,
             contracts: Vec::with_capacity(1000),
         }),
-        GeneratorConfig::ECMul => Box::new(ECMulGenerator {
+        GenMode::ECMul => Box::new(ECMulGenerator {
             ecmul: deployed_contract.ecmul()?,
             tx_per_sender,
         }),
-        GeneratorConfig::Uniswap => Box::new(UniswapGenerator {
+        GenMode::Uniswap => Box::new(UniswapGenerator {
             uniswap: deployed_contract.uniswap()?,
             tx_per_sender,
         }),

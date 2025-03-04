@@ -61,7 +61,7 @@ pub struct Config {
 
     /// Which generation mode to use. Corresponds to Generator impls
     #[command(subcommand)]
-    pub generator_config: GeneratorConfig,
+    pub gen_mode: GenMode,
 
     /// How many senders should be batched together when cycling between gen -> rpc sender -> refresher -> gen...
     #[arg(long, global = true)]
@@ -122,15 +122,18 @@ pub struct Config {
     /// Writes `TRACE` logs to ./trace.log
     #[arg(long, global = true, default_value_t = false)]
     pub trace_log_file: bool,
+
+    #[arg(long, global = true)]
+    pub use_static_tps_interval: bool,
 }
 
 impl Config {
     pub fn tx_per_sender(&self) -> usize {
-        use GeneratorConfig::*;
+        use GenMode::*;
         if let Some(x) = self.tx_per_sender {
             return x;
         }
-        match self.generator_config {
+        match self.gen_mode {
             FewToMany { .. } => 500,
             ManyToMany { .. }
             | Duplicates
@@ -142,15 +145,16 @@ impl Config {
             | ECMul => 10,
             NullGen => 0,
             Uniswap => 10,
+            HighCallDataLowGasLimit => 30,
         }
     }
 
     pub fn sender_group_size(&self) -> usize {
-        use GeneratorConfig::*;
+        use GenMode::*;
         if let Some(x) = self.sender_group_size {
             return x;
         }
-        match self.generator_config {
+        match self.gen_mode {
             FewToMany { .. } => 100,
             ManyToMany { .. }
             | Duplicates
@@ -158,16 +162,17 @@ impl Config {
             | NonDeterministicStorage
             | StorageDeletes => 100,
             NullGen | SelfDestructs | HighCallData | ECMul => 10,
+            HighCallDataLowGasLimit => 3,
             Uniswap => 20,
         }
     }
 
     pub fn senders(&self) -> usize {
-        use GeneratorConfig::*;
+        use GenMode::*;
         if let Some(x) = self.senders {
             return x;
         }
-        match self.generator_config {
+        match self.gen_mode {
             FewToMany { .. } => 1000,
             ManyToMany { .. }
             | Duplicates
@@ -175,31 +180,32 @@ impl Config {
             | NonDeterministicStorage
             | StorageDeletes => 2500,
             NullGen => 100,
-            SelfDestructs | HighCallData | ECMul => 100,
+            SelfDestructs | HighCallData | HighCallDataLowGasLimit | ECMul => 100,
             Uniswap => 200,
         }
     }
 
     pub fn required_contract(&self) -> RequiredContract {
         use RequiredContract::*;
-        match self.generator_config {
-            GeneratorConfig::FewToMany { tx_type } => match tx_type {
+        match self.gen_mode {
+            GenMode::FewToMany { tx_type } => match tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
             },
-            GeneratorConfig::ManyToMany { tx_type } => match tx_type {
+            GenMode::ManyToMany { tx_type } => match tx_type {
                 TxType::ERC20 => ERC20,
                 TxType::Native => None,
             },
-            GeneratorConfig::Duplicates => ERC20,
-            GeneratorConfig::RandomPriorityFee => ERC20,
-            GeneratorConfig::HighCallData => None,
-            GeneratorConfig::SelfDestructs => None,
-            GeneratorConfig::NonDeterministicStorage => ERC20,
-            GeneratorConfig::StorageDeletes => ERC20,
-            GeneratorConfig::NullGen => None,
-            GeneratorConfig::ECMul => ECMUL,
-            GeneratorConfig::Uniswap => Uniswap,
+            GenMode::Duplicates => ERC20,
+            GenMode::RandomPriorityFee => ERC20,
+            GenMode::HighCallData => None,
+            GenMode::HighCallDataLowGasLimit => None,
+            GenMode::SelfDestructs => None,
+            GenMode::NonDeterministicStorage => ERC20,
+            GenMode::StorageDeletes => ERC20,
+            GenMode::NullGen => None,
+            GenMode::ECMul => ECMUL,
+            GenMode::Uniswap => Uniswap,
         }
     }
 
@@ -249,7 +255,7 @@ impl DeployedContract {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum GeneratorConfig {
+pub enum GenMode {
     FewToMany {
         #[clap(long, default_value = "erc20")]
         tx_type: TxType,
@@ -261,6 +267,7 @@ pub enum GeneratorConfig {
     Duplicates,
     RandomPriorityFee,
     HighCallData,
+    HighCallDataLowGasLimit,
     SelfDestructs,
     NonDeterministicStorage,
     StorageDeletes,

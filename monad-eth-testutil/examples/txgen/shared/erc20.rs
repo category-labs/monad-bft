@@ -79,6 +79,30 @@ impl ERC20 {
         Ok(ERC20 { addr })
     }
 
+    pub fn deploy_tx_with_gas_limit(
+        nonce: u64,
+        deployer: &PrivateKey,
+        max_fee_per_gas: u128,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> TxEnvelope {
+        let input = Bytes::from_hex(BYTECODE).unwrap();
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit, // usually around 600k gas
+            max_fee_per_gas,
+            max_priority_fee_per_gas: 10,
+            to: TxKind::Create,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input,
+        };
+
+        let sig = deployer.sign_transaction(&tx);
+        TxEnvelope::Eip1559(tx.into_signed(sig))
+    }
+
     pub fn deploy_tx(
         nonce: u64,
         deployer: &PrivateKey,

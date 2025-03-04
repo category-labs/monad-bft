@@ -3,6 +3,7 @@ use crate::{prelude::*, shared::erc20::ERC20};
 pub struct HighCallDataTxGenerator {
     pub(crate) recipient_keys: SeededKeyPool,
     pub(crate) tx_per_sender: usize,
+    pub(crate) gas_limit: u64,
 }
 
 impl Generator for HighCallDataTxGenerator {
@@ -17,8 +18,13 @@ impl Generator for HighCallDataTxGenerator {
             for _ in 0..self.tx_per_sender {
                 let to = self.recipient_keys.next_addr();
 
-                let tx =
-                    ERC20::deploy_tx(sender.nonce, &sender.key, ctx.base_fee * 2, ctx.chain_id);
+                let tx = ERC20::deploy_tx_with_gas_limit(
+                    sender.nonce,
+                    &sender.key,
+                    ctx.base_fee * 2,
+                    ctx.chain_id,
+                    self.gas_limit,
+                );
                 sender.nonce += 1;
 
                 txs.push((tx, to));

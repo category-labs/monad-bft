@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
@@ -13,19 +15,57 @@ pub struct RpcSender {
     pub target_tps: u64,
     pub metrics: Arc<Metrics>,
     pub sent_txs: Arc<DashMap<TxHash, Instant>>,
+
+    // Fields for dynamic adjustment
+    pub tx_history: VecDeque<(Instant, u64)>,
+    pub last_adjustment_time: Instant,
+    pub adjustment_interval: Duration,
+    pub use_dynamic_adjustment: bool,
+    pub window_duration: Duration,
 }
 
 impl RpcSender {
+    pub fn new(
+        gen_rx: mpsc::Receiver<AccountsWithTxs>,
+        refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
+        recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
+        client: ReqwestClient,
+        target_tps: u64,
+        metrics: Arc<Metrics>,
+        sent_txs: Arc<DashMap<TxHash, Instant>>,
+        use_dynamic_adjustment: bool,
+    ) -> Self {
+        Self {
+            gen_rx,
+            refresh_sender,
+            recipient_sender,
+            client,
+            target_tps,
+            metrics,
+            sent_txs,
+            // Initialize fields
+            tx_history: VecDeque::new(),
+            last_adjustment_time: Instant::now(),
+            adjustment_interval: Duration::from_secs(1), // Check every 5 seconds
+            use_dynamic_adjustment,
+            window_duration: Duration::from_secs(300), // 5 minute window for averaging
+        }
+    }
+
     pub async fn run(mut self) {
+        // Calculate initial interval using BATCH_SIZE as our starting estimate
         let mut interval = tokio::time::interval(Duration::from_millis(
             BATCH_SIZE as u64 * 1000 / self.target_tps,
         ));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         info!(
+            use_dynamic_adjustment = self.use_dynamic_adjustment,
+            batch_size = BATCH_SIZE as u64,
             interval_ms = interval.period().as_millis(),
             "Starting rpc sender loop"
         );
+
         while let Some(AccountsWithTxs { accts, txs }) = self.gen_rx.recv().await {
             info!(
                 num_accts = accts.len(),
@@ -35,6 +75,15 @@ impl RpcSender {
             );
 
             for batch in txs.chunks(BATCH_SIZE) {
+                let now = Instant::now();
+                let batch_size = batch.len() as u64;
+
+                if self.use_dynamic_adjustment {
+                    // Track this batch and update interval if needed
+                    self.track_batch(batch_size, now);
+                    interval = self.maybe_update_interval(interval, now);
+                }
+
                 self.spawn_send_batch(batch);
 
                 // limit sending batch by interval
@@ -50,6 +99,88 @@ impl RpcSender {
                 .expect("Sender not closed");
             debug!("Accts sent to refresher...");
         }
+    }
+
+    // Track a batch of transactions and clean up history
+    fn track_batch(&mut self, batch_size: u64, now: Instant) {
+        // Record the actual batch size being sent
+        self.tx_history.push_back((now, batch_size));
+
+        // Remove history entries older than window_duration
+        let window_cutoff = now - self.window_duration;
+        while let Some((timestamp, _)) = self.tx_history.front() {
+            if *timestamp < window_cutoff {
+                self.tx_history.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Check if we need to update the interval, and do so if necessary
+    fn maybe_update_interval(
+        &mut self,
+        current_interval: tokio::time::Interval,
+        now: Instant,
+    ) -> tokio::time::Interval {
+        if now - self.last_adjustment_time >= self.adjustment_interval {
+            let avg_batch_size = self.calculate_average_batch_size();
+            self.last_adjustment_time = now;
+
+            // Calculate ideal new interval
+            let ideal_interval = Duration::from_millis(avg_batch_size * 1000 / self.target_tps);
+
+            // Get current interval duration
+            let current_duration = current_interval.period();
+
+            // Limit change to ±10% of current interval
+            let max_increase = current_duration.mul_f64(1.1);
+            let min_decrease = current_duration.mul_f64(0.9);
+
+            let new_interval = if ideal_interval > max_increase {
+                max_increase
+            } else if ideal_interval < min_decrease {
+                min_decrease
+            } else {
+                ideal_interval
+            };
+
+            info!(
+                avg_batch_size,
+                ideal_interval_ms = ideal_interval.as_millis(),
+                new_interval_ms = new_interval.as_millis(),
+                current_interval_ms = current_duration.as_millis(),
+                capped = ideal_interval != new_interval,
+                "Adjusted interval based on average batch size"
+            );
+
+            let mut interval = tokio::time::interval(new_interval);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            interval
+        } else {
+            current_interval
+        }
+    }
+
+    fn calculate_average_batch_size(&self) -> u64 {
+        if self.tx_history.is_empty() {
+            return BATCH_SIZE as u64; // Default if no history
+        }
+
+        let mut total_txs = 0;
+        let mut count = 0;
+
+        for (_, batch_size) in &self.tx_history {
+            total_txs += batch_size;
+            count += 1;
+        }
+
+        if count == 0 {
+            return BATCH_SIZE as u64;
+        }
+
+        // Calculate average, rounded to nearest integer
+        (total_txs as f64 / count as f64).round() as u64
     }
 
     fn spawn_send_batch(&self, batch: &[(TxEnvelope, Address)]) {
