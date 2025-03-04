@@ -1,11 +1,6 @@
 use std::{
-    collections::BTreeMap,
-    marker::PhantomData,
-    net::{SocketAddr, ToSocketAddrs},
-    ops::DerefMut,
-    path::PathBuf,
-    task::Poll,
-    time::Duration,
+    collections::BTreeMap, marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf,
+    task::Poll, time::Duration,
 };
 
 use futures::Stream;
@@ -19,7 +14,10 @@ use monad_executor_glue::{
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{DropTimer, ExecutionProtocol, NodeId};
-use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
+use tokio::{
+    net::lookup_host,
+    sync::mpsc::{error::TrySendError, Receiver, Sender},
+};
 use tracing::{debug, info, warn};
 pub struct MockConfigLoader<ST, SCT, EPT> {
     _phantom: PhantomData<(ST, SCT, EPT)>,
@@ -110,7 +108,7 @@ where
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if let Some(update) = peers_table.refresh_dns(){
+                        if let Some(update) = peers_table.refresh_dns().await {
                             try_send_update(update);
                         }
                     }
@@ -121,7 +119,7 @@ where
                         };
                         let new_peers = req.into_iter().map(|peer| (NodeId::new(peer.secp256k1_pubkey), peer.address)).collect::<Vec<_>>();
                         peers_table.set_peers(new_peers);
-                        if let Some(update) = peers_table.refresh_dns(){
+                        if let Some(update) = peers_table.refresh_dns().await {
                             try_send_update(update);
                         }
                     }
@@ -260,17 +258,17 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
         Self(peers_table)
     }
 
-    fn resolve_domain(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-        let mut dns_response = domain.to_socket_addrs()?;
+    async fn resolve_domain(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
+        let mut dns_response = lookup_host(domain).await?;
         Ok(dns_response.next())
     }
 
-    fn resolve_domains<P: PubKey>(
+    async fn resolve_domains<P: PubKey>(
         peers: Vec<(NodeId<P>, &String)>,
     ) -> Vec<(NodeId<P>, Option<SocketAddr>)> {
         let mut resolved_peers = Vec::with_capacity(peers.len());
         for (node_id, address) in peers {
-            let maybe_addr = match Self::resolve_domain(address) {
+            let maybe_addr = match Self::resolve_domain(address).await {
                 Ok(Some(addr)) => Some(addr),
                 Ok(None) => {
                     info!(?node_id, domain=?address, "No DNS record");
@@ -286,7 +284,7 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
         resolved_peers
     }
 
-    fn refresh_dns(&mut self) -> Option<ConfigEvent<SCT>> {
+    async fn refresh_dns(&mut self) -> Option<ConfigEvent<SCT>> {
         info!("refreshing dns record");
         let _drop_timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, "refreshing dns record done")
@@ -298,7 +296,7 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             .iter()
             .map(|(node_id, (hostname, _))| (*node_id, hostname))
             .collect::<Vec<_>>();
-        let resolved = Self::resolve_domains(peers);
+        let resolved = Self::resolve_domains(peers).await;
         for (node_id, maybe_addr) in resolved {
             // retain old record if hostname fails to resolve
             if let Some(new_addr) = maybe_addr {
