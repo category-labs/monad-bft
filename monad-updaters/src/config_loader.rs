@@ -108,7 +108,7 @@ where
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if let Some(update) = peers_table.refresh_dns().await {
+                        if let Some(update) = peers_table.refresh_dns(false).await {
                             try_send_update(update);
                         }
                     }
@@ -119,7 +119,8 @@ where
                         };
                         let new_peers = req.into_iter().map(|peer| (NodeId::new(peer.secp256k1_pubkey), peer.address)).collect::<Vec<_>>();
                         peers_table.set_peers(new_peers);
-                        if let Some(update) = peers_table.refresh_dns().await {
+                        // force updating peer list when config is reloaded
+                        if let Some(update) = peers_table.refresh_dns(true).await {
                             try_send_update(update);
                         }
                     }
@@ -237,7 +238,6 @@ where
 
 struct PeersTable<SCT: SignatureCollection> {
     peers: BTreeMap<NodeId<SCT::NodeIdPubKey>, (String, Option<SocketAddr>)>,
-    pending_update: bool,
 }
 
 impl<SCT: SignatureCollection> PeersTable<SCT> {
@@ -256,10 +256,7 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
                 .expect("all peers are resolved on startup");
             peers_table.insert(node_id, (peer.address, Some(*addr)));
         }
-        Self {
-            peers: peers_table,
-            pending_update: false,
-        }
+        Self { peers: peers_table }
     }
 
     async fn resolve_domain(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
@@ -288,18 +285,19 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
         resolved_peers
     }
 
-    async fn refresh_dns(&mut self) -> Option<ConfigEvent<SCT>> {
+    async fn refresh_dns(&mut self, force_update: bool) -> Option<ConfigEvent<SCT>> {
         info!("refreshing dns record");
         let _drop_timer = DropTimer::start(Duration::ZERO, |elapsed| {
             debug!(?elapsed, "refreshing dns record done")
         });
-        // refresh dns for peer table
+        // refresh peer table dns entries
         let peers = self
             .peers
             .iter()
             .map(|(node_id, (hostname, _))| (*node_id, hostname))
             .collect::<Vec<_>>();
         let resolved = Self::resolve_domains(peers).await;
+        let mut table_changed = false;
         for (node_id, maybe_addr) in resolved {
             // retain old record if hostname fails to resolve
             if let Some(new_addr) = maybe_addr {
@@ -307,17 +305,14 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
                     .peers
                     .get_mut(&node_id)
                     .expect("peers table is immutable during lookup");
-                if maybe_last_resolved.is_none()
-                    || maybe_last_resolved.is_some_and(|last_resolved| last_resolved != new_addr)
-                {
+                if maybe_last_resolved.is_none_or(|last_resolved| last_resolved != new_addr) {
                     info!(?node_id, old_addr=?maybe_last_resolved, ?new_addr, "update dns record");
-                    self.pending_update = true;
+                    table_changed = true;
                     *maybe_last_resolved = Some(new_addr);
                 }
             }
         }
-        if self.pending_update {
-            self.pending_update = false;
+        if table_changed || force_update {
             let response = self
                 .peers
                 .iter()
@@ -345,7 +340,5 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             }
         }
         self.peers = new_table;
-        // always update peers if config is reloaded
-        self.pending_update = true;
     }
 }
