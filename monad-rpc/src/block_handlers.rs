@@ -145,16 +145,14 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
             .await
             .map_err(JsonRpcError::internal_error)?
         {
-            let transactions = triedb_env
-                .get_transactions(block_key)
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            return parse_block_content(
-                header.hash,
-                header.header,
-                transactions,
-                params.return_full_txns,
-            );
+            if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+                return parse_block_content(
+                    header.hash,
+                    header.header,
+                    transactions,
+                    params.return_full_txns,
+                );
+            }
         }
     }
 
@@ -253,11 +251,9 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
         .map_err(JsonRpcError::internal_error)?
     {
         let block_key = triedb_env.get_block_key(SeqNum(block_num));
-        let transactions = triedb_env
-            .get_transactions(block_key)
-            .await
-            .map_err(JsonRpcError::internal_error)?;
-        return Ok(Some(format!("0x{:x}", transactions.len())));
+        if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
+            return Ok(Some(format!("0x{:x}", transactions.len())));
+        }
     }
 
     // try archive if block hash not found and archive reader specified
@@ -401,18 +397,16 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
         {
             // if block header is present but transactions are not, the block is statesynced
             if let Ok(transactions) = triedb_env.get_transactions(block_key).await {
-                let receipts = triedb_env
-                    .get_receipts(block_key)
-                    .await
-                    .map_err(JsonRpcError::internal_error)?;
-                let block_receipts = map_block_receipts(
-                    transactions,
-                    receipts,
-                    &header.header,
-                    header.hash,
-                    MonadTransactionReceipt,
-                )?;
-                return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+                if let Ok(receipts) = triedb_env.get_receipts(block_key).await {
+                    let block_receipts = map_block_receipts(
+                        transactions,
+                        receipts,
+                        &header.header,
+                        header.hash,
+                        MonadTransactionReceipt,
+                    )?;
+                    return Ok(Some(MonadEthGetBlockReceiptsResult(block_receipts)));
+                }
             }
         }
     }
