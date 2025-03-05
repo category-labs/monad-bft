@@ -134,6 +134,7 @@ impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
         genesis_path: &str,
+        sq_thread_cpu: Option<u32>,
         state_sync_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
         request_timeout: Duration,
@@ -185,6 +186,7 @@ impl<PT: PubKey> StateSync<PT> {
                 db_paths_ptr,
                 num_db_paths,
                 genesis_path.as_ptr(),
+                sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
                 &mut *request_ctx as *mut _ as *mut bindings::monad_statesync_client,
                 Some(statesync_send_request),
             );
@@ -392,6 +394,7 @@ struct SyncCtx {
     dbname_paths: *const *const ::std::os::raw::c_char,
     len: usize,
     genesis_file: *const ::std::os::raw::c_char,
+    sq_thread_cpu: Option<::std::os::raw::c_uint>,
     request_ctx: *mut bindings::monad_statesync_client,
     statesync_send_request: ::std::option::Option<
         unsafe extern "C" fn(
@@ -408,6 +411,7 @@ impl SyncCtx {
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
         genesis_file: *const ::std::os::raw::c_char,
+        sq_thread_cpu: Option<::std::os::raw::c_uint>,
         request_ctx: *mut bindings::monad_statesync_client,
         statesync_send_request: ::std::option::Option<
             unsafe extern "C" fn(
@@ -420,6 +424,7 @@ impl SyncCtx {
             dbname_paths,
             len,
             genesis_file,
+            sq_thread_cpu,
             request_ctx,
             statesync_send_request,
 
@@ -433,6 +438,8 @@ impl SyncCtx {
                 self.dbname_paths,
                 self.len,
                 self.genesis_file,
+                self.sq_thread_cpu
+                    .unwrap_or(bindings::MONAD_SQPOLL_DISABLED),
                 self.request_ctx,
                 self.statesync_send_request,
             );

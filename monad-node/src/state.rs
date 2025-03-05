@@ -30,6 +30,7 @@ pub struct NodeState {
     pub mempool_ipc_path: PathBuf,
     pub control_panel_ipc_path: PathBuf,
     pub statesync_ipc_path: PathBuf,
+    pub statesync_sq_thread_cpu: Option<u32>,
     pub triedb_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
@@ -50,6 +51,7 @@ impl NodeState {
             triedb_path,
             control_panel_ipc_path,
             statesync_ipc_path,
+            statesync_sq_thread_cpu,
             keystore_password,
             otel_endpoint,
             record_metrics_interval_seconds,
@@ -133,6 +135,7 @@ impl NodeState {
             mempool_ipc_path,
             control_panel_ipc_path,
             statesync_ipc_path,
+            statesync_sq_thread_cpu,
 
             otel_endpoint_interval,
         })

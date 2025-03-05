@@ -53,6 +53,11 @@ pub struct Cli {
     #[arg(long)]
     pub statesync_ipc_path: PathBuf,
 
+    /// Set the sq_thread_cpu for statesync client. None means SQPOLL mode is
+    /// disabled
+    #[arg(long)]
+    pub statesync_sq_thread_cpu: Option<u32>,
+
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,
