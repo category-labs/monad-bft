@@ -13,6 +13,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 
 alloy-rlp = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 zerocopy = { workspace = true }

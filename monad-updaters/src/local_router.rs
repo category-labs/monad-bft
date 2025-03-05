@@ -125,9 +125,19 @@ where
                             tx.send((now, self.me, message.clone())).unwrap();
                         }
                     }
-                    RouterTarget::PointToPoint(peer) | RouterTarget::TcpPointToPoint(peer) => {
+                    RouterTarget::PointToPoint(peer) => {
                         self.txs
                             .get(&peer)
+                            .unwrap()
+                            .send((now, self.me, message.into()))
+                            .unwrap();
+                    }
+                    RouterTarget::TcpPointToPoint { to, completion } => {
+                        if let Some(completion) = completion {
+                            let _ = completion.send(());
+                        }
+                        self.txs
+                            .get(&to)
                             .unwrap()
                             .send((now, self.me, message.into()))
                             .unwrap();

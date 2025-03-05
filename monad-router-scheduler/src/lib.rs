@@ -135,7 +135,13 @@ where
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
+            RouterTarget::PointToPoint(to) => {
+                self.events.push_back((time, RouterEvent::Tx(to, message)));
+            }
+            RouterTarget::TcpPointToPoint { to, completion } => {
+                if let Some(completion) = completion {
+                    let _ = completion.send(());
+                }
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }
@@ -246,7 +252,13 @@ where
                         .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
                 );
             }
-            RouterTarget::PointToPoint(to) | RouterTarget::TcpPointToPoint(to) => {
+            RouterTarget::PointToPoint(to) => {
+                self.events.push_back((time, RouterEvent::Tx(to, message)));
+            }
+            RouterTarget::TcpPointToPoint { to, completion } => {
+                if let Some(completion) = completion {
+                    let _ = completion.send(());
+                }
                 self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }

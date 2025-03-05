@@ -5,6 +5,7 @@ use std::{fmt::Debug, net::SocketAddr};
 use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
+use futures::channel::oneshot;
 use monad_blocksync::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
@@ -35,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum RouterCommand<PT: PubKey, OM> {
     // Publish should not be replayed
     Publish {
@@ -887,7 +888,7 @@ impl Decodable for StateSyncNetworkMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum StateSyncEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -895,7 +896,11 @@ where
     EPT: ExecutionProtocol,
 {
     Inbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
-    Outbound(NodeId<SCT::NodeIdPubKey>, StateSyncNetworkMessage),
+    Outbound(
+        NodeId<SCT::NodeIdPubKey>,
+        StateSyncNetworkMessage,
+        Option<oneshot::Sender<()>>, // completion
+    ),
 
     /// Execution done syncing
     DoneSync(SeqNum),
@@ -956,7 +961,7 @@ where
 }
 
 /// MonadEvent are inputs to MonadState
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -981,6 +986,63 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
+}
+
+impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    /// We don't implement the normal Clone::clone because it's unnecessary in the general case.
+    /// Clone is only used in mock-swarm for added observability.
+    ///
+    /// Currently, the only inconsistency is that the lossy_clone won't clone the statesync
+    /// completion.
+    pub fn lossy_clone(&self) -> Self {
+        match self {
+            MonadEvent::ConsensusEvent(event) => MonadEvent::ConsensusEvent(event.clone()),
+            MonadEvent::BlockSyncEvent(event) => MonadEvent::BlockSyncEvent(event.clone()),
+            MonadEvent::ValidatorEvent(event) => MonadEvent::ValidatorEvent(event.clone()),
+            MonadEvent::MempoolEvent(event) => MonadEvent::MempoolEvent(event.clone()),
+            MonadEvent::ExecutionResultEvent(event) => {
+                MonadEvent::ExecutionResultEvent(event.clone())
+            }
+            MonadEvent::ControlPanelEvent(event) => MonadEvent::ControlPanelEvent(event.clone()),
+            MonadEvent::TimestampUpdateEvent(timestamp) => {
+                MonadEvent::TimestampUpdateEvent(*timestamp)
+            }
+            MonadEvent::StateSyncEvent(event) => {
+                let event = match event {
+                    StateSyncEvent::Inbound(node_id, state_sync_network_message) => {
+                        StateSyncEvent::Inbound(*node_id, state_sync_network_message.clone())
+                    }
+                    StateSyncEvent::Outbound(
+                        node_id,
+                        state_sync_network_message,
+                        // completion is NOT cloned
+                        _completion,
+                    ) => {
+                        StateSyncEvent::Outbound(*node_id, state_sync_network_message.clone(), None)
+                    }
+                    StateSyncEvent::DoneSync(seq_num) => StateSyncEvent::DoneSync(*seq_num),
+                    StateSyncEvent::BlockSync {
+                        block_range,
+                        full_blocks,
+                    } => StateSyncEvent::BlockSync {
+                        block_range: *block_range,
+                        full_blocks: full_blocks.clone(),
+                    },
+                    StateSyncEvent::RequestSync { root, high_qc } => StateSyncEvent::RequestSync {
+                        root: root.clone(),
+                        high_qc: high_qc.clone(),
+                    },
+                };
+                MonadEvent::StateSyncEvent(event)
+            }
+            MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+        }
+    }
 }
 
 impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT, EPT>
@@ -1053,7 +1115,7 @@ where
 
 /// Wrapper around MonadEvent to capture more information that is useful in logs for
 /// retrospection
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct LogFriendlyMonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

@@ -184,6 +184,7 @@ where
                             StateSyncEvent::Outbound(
                                 servicer,
                                 StateSyncNetworkMessage::Request(request),
+                                None, // we don't care about completions for requests
                             )
                         }
                         SyncRequest::DoneSync(target) => {
@@ -195,7 +196,7 @@ where
             }
             StateSyncMode::Live(execution_ipc) => {
                 if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
-                    let (to, response) = maybe_response.expect("did StateSyncIpc die?");
+                    let (to, response, completion) = maybe_response.expect("did StateSyncIpc die?");
                     tracing::debug!(
                         ?to,
                         ?response,
@@ -203,7 +204,11 @@ where
                         "sending response"
                     );
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
-                        StateSyncEvent::Outbound(to, StateSyncNetworkMessage::Response(response)),
+                        StateSyncEvent::Outbound(
+                            to,
+                            StateSyncNetworkMessage::Response(response),
+                            Some(completion),
+                        ),
                     )));
                 }
             }

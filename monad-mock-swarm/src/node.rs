@@ -256,11 +256,12 @@ impl<S: SwarmRelation> Node<S> {
                             let node_span =
                                 tracing::trace_span!("node", id = format!("{}", self.id));
                             let _guard = node_span.enter();
-                            let commands = self.state.update(event.clone());
+                            let event_clone = event.lossy_clone();
+                            let commands = self.state.update(event);
 
                             self.executor.exec(commands);
 
-                            (tick, event)
+                            (tick, event_clone)
                         }
                         Some(MockExecutorEvent::Send(to, serialized)) => {
                             let lm = LinkMessage {

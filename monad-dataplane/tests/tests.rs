@@ -1,7 +1,9 @@
 use std::{sync::Once, thread::sleep, time::Duration};
 
 use futures::executor;
-use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, UnicastMsg};
+use monad_dataplane::{
+    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, TcpMsg, UnicastMsg,
+};
 use ntest::timeout;
 use rand::Rng;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -105,7 +107,13 @@ fn tcp_slow() {
         .collect();
 
     for _ in 0..num_msgs {
-        tx.tcp_write(rx_addr, payload.clone().into());
+        tx.tcp_write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.clone().into(),
+                completion: None,
+            },
+        );
         sleep(Duration::from_millis(10));
     }
 
@@ -136,7 +144,13 @@ fn tcp_rapid() {
         .collect();
 
     for _ in 0..num_msgs {
-        tx.tcp_write(rx_addr, payload.clone().into());
+        tx.tcp_write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.clone().into(),
+                completion: None,
+            },
+        );
     }
 
     for _ in 0..num_msgs {

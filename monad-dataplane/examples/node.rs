@@ -9,7 +9,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{executor, Stream};
 use futures_util::FutureExt;
-use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg};
+use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, TcpMsg};
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -72,8 +72,13 @@ fn main() {
             })
         }
 
-        tx.network
-            .tcp_write(tx.target, Bytes::from(&b"Hello world"[..]));
+        tx.network.tcp_write(
+            tx.target,
+            TcpMsg {
+                msg: Bytes::from(&b"Hello world"[..]),
+                completion: None,
+            },
+        );
 
         std::thread::sleep(std::time::Duration::from_secs(5));
     });

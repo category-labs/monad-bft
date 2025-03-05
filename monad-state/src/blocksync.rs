@@ -163,7 +163,10 @@ where
         match wrapped.command {
             BlockSyncCommand::SendRequest { to, request } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::TcpPointToPoint(to),
+                    target: RouterTarget::TcpPointToPoint {
+                        to,
+                        completion: None,
+                    },
                     message: VerifiedMonadMessage::BlockSyncRequest(request),
                 })]
             }
@@ -181,7 +184,10 @@ where
             }
             BlockSyncCommand::SendResponse { to, response } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::TcpPointToPoint(to),
+                    target: RouterTarget::TcpPointToPoint {
+                        to,
+                        completion: None,
+                    },
                     message: VerifiedMonadMessage::BlockSyncResponse(response),
                 })]
             }

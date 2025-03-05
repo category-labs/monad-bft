@@ -461,12 +461,15 @@ impl<S: Clone> Deserializable<S> for S {
 // FIXME-4: move to monad-executor-glue after spaghetti fixed
 /// RouterTarget specifies the particular node(s) that the router should send
 /// the message toward
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
     Raptorcast(Epoch), // sharded raptor-aware broadcast
     PointToPoint(NodeId<P>),
-    TcpPointToPoint(NodeId<P>),
+    TcpPointToPoint {
+        to: NodeId<P>,
+        completion: Option<futures::channel::oneshot::Sender<()>>,
+    },
 }
 
 /// Trait for use in tests to populate structs where the value of the fields is not relevant

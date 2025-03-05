@@ -250,7 +250,7 @@ impl EventCountsWidget {
         let monad_events: Vec<WalEvent> = self
             .wrapped_events
             .iter()
-            .map(|a| a.event.clone())
+            .map(|a| a.event.lossy_clone())
             .collect();
         self.counts = counter(&monad_events);
     }

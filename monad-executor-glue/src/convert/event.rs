@@ -758,7 +758,12 @@ where
                     },
                 )),
             },
-            StateSyncEvent::Outbound(to, message) => Self {
+            StateSyncEvent::Outbound(
+                to,
+                message,
+                // a serialized completion doesn't mean anything
+                _completion,
+            ) => Self {
                 event: Some(proto_state_sync_event::Event::Outbound(
                     ProtoOutboundStateMessage {
                         recipient: Some(to.into()),
@@ -931,6 +936,7 @@ where
                             "OutboundStateMessage::message".to_owned(),
                         ))?
                         .try_into()?,
+                    None, // a deserialized completion doesn't mean anything
                 ),
                 proto_state_sync_event::Event::DoneSync(done_sync) => StateSyncEvent::DoneSync(
                     done_sync

@@ -4,13 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::FutureExt;
+use futures::{channel::oneshot, FutureExt};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
     SELF_STATESYNC_VERSION,
 };
-use monad_types::NodeId;
+use monad_types::{DropTimer, NodeId};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
@@ -23,8 +23,10 @@ use crate::bindings;
 pub(crate) struct StateSyncIpc<PT: PubKey> {
     /// request_tx accepts (from, request) pairs
     pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncRequest)>,
-    /// response_rx yields (to, response) pairs
-    pub response_rx: tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncResponse)>,
+    /// response_rx yields (to, response, completion) tuples
+    /// `completion` gets resolved when the message is serialized + written to the socket
+    pub response_rx:
+        tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncResponse, oneshot::Sender<()>)>,
 }
 
 // Flow:
@@ -49,6 +51,8 @@ pub enum ExecutionMessage {
 }
 
 const MAX_UPSERTS_PER_RESPONSE: usize = 1_000_000;
+/// max number of chunked responses to send out before blocking on completions
+const MAX_PENDING_RESPONSES: usize = 2;
 
 impl<PT: PubKey> StateSyncIpc<PT> {
     pub fn new(uds_path: &str, request_timeout: Duration) -> Self {
@@ -107,7 +111,8 @@ struct StreamState<'a, PT: PubKey> {
     request_timeout: Duration,
     stream: BufReader<UnixStream>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
-    response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
+    response_rx_writer:
+        &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse, oneshot::Sender<()>)>,
 
     pending_requests: VecDeque<PendingRequest<PT>>,
     wip_response: Option<WipResponse<PT>>,
@@ -126,6 +131,10 @@ struct WipResponse<PT: PubKey> {
     rx_time: Instant,
     service_start_time: Instant,
     response: StateSyncResponse,
+
+    // list of pending completions, max size of MAX_PENDING_RESPONSES
+    // set to none if any of the completions have failed
+    pending_response_completions: Option<VecDeque<oneshot::Receiver<()>>>,
 }
 
 impl<'a, PT: PubKey> StreamState<'a, PT> {
@@ -133,7 +142,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         request_timeout: Duration,
         stream: UnixStream,
         request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
-        response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse)>,
+        response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(
+            NodeId<PT>,
+            StateSyncResponse,
+            oneshot::Sender<()>,
+        )>,
     ) -> Self {
         Self {
             request_timeout,
@@ -179,6 +192,18 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         &mut self,
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
+        let write_response = |to, response| {
+            let (completion_sender, completion_receiver) = oneshot::channel();
+            if self
+                .response_rx_writer
+                .try_send((to, response, completion_sender))
+                .is_err()
+            {
+                tracing::warn!("dropping outbound statesync response, consensus state backlogged?");
+            }
+            completion_receiver
+        };
+
         match message {
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
@@ -207,7 +232,42 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     // unnecessary but keeping for clarity
                     wip_response.response.response.clear();
                     let from = wip_response.from;
-                    self.write_response(from, response);
+
+                    if let Some(pending_response_completions) =
+                        &mut wip_response.pending_response_completions
+                    {
+                        let completion = write_response(from, response);
+                        pending_response_completions.push_back(completion);
+                        if pending_response_completions.len() == MAX_PENDING_RESPONSES {
+                            let oldest_completion =
+                                pending_response_completions.pop_front().expect("nonempty");
+
+                            let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
+                                tracing::debug!(
+                                    ?elapsed,
+                                    ?from,
+                                    "waiting for statesync response chunk completion"
+                                )
+                            });
+
+                            // will block until oldest_response is fully written to the TCP socket
+                            if oldest_completion.await.is_err() {
+                                wip_response.pending_response_completions = None;
+                                tracing::warn!(
+                                    ?from,
+                                    "outbound statesync response TCP socket completion failed"
+                                )
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            ?from,
+                            request =? response.request,
+                            nonce =? response.nonce,
+                            response_index = response.response_index,
+                            "not sending statesync response, previous send failed"
+                        )
+                    }
                 }
             }
             ExecutionMessage::SyncDone(done) => {
@@ -228,7 +288,18 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     assert_eq!(wip_response.response.request.prefix, done.prefix);
                     // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
-                    self.write_response(wip_response.from, wip_response.response);
+                    if wip_response.pending_response_completions.is_some() {
+                        let _completion = write_response(wip_response.from, wip_response.response);
+                    } else {
+                        tracing::warn!(
+                            from =? wip_response.from,
+                            request =? wip_response.response.request,
+                            nonce =? wip_response.response.nonce,
+                            response_index = wip_response.response.response_index,
+                            response_n = wip_response.response.response_n,
+                            "not sending statesync response (final), previous send failed"
+                        )
+                    }
                 } else {
                     // request failed, so don't send finish the response. we've dropped the
                     // wip_response at this point.
@@ -316,6 +387,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 // this gets set in handle_execution_message(ExecutionMessage::SyncDone(_))
                 response_n: 0,
             },
+            pending_response_completions: Some(VecDeque::with_capacity(MAX_PENDING_RESPONSES)),
         });
 
         self.write_execution_request(bindings::monad_sync_request {
@@ -409,11 +481,5 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         };
         self.stream.write_all(&request).await?;
         Ok(())
-    }
-
-    fn write_response(&mut self, to: NodeId<PT>, response: StateSyncResponse) {
-        if self.response_rx_writer.try_send((to, response)).is_err() {
-            tracing::warn!("dropping outbound statesync response, consensus state backlogged?")
-        }
     }
 }

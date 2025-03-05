@@ -146,9 +146,11 @@ where
                 ControlPanelCommand::Read(r) => match r {
                     ReadCommand::GetValidatorSet(v) => match v {
                         GetValidatorSet::Request => {
-                            let event =
-                                MonadEvent::ControlPanelEvent(ControlPanelEvent::GetValidatorSet);
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::GetValidatorSet;
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
@@ -157,9 +159,11 @@ where
                     },
                     ReadCommand::GetMetrics(m) => match m {
                         GetMetrics::Request => {
-                            let event =
-                                MonadEvent::ControlPanelEvent(ControlPanelEvent::GetMetricsEvent);
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::GetMetricsEvent;
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
@@ -168,10 +172,11 @@ where
                     },
                     ReadCommand::GetPeers(l) => match l {
                         GetPeers::Request => {
-                            let event = MonadEvent::ControlPanelEvent(ControlPanelEvent::GetPeers(
-                                GetPeers::Request,
-                            ));
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::GetPeers(GetPeers::Request);
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
@@ -180,10 +185,11 @@ where
                     },
                     ReadCommand::GetFullNodes(get_full_nodes) => match get_full_nodes {
                         GetFullNodes::Request => {
-                            let event = MonadEvent::ControlPanelEvent(
-                                ControlPanelEvent::GetFullNodes(GetFullNodes::Request),
-                            );
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::GetFullNodes(GetFullNodes::Request);
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
@@ -194,9 +200,11 @@ where
                 ControlPanelCommand::Write(w) => match w {
                     WriteCommand::ClearMetrics(clear_metrics) => match clear_metrics {
                         ClearMetrics::Request => {
-                            let event =
-                                MonadEvent::ControlPanelEvent(ControlPanelEvent::ClearMetricsEvent);
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::ClearMetricsEvent;
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };
@@ -206,10 +214,12 @@ where
                     WriteCommand::UpdateValidatorSet(update_validator_set) => {
                         match update_validator_set {
                             UpdateValidatorSet::Request(parsed_validator_set) => {
-                                let event = MonadEvent::ControlPanelEvent(
-                                    ControlPanelEvent::UpdateValidators(parsed_validator_set),
-                                );
-                                let Ok(_) = event_channel.send(event.clone()).await else {
+                                let event =
+                                    ControlPanelEvent::UpdateValidators(parsed_validator_set);
+                                let Ok(_) = event_channel
+                                    .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                    .await
+                                else {
                                     error!("failed to forward request {:?} to executor, closing connection", &event);
                                     break;
                                 };
@@ -218,10 +228,11 @@ where
                         }
                     }
                     WriteCommand::UpdateLogFilter(filter) => {
-                        let event = MonadEvent::ControlPanelEvent(
-                            ControlPanelEvent::UpdateLogFilter(filter),
-                        );
-                        let Ok(_) = event_channel.send(event.clone()).await else {
+                        let event = ControlPanelEvent::UpdateLogFilter(filter);
+                        let Ok(_) = event_channel
+                            .send(MonadEvent::ControlPanelEvent(event.clone()))
+                            .await
+                        else {
                             error!(
                                 "failed to forward request {:?} to executor, closing connection",
                                 &event
@@ -231,10 +242,11 @@ where
                     }
                     WriteCommand::ReloadConfig(reload_config) => match reload_config {
                         ReloadConfig::Request => {
-                            let event = MonadEvent::ControlPanelEvent(
-                                ControlPanelEvent::ReloadConfig(ReloadConfig::Request),
-                            );
-                            let Ok(_) = event_channel.send(event.clone()).await else {
+                            let event = ControlPanelEvent::ReloadConfig(ReloadConfig::Request);
+                            let Ok(_) = event_channel
+                                .send(MonadEvent::ControlPanelEvent(event.clone()))
+                                .await
+                            else {
                                 error!("failed to forward request {:?} to executor, closing connection", &event);
                                 break;
                             };

@@ -10,12 +10,12 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, Stream};
+use futures::{channel::oneshot, FutureExt, Stream};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, BroadcastMsg, Dataplane, UnicastMsg};
+use monad_dataplane::{udp::segment_size_for_mtu, BroadcastMsg, Dataplane, TcpMsg, UnicastMsg};
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -123,6 +123,7 @@ where
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
         make_app_message: impl FnOnce() -> Bytes,
+        completion: Option<oneshot::Sender<()>>,
     ) {
         match self.known_addresses.get(to) {
             None => {
@@ -137,7 +138,13 @@ where
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
                 signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane.tcp_write(*address, signed_message.freeze());
+                self.dataplane.tcp_write(
+                    *address,
+                    TcpMsg {
+                        msg: signed_message.freeze(),
+                        completion,
+                    },
+                );
             }
         };
     }
@@ -238,9 +245,9 @@ where
                     };
 
                     // send message to self if applicable
-                    match &target {
+                    match target {
                         RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
-                            let Some(epoch_validators) = self.epoch_validators.get_mut(epoch)
+                            let Some(epoch_validators) = self.epoch_validators.get_mut(&epoch)
                             else {
                                 tracing::error!(
                                     "don't have epoch validators populated for epoch: {:?}",
@@ -280,13 +287,13 @@ where
                             };
 
                             self.dataplane.udp_write_unicast(udp_build(
-                                epoch,
+                                &epoch,
                                 build_target,
                                 app_message,
                             ));
                         }
                         RouterTarget::PointToPoint(to) => {
-                            if to == &self_id {
+                            if to == self_id {
                                 let message: M = message.into();
                                 self.pending_events
                                     .push_back(RaptorCastEvent::Message(message.event(self_id)));
@@ -297,13 +304,13 @@ where
                                 let app_message = message.serialize();
                                 self.dataplane.udp_write_unicast(udp_build(
                                     &self.current_epoch,
-                                    BuildTarget::PointToPoint(to),
+                                    BuildTarget::PointToPoint(&to),
                                     app_message,
                                 ));
                             }
                         }
-                        RouterTarget::TcpPointToPoint(to) => {
-                            if to == &self_id {
+                        RouterTarget::TcpPointToPoint { to, completion } => {
+                            if to == self_id {
                                 let message: M = message.into();
                                 self.pending_events
                                     .push_back(RaptorCastEvent::Message(message.event(self_id)));
@@ -311,7 +318,7 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                self.tcp_build_and_send(to, || message.serialize())
+                                self.tcp_build_and_send(&to, || message.serialize(), completion)
                             }
                         }
                     };

@@ -8,15 +8,14 @@ use std::{
     time::Instant,
 };
 
-use bytes::Bytes;
 use monoio::{io::AsyncWriteRentExt, net::TcpStream, spawn, time::timeout};
 use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
-use super::{TcpMsgHdr, TCP_MESSAGE_TIMEOUT};
+use super::{TcpMsg, TcpMsgHdr, TCP_MESSAGE_TIMEOUT};
 
-const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
+const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
 
 #[derive(Clone)]
 struct TxState {
@@ -36,13 +35,15 @@ impl TxState {
 
 struct TxStateInner {
     conn_id: u64,
-    messages: BTreeMap<SocketAddr, VecDeque<Bytes>>,
+    messages: BTreeMap<SocketAddr, VecDeque<TcpMsg>>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>) {
+pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     let tx_state = TxState::new();
 
-    while let Some((addr, bytes)) = tcp_egress_rx.recv().await {
+    while let Some((addr, msg)) = tcp_egress_rx.recv().await {
+        debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
+
         let peer_task_exists = {
             let mut inner_ref = tx_state.inner.borrow_mut();
 
@@ -52,7 +53,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes)>) {
 
             let queued_messages = entry.or_default();
 
-            queued_messages.push_back(bytes);
+            queued_messages.push_back(msg);
 
             if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
                 warn!(
@@ -102,7 +103,7 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
             }
         };
 
-        let len = message.len();
+        let len = message.msg.len();
 
         // TODO: When we experience a transmission failure, we should consider zapping
         // all outbound messages that are linked to this one (i.e. that are part of the
@@ -121,11 +122,11 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
     }
 }
 
-async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
+async fn send_message(conn_id: u64, addr: SocketAddr, message: TcpMsg) {
     trace!(
         conn_id,
         ?addr,
-        len = message.len(),
+        len = message.msg.len(),
         "start transmission of TCP message"
     );
 
@@ -150,7 +151,7 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
             let raw_fd = stream.as_raw_fd();
             conn_cork(raw_fd, true);
 
-            let message_len = message.len();
+            let message_len = message.msg.len();
             let header = TcpMsgHdr::new(message_len as u64);
 
             let (ret, _header) = stream.write_all(Box::<[u8]>::from(header.as_bytes())).await;
@@ -166,7 +167,7 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
                 return;
             }
 
-            let (ret, _message) = stream.write_all(message).await;
+            let (ret, _message) = stream.write_all(message.msg).await;
 
             if let Err(err) = ret {
                 debug!(
@@ -180,6 +181,18 @@ async fn send_message(conn_id: u64, addr: SocketAddr, message: Bytes) {
             }
 
             conn_cork(raw_fd, false);
+
+            if message
+                .completion
+                .is_some_and(|completion| completion.send(()).is_err())
+            {
+                warn!(
+                    conn_id,
+                    ?addr,
+                    ?header,
+                    "error sending completion for transmitted TCP message"
+                );
+            }
 
             if let Some(connect_time) = connect_time {
                 let num_unacked_bytes = num_unacked_bytes(raw_fd);

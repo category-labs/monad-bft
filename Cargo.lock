@@ -5160,6 +5160,7 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
+ "futures",
  "monad-blocksync",
  "monad-consensus",
  "monad-consensus-types",
@@ -5733,6 +5734,7 @@ name = "monad-types"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "futures",
  "hex",
  "monad-crypto",
  "monad-proto",

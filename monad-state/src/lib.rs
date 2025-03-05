@@ -883,9 +883,9 @@ where
                         sender, message,
                     )))]
                 }
-                StateSyncEvent::Outbound(to, message) => {
+                StateSyncEvent::Outbound(to, message, completion) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::TcpPointToPoint(to),
+                        target: RouterTarget::TcpPointToPoint { to, completion },
                         message: VerifiedMonadMessage::StateSyncMessage(message),
                     })]
                 }

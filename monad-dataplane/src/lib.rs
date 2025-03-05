@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, thread};
 
 use bytes::Bytes;
+use futures::channel::oneshot;
 use monoio::{IoUringDriver, RuntimeBuilder};
 use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tracing::warn;
@@ -10,7 +11,7 @@ pub mod udp;
 
 pub struct Dataplane {
     tcp_ingress_rx: mpsc::Receiver<(SocketAddr, Bytes)>,
-    tcp_egress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
+    tcp_egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
     udp_ingress_rx: mpsc::Receiver<RecvMsg>,
     udp_egress_tx: mpsc::Sender<(SocketAddr, Bytes, u16)>,
 
@@ -36,6 +37,11 @@ pub struct RecvMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: u16,
+}
+
+pub struct TcpMsg {
+    pub msg: Bytes,
+    pub completion: Option<oneshot::Sender<()>>,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
@@ -85,8 +91,8 @@ impl Dataplane {
             .expect("tcp_ingress_rx channel should never be closed")
     }
 
-    pub fn tcp_write(&mut self, addr: SocketAddr, msg: Bytes) {
-        let msg_length = msg.len();
+    pub fn tcp_write(&mut self, addr: SocketAddr, msg: TcpMsg) {
+        let msg_length = msg.msg.len();
 
         match self.tcp_egress_tx.try_send((addr, msg)) {
             Ok(()) => {}

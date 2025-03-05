@@ -108,6 +108,7 @@ where
                         MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
                             *peer,
                             StateSyncNetworkMessage::Request(request),
+                            None, // don't care about completion for mock
                         ))
                     }))
                 }
@@ -146,6 +147,7 @@ where
                             .push_back(MonadEvent::StateSyncEvent(StateSyncEvent::Outbound(
                                 from,
                                 StateSyncNetworkMessage::Response(response),
+                                None, // don't care about completion for mock
                             )))
                     }
                     StateSyncNetworkMessage::Response(response) => {

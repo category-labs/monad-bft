@@ -23,6 +23,7 @@ alloy-rlp = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
