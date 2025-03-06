@@ -18,7 +18,6 @@ ipc_queued_batches_watermark = 3
 
 statesync_threshold = 600
 statesync_max_concurrent_requests = 5
-statesync_request_timeout_ms = 2000
 
 #########################################################
 # Network-wide configuration

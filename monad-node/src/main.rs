@@ -60,6 +60,7 @@ type ReloadHandle =
     tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
 
 const CLIENT_VERSION: &str = env!("VERGEN_GIT_DESCRIBE");
+const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() {
     let mut cmd = Cli::command();
@@ -257,8 +258,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .node_config
                 .statesync_max_concurrent_requests
                 .into(),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
-            Duration::from_millis(node_state.node_config.statesync_request_timeout_ms.into()),
+            STATESYNC_REQUEST_TIMEOUT,
+            STATESYNC_REQUEST_TIMEOUT,
             node_state
                 .statesync_ipc_path
                 .to_str()

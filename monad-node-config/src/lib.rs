@@ -38,7 +38,6 @@ pub struct NodeConfig<P: PubKey> {
 
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,
-    pub statesync_request_timeout_ms: u16,
 
     #[serde(bound = "P:PubKey")]
     pub bootstrap: NodeBootstrapConfig<P>,
