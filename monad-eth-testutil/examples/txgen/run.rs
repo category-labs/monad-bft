@@ -80,6 +80,13 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         !config.use_static_tps_interval,
     );
 
+    let metrics_reporter = MetricsReporter::new(
+        metrics.clone(),
+        config.otel_endpoint,
+        config.otel_replica_name,
+        format!("{:?}", config.gen_mode),
+    )?;
+
     let mut tasks = FuturesUnordered::new();
 
     // abort if critical task stops
@@ -89,10 +96,11 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
 
     // continue working if helper task stops
     tasks.push(helper_task("Metrics", tokio::spawn(metrics.run())).boxed());
+    tasks.push(helper_task("Otel Reporter", tokio::spawn(metrics_reporter.run())).boxed());
     tasks.push(helper_task("Recipient Tracker", tokio::spawn(recipient_tracker.run())).boxed());
     tasks.push(
         helper_task(
-            "Committed Tx Watcher",
+            "CommittedTx Watcher",
             tokio::spawn(committed_tx_watcher.run()),
         )
         .boxed(),

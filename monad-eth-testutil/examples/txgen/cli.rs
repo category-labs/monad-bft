@@ -125,6 +125,14 @@ pub struct Config {
 
     #[arg(long, global = true)]
     pub use_static_tps_interval: bool,
+
+    /// Otel endpoint
+    #[arg(long, global = true)]
+    pub otel_endpoint: Option<String>,
+
+    /// Otel replica name
+    #[arg(long, global = true, default_value = "default")]
+    pub otel_replica_name: String,
 }
 
 impl Config {

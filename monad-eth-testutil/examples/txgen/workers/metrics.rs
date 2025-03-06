@@ -1,6 +1,9 @@
 use std::sync::RwLock;
 
 use futures::join;
+use opentelemetry::metrics::{Gauge, MeterProvider};
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use super::*;
 
@@ -138,4 +141,178 @@ impl<'a> Rate<'a> {
     fn val(&self) -> usize {
         self.val.load(SeqCst)
     }
+}
+
+pub struct MetricsReporter {
+    metrics: Arc<Metrics>,
+    gen_mode: String,
+
+    // Gauges
+    committed_tps: Gauge<u64>,
+    sent_tps: Gauge<u64>,
+    accts_created_ps: Gauge<u64>,
+    rpc_calls_ps: Gauge<u64>,
+    rpc_calls_error_ps: Gauge<u64>,
+    contracts_deployed_ps: Gauge<u64>,
+    total_transactions: Gauge<u64>,
+    total_contracts_created: Gauge<u64>,
+
+    // Keeping these so they don't get dropped
+    _provider: SdkMeterProvider,
+    _meter: opentelemetry::metrics::Meter,
+}
+
+struct Rates<'a> {
+    nonzero_accts: Rate<'a>,
+    txs_sent: Rate<'a>,
+    rpc_calls: Rate<'a>,
+    committed_txs: Rate<'a>,
+    rpc_calls_error: Rate<'a>,
+    contracts_deployed: Rate<'a>,
+}
+
+impl MetricsReporter {
+    pub fn new(
+        metrics: Arc<Metrics>,
+        otel_endpoint: Option<impl AsRef<str>>,
+        otel_replica_name: String,
+        gen_mode: String,
+    ) -> Result<Self> {
+        let provider = build_otel_meter_provider(
+            otel_endpoint,
+            "txgen".to_string(),
+            otel_replica_name,
+            Duration::from_secs(5),
+        )?;
+        let meter = provider.meter("opentelemetry");
+
+        let reporter = Self {
+            metrics: metrics.clone(),
+            gen_mode,
+
+            committed_tps: meter.u64_gauge("committed_tps").init(),
+            sent_tps: meter.u64_gauge("sent_tps").init(),
+            accts_created_ps: meter.u64_gauge("accts_created_ps").init(),
+            rpc_calls_ps: meter.u64_gauge("rpc_calls_ps").init(),
+            rpc_calls_error_ps: meter.u64_gauge("rpc_calls_error_ps").init(),
+            contracts_deployed_ps: meter.u64_gauge("contracts_deployed_ps").init(),
+            total_transactions: meter.u64_gauge("total_transactions").init(),
+            total_contracts_created: meter.u64_gauge("total_contracts_created").init(),
+
+            _provider: provider,
+            _meter: meter,
+        };
+
+        // Report for all metrics to prevent "No data"
+        reporter.report_metrics(
+            0.1,
+            // TODO: Make this cleaner
+            &mut Rates {
+                nonzero_accts: Rate::new(&metrics.accts_with_nonzero_bal),
+                txs_sent: Rate::new(&metrics.total_txs_sent),
+                rpc_calls: Rate::new(&metrics.total_rpc_calls),
+                committed_txs: Rate::new(&metrics.total_committed_txs),
+                rpc_calls_error: Rate::new(&metrics.receipts_rpc_calls_error),
+                contracts_deployed: Rate::new(&metrics.receipts_contracts_deployed),
+            },
+        );
+
+        Ok(reporter)
+    }
+
+    pub async fn run(self) {
+        let mut report_interval = tokio::time::interval(Duration::from_secs(5));
+        report_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last = Instant::now();
+
+        let mut rates = Rates {
+            nonzero_accts: Rate::new(&self.metrics.accts_with_nonzero_bal),
+            txs_sent: Rate::new(&self.metrics.total_txs_sent),
+            rpc_calls: Rate::new(&self.metrics.total_rpc_calls),
+            committed_txs: Rate::new(&self.metrics.total_committed_txs),
+            rpc_calls_error: Rate::new(&self.metrics.receipts_rpc_calls_error),
+            contracts_deployed: Rate::new(&self.metrics.receipts_contracts_deployed),
+        };
+
+        loop {
+            let now = report_interval.tick().await;
+            let elapsed = last.elapsed().as_secs_f64();
+
+            self.report_metrics(elapsed, &mut rates);
+            last = now;
+        }
+    }
+
+    fn report_metrics(&self, elapsed: f64, rates: &mut Rates) {
+        debug!("Reporting Otel Metrics");
+
+        self.committed_tps.record(
+            rates.committed_txs.rate(elapsed) as u64,
+            &[opentelemetry::KeyValue::new(
+                "Generator Mode",
+                self.gen_mode.clone(),
+            )],
+        );
+        self.sent_tps.record(
+            rates.txs_sent.rate(elapsed) as u64,
+            &[opentelemetry::KeyValue::new(
+                "Generator Mode",
+                self.gen_mode.clone(),
+            )],
+        );
+        self.accts_created_ps
+            .record(rates.nonzero_accts.rate(elapsed) as u64, &[]);
+        self.rpc_calls_ps
+            .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
+        self.rpc_calls_error_ps
+            .record(rates.rpc_calls_error.rate(elapsed) as u64, &[]);
+        self.contracts_deployed_ps
+            .record(rates.contracts_deployed.rate(elapsed) as u64, &[]);
+
+        self.total_transactions
+            .record(rates.txs_sent.val() as u64, &[]);
+        self.total_contracts_created
+            .record(rates.contracts_deployed.val() as u64, &[]);
+
+        info!("Otel Metrics Reported");
+    }
+}
+
+fn build_otel_meter_provider(
+    otel_endpoint: Option<impl AsRef<str>>,
+    service_name: String,
+    replica_name: String,
+    interval: Duration,
+) -> Result<SdkMeterProvider> {
+    let mut provider_builder =
+        SdkMeterProvider::builder().with_resource(opentelemetry_sdk::Resource::new(vec![
+            opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                format!("{replica_name}-{service_name}"),
+            ),
+        ]));
+
+    if let Some(otel_endpoint) = otel_endpoint {
+        let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(otel_endpoint.as_ref()),
+        )
+        .build_metrics_exporter(
+            Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
+            Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
+        )?;
+
+        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
+            exporter,
+            opentelemetry_sdk::runtime::Tokio,
+        )
+        .with_interval(interval / 2)
+        .with_timeout(interval * 2)
+        .build();
+
+        provider_builder = provider_builder.with_reader(reader)
+    }
+
+    Ok(provider_builder.build())
 }
