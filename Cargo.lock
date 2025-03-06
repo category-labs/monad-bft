@@ -5364,7 +5364,6 @@ dependencies = [
 name = "monad-raptor"
 version = "0.1.0"
 dependencies = [
- "bitvec",
  "rand",
  "rayon",
 ]
@@ -5373,6 +5372,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "bitvec",
  "bytes",
  "clap 4.4.10",
  "criterion",

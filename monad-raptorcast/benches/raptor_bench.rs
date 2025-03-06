@@ -8,7 +8,7 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
+    udp::{build_messages, parse_message, MAX_REDUNDANCY, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
 };
 use monad_secp::{KeyPair, SecpSignature};
@@ -123,8 +123,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
                     // data_size is always greater than zero, so this division is safe
                     let num_source_symbols = message_size.div_ceil(symbol_len);
+                    let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
 
-                    ManagedDecoder::new(num_source_symbols, symbol_len).unwrap()
+                    ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
+                        .unwrap()
                 };
                 let mut decode_success = false;
                 for mut message in messages {
@@ -134,12 +136,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                             message.split_to(DEFAULT_SEGMENT_SIZE.into()),
                         )
                         .expect("valid message");
-                        decoder
-                            .received_encoded_symbol(
-                                &parsed_message.chunk,
-                                parsed_message.chunk_id.into(),
-                            )
-                            .unwrap();
+                        decoder.received_encoded_symbol(
+                            &parsed_message.chunk,
+                            parsed_message.chunk_id.into(),
+                        );
                         if decoder.try_decode() {
                             decode_success = true;
                             break;

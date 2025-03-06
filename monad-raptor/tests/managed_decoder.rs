@@ -10,7 +10,7 @@ fn test_single_decode(src: Vec<u8>) {
 
     let num_source_symbols = encoder.num_source_symbols();
 
-    let mut decoder = ManagedDecoder::new(num_source_symbols, SYMBOL_LEN).unwrap();
+    let mut decoder = ManagedDecoder::new(num_source_symbols, 0, SYMBOL_LEN).unwrap();
 
     let mut esis: Vec<usize> = (0..2 * num_source_symbols).collect();
     esis.shuffle(&mut thread_rng());
@@ -19,11 +19,12 @@ fn test_single_decode(src: Vec<u8>) {
         let mut buf: Box<[u8]> = vec![0; SYMBOL_LEN].into_boxed_slice();
         encoder.encode_symbol(&mut buf, *esi);
 
-        decoder.received_encoded_symbol(&buf, *esi).unwrap();
+        decoder.received_encoded_symbol(&buf, *esi);
 
-        // Make sure that we detect multiple submissions of the same ESI.
+        // We feed some encoded symbols back into the decoder twice to test the
+        // redundant buffer handling paths.
         if rand::thread_rng().gen_ratio(1, 100) {
-            decoder.received_encoded_symbol(&buf, *esi).unwrap_err();
+            decoder.received_encoded_symbol(&buf, *esi);
         }
 
         if decoder.try_decode() {
@@ -57,4 +58,18 @@ fn test_managed_decoder() {
 
         test_single_decode(src);
     }
+}
+
+#[test]
+#[should_panic]
+fn test_invalid_symbol_len() {
+    let src = vec![0u8; 32];
+
+    let encoder: Encoder = Encoder::new(&src, SYMBOL_LEN).unwrap();
+    let num_source_symbols = encoder.num_source_symbols();
+    let mut decoder = ManagedDecoder::new(num_source_symbols, 0, SYMBOL_LEN).unwrap();
+
+    let buf = vec![0; SYMBOL_LEN + 1];
+
+    decoder.received_encoded_symbol(buf.as_slice(), 0);
 }

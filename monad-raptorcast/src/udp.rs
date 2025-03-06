@@ -5,6 +5,7 @@ use std::{
     ops::Range,
 };
 
+use bitvec::prelude::*;
 use bytes::{Bytes, BytesMut};
 use itertools::Itertools;
 use lru::LruCache;
@@ -41,6 +42,16 @@ const MIN_CHUNK_LENGTH: usize = 960;
 // if we have many peers to transmit the message to.
 const MAX_NUM_PACKETS: usize = 65535;
 
+// For a message with K source symbols, we accept up to the first MAX_REDUNDANCY * K
+// encoded symbols.
+//
+// Any received encoded symbol with an ESI equal to or greater than MAX_REDUNDANCY * K
+// will be discarded, as a protection against DoS and algorithmic complexity attacks.
+//
+// We pick 7 because that is the largest value that works for all values of K, as K
+// can be at most 8192, and there can be at most 65521 encoding symbol IDs.
+pub const MAX_REDUNDANCY: usize = 7;
+
 // For a tree depth of 1, every encoded symbol is its own Merkle tree, and there will be no
 // Merkle proof section in the constructed RaptorCast packets.
 //
@@ -52,6 +63,15 @@ const MAX_MERKLE_TREE_DEPTH: u8 = 9;
 struct DecoderState {
     decoder: ManagedDecoder,
     recipient_chunks: BTreeMap<NodeIdHash, usize>,
+    encoded_symbol_capacity: usize,
+    seen_esis: BitVec<usize, Lsb0>,
+}
+
+struct RecentlyDecodedState {
+    symbol_len: usize,
+    encoded_symbol_capacity: usize,
+    seen_esis: BitVec<usize, Lsb0>,
+    excess_chunk_count: usize,
 }
 
 pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
@@ -67,7 +87,8 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     signature_cache:
         LruCache<[u8; HEADER_LEN as usize + 20], NodeId<CertificateSignaturePubKey<ST>>>,
     /// Value in this map represents the # of excess chunks received for a successfully decoded msg
-    recently_decoded_cache: LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, usize>,
+    recently_decoded_cache:
+        LruCache<MessageCacheKey<CertificateSignaturePubKey<ST>>, RecentlyDecodedState>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -145,7 +166,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             }
 
             if parsed_message.broadcast {
-                let Some(epoch_validators) = epoch_validators.get_mut(&Epoch(parsed_message.epoch))
+                let Some(epoch_validators) = epoch_validators.get(&Epoch(parsed_message.epoch))
                 else {
                     tracing::debug!(
                         epoch =? parsed_message.epoch,
@@ -163,19 +184,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     );
                     continue;
                 }
-                if self_hash == parsed_message.recipient_hash {
-                    let targets =
-                        epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
-                    batch_guard.queue_broadcast(
-                        payload_start_idx,
-                        payload_end_idx,
-                        &parsed_message.author,
-                        || targets.view().keys().copied().collect(),
-                    )
-                }
-
-                // forward all broadcast packets to full nodes
-                full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
             } else if self_hash != parsed_message.recipient_hash {
                 tracing::debug!(
                     ?self_hash,
@@ -204,9 +212,45 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 app_message_len,
             };
 
-            if let Some(excess_chunk_count) = self.recently_decoded_cache.get_mut(&key) {
-                // already decoded
-                *excess_chunk_count += 1;
+            let mut try_rebroadcast_symbol = || {
+                // rebroadcast if necessary
+                if parsed_message.broadcast {
+                    if self_hash == parsed_message.recipient_hash {
+                        let epoch_validators = epoch_validators
+                            .get_mut(&Epoch(parsed_message.epoch))
+                            .expect("parsed message was validated");
+                        let targets =
+                            epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
+                        batch_guard.queue_broadcast(
+                            payload_start_idx,
+                            payload_end_idx,
+                            &parsed_message.author,
+                            || targets.view().keys().copied().collect(),
+                        )
+                    }
+
+                    // forward all broadcast packets to full nodes
+                    full_node_forward_batch_guard.queue_forward(payload_start_idx, payload_end_idx);
+                }
+            };
+
+            if let Some(recently_decoded_state) = self.recently_decoded_cache.get_mut(&key) {
+                if is_valid_symbol::<ST>(
+                    self.self_id,
+                    &parsed_message,
+                    recently_decoded_state.symbol_len,
+                    recently_decoded_state.encoded_symbol_capacity,
+                    &recently_decoded_state.seen_esis,
+                ) {
+                    // already decoded but valid symbol
+                    recently_decoded_state
+                        .seen_esis
+                        .set(encoding_symbol_id, true);
+                    recently_decoded_state.excess_chunk_count += 1;
+
+                    try_rebroadcast_symbol();
+                }
+
                 continue;
             }
 
@@ -217,13 +261,15 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     // symbol_len is always greater than zero, so this division is safe
                     let num_source_symbols =
                         app_message_len.div_ceil(symbol_len).max(SOURCE_SYMBOLS_MIN);
+                    let encoded_symbol_capacity = MAX_REDUNDANCY * num_source_symbols;
 
-                    ManagedDecoder::new(num_source_symbols, symbol_len).map(|decoder| {
-                        DecoderState {
+                    ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
+                        .map(|decoder| DecoderState {
                             decoder,
                             recipient_chunks: BTreeMap::new(),
-                        }
-                    })
+                            encoded_symbol_capacity,
+                            seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
+                        })
                 });
 
             let decoder_state = match decoder_state_result {
@@ -233,6 +279,20 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     continue;
                 }
             };
+
+            if !is_valid_symbol::<ST>(
+                self.self_id,
+                &parsed_message,
+                decoder_state.decoder.symbol_len(),
+                decoder_state.encoded_symbol_capacity,
+                &decoder_state.seen_esis,
+            ) {
+                // invalid symbol
+                continue;
+            }
+            decoder_state.seen_esis.set(encoding_symbol_id, true);
+
+            try_rebroadcast_symbol();
 
             let num_buffers_received = decoder_state.decoder.num_encoded_symbols_received() + 1;
 
@@ -250,52 +310,50 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             // can we assert!(!decoder_state.decoder.decoding_done()) ?
 
-            match decoder_state
+            decoder_state
                 .decoder
-                .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id)
-            {
-                Ok(()) => {
-                    *decoder_state
-                        .recipient_chunks
-                        .entry(parsed_message.recipient_hash)
-                        .or_insert(0) += 1;
+                .received_encoded_symbol(&parsed_message.chunk, encoding_symbol_id);
 
-                    if decoder_state.decoder.try_decode() {
-                        let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data()
-                        else {
-                            tracing::error!("failed to reconstruct source data");
-                            continue;
-                        };
+            *decoder_state
+                .recipient_chunks
+                .entry(parsed_message.recipient_hash)
+                .or_insert(0) += 1;
 
-                        if app_message_len > 10_000 {
-                            tracing::debug!(
-                                ?self_id,
-                                author =? parsed_message.author,
-                                unix_ts_ms = parsed_message.unix_ts_ms,
-                                app_message_hash =? parsed_message.app_message_hash,
-                                encoding_symbol_id,
-                                app_message_len,
-                                "reconstructed large message"
-                            );
-                        }
+            if decoder_state.decoder.try_decode() {
+                let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data() else {
+                    tracing::error!("failed to reconstruct source data");
+                    continue;
+                };
 
-                        decoded.truncate(app_message_len);
-                        // successfully decoded, so pop out from pending_messages
-                        self.pending_message_cache
-                            .pop(&key)
-                            .expect("decoder exists");
-                        self.recently_decoded_cache.push(key, 0);
-
-                        messages.push((parsed_message.author, Bytes::from(decoded)));
-                    }
+                if app_message_len > 10_000 {
+                    tracing::debug!(
+                        ?self_id,
+                        author =? parsed_message.author,
+                        unix_ts_ms = parsed_message.unix_ts_ms,
+                        app_message_hash =? parsed_message.app_message_hash,
+                        encoding_symbol_id,
+                        app_message_len,
+                        "reconstructed large message"
+                    );
                 }
-                Err(err) => {
-                    tracing::warn!(
-                        ?err,
-                        ?key,
-                        "ManagedDecoder::received_encoded_symbol returned error",
-                    )
-                }
+
+                decoded.truncate(app_message_len);
+                // successfully decoded, so pop out from pending_messages
+                let decoded_state = self
+                    .pending_message_cache
+                    .pop(&key)
+                    .expect("decoder exists");
+                self.recently_decoded_cache.push(
+                    key,
+                    RecentlyDecodedState {
+                        symbol_len: decoded_state.decoder.symbol_len(),
+                        encoded_symbol_capacity: decoded_state.encoded_symbol_capacity,
+                        seen_esis: decoded_state.seen_esis,
+                        excess_chunk_count: 0,
+                    },
+                );
+
+                messages.push((parsed_message.author, Bytes::from(decoded)));
             }
         }
 
@@ -314,6 +372,63 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
         messages
     }
+}
+
+fn is_valid_symbol<ST>(
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    parsed_message: &ValidatedMessage<CertificateSignaturePubKey<ST>>,
+    symbol_len: usize,
+    encoded_symbol_capacity: usize,
+    seen_esis: &BitVec,
+) -> bool
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let encoding_symbol_id: usize = parsed_message.chunk_id.into();
+
+    if symbol_len != parsed_message.chunk.len() {
+        // invalid symbol length
+        tracing::warn!(
+            ?self_id,
+            author =? parsed_message.author,
+            unix_ts_ms = parsed_message.unix_ts_ms,
+            app_message_hash =? parsed_message.app_message_hash,
+            encoding_symbol_id,
+            expected_len = symbol_len,
+            received_len = parsed_message.chunk.len(),
+            "received invalid symbol len"
+        );
+        return false;
+    }
+
+    if encoding_symbol_id >= encoded_symbol_capacity {
+        // invalid symbol id
+        tracing::warn!(
+            ?self_id,
+            author =? parsed_message.author,
+            unix_ts_ms = parsed_message.unix_ts_ms,
+            app_message_hash =? parsed_message.app_message_hash,
+            encoded_symbol_capacity = encoded_symbol_capacity,
+            encoding_symbol_id,
+            "received invalid symbol id"
+        );
+        return false;
+    }
+
+    if seen_esis[encoding_symbol_id] {
+        // duplicate symbol
+        tracing::warn!(
+            ?self_id,
+            author =? parsed_message.author,
+            unix_ts_ms = parsed_message.unix_ts_ms,
+            app_message_hash =? parsed_message.app_message_hash,
+            encoding_symbol_id,
+            "received duplicate symbol"
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Stuff to include:

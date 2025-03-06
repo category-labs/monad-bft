@@ -22,6 +22,7 @@ monad-raptor = { path = "../monad-raptor" }
 monad-secp = { path = "../monad-secp" }
 monad-types = { path = "../monad-types" }
 
+bitvec = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
