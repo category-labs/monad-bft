@@ -209,7 +209,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            0,                                   // proposal_tx_limit
             val_set_update_interval,             // val_set_update_interval
             Round(20),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
@@ -312,7 +311,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            0,                                   // proposal_tx_limit
             val_set_update_interval,             // val_set_update_interval
             Round(20),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
@@ -488,7 +486,6 @@ mod test {
             SeqNum::MAX,                         // execution_delay
             Duration::from_millis(delta),        // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            0,                                   // proposal_tx_limit
             val_set_update_interval,             // val_set_update_interval
             Round(20),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold
@@ -696,7 +693,6 @@ mod test {
             SeqNum(4),                           // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             val_set_update_interval,             // val_set_update_interval
             epoch_start_delay,                   // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold

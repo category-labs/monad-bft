@@ -71,7 +71,6 @@ fn all_messages_delayed_cron() {
 fn all_messages_delayed(direction: TransformerReplayOrder) {
     // tracing_subscriber::fmt::init();
     let delta = Duration::from_millis(20);
-    let vote_pace = Duration::from_millis(0);
     let max_blocksync_retries = 5;
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
@@ -88,7 +87,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         SeqNum(1),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        10,                                  // proposal_tx_limit
         SeqNum(2000),                        // val_set_update_interval
         Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold

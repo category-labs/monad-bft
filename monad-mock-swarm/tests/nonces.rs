@@ -150,7 +150,6 @@ mod test {
             execution_delay,                     // execution_delay
             CONSENSUS_DELTA,                     // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             SeqNum(2000),                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
             SeqNum(100),                         // state_sync_threshold

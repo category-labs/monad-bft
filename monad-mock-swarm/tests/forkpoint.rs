@@ -239,7 +239,6 @@ fn forkpoint_restart_f(
         state_root_delay,
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        10,                                  // proposal_tx_limit
         epoch_length,                        // val_set_update_interval
         Round(50),                           // epoch_start_delay
         statesync_threshold,                 // state_sync_threshold
@@ -273,7 +272,6 @@ fn forkpoint_restart_f(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             epoch_length,                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
@@ -294,7 +292,6 @@ fn forkpoint_restart_f(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             epoch_length,                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
@@ -557,7 +554,6 @@ fn forkpoint_restart_below_all(
         state_root_delay,                    // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        10,                                  // proposal_tx_limit
         epoch_length,                        // val_set_update_interval
         Round(50),                           // epoch_start_delay
         statesync_threshold,                 // state_sync_threshold
@@ -601,7 +597,6 @@ fn forkpoint_restart_below_all(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             epoch_length,                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
@@ -616,7 +611,6 @@ fn forkpoint_restart_below_all(
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            10,                                  // proposal_tx_limit
             epoch_length,                        // val_set_update_interval
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold

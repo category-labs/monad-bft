@@ -44,7 +44,6 @@ fn random_latency_test(latency_seed: u64) {
         SeqNum(4),                           // execution_delay
         Duration::from_millis(250),          // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        0,                                   // proposal_tx_limit
         SeqNum(2000),                        // val_set_update_interval
         Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold
@@ -113,7 +112,6 @@ fn delayed_message_test(latency_seed: u64) {
         SeqNum(4),                                        // execution_delay
         Duration::from_millis(2),                         // delta
         MockChainConfig::new(&CHAIN_PARAMS_NO_VOTE_PACE), // chain config
-        0,                                                // proposal_tx_limit
         SeqNum(2000),                                     // val_set_update_interval
         Round(50),                                        // epoch_start_delay
         SeqNum(100),                                      // state_sync_threshold

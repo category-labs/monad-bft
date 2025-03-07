@@ -91,7 +91,6 @@ fn nodes_with_random_latency(latency_seed: u64) {
         SeqNum::MAX,                         // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
-        0,                                   // proposal_tx_limit
         SeqNum(3000),                        // val_set_update_interval
         Round(50),                           // epoch_start_delay
         SeqNum(100),                         // state_sync_threshold

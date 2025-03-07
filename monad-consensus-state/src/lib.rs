@@ -183,8 +183,6 @@ where
     CRT: ChainRevision,
 {
     pub execution_delay: SeqNum,
-    /// Maximum number of transactions allowed in a proposal
-    pub proposal_txn_limit: usize,
     /// Duration used by consensus to determine timeout lengths
     /// delta should be approximately equal to the upper bound of message
     /// delivery during a broadcast
@@ -1941,7 +1939,6 @@ mod test {
                     .unwrap();
                 let consensus_config = ConsensusConfig {
                     execution_delay,
-                    proposal_txn_limit: 5000,
                     delta: Duration::from_secs(1),
                     statesync_to_live_threshold: SeqNum(600),
                     live_to_statesync_threshold: SeqNum(900),

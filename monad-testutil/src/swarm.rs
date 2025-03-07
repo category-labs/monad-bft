@@ -28,7 +28,6 @@ pub fn make_state_configs<S: SwarmRelation>(
     execution_delay: SeqNum,
     delta: Duration,
     chain_config: S::ChainConfigType,
-    proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
     statesync_threshold: SeqNum,
@@ -86,7 +85,6 @@ pub fn make_state_configs<S: SwarmRelation>(
 
             consensus_config: ConsensusConfig {
                 execution_delay,
-                proposal_txn_limit,
                 delta,
                 // StateSync -> Live transition happens here
                 statesync_to_live_threshold: statesync_threshold,

@@ -363,7 +363,6 @@ where
 
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),
-                proposal_txn_limit: 10,
                 delta: Duration::from_millis(delta_ms),
                 statesync_to_live_threshold: SeqNum(600),
                 live_to_statesync_threshold: SeqNum(900),
