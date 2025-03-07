@@ -20,8 +20,8 @@ use monad_types::ExecutionProtocol;
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
     MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent, StateSyncNetworkMessage,
-    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, StateSyncVersion,
-    ValidatorEvent,
+    StateSyncProof, StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType,
+    StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -728,6 +728,15 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
     }
 }
 
+impl From<&StateSyncProof> for monad_proto::proto::message::ProtoStateSyncProof {
+    fn from(proof: &StateSyncProof) -> Self {
+        Self {
+            prefix: proof.prefix,
+            data: Bytes::copy_from_slice(&proof.proof),
+        }
+    }
+}
+
 impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateSyncNetworkMessage {
     fn from(value: &StateSyncNetworkMessage) -> Self {
         use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
@@ -737,6 +746,9 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
             },
             StateSyncNetworkMessage::Response(response) => Self {
                 oneof_message: Some(OneofMessage::Response(response.into())),
+            },
+            StateSyncNetworkMessage::Proof(response) => Self {
+                oneof_message: Some(OneofMessage::Proof(response.into())),
             },
         }
     }
@@ -807,6 +819,7 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncRequest> for StateSyncRe
                 .prefix_bytes
                 .try_into()
                 .map_err(|_| ProtoError::DeserializeError("prefix_bytes too big".to_owned()))?,
+            is_retry: 0,
             target: request.target,
             from: request.from,
             until: request.until,
@@ -887,6 +900,10 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                     response_n: response.n,
                 }))
             }
+            OneofMessage::Proof(proof) => Ok(StateSyncNetworkMessage::Proof(StateSyncProof {
+                prefix: proof.prefix,
+                proof: proof.data.into(),
+            })),
         }
     }
 }

@@ -800,7 +800,7 @@ mod test {
             timestamp_ns: GENESIS_TIMESTAMP,
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
-        let mut block_policy = PassthruBlockPolicy;
+        let block_policy = PassthruBlockPolicy;
         blocktree.add(g.into());
         blocktree.add(b1.clone().into());
         blocktree.add(b1.clone().into());
@@ -1396,7 +1396,7 @@ mod test {
             timestamp_ns: GENESIS_TIMESTAMP,
         });
         let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
-        let mut block_policy = PassthruBlockPolicy;
+        let block_policy = PassthruBlockPolicy;
         blocktree.add(b2.clone().into());
         assert!(blocktree.root.children_blocks.is_empty());
 

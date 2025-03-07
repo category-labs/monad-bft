@@ -99,6 +99,7 @@ where
                         target: eth_header.seq_num().0,
                         from: 0,
                         prefix: 0,
+                        is_retry: 0,
                         prefix_bytes: 1,
                         until: 0,
                         old_target: 0,
@@ -148,6 +149,7 @@ where
                                 StateSyncNetworkMessage::Response(response),
                             )))
                     }
+                    StateSyncNetworkMessage::Proof(_) => {}
                     StateSyncNetworkMessage::Response(response) => {
                         if !self.started_execution
                             && self

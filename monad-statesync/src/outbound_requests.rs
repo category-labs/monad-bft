@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{StateSyncProof, StateSyncRequest, StateSyncResponse};
 use monad_types::NodeId;
 
 pub(crate) struct OutboundRequests<PT: PubKey> {
@@ -168,6 +168,11 @@ impl<PT: PubKey> OutboundRequests<PT> {
         {
             assert_eq!(current_target, request.target);
         }
+        // If this is a retry, remove the prefix peer so request can be retried on a
+        // different node.
+        if request.is_retry != 0 {
+            self.prefix_peers.remove(&request.prefix);
+        }
         self.pending_requests.insert(request);
     }
 
@@ -204,6 +209,24 @@ impl<PT: PubKey> OutboundRequests<PT> {
             return Some(full_response);
         }
         None
+    }
+
+    #[must_use]
+    pub fn handle_proof(
+        &mut self,
+        from: NodeId<PT>,
+        proof: StateSyncProof,
+    ) -> Option<StateSyncProof> {
+        let maybe_prefix_peer = self.prefix_peers.get(&proof.prefix);
+        if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
+            tracing::debug!(
+                ?from,
+                ?proof,
+                "dropping statesync proof, already fixed to different prefix_peer"
+            );
+            return None;
+        }
+        Some(proof)
     }
 
     #[must_use]

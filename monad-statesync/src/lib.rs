@@ -119,6 +119,19 @@ where
                     };
                     statesync.handle_response(from, response);
                 }
+                StateSyncCommand::Message((from, StateSyncNetworkMessage::Proof(proof))) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::trace!(
+                                ?from,
+                                "dropping statesync proof, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.handle_proof(from, proof);
+                }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {

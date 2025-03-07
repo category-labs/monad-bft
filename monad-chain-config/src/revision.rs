@@ -8,15 +8,15 @@ pub trait ChainRevision: Copy + Clone {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum MonadChainRevision {
-    V_0_7_0,
-    V_0_8_0,
+    V0_7_0,
+    V0_8_0,
 }
 
 impl ChainRevision for MonadChainRevision {
     fn chain_params(&self) -> &'static ChainParams {
         match &self {
-            MonadChainRevision::V_0_7_0 => &CHAIN_PARAMS_V_0_7_0,
-            MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
+            MonadChainRevision::V0_7_0 => &CHAIN_PARAMS_V_0_7_0,
+            MonadChainRevision::V0_8_0 => &CHAIN_PARAMS_V_0_8_0,
         }
     }
 }
@@ -61,6 +61,6 @@ mod test {
 
     #[test]
     fn chain_revision_ord() {
-        assert!(MonadChainRevision::V_0_7_0 < MonadChainRevision::V_0_8_0);
+        assert!(MonadChainRevision::V0_7_0 < MonadChainRevision::V0_8_0);
     }
 }

@@ -75,11 +75,11 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
         if round >= self.v_0_8_0_activation {
-            MonadChainRevision::V_0_8_0
+            MonadChainRevision::V0_8_0
         } else if round >= self.v_0_7_0_activation {
-            MonadChainRevision::V_0_7_0
+            MonadChainRevision::V0_7_0
         } else {
-            MonadChainRevision::V_0_7_0
+            MonadChainRevision::V0_7_0
         }
     }
 }

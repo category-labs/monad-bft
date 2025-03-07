@@ -610,6 +610,8 @@ pub struct StateSyncRequest {
 
     pub prefix: u64,
     pub prefix_bytes: u8,
+    #[rlp(skip)]
+    pub is_retry: u8,
     pub target: u64,
     pub from: u64,
     pub until: u64,
@@ -712,10 +714,17 @@ impl Debug for StateSyncResponse {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, RlpEncodable, RlpDecodable)]
+pub struct StateSyncProof {
+    pub prefix: u64,
+    pub proof: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateSyncNetworkMessage {
     Request(StateSyncRequest),
     Response(StateSyncResponse),
+    Proof(StateSyncProof),
 }
 
 impl Encodable for StateSyncNetworkMessage {
@@ -728,6 +737,10 @@ impl Encodable for StateSyncNetworkMessage {
             }
             Self::Response(resp) => {
                 let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Proof(proof) => {
+                let enc: [&dyn Encodable; 3] = [&name, &3u8, &proof];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -747,6 +760,7 @@ impl Decodable for StateSyncNetworkMessage {
         match u8::decode(&mut payload)? {
             1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
             2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
+            3 => Ok(Self::Proof(StateSyncProof::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown StateSyncNetworkMessage",
             )),

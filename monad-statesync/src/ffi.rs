@@ -12,7 +12,8 @@ use alloy_rlp::Encodable;
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncProof, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    SELF_STATESYNC_VERSION,
 };
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
@@ -56,6 +57,7 @@ pub(crate) enum SyncRequest<R> {
 /// the perspetive of the caller, this is an output event.
 pub(crate) enum SyncResponse {
     Response(StateSyncResponse),
+    Proof(StateSyncProof),
     UpdateTarget(Header),
 }
 
@@ -168,6 +170,7 @@ impl<PT: PubKey> StateSync<PT> {
                         version: SELF_STATESYNC_VERSION,
                         prefix: request.prefix,
                         prefix_bytes: request.prefix_bytes,
+                        is_retry: request.is_retry,
                         target: request.target,
                         from: request.from,
                         until: request.until,
@@ -263,6 +266,19 @@ impl<PT: PubKey> StateSync<PT> {
                             .unwrap()
                             .update_handled_request(&response.request)
                     }
+                    SyncResponse::Proof(proof) => {
+                        assert!(current_target.is_some());
+                        // handle_proof can only be called on an active SyncCtx
+                        let ctx = sync_ctx.ctx.expect("received proof on inactive ctx");
+                        unsafe {
+                            bindings::monad_statesync_client_handle_proof(
+                                ctx,
+                                proof.prefix,
+                                proof.proof.as_ptr(),
+                                proof.proof.len() as u64,
+                            )
+                        }
+                    }
                 }
                 if sync_ctx.try_finalize() {
                     let target = current_target
@@ -325,6 +341,14 @@ impl<PT: PubKey> StateSync<PT> {
         if let Some(full_response) = self.outbound_requests.handle_response(from, response) {
             self.response_tx
                 .send(SyncResponse::Response(full_response))
+                .expect("response_rx dropped");
+        }
+    }
+
+    pub fn handle_proof(&mut self, from: NodeId<PT>, proof: StateSyncProof) {
+        if let Some(proof) = self.outbound_requests.handle_proof(from, proof) {
+            self.response_tx
+                .send(SyncResponse::Proof(proof))
                 .expect("response_rx dropped");
         }
     }

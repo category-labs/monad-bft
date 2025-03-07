@@ -321,6 +321,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         self.write_execution_request(bindings::monad_sync_request {
             prefix: request.request.prefix,
             prefix_bytes: request.request.prefix_bytes,
+            is_retry: 0,
             target: request.request.target,
             from: request.request.from,
             until: request.request.until,
