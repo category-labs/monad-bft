@@ -24,7 +24,7 @@ value: code
 ## Receipt
 ```
 key: <receipt nibble (2): 1 nibble><rlp(transaction index)>
-value: rlp([tx_type, status, culmulative_gas_used, logs_bloom, logs])
+value: rlp([rlp_encode_string(encoded_receipt), rlp(log_index_start)])
 ```
 
 ## Block Data
@@ -40,7 +40,7 @@ value: rlp(block_header)
 **Transaction**
 ```
 key: <transaction nibble (3): 1 nibble><rlp(transaction index)>
-value: rlp(tx)
+value: rlp([rlp_encode_string(encoded_transaction), rlp(sender_addr)])
 ```
 
 **Withdrawal**
@@ -52,7 +52,7 @@ value: rlp(withdrawal)
 **Ommers**
 ```
 key: <ommers nibble (6): 1 nibble>
-value: rlp(ommersList)
+value: rlp(ommers_list)
 ```
 
 ## Tx Hash
@@ -65,4 +65,10 @@ value: rlp([block_number, transaction_index])
 ```
 key: <block hash nibble (8): 1 nibble><keccak(rlp(block_header))>
 value: rlp(block_number)
+```
+
+## Call Frames
+```
+key: <block hash nibble (9): 1 nibble><4 bytes tx index, 1 byte chunk index>
+value: rlp(call_frames)
 ```

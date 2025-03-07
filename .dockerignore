@@ -9,8 +9,7 @@
 /docker/devnet/monad/triedb
 /docker/devnet/monad/wal
 /docker/devnet/monad/mempool.sock
-/docker/flexnet/logs
-/docker/flexnet/save_logs
+/docker/single-node/logs
 
 # unfortunately some submodules and rpc's build script require .git folder to exist...
 !/.git

@@ -15,9 +15,8 @@ git submodule update --init --recursive
 ### Using Docker
 
 The most straightforward way to start a consensus client + an execution client + a JsonRpc server. Run the following:
-1. `cd docker/flexnet`
-2. `mkdir -p logs`
-3. `nets/devnet-integration/scripts/net-run.sh --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../.. run`
+1. `cd docker/single-node`
+2. `nets/run.sh`
 
 ### Using Cargo
 

@@ -1,6 +1,6 @@
 /target
-/docker/flexnet/.venv
-/docker/flexnet/logs
+/docker/single-node/.venv
+/docker/single-node/logs
 /docker/devnet/monad/bft-ledger
 /docker/devnet/monad/block-payload
 /docker/devnet/monad/ledger

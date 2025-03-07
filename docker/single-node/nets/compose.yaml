@@ -7,15 +7,8 @@ services:
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
 
-  build_python:
-    build:
-      context: ${FLEXNET_IMAGE_ROOT}/python
-      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
-    image: monad-python:latest
-
   build_genesis:
     image: monad-execution-builder:latest
-    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --nblocks 0 --genesis /monad/config/genesis.json --log_level ERROR
     depends_on:
       build_triedb:
         condition: service_completed_successfully
@@ -23,10 +16,21 @@ services:
       - ./node:/monad
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    command:
+      monad
+      --chain monad_devnet
+      --db /monad/triedb/test.db
+      --block_db /monad/ledger
+      --nblocks 0
+      --genesis /monad/config/genesis.json
+      --log_level ERROR
+    ulimits:
+      memlock:
+        soft: "16770785280"
+        hard: "16770785280"
 
   monad_execution:
     image: monad-execution-builder:latest
-    command: monad --chain monad_devnet --db /monad/triedb/test.db --block_db /monad/ledger --statesync /monad/statesync.sock --log_level ERROR
     depends_on:
       build_triedb:
         condition: service_completed_successfully
@@ -36,6 +40,17 @@ services:
       - ./node:/monad
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+    command: |
+      monad
+      --chain monad_devnet
+      --db /monad/triedb/test.db
+      --block_db /monad/ledger
+      --statesync /monad/statesync.sock
+      --log_level ERROR
+    ulimits:
+      memlock:
+        soft: "16770785280"
+        hard: "16770785280"
 
   monad_node:
     build:
@@ -64,6 +79,10 @@ services:
       --control-panel-ipc-path /monad/controlpanel.sock
       --ledger-path /monad/ledger
       --triedb-path /monad/triedb
+    ulimits:
+      memlock:
+        soft: "16770785280"
+        hard: "16770785280"
 
   monad_rpc:
     build:
@@ -84,15 +103,10 @@ services:
       --ipc-path /monad/mempool.sock
       --triedb-path /monad/triedb
       --chain-id 20143
-
-  e2e_tester:
-    image: monad-python:latest
-    volumes:
-      - ./e2e_tester:/monad
-      - ./data:/data
-    depends_on:
-      - monad_rpc
-    entrypoint: ["bash", "/monad/scripts/run.sh"]
+    ulimits:
+      memlock:
+        soft: "16770785280"
+        hard: "16770785280"
 
 networks:
   default:
