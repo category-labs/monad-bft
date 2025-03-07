@@ -25,3 +25,10 @@ bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "rlp_bench"
+harness = false

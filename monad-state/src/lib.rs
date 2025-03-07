@@ -454,6 +454,36 @@ where
             }
         }
     }
+
+    fn length(&self) -> usize {
+        let monad_version = MonadVersion::version();
+
+        match self {
+            Self::Consensus(m) => {
+                let wire: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>> =
+                    m.clone().into();
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &1u8, &wire];
+                Encodable::length(&enc)
+            }
+            Self::BlockSyncRequest(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &2u8, &m];
+                Encodable::length(&enc)
+            }
+            Self::BlockSyncResponse(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &3u8, &m];
+                Encodable::length(&enc)
+            }
+            Self::ForwardedTx(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &4u8, &m];
+                // TODO does tx bytes need a prefix?
+                Encodable::length(&enc)
+            }
+            Self::StateSyncMessage(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &5u8, &m];
+                Encodable::length(&enc)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

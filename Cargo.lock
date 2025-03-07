@@ -5159,6 +5159,7 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "criterion",
  "monad-blocksync",
  "monad-consensus",
  "monad-consensus-types",

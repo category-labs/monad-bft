@@ -7,7 +7,7 @@ use std::{
 use futures::FutureExt;
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsert, StateSyncUpsertType,
+    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
     SELF_STATESYNC_VERSION,
 };
 use monad_types::NodeId;
@@ -191,7 +191,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 wip_response
                     .response
                     .response
-                    .push(StateSyncUpsert::new(upsert_type, data));
+                    .push(StateSyncUpsertV1::new(upsert_type, data.into()));
                 if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
                     // send batch
                     let response = StateSyncResponse {

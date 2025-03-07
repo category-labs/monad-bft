@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
-    StateSyncResponse, StateSyncUpsert, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
 };
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
@@ -136,9 +136,9 @@ where
                             response_index: 0,
 
                             request,
-                            response: vec![StateSyncUpsert::new(
+                            response: vec![StateSyncUpsertV1::new(
                                 StateSyncUpsertType::Code,
-                                serialized,
+                                serialized.into(),
                             )],
                             response_n: 1,
                         };

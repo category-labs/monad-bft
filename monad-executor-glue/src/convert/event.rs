@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, str::FromStr};
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use monad_consensus_types::{
     convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     payload::RoundSignature,
@@ -20,8 +20,8 @@ use monad_types::ExecutionProtocol;
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
     KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent,
-    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsert,
-    StateSyncUpsertType, StateSyncVersion, ValidatorEvent,
+    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -720,7 +720,7 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
                         &upsert.upsert_type,
                     )
                     .into(),
-                    data: Bytes::copy_from_slice(&upsert.data),
+                    data: upsert.data.clone(),
                 })
                 .collect(),
             n: response.response_n,
@@ -878,9 +878,9 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                                     ProtoError::DeserializeError("unknown upsert type".to_owned())
                                 })?
                                 .into();
-                            Ok(StateSyncUpsert {
+                            Ok(StateSyncUpsertV1 {
                                 upsert_type,
-                                data: Vec::from(upsert.data),
+                                data: upsert.data,
                             })
                         })
                         .collect::<Result<_, ProtoError>>()?,

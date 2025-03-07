@@ -579,7 +579,9 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
     }
 }
 
-pub const SELF_STATESYNC_VERSION: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
+const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
+const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V1;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncVersion {
@@ -602,6 +604,10 @@ impl StateSyncVersion {
     pub fn is_compatible(&self) -> bool {
         self.major == SELF_STATESYNC_VERSION.major
     }
+
+    pub fn is_compatible_with(&self, with: &Self) -> bool {
+        self.major == with.major
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
@@ -616,7 +622,7 @@ pub struct StateSyncRequest {
     pub old_target: u64,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StateSyncUpsertType {
     Code,
     Account,
@@ -627,14 +633,36 @@ pub enum StateSyncUpsertType {
 }
 
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct StateSyncUpsert {
+pub struct StateSyncUpsertV0 {
     pub upsert_type: StateSyncUpsertType,
     pub data: Vec<u8>,
 }
 
-impl StateSyncUpsert {
-    pub fn new(upsert_type: StateSyncUpsertType, data: Vec<u8>) -> Self {
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct StateSyncUpsertV1 {
+    pub upsert_type: StateSyncUpsertType,
+    pub data: Bytes,
+}
+
+impl StateSyncUpsertV0 {
+    fn as_v1(&self) -> StateSyncUpsertV1 {
+        StateSyncUpsertV1 {
+            upsert_type: self.upsert_type,
+            data: Bytes::copy_from_slice(&self.data),
+        }
+    }
+}
+
+impl StateSyncUpsertV1 {
+    pub fn new(upsert_type: StateSyncUpsertType, data: Bytes) -> Self {
         Self { upsert_type, data }
+    }
+
+    fn as_v0(&self) -> StateSyncUpsertV0 {
+        StateSyncUpsertV0 {
+            upsert_type: self.upsert_type,
+            data: self.data.to_vec(),
+        }
     }
 }
 
@@ -667,6 +695,13 @@ impl Encodable for StateSyncUpsertType {
             }
         }
     }
+
+    fn length(&self) -> usize {
+        // max enum value is << 127
+        // the rlp encoding of integers between 0 and 127 is 1 byte.
+        // the rlp encoding of a list of 1 byte is always 2 bytes
+        2
+    }
 }
 
 impl Decodable for StateSyncUpsertType {
@@ -687,7 +722,7 @@ impl Decodable for StateSyncUpsertType {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StateSyncResponse {
     pub version: StateSyncVersion,
     pub nonce: u64,
@@ -695,8 +730,92 @@ pub struct StateSyncResponse {
 
     pub request: StateSyncRequest,
     // consensus state must validate that this sender is "trusted"
-    pub response: Vec<StateSyncUpsert>,
+    pub response: Vec<StateSyncUpsertV1>,
     pub response_n: u64,
+}
+
+impl Encodable for StateSyncResponse {
+    fn encode(&self, out: &mut dyn BufMut) {
+        // check if client version is past V1: upsert fork
+        if self.request.version >= STATESYNC_VERSION_V1 {
+            let enc: [&dyn Encodable; 6] = [
+                &self.version,
+                &self.nonce,
+                &self.response_index,
+                &self.request,
+                &self.response,
+                &self.response_n,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        } else {
+            let v0_response: Vec<StateSyncUpsertV0> =
+                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
+            let enc: [&dyn Encodable; 6] = [
+                &self.version,
+                &self.nonce,
+                &self.response_index,
+                &self.request,
+                &v0_response,
+                &self.response_n,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        }
+    }
+
+    fn length(&self) -> usize {
+        // check if client version is past V1: upsert fork
+        if self.request.version >= STATESYNC_VERSION_V1 {
+            let enc: Vec<&dyn Encodable> = vec![
+                &self.version,
+                &self.nonce,
+                &self.response_index,
+                &self.request,
+                &self.response,
+                &self.response_n,
+            ];
+            Encodable::length(&enc)
+        } else {
+            let v0_response: Vec<StateSyncUpsertV0> =
+                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
+            let enc: Vec<&dyn Encodable> = vec![
+                &self.version,
+                &self.nonce,
+                &self.response_index,
+                &self.request,
+                &v0_response,
+                &self.response_n,
+            ];
+            Encodable::length(&enc)
+        }
+    }
+}
+
+impl Decodable for StateSyncResponse {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let version = StateSyncVersion::decode(&mut payload)?;
+        let nonce = u64::decode(&mut payload)?;
+        let response_index = u32::decode(&mut payload)?;
+        let request = StateSyncRequest::decode(&mut payload)?;
+        // check if server version is past V1: upsert fork
+        let response: Vec<StateSyncUpsertV1> = if version >= STATESYNC_VERSION_V1 {
+            Vec::<StateSyncUpsertV1>::decode(&mut payload)?
+        } else {
+            let v0_response = Vec::<StateSyncUpsertV0>::decode(&mut payload)?;
+            v0_response.iter().map(StateSyncUpsertV0::as_v1).collect()
+        };
+        let response_n = u64::decode(&mut payload)?;
+
+        Ok(Self {
+            version,
+            nonce,
+            response_index,
+            request,
+            response,
+            response_n,
+        })
+    }
 }
 
 impl Debug for StateSyncResponse {
@@ -729,6 +848,20 @@ impl Encodable for StateSyncNetworkMessage {
             Self::Response(resp) => {
                 let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
                 encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        let name = STATESYNC_NETWORK_MESSAGE_NAME;
+        match self {
+            Self::Request(req) => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &1u8, &req];
+                Encodable::length(&enc)
+            }
+            Self::Response(resp) => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &2u8, &resp];
+                Encodable::length(&enc)
             }
         }
     }
@@ -978,5 +1111,99 @@ where
         b.put(&ev[..]);
 
         b.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
+        StateSyncVersion, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
+    };
+
+    #[test]
+    fn statesync_version_is_compatible() {
+        assert!(STATESYNC_VERSION_V0.is_compatible_with(&STATESYNC_VERSION_V1));
+        assert!(STATESYNC_VERSION_V1.is_compatible_with(&STATESYNC_VERSION_V0));
+    }
+
+    #[test]
+    fn statesync_version_ord() {
+        assert!(STATESYNC_VERSION_V0 < STATESYNC_VERSION_V1);
+    }
+
+    fn make_response(
+        client_version: StateSyncVersion,
+        server_version: StateSyncVersion,
+    ) -> StateSyncResponse {
+        StateSyncResponse {
+            version: server_version,
+            nonce: 0,
+            response_index: 0,
+            request: StateSyncRequest {
+                version: client_version,
+                prefix: 0,
+                prefix_bytes: 0,
+                target: 0,
+                from: 0,
+                until: 0,
+                old_target: 0,
+            },
+            response: vec![StateSyncUpsertV1 {
+                upsert_type: StateSyncUpsertType::Account,
+                data: vec![0xFF_u8; 100].into(),
+            }],
+            response_n: 0,
+        }
+    }
+
+    #[test]
+    fn statesync_version_v0_roundtrip() {
+        let response = make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0);
+        let serialized_response = alloy_rlp::encode(&response);
+        let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
+        if response != deserialized_response {
+            panic!("failed to roundtrip v0 statesync response")
+        }
+    }
+
+    #[test]
+    fn statesync_version_v1_roundtrip() {
+        let response = make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1);
+        let serialized_response = alloy_rlp::encode(&response);
+        let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
+        if response != deserialized_response {
+            panic!("failed to roundtrip v1 statesync response")
+        }
+    }
+
+    #[test]
+    fn statesync_version_v1_to_v0() {
+        // v0 client, v1 server
+        let response = alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V1));
+
+        // v0 format
+        let v0_response =
+            alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0));
+        // v1 format
+        let v1_response =
+            alloy_rlp::encode(make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1));
+        assert!(
+            v0_response.len() > v1_response.len(),
+            "v1 serializes smaller messages"
+        );
+
+        // use len as a proxy for format
+        // can't check pure equality, because the versions won't match in the serialized messages
+        assert_eq!(
+            response.len(),
+            v0_response.len(),
+            "v0 client can't understand v1 server"
+        );
+        assert_ne!(
+            response.len(),
+            v1_response.len(),
+            "v1 server sent v1 response to v0 client"
+        );
     }
 }
