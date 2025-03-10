@@ -281,7 +281,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::B256;
+    use alloy_consensus::Signed;
+    use alloy_primitives::{PrimitiveSignature, B256};
     use monad_consensus_types::payload::ConsensusBlockBodyInner;
     use monad_crypto::NopSignature;
     use monad_eth_testutil::make_legacy_tx;
@@ -422,6 +423,83 @@ mod test {
         });
 
         // block validation should return error
+        let result = block_validator.validate_block_body(
+            &payload,
+            10,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+            0x6000,
+        );
+        assert!(matches!(result, Err(BlockValidationError::TxnError)));
+    }
+
+    #[test]
+    fn test_invalid_eip2_signature() {
+        let block_validator: EthValidator<
+            NopSignature,
+            MockSignatures<NopSignature>,
+            InMemoryState,
+        > = EthValidator::new(1337);
+
+        let valid_txn = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
+
+        // create a block with the above transaction
+        let txs = vec![valid_txn.clone()];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+
+        // block validation should return Ok
+        let result = block_validator.validate_block_body(
+            &payload,
+            10,
+            PROPOSAL_GAS_LIMIT,
+            PROPOSAL_SIZE_LIMIT,
+            0x6000,
+        );
+        assert!(result.is_ok());
+
+        // ECDSA signature is malleable
+        // given a signature, we can form a second signature by computing additive inverse of s and flips v
+        let original_signature = valid_txn.signature();
+        let secp256k1_n = U256::from_str_radix(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap();
+        let new_s = secp256k1_n.saturating_sub(original_signature.s());
+
+        // form the new signature and transaction
+        let invalid_signature = PrimitiveSignature::from_scalars_and_parity(
+            original_signature.r().into(),
+            new_s.into(),
+            !original_signature.v(),
+        );
+        let inner_tx = valid_txn.as_legacy().unwrap().tx();
+        let invalid_txn: TxEnvelope =
+            Signed::new_unchecked(inner_tx.clone(), invalid_signature, *valid_txn.tx_hash()).into();
+
+        // both transactions recover to the same signer
+        assert_eq!(
+            valid_txn.recover_signer().unwrap(),
+            invalid_txn.recover_signer().unwrap()
+        );
+
+        // create a block with the above transaction
+        let txs = vec![invalid_txn];
+        let payload = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs,
+                ommers: Vec::new(),
+                withdrawals: Vec::new(),
+            },
+        });
+
+        // block validation should return Err
         let result = block_validator.validate_block_body(
             &payload,
             10,
