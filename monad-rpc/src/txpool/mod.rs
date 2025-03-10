@@ -16,7 +16,10 @@ use tokio::pin;
 use tracing::warn;
 
 pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};
-use self::{socket::SocketWatcher, state::EthTxPoolBridgeState};
+use self::{
+    socket::SocketWatcher,
+    state::{EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState},
+};
 
 mod client;
 mod handle;
@@ -41,6 +44,7 @@ pub struct EthTxPoolBridge {
     ipc_state: EthTxPoolBridgeIpcState,
 
     state: EthTxPoolBridgeState,
+    eviction_queue: EthTxPoolBridgeEvictionQueue,
 }
 
 impl EthTxPoolBridge {
@@ -54,7 +58,8 @@ impl EthTxPoolBridge {
 
         let (ipc_client, snapshot) = EthTxPoolIpcClient::new(bind_path).await?;
 
-        let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(snapshot);
+        let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
+        let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
 
         let (tx_sender, tx_receiver) = flume::bounded(1024);
 
@@ -66,6 +71,7 @@ impl EthTxPoolBridge {
             ipc_state: EthTxPoolBridgeIpcState::Ready,
 
             state,
+            eviction_queue,
         };
 
         let handle = EthTxPoolBridgeHandle::new(tokio::task::spawn(bridge.run(tx_receiver)));
@@ -82,7 +88,7 @@ impl EthTxPoolBridge {
                     let tx = result.unwrap();
 
                     for tx in std::iter::once(tx).chain(tx_receiver.drain()) {
-                        self.state.add_tx(&tx);
+                        self.state.add_tx(&mut self.eviction_queue, &tx);
 
                         if let Err(e) = self.feed(&tx).await {
                             warn!("IPC feed failed, monad-bft likely crashed: {}", e);
@@ -99,11 +105,11 @@ impl EthTxPoolBridge {
                         continue;
                     };
 
-                    self.state.handle_events(events);
+                    self.state.handle_events(&mut self.eviction_queue, events);
                 }
 
                 now = cleanup_timer.tick() => {
-                    self.state.cleanup(now);
+                    self.state.cleanup(&mut self.eviction_queue, now);
                 }
             }
         }
@@ -160,7 +166,7 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
                 match task.as_mut().poll(cx) {
                     Poll::Ready(result) => {
                         let (ipc_client, snapshot) = result?;
-                        this.state.apply_snapshot(snapshot);
+                        this.state.apply_snapshot(this.eviction_queue, snapshot);
 
                         *this.ipc_client = ipc_client;
                         ipc_state.set(EthTxPoolBridgeIpcState::Ready);

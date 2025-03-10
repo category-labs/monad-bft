@@ -1,6 +1,6 @@
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEvictReason};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TxStatus {
     // No response
     Unknown,
