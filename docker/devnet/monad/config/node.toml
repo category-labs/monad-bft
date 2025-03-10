@@ -58,5 +58,4 @@ max_mbps = 1000
 # Network-wide configuration
 #########################################################
 [consensus]
-block_txn_limit = 10_000
 execution_delay = 10
