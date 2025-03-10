@@ -17,7 +17,7 @@ use monad_triedb_utils::triedb_env::{
 };
 use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     block_handlers::{block_receipts, get_block_key_from_tag},
@@ -444,35 +444,39 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             let hash = *tx.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            if let Err(err) = txpool_bridge_client.try_send(tx) {
+            let (tx_status_send, tx_status_recv) = tokio::sync::oneshot::channel::<TxStatus>();
+
+            if let Err(err) = txpool_bridge_client.try_send(tx, tx_status_send) {
                 warn!(?err, "mempool ipc send error");
                 return Err(JsonRpcError::internal_error(
                     "unable to send to validator".into(),
                 ));
             }
 
-            for _ in 0..20 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                let response = match txpool_bridge_client.get_status_by_hash(&hash) {
-                    None | Some(TxStatus::Unknown) => continue,
-                    Some(TxStatus::Evicted { reason: _ } | TxStatus::Replaced) => {
-                        Err(JsonRpcError::custom("rejected".to_string()))
+            match tokio::time::timeout(Duration::from_secs(1), tx_status_recv).await {
+                Ok(Ok(tx_status)) => match tx_status {
+                    TxStatus::Evicted { reason: _ } | TxStatus::Replaced => {
+                        return Err(JsonRpcError::custom("rejected".to_string()))
                     }
-                    Some(TxStatus::Dropped { reason }) => {
-                        Err(JsonRpcError::custom(reason.as_user_string()))
+                    TxStatus::Dropped { reason } => {
+                        return Err(JsonRpcError::custom(reason.as_user_string()))
                     }
-                    Some(TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed) => {
-                        Ok(hash.to_string())
+                    TxStatus::Pending | TxStatus::Tracked | TxStatus::Committed => {
+                        return Ok(hash.to_string())
                     }
-                };
-                return response;
+                    TxStatus::Unknown => {
+                        error!("txpool bridge sent unknown status");
+                    }
+                },
+                Ok(Err(_)) | Err(_) => {
+                    warn!("txpool not responding");
+                }
             }
-            warn!("txpool not responding");
+
             return Err(JsonRpcError::custom("txpool not responding".to_string()));
         }
         Err(e) => {
-            debug!("eth txn decode failed {:?}", e);
+            debug!(?e, "eth txn decode failed");
             Err(JsonRpcError::txn_decode_error())
         }
     }

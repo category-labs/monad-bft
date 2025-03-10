@@ -15,17 +15,18 @@ use super::TxStatus;
 const TX_EVICT_DURATION_SECONDS: u64 = 15 * 60;
 
 pub(super) type EthTxPoolBridgeEvictionQueue = VecDeque<(Instant, TxHash)>;
+pub(super) type TxStatusSender = tokio::sync::oneshot::Sender<TxStatus>;
 
 #[derive(Clone)]
 pub struct EthTxPoolBridgeStateView {
-    status: Arc<DashMap<TxHash, TxStatus>>,
+    status: Arc<DashMap<TxHash, (TxStatus, Option<TxStatusSender>)>>,
     hash_address: Arc<DashMap<TxHash, Address>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
 }
 
 impl EthTxPoolBridgeStateView {
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
-        Some(self.status.get(hash)?.value().to_owned())
+        Some(self.status.get(hash)?.value().0.to_owned())
     }
 
     pub(super) fn get_status_by_address(
@@ -37,7 +38,7 @@ impl EthTxPoolBridgeStateView {
         let statuses = hashes
             .into_iter()
             .flat_map(|hash| {
-                let status = self.status.get(&hash)?.value().to_owned();
+                let status = self.status.get(&hash)?.value().0.to_owned();
                 Some((hash, status))
             })
             .collect();
@@ -58,7 +59,7 @@ impl EthTxPoolBridgeStateView {
 }
 
 pub struct EthTxPoolBridgeState {
-    status: Arc<DashMap<TxHash, TxStatus>>,
+    status: Arc<DashMap<TxHash, (TxStatus, Option<TxStatusSender>)>>,
     hash_address: Arc<DashMap<TxHash, Address>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
 }
@@ -91,9 +92,12 @@ impl EthTxPoolBridgeState {
         &self,
         eviction_queue: &mut EthTxPoolBridgeEvictionQueue,
         tx: &TxEnvelope,
+        tx_status_send: TxStatusSender,
     ) {
         let hash = tx.tx_hash();
-        self.status.entry(*hash).insert(TxStatus::Unknown);
+        self.status
+            .entry(*hash)
+            .insert((TxStatus::Unknown, Some(tx_status_send)));
         eviction_queue.push_back((Instant::now(), *hash));
     }
 
@@ -112,14 +116,16 @@ impl EthTxPoolBridgeState {
         while eviction_queue.pop_front().is_some() {}
 
         self.status.retain(|tx_hash, status| {
+            status.1 = None;
+
             if pending.remove(tx_hash) {
-                *status = TxStatus::Pending;
+                status.0 = TxStatus::Pending;
                 eviction_queue.push_back((now, *tx_hash));
                 return true;
             }
 
             if tracked.remove(tx_hash) {
-                *status = TxStatus::Tracked;
+                status.0 = TxStatus::Tracked;
                 eviction_queue.push_back((now, *tx_hash));
                 return true;
             }
@@ -136,12 +142,12 @@ impl EthTxPoolBridgeState {
         });
 
         for tx_hash in pending {
-            self.status.insert(tx_hash, TxStatus::Pending);
+            self.status.insert(tx_hash, (TxStatus::Pending, None));
             eviction_queue.push_back((now, tx_hash));
         }
 
         for tx_hash in tracked {
-            self.status.insert(tx_hash, TxStatus::Tracked);
+            self.status.insert(tx_hash, (TxStatus::Tracked, None));
             eviction_queue.push_back((now, tx_hash));
         }
 
@@ -155,13 +161,17 @@ impl EthTxPoolBridgeState {
     ) {
         let now = Instant::now();
 
-        let mut insert = |tx_hash, status| {
+        let mut modified_tx_hashes = HashSet::<TxHash>::default();
+
+        let mut insert = |tx_hash, tx_status: TxStatus| {
+            modified_tx_hashes.insert(tx_hash);
+
             match self.status.entry(tx_hash) {
                 Entry::Occupied(mut o) => {
-                    o.insert(status);
+                    o.get_mut().0 = tx_status;
                 }
                 Entry::Vacant(v) => {
-                    v.insert(status);
+                    v.insert((tx_status, None));
                     eviction_queue.push_back((now, tx_hash));
                 }
             };
@@ -219,6 +229,18 @@ impl EthTxPoolBridgeState {
                     insert(tx_hash, TxStatus::Evicted { reason });
                 }
             }
+        }
+
+        for tx_hash in modified_tx_hashes {
+            let Some(mut o) = self.status.get_mut(&tx_hash) else {
+                continue;
+            };
+
+            let Some(tx_status_send) = o.1.take() else {
+                continue;
+            };
+
+            let _ = tx_status_send.send(o.0.clone());
         }
     }
 
@@ -299,7 +321,7 @@ mod test {
         assert_eq!(state.status.len(), 0);
         assert_eq!(state_view.status.len(), 0);
 
-        state.add_tx(&mut eviction_queue, &tx);
+        state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0);
 
         assert_eq!(state.status.len(), 1);
         assert_eq!(state_view.status.len(), 1);
@@ -311,7 +333,7 @@ mod test {
 
         assert_eq!(state_view.get_status_by_hash(tx.tx_hash()), None);
 
-        state.add_tx(&mut eviction_queue, &tx);
+        state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0);
         assert_eq!(
             state_view.get_status_by_hash(tx.tx_hash()),
             Some(TxStatus::Unknown)
@@ -351,7 +373,7 @@ mod test {
         ] {
             let (state, state_view, mut eviction_queue, tx) = setup();
 
-            state.add_tx(&mut eviction_queue, &tx);
+            state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0);
             assert_eq!(
                 state_view.get_status_by_hash(tx.tx_hash()),
                 Some(TxStatus::Unknown)
@@ -617,7 +639,7 @@ mod test {
             assert_eq!(eviction_queue.len(), 0);
             assert_eq!(state_view.status.len(), 0);
 
-            state.add_tx(&mut eviction_queue, &tx);
+            state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0);
             assert_eq!(eviction_queue.len(), 1);
             assert_eq!(state_view.status.len(), 1);
 
@@ -637,7 +659,7 @@ mod test {
             assert_eq!(state_view.status.len(), 1);
 
             if add_duplicate_tx {
-                state.add_tx(&mut eviction_queue, &tx);
+                state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0);
                 assert_eq!(eviction_queue.len(), 2);
                 assert_eq!(state_view.status.len(), 1);
 
