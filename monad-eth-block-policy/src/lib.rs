@@ -110,6 +110,11 @@ pub fn static_validate_transaction(
     proposal_gas_limit: u64,
     max_code_size: usize,
 ) -> Result<(), TransactionError> {
+    // EIP-2 - verify that s is in the lower half of the curve
+    if tx.signature().normalize_s().is_some() {
+        return Err(TransactionError::UnsupportedTransactionType);
+    }
+
     // EIP-155
     // We allow legacy transactions without chain_id specified to pass through
     if let Some(tx_chain_id) = tx.chain_id() {
