@@ -4899,6 +4899,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
  "bindgen",
  "cmake",
  "futures",

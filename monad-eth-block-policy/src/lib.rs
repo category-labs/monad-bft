@@ -791,8 +791,10 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, FixedBytes, PrimitiveSignature, TxKind, B256};
+    use alloy_primitives::{Address, Bytes, FixedBytes, PrimitiveSignature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_crypto::NopSignature;
@@ -1086,6 +1088,26 @@ mod test {
 
         let result = static_validate_transaction(&txn.into(), CHAIN_ID, PROPOSAL_GAS_LIMIT, 0x6000);
         assert!(matches!(result, Err(TransactionError::GasLimitTooHigh)));
+    }
+
+    #[test]
+    fn test_compute_intrinsic_gas() {
+        const CHAIN_ID: u64 = 1337;
+        let tx = TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            to: TxKind::Create,
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10,
+            gas_limit: 1_000_000,
+            input: Bytes::from_str("0x6040608081523462000414").unwrap(),
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx.signature_hash());
+        let tx = tx.into_signed(signature);
+
+        let result = compute_intrinsic_gas(&tx.into());
+        assert_eq!(result, 53166);
     }
 
     // TODO: check accounts for previous transactions in the block

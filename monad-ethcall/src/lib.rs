@@ -9,6 +9,7 @@ use alloy_consensus::{Header, Transaction as _, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, B256, U256, U64};
 use alloy_rlp::Encodable;
+use alloy_sol_types::decode_revert_reason;
 use bindings::monad_eth_call_result;
 use futures::channel::oneshot::{channel, Sender};
 use serde::{Deserialize, Serialize};
@@ -297,9 +298,12 @@ pub async fn eth_call(
                     };
 
                     let message = String::from("execution reverted");
-                    let error_message = decode_revert_message(&output_data);
+                    let formatted_message = match decode_revert_message(&output_data) {
+                        Some(error_message) => format!("{}: {}", message, error_message),
+                        None => message,
+                    };
                     CallResult::Failure(FailureCallResult {
-                        message: message + ": " + &error_message,
+                        message: formatted_message,
                         data: Some(format!("0x{}", hex::encode(&output_data))),
                     })
                 } else {
@@ -331,26 +335,43 @@ pub async fn eth_call(
     }
 }
 
-pub fn decode_revert_message(output_data: &[u8]) -> String {
+pub fn decode_revert_message(output_data: &[u8]) -> Option<String> {
     // https://docs.soliditylang.org/en/latest/control-structures.html#revert
-    // https://github.com/ethereum/execution-apis/blob/main/tests/eth_call/call-revert-abi-error.io
-    // if there is an error message to be decoded, output_data will be the following form:
-    // 4 bytes function signature
-    // 32 bytes data offset
-    // 32 bytes error message length (let's call it x)
-    // x bytes error message (padded to multiple of 32 bytes)
-    let message_start_index = 68_usize;
-    if output_data.len() > message_start_index {
-        // we only return the first 256 bytes of the error message
-        let message_length = output_data[message_start_index - 1] as usize;
-        let message_end_index = message_start_index + message_length;
-        if output_data.len() >= message_end_index {
-            // extract the message bytes
-            let message_bytes = &output_data[message_start_index..message_end_index];
-
-            // attempt to decode the message bytes as UTF-8
-            return String::from_utf8(message_bytes.to_vec()).unwrap_or_default();
+    decode_revert_reason(output_data).and_then(|message| {
+        let parsed_message = message
+            .strip_prefix("revert: ")
+            .or_else(|| message.strip_prefix("panic: "))
+            .unwrap_or(&message)
+            .trim();
+        if parsed_message.is_empty() {
+            None
+        } else {
+            Some(parsed_message.to_string())
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::hex;
+
+    use super::*;
+
+    #[test]
+    fn test_decode_revert_message() {
+        // https://github.com/ethereum/execution-apis/blob/37c2b9e/tests/eth_call/call-revert-abi-error.io
+        let data = hex::decode(
+            "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000a75736572206572726f72"
+        ).unwrap();
+        let message = decode_revert_message(&data).unwrap();
+        assert_eq!(message, String::from("user error"));
+
+        // https://github.com/ethereum/execution-apis/blob/37c2b9e/tests/eth_call/call-revert-abi-panic.io
+        let data = hex::decode(
+            "0x4e487b710000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
+        let message = decode_revert_message(&data).unwrap();
+        assert_eq!(message, String::from("assertion failed (0x01)"));
     }
-    String::new()
 }

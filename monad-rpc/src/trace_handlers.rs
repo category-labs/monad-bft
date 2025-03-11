@@ -158,7 +158,7 @@ impl From<CallFrame> for MonadCallFrame {
 
         let revert_reason = error
             .as_ref()
-            .map(|_| monad_ethcall::decode_revert_message(&value.output));
+            .and_then(|_| monad_ethcall::decode_revert_message(&value.output));
 
         Self {
             typ: value.typ,
@@ -591,7 +591,7 @@ mod tests {
 
         let resp = resp.unwrap();
         assert_eq!(resp.error, Some("execution reverted".to_string()));
-        assert!(resp.revert_reason.is_some());
+        assert!(resp.revert_reason.is_none());
         assert_eq!(resp.calls.len(), 0);
         assert_eq!(
             resp.from.0,
