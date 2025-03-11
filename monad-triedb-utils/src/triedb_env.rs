@@ -487,6 +487,11 @@ pub trait Triedb: Debug {
     /// returns a FinalizedBlockKey if latest_voted doesn't exist
     fn get_latest_voted_block_key(&self) -> BlockKey;
     fn get_block_key(&self, block_num: SeqNum) -> BlockKey;
+    /// returns whether block number is available in triedb
+    fn get_state_availability(
+        &self,
+        key: BlockKey,
+    ) -> impl std::future::Future<Output = Result<bool, String>> + Send;
 
     fn get_account(
         &self,
@@ -696,6 +701,48 @@ impl Triedb for TriedbEnv {
         } else {
             // this seq_num is finalized
             BlockKey::Finalized(FinalizedBlockKey(seq_num))
+        }
+    }
+
+    async fn get_state_availability(&self, block_key: BlockKey) -> Result<bool, String> {
+        // create a one shot channel to retrieve the triedb result from the polling thread
+        let (request_sender, request_receiver) = oneshot::channel();
+
+        let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), KeyInput::State);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_key,
+            }))
+        {
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
+        }
+
+        // await the result using request_receiver
+        match request_receiver.await {
+            Ok(result) => {
+                // sanity check to ensure completed_counter is equal to 1
+                if completed_counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return Err(String::from("error reading from db"));
+                }
+
+                match result {
+                    Some(_) => Ok(true),
+                    None => Ok(false),
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
         }
     }
 

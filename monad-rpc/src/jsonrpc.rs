@@ -208,7 +208,10 @@ impl JsonRpcError {
     pub fn block_not_found() -> Self {
         Self {
             code: -32602,
-            message: "Block requested not found".into(),
+            message: "Block requested not found. Request might be querying \
+                      historical state that is not available. If possible, \
+                      reformulate query to point to more recent blocks"
+                .into(),
             data: None,
         }
     }

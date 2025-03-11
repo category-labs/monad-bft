@@ -26,6 +26,7 @@ pub enum Version {
 }
 
 pub enum KeyInput<'a> {
+    State,
     Address(&'a [u8; 20]),
     Storage(&'a [u8; 20], &'a [u8; 32]),
     CodeHash(&'a [u8; 32]),
@@ -55,6 +56,7 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, u8) {
     };
 
     match key {
+        KeyInput::State => key_nibbles.push(STATE_NIBBLE),
         KeyInput::Address(addr) => {
             key_nibbles.push(STATE_NIBBLE);
             let hashed_addr = keccak256(addr);

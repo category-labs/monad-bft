@@ -32,7 +32,14 @@ pub async fn monad_eth_getBalance<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    Ok(format!("0x{:x}", account.balance))
+    match triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        true => Ok(format!("0x{:x}", account.balance)),
+        false => Err(JsonRpcError::block_not_found()),
+    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -56,10 +63,19 @@ pub async fn monad_eth_getCode<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    triedb_env
+    let code = triedb_env
         .get_code(block_key, account.code_hash)
         .await
-        .map_err(JsonRpcError::internal_error)
+        .map_err(JsonRpcError::internal_error)?;
+
+    match triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        true => Ok(code),
+        false => Err(JsonRpcError::block_not_found()),
+    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -79,10 +95,19 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
     trace!("monad_eth_getStorageAt: {params:?}");
 
     let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
-    triedb_env
+    let storage_value = triedb_env
         .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
         .await
-        .map_err(JsonRpcError::internal_error)
+        .map_err(JsonRpcError::internal_error)?;
+
+    match triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        true => Ok(storage_value),
+        false => Err(JsonRpcError::block_not_found()),
+    }
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -106,7 +131,14 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
         .await
         .map_err(JsonRpcError::internal_error)?;
 
-    Ok(format!("0x{:x}", account.nonce))
+    match triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        true => Ok(format!("0x{:x}", account.nonce)),
+        false => Err(JsonRpcError::block_not_found()),
+    }
 }
 
 #[allow(non_snake_case)]

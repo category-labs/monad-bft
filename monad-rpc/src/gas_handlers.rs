@@ -196,6 +196,14 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
     };
 
     let block_key = get_block_key_from_tag(triedb_env, params.block);
+    let version_exist = triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+    if !version_exist {
+        return Err(JsonRpcError::block_not_found());
+    }
+
     let mut header = match triedb_env
         .get_block_header(block_key)
         .await

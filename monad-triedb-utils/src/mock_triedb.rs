@@ -50,6 +50,13 @@ impl Triedb for MockTriedb {
         BlockKey::Finalized(FinalizedBlockKey(block_num))
     }
 
+    fn get_state_availability(
+        &self,
+        _key: BlockKey,
+    ) -> impl std::future::Future<Output = Result<bool, String>> + Send {
+        ready(Ok(true))
+    }
+
     fn get_account(
         &self,
         _block_key: BlockKey,
