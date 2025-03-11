@@ -260,6 +260,12 @@ impl JsonRpcError {
     }
 }
 
+impl From<serde_json::Error> for JsonRpcError {
+    fn from(_: serde_json::Error) -> Self {
+        JsonRpcError::parse_error()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use serde_json::Value;

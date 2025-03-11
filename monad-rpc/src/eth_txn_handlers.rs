@@ -443,7 +443,6 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             }
 
             let hash = *tx.tx_hash();
-            debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
             if let Err(err) = ipc.try_send(tx) {
                 warn!(?err, "mempool ipc send error");

@@ -95,18 +95,15 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use actix_http::{ws, ws::Frame};
     use actix_web::{web, App};
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
-    use tokio::sync::Semaphore;
     use tracing_actix_web::TracingLogger;
 
     use crate::{
         tests::MonadRpcResourcesState, EthTxPoolBridgeState, FixedFee, MonadJsonRootSpanBuilder,
-        MonadRpcResources,
+        MonadRpcResources, MonadRpcServer,
     };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
@@ -121,7 +118,6 @@ mod tests {
             batch_request_limit: 1000,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
-            rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
         };
         (
@@ -131,7 +127,7 @@ mod tests {
                     .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                     .app_data(web::PayloadConfig::default().limit(8192))
                     .app_data(web::Data::new(resources.clone()))
-                    .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
+                    .service(web::resource("/").route(web::post().to(MonadRpcServer::rpc_handler)))
                     .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
             }),
         )
