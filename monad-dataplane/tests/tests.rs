@@ -1,6 +1,6 @@
 use std::{sync::Once, thread::sleep, time::Duration};
 
-use futures::executor;
+use futures::{channel::oneshot, executor};
 use monad_dataplane::{
     udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, TcpMsg, UnicastMsg,
 };
@@ -107,14 +107,17 @@ fn tcp_slow() {
         .collect();
 
     for _ in 0..num_msgs {
+        let (sender, receiver) = oneshot::channel::<()>();
+
         tx.tcp_write(
             rx_addr,
             TcpMsg {
                 msg: payload.clone().into(),
-                completion: None,
+                completion: Some(sender),
             },
         );
-        sleep(Duration::from_millis(10));
+
+        assert!(executor::block_on(receiver).is_ok());
     }
 
     for _ in 0..num_msgs {
@@ -143,14 +146,24 @@ fn tcp_rapid() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
+    let mut completions = Vec::with_capacity(num_msgs);
+
     for _ in 0..num_msgs {
+        let (sender, receiver) = oneshot::channel::<()>();
+
         tx.tcp_write(
             rx_addr,
             TcpMsg {
                 msg: payload.clone().into(),
-                completion: None,
+                completion: Some(sender),
             },
         );
+
+        completions.push(receiver);
+    }
+
+    for receiver in completions {
+        assert!(executor::block_on(receiver).is_ok());
     }
 
     for _ in 0..num_msgs {
@@ -160,6 +173,37 @@ fn tcp_rapid() {
     }
 }
 
+#[test]
+#[timeout(1000)]
+fn tcp_fail() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9008".parse().unwrap();
+    let tx_addr = "127.0.0.1:9009".parse().unwrap();
+
+    // let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    let (sender, receiver) = oneshot::channel::<()>();
+
+    tx.tcp_write(
+        rx_addr,
+        TcpMsg {
+            msg: payload.into(),
+            completion: Some(sender),
+        },
+    );
+
+    assert!(executor::block_on(receiver).is_err());
+}
+
 const MINIMUM_SEGMENT_SIZE: u16 = 256;
 
 #[test]
@@ -167,8 +211,8 @@ const MINIMUM_SEGMENT_SIZE: u16 = 256;
 fn broadcast_all_strides() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9008".parse().unwrap();
-    let tx_addr = "127.0.0.1:9009".parse().unwrap();
+    let rx_addr = "127.0.0.1:9010".parse().unwrap();
+    let tx_addr = "127.0.0.1:9011".parse().unwrap();
 
     let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
     let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
@@ -210,8 +254,8 @@ fn broadcast_all_strides() {
 fn unicast_all_strides() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9010".parse().unwrap();
-    let tx_addr = "127.0.0.1:9011".parse().unwrap();
+    let rx_addr = "127.0.0.1:9012".parse().unwrap();
+    let tx_addr = "127.0.0.1:9013".parse().unwrap();
 
     let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
     let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
