@@ -12,6 +12,9 @@ pub struct EthTxPoolExecutorMetrics {
     pub create_proposal: AtomicU64,
     pub create_proposal_elapsed_ns: AtomicU64,
 
+    pub preload_backend_lookups: AtomicU64,
+    pub preload_backend_requests: AtomicU64,
+
     pub pool: EthTxPoolMetrics,
 }
 
@@ -25,6 +28,11 @@ impl EthTxPoolExecutorMetrics {
         metrics["monad.bft.txpool.create_proposal"] = self.create_proposal.load(Ordering::SeqCst);
         metrics["monad.bft.txpool.create_proposal_elapsed_ns"] =
             self.create_proposal_elapsed_ns.load(Ordering::SeqCst);
+
+        metrics["monad.bft.txpool.preload_backend_lookups"] =
+            self.preload_backend_lookups.load(Ordering::SeqCst);
+        metrics["monad.bft.txpool.preload_backend_requests"] =
+            self.preload_backend_requests.load(Ordering::SeqCst);
 
         self.pool.update(metrics);
     }

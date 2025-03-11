@@ -3,6 +3,7 @@ use std::time::Duration;
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
+use alloy_primitives::Address;
 use itertools::Itertools;
 use monad_consensus_types::{
     block::ProposedExecutionInputs, payload::RoundSignature,
@@ -28,7 +29,9 @@ mod transaction;
 // This constants controls the maximum number of addresses that get promoted during the tx insertion
 // process. It was set based on intuition and should be changed once we have more data on txpool
 // performance.
-const INSERT_TXS_MAX_PROMOTE: usize = 64;
+// Each account lookup takes about 30us so this should block the thread for at most roughly 8ms.
+const INSERT_TXS_MAX_PROMOTE: usize = 256;
+const PENDING_MAX_PROMOTE: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct EthTxPool<ST, SCT, SBT>
@@ -197,6 +200,24 @@ where
         self.update_aggregate_metrics(event_tracker);
     }
 
+    pub fn promote_pending(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        block_policy: &EthBlockPolicy<ST, SCT>,
+        state_backend: &SBT,
+    ) {
+        if !self.tracked.try_promote_pending(
+            event_tracker,
+            block_policy,
+            state_backend,
+            &mut self.pending,
+            0,
+            PENDING_MAX_PROMOTE,
+        ) {
+            warn!("txpool failed to promote during promote_pending call");
+        }
+    }
+
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
@@ -335,5 +356,14 @@ where
                 .map(ValidEthTransaction::hash)
                 .collect(),
         }
+    }
+
+    pub fn generate_sender_snapshot(&self) -> Vec<Address> {
+        self.tracked
+            .iter_txs()
+            .map(ValidEthTransaction::signer)
+            .chain(self.pending.iter_txs().map(ValidEthTransaction::signer))
+            .unique()
+            .collect()
     }
 }

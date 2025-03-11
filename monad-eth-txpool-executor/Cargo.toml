@@ -24,9 +24,11 @@ monad-types = { workspace = true }
 monad-updaters = { workspace = true, features = ["tokio"] }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 pin-project = { workspace = true }
 rayon = { workspace = true }

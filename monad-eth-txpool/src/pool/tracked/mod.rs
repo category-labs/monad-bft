@@ -205,6 +205,7 @@ where
             tx_heap_len,
             tx_heap_len = tx_heap.len(),
             account_balances = account_balances.len(),
+            ?account_balance_lookups,
             "txpool sequencing transactions"
         );
 

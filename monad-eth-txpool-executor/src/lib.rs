@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     io,
     marker::PhantomData,
     pin::Pin,
@@ -11,6 +12,7 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 use futures::Stream;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -29,16 +31,20 @@ use monad_types::DropTimer;
 use monad_updaters::TokioTaskUpdater;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub use self::ipc::EthTxPoolIpcConfig;
 use self::{
-    forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer, metrics::EthTxPoolExecutorMetrics,
+    forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer,
+    metrics::EthTxPoolExecutorMetrics, preload::EthTxPoolPreloadManager,
 };
 
 mod forward;
 mod ipc;
 mod metrics;
+mod preload;
+
+const PROMOTE_PENDING_INTERVAL_MS: u64 = 2;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -61,6 +67,8 @@ where
     events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
+    preload_manager: Pin<Box<EthTxPoolPreloadManager>>,
+    promote_pending_timer: tokio::time::Interval,
 
     metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
@@ -101,6 +109,11 @@ where
             {
                 let metrics = metrics.clone();
 
+                let mut promote_pending_timer =
+                    tokio::time::interval(Duration::from_millis(PROMOTE_PENDING_INTERVAL_MS));
+                promote_pending_timer
+                    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
                 move |command_rx, event_tx| {
                     let pool = EthTxPool::new(
                         do_local_insert,
@@ -123,6 +136,8 @@ where
                         events,
 
                         forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+                        preload_manager: Box::pin(EthTxPoolPreloadManager::default()),
+                        promote_pending_timer,
 
                         metrics,
                         executor_metrics,
@@ -189,6 +204,9 @@ where
                             &committed_block,
                         );
 
+                        self.preload_manager
+                            .update_committed_block(&committed_block);
+
                         let execution_revision = self.chain_config.get_execution_chain_revision(
                             committed_block.header().execution_inputs.timestamp,
                         );
@@ -220,6 +238,8 @@ where
                     extending_blocks,
                     delayed_execution_results,
                 } => {
+                    self.preload_manager.update_on_create_proposal(seq_num);
+
                     let create_proposal_start = Instant::now();
 
                     match self.pool.create_proposal(
@@ -319,7 +339,7 @@ where
                 TxPoolCommand::EnterRound {
                     epoch: _,
                     round,
-                    upcoming_leader_rounds: _,
+                    upcoming_leader_rounds,
                 } => {
                     let proposal_gas_limit = self
                         .chain_config
@@ -327,6 +347,18 @@ where
                         .chain_params()
                         .proposal_gas_limit;
                     self.pool.set_tx_gas_limit(proposal_gas_limit);
+
+                    debug!(
+                        ?round,
+                        "txpool executor entered round, submitting preload requests"
+                    );
+
+                    self.preload_manager.enter_round(
+                        round,
+                        self.block_policy.get_last_commit(),
+                        upcoming_leader_rounds,
+                        || self.pool.generate_sender_snapshot(),
+                    );
                 }
                 TxPoolCommand::Reset {
                     last_delay_committed_blocks,
@@ -396,6 +428,8 @@ where
             events,
 
             forwarding_manager,
+            preload_manager,
+            promote_pending_timer,
 
             metrics,
             executor_metrics,
@@ -422,19 +456,23 @@ where
         while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
             let mut ipc_events = Vec::default();
 
+            let mut inserted_addresses = HashSet::<Address>::default();
+
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
                 forwarded_txs,
                 false,
-                |_| {},
+                |tx| {
+                    inserted_addresses.insert(tx.signer());
+                },
             );
 
             metrics.update(executor_metrics);
-
             ipc.as_mut().broadcast_tx_events(&ipc_events);
 
+            preload_manager.add_requests(inserted_addresses.iter());
             forwarding_manager.as_mut().complete_ingress();
         }
 
@@ -442,6 +480,7 @@ where
         {
             let mut ipc_events = Vec::default();
             let mut inserted_txs = Vec::default();
+            let mut inserted_addresses = HashSet::<Address>::default();
 
             let recovered_txs = {
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
@@ -466,18 +505,70 @@ where
                 recovered_txs,
                 true,
                 |tx| {
+                    inserted_addresses.insert(tx.signer());
                     let tx: &TxEnvelope = tx.raw().tx();
                     inserted_txs.push(alloy_rlp::encode(tx).into());
                 },
             );
 
             metrics.update(executor_metrics);
-
             ipc.as_mut().broadcast_tx_events(&ipc_events);
+            preload_manager.add_requests(inserted_addresses.iter());
 
             return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
                 inserted_txs,
             ))));
+        }
+
+        while promote_pending_timer.poll_tick(cx).is_ready() {
+            let mut ipc_events = Vec::default();
+
+            pool.promote_pending(
+                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
+                block_policy,
+                state_backend,
+            );
+
+            metrics.update(executor_metrics);
+            ipc.as_mut().broadcast_tx_events(&ipc_events);
+
+            promote_pending_timer.reset();
+        }
+
+        while let Poll::Ready((predicted_proposal_seqnum, addresses)) =
+            preload_manager.as_mut().poll_requests(cx)
+        {
+            debug!(
+                ?predicted_proposal_seqnum,
+                "txpool executor preloading account balances"
+            );
+
+            let total_db_lookups_before = state_backend.total_db_lookups();
+
+            if let Err(state_backend_error) = block_policy.compute_account_base_balances(
+                predicted_proposal_seqnum,
+                state_backend,
+                None,
+                addresses.iter(),
+            ) {
+                warn!(
+                    ?state_backend_error,
+                    "txpool executor failed to preload account balances"
+                )
+            }
+
+            metrics.preload_backend_lookups.fetch_add(
+                state_backend.total_db_lookups() - total_db_lookups_before,
+                Ordering::SeqCst,
+            );
+            metrics
+                .preload_backend_requests
+                .fetch_add(addresses.len() as u64, Ordering::SeqCst);
+
+            metrics.update(executor_metrics);
+
+            preload_manager
+                .complete_polled_requests(predicted_proposal_seqnum, addresses.into_iter());
         }
 
         Poll::Pending

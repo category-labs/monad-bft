@@ -4776,6 +4776,7 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "futures",
+ "indexmap 2.7.0",
  "itertools 0.10.5",
  "monad-chain-config",
  "monad-consensus-types",
