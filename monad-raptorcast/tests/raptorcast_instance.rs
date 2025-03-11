@@ -17,7 +17,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
-    udp::{build_messages, build_messages_with_length},
+    udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
     RaptorCast, RaptorCastConfig, RaptorCastEvent,
 };
@@ -34,12 +34,19 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 pub fn different_symbol_sizes() {
     let tx_addr = "127.0.0.1:10000".parse().unwrap();
     let rx_addr = "127.0.0.1:10001".parse().unwrap();
+    let rebroadcast_addr = "127.0.0.1:10002".parse().unwrap();
 
-    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
+        set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
 
     let message: Bytes = vec![0; 100 * 1000].into();
 
     let tx_socket = UdpSocket::bind(tx_addr).unwrap();
+
+    let rebroadcast_socket = UdpSocket::bind(rebroadcast_addr).unwrap();
+    rebroadcast_socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
 
     // Generate differently-sized encoded symbols that look like they are part of the same
     // message.  For the RaptorCast receiver to think that they are part of the same message,
@@ -92,6 +99,15 @@ pub fn different_symbol_sizes() {
 
     // Wait for RaptorCast instance to catch up.
     std::thread::sleep(Duration::from_millis(100));
+
+    // Verify that the rebroadcast target receives the first symbol.
+    let _ = rebroadcast_socket.recv(&mut []).unwrap();
+
+    // Verify that the rebroadcast target never receives another symbol of different length.
+    assert_eq!(
+        rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
 }
 
 // Try to crash the R10 decoder by feeding it more than 2^16 encoded symbols.
@@ -100,8 +116,8 @@ pub fn different_symbol_sizes() {
 // of buffer indices in the decoder and panic the decoder.
 #[test]
 pub fn buffer_count_overflow() {
-    let tx_addr = "127.0.0.1:10002".parse().unwrap();
-    let rx_addr = "127.0.0.1:10003".parse().unwrap();
+    let tx_addr = "127.0.0.1:10003".parse().unwrap();
+    let rx_addr = "127.0.0.1:10004".parse().unwrap();
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
@@ -155,8 +171,8 @@ pub fn buffer_count_overflow() {
 // would fail.
 #[test]
 pub fn oversized_message() {
-    let tx_addr = "127.0.0.1:10004".parse().unwrap();
-    let rx_addr = "127.0.0.1:10005".parse().unwrap();
+    let tx_addr = "127.0.0.1:10005".parse().unwrap();
+    let rx_addr = "127.0.0.1:10006".parse().unwrap();
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) = set_up_test(&tx_addr, &rx_addr, None);
 
@@ -207,8 +223,8 @@ pub fn oversized_message() {
 // which would then call .step_by(0) on (0..0), which panics.
 #[test]
 pub fn zero_sized_packet() {
-    let tx_addr = "127.0.0.1:10006".parse().unwrap();
-    let rx_addr = "127.0.0.1:10007".parse().unwrap();
+    let tx_addr = "127.0.0.1:10007".parse().unwrap();
+    let rx_addr = "127.0.0.1:10008".parse().unwrap();
 
     let (_tx_nodeid, _tx_keypair, _rx_nodeid, _known_addresses) =
         set_up_test(&tx_addr, &rx_addr, None);
@@ -225,13 +241,13 @@ pub fn zero_sized_packet() {
     std::thread::sleep(Duration::from_millis(100));
 }
 
-// Verify that received encoded symbols are only rebroadcast when they are received for
-// the first time.
+// Verify that all received encoded symbols that are valid are rebroadcast
+// exactly once.
 #[test]
-pub fn duplicate_rebroadcast() {
-    let tx_addr = "127.0.0.1:10008".parse().unwrap();
-    let rx_addr = "127.0.0.1:10009".parse().unwrap();
-    let rebroadcast_addr = "127.0.0.1:10010".parse().unwrap();
+pub fn valid_rebroadcast() {
+    let tx_addr = "127.0.0.1:10009".parse().unwrap();
+    let rx_addr = "127.0.0.1:10010".parse().unwrap();
+    let rebroadcast_addr = "127.0.0.1:10011".parse().unwrap();
 
     let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses) =
         set_up_test(&tx_addr, &rx_addr, Some(&rebroadcast_addr));
@@ -259,34 +275,39 @@ pub fn duplicate_rebroadcast() {
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        2, // redundancy,
-        0, // epoch_no
-        0, // unix_ts_ms
+        MAX_REDUNDANCY as u8, // redundancy,
+        0,                    // epoch_no
+        0,                    // unix_ts_ms
         BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
         &known_addresses,
     );
 
-    // Send 5 copies of the first symbol of the first message.
-    for _ in 0..5 {
-        tx_socket
-            .send_to(
-                &messages[0].1[0..usize::from(DEFAULT_SEGMENT_SIZE)],
-                messages[0].0,
-            )
-            .unwrap();
+    for i in 0..=1 {
+        let mut num_chunks = 0;
+        for message in &messages {
+            for chunk in message.1.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
+                tx_socket.send_to(chunk, message.0).unwrap();
+
+                num_chunks += 1;
+            }
+        }
+
+        // Wait for all rebroadcasting activity to complete.
+        std::thread::sleep(Duration::from_millis(100));
+
+        if i == 0 {
+            for _ in 0..num_chunks {
+                // Verify that the rebroadcast target receives a copy of every symbol.
+                let _ = rebroadcast_socket.recv(&mut []).unwrap();
+            }
+        } else {
+            // Verify that the rebroadcast target has nothing more to receive.
+            assert_eq!(
+                rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
+                ErrorKind::WouldBlock
+            );
+        }
     }
-
-    // Wait for all rebroadcasting activity to complete.
-    std::thread::sleep(Duration::from_millis(10));
-
-    // Verify that the rebroadcast target receives one copy of the symbol.
-    let _ = rebroadcast_socket.recv(&mut []).unwrap();
-
-    // Verify that the rebroadcast target never receives another copy of the same symbol.
-    assert_eq!(
-        rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
-        ErrorKind::WouldBlock
-    );
 }
 
 static ONCE_SETUP: Once = Once::new();

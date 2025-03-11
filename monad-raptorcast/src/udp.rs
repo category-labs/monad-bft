@@ -408,7 +408,7 @@ where
             author =? parsed_message.author,
             unix_ts_ms = parsed_message.unix_ts_ms,
             app_message_hash =? parsed_message.app_message_hash,
-            encoded_symbol_capacity = encoded_symbol_capacity,
+            encoded_symbol_capacity,
             encoding_symbol_id,
             "received invalid symbol id"
         );
