@@ -732,41 +732,73 @@ async fn main() -> std::io::Result<()> {
         .unwrap();
 
     // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
+    info!("Initializing archive readers for historical data access");
+
     let aws_archive_reader = match (
-        args.s3_bucket,
-        args.region,
-        args.archive_url,
-        args.archive_api_key,
+        &args.s3_bucket,
+        &args.region,
+        &args.archive_url,
+        &args.archive_api_key,
     ) {
         (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
-            match ArchiveReader::init_aws_reader(
+            info!(
                 s3_bucket,
-                Some(region),
-                &archive_url,
-                &archive_api_key,
+                region, archive_url, "Initializing AWS archive reader"
+            );
+            match ArchiveReader::init_aws_reader(
+                s3_bucket.clone(),
+                Some(region.clone()),
+                archive_url,
+                archive_api_key,
                 5,
             )
             .await
             {
-                Ok(reader) => Some(reader),
+                Ok(reader) => {
+                    info!("AWS archive reader initialized successfully");
+                    Some(reader)
+                }
                 Err(e) => {
-                    warn!("Unable to initialize archive reader {e}");
+                    warn!(error = %e, "Unable to initialize AWS archive reader");
                     None
                 }
             }
         }
-        _ => None,
+        _ => {
+            debug!("AWS archive reader configuration not provided, skipping initialization");
+            None
+        }
     };
 
-    let archive_reader = match (args.mongo_db_name, args.mongo_url) {
-        (Some(db_name), Some(url)) => match ArchiveReader::init_mongo_reader(url, db_name).await {
-            Ok(mongo_reader) => Some(mongo_reader.with_fallback(aws_archive_reader)),
-            Err(e) => {
-                warn!("Unable to initialize mongo-backed ArchiveReader: {e:?}");
-                aws_archive_reader
+    let archive_reader = match (&args.mongo_db_name, &args.mongo_url) {
+        (Some(db_name), Some(url)) => {
+            info!(url, db_name, "Initializing MongoDB archive reader");
+            match ArchiveReader::init_mongo_reader(url.clone(), db_name.clone()).await {
+                Ok(mongo_reader) => {
+                    let has_aws_fallback = aws_archive_reader.is_some();
+                    info!(
+                        has_aws_fallback,
+                        "MongoDB archive reader initialized successfully"
+                    );
+                    Some(mongo_reader.with_fallback(aws_archive_reader))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Unable to initialize MongoDB archive reader");
+                    if aws_archive_reader.is_some() {
+                        info!("Falling back to AWS archive reader");
+                    }
+                    aws_archive_reader
+                }
             }
-        },
-        _ => aws_archive_reader,
+        }
+        _ => {
+            if aws_archive_reader.is_some() {
+                info!("MongoDB configuration not provided, using AWS archive reader only");
+            } else {
+                info!("No archive readers configured, historical data access will be limited");
+            }
+            aws_archive_reader
+        }
     };
 
     let resources = MonadRpcResources::new(

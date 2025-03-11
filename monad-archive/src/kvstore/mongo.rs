@@ -6,6 +6,7 @@ use mongodb::{
     Client, Collection,
 };
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::prelude::*;
 
@@ -29,6 +30,11 @@ impl MongoDbStorage {
         database: &str,
         create_with_capped_size: Option<u64>,
     ) -> Result<Self> {
+        trace!(
+            "Creating MongoDB index store with connection: {}, database: {}",
+            connection_string,
+            database
+        );
         Self::new(
             connection_string,
             database,
@@ -43,6 +49,11 @@ impl MongoDbStorage {
         database: &str,
         create_with_capped_size: Option<u64>,
     ) -> Result<Self> {
+        trace!(
+            "Creating MongoDB block store with connection: {}, database: {}",
+            connection_string,
+            database
+        );
         Self::new(
             connection_string,
             database,
@@ -58,31 +69,63 @@ impl MongoDbStorage {
         collection_name: &str,
         create_with_capped_size: Option<u64>,
     ) -> Result<Self> {
+        info!(
+            "Initializing MongoDB connection to {}/{}",
+            connection_string, database
+        );
+
         let mut client_options = ClientOptions::parse(connection_string).await?;
         client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
+        debug!(
+            "Setting MongoDB max pool size to {}",
+            MAX_CONNECTION_POOL_SIZE
+        );
+
         let client = Client::with_options(client_options)?;
+        trace!("MongoDB client created successfully");
 
         let db = client.database(database);
+        debug!("Using database: {}", database);
 
-        if !db
+        let collection_exists = db
             .list_collection_names()
             .await?
-            .contains(&collection_name.to_string())
-        {
+            .contains(&collection_name.to_string());
+
+        if !collection_exists {
+            debug!("Collection '{}' not found", collection_name);
+
             // If we aren't creating the collection and it's not found, error
             let Some(max_size_gb) = create_with_capped_size else {
+                warn!(
+                    "Collection '{}' not found and no capped size provided",
+                    collection_name
+                );
                 bail!("Collection not found: {}", collection_name);
             };
             let max_size_bytes = max_size_gb * 2u64.pow(30);
+
+            info!(
+                "Creating capped collection '{}' with size: {} GB ({} bytes)",
+                collection_name, max_size_gb, max_size_bytes
+            );
 
             // Create capped collection if it doesn't exist
             db.create_collection(collection_name)
                 .capped(true)
                 .size(max_size_bytes)
                 .await?;
+
+            debug!(
+                "Capped collection '{}' created successfully",
+                collection_name
+            );
+        } else {
+            trace!("Collection '{}' already exists", collection_name);
         }
 
         // Ensure writes are journaled before returning
+        debug!("Configuring collection with journaled write concern");
         let collection = db.collection_with_options(
             collection_name,
             CollectionOptions::builder()
@@ -90,10 +133,13 @@ impl MongoDbStorage {
                 .build(),
         );
 
-        Ok(Self {
+        let storage = Self {
             collection,
             name: format!("mongodb://{database}/{collection_name}"),
-        })
+        };
+
+        info!("MongoDB storage initialized: {}", storage.name);
+        Ok(storage)
     }
 }
 

@@ -1,6 +1,7 @@
 use alloy_primitives::BlockHash;
 use eyre::Result;
 use monad_triedb_utils::triedb_env::ReceiptWithLogIndex;
+use tracing::trace;
 
 use crate::{
     cli::AwsCliArgs,
@@ -27,18 +28,30 @@ impl ArchiveReader {
         index_store: impl Into<KVReaderErased>,
         fallback: Option<Box<ArchiveReader>>,
     ) -> ArchiveReader {
+        trace!(
+            has_fallback = fallback.is_some(),
+            "Creating new ArchiveReader instance"
+        );
         let block_data_reader = block_data_reader.into();
-        ArchiveReader {
+        let reader = ArchiveReader {
             index_reader: IndexReaderImpl::new(index_store.into(), block_data_reader.clone()),
             block_data_reader,
             fallback,
-        }
+        };
+        debug!("ArchiveReader instance created successfully");
+        reader
     }
 
     pub async fn init_mongo_reader(url: String, db: String) -> Result<ArchiveReader> {
+        info!(url, db, "Initializing MongoDB ArchiveReader");
+        trace!("Creating MongoDB block store");
         let block_store = MongoDbStorage::new_block_store(&url, &db, None).await?;
         let bdr = BlockDataArchive::new(block_store);
+
+        trace!("Creating MongoDB index store");
         let index_store = MongoDbStorage::new_index_store(&url, &db, None).await?;
+
+        debug!("MongoDB ArchiveReader initialization complete");
         Ok(ArchiveReader::new(bdr, index_store, None))
     }
 
@@ -49,7 +62,16 @@ impl ArchiveReader {
         api_key: &str,
         concurrency: usize,
     ) -> Result<ArchiveReader> {
+        info!(
+            cloud_proxy_url = url,
+            bucket, region, "Initializing AWS ArchiveReader"
+        );
         let url = url::Url::parse(url)?;
+
+        trace!(
+            "Creating AWS block data reader with concurrency: {}",
+            concurrency
+        );
         let block_data_reader = BlockDataArchive::new(
             AwsCliArgs {
                 bucket: bucket.clone(),
@@ -59,8 +81,11 @@ impl ArchiveReader {
             .build_blob_store(&Metrics::none())
             .await,
         );
+
+        trace!("Creating cloud proxy reader");
         let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket)?;
 
+        debug!("AWS ArchiveReader initialization complete");
         Ok(ArchiveReader::new(
             block_data_reader,
             cloud_proxy_reader,
