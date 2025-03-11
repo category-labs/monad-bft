@@ -1,4 +1,4 @@
-use std::{future::Future, io, pin::Pin, task::Poll, time::Duration};
+use std::{future::Future, io, path::PathBuf, pin::Pin, task::Poll, time::Duration};
 
 use alloy_consensus::TxEnvelope;
 use futures::{Stream, StreamExt};
@@ -17,12 +17,23 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-pub use self::config::EthTxPoolIpcConfig;
+pub use self::config::{EthTxPoolConfig, EthTxPoolIpcConfig};
 
 mod config;
 
 const MAX_BATCH_LEN: usize = 128;
 const BATCH_TIMER_INTERVAL_MS: u64 = 10;
+
+#[pin_project(project = EthTxPoolIpcConnectionProjected)]
+pub enum EthTxPoolIpcConnection<ST, SCT, SBT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    SBT: StateBackend,
+{
+    Ready(#[pin] EthTxPoolIpcServer<ST, SCT, SBT>),
+    NotReady(EthTxPoolIpcConfig, EthTxPoolConfig),
+}
 
 #[pin_project(project = EthTxPoolIpcServerProjected)]
 pub struct EthTxPoolIpcServer<ST, SCT, SBT>
@@ -118,9 +129,7 @@ where
             listener,
 
             connections,
-
             pool,
-
             batch,
             mut batch_timer,
         } = self.project();

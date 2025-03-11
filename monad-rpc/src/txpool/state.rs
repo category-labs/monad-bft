@@ -18,6 +18,7 @@ pub struct EthTxPoolBridgeState {
     status: DashMap<TxHash, TxStatusEntry>,
     hash_address: DashMap<TxHash, Address>,
     address_hashes: DashMap<Address, HashSet<TxHash>>,
+    connected: tokio::sync::Mutex<bool>,
 
     pub pending_send_raw_tx: Arc<()>,
 }
@@ -31,7 +32,17 @@ impl EthTxPoolBridgeState {
             address_hashes: DashMap::default(),
 
             pending_send_raw_tx: Default::default(),
+
+            connected: tokio::sync::Mutex::new(false),
         })
+    }
+
+    pub async fn connected(&self, is_connected: bool) {
+        *self.connected.lock().await = is_connected;
+    }
+
+    pub async fn is_connected(&self) -> bool {
+        self.connected.lock().await.to_owned()
     }
 
     pub fn add_tx(&self, tx: &TxEnvelope) {

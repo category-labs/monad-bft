@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use alloy_primitives::B256;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
@@ -9,6 +11,7 @@ use crate::{
     block_handlers::get_block_key_from_tag_or_hash,
     eth_json_types::{serialize_result, BlockTagOrHash, BlockTags, EthAddress, EthHash, MonadU256},
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    txpool::EthTxPoolBridgeState,
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -111,12 +114,14 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 
 #[allow(non_snake_case)]
 /// Returns an object with data about the sync status or false.
-pub async fn monad_eth_syncing() -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_syncing(
+    mempool_state: &Arc<EthTxPoolBridgeState>,
+) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_syncing");
 
-    // TODO. TBD where this data actually comes from
+    let is_connected = mempool_state.is_connected().await;
 
-    serialize_result(serde_json::Value::Bool(false))
+    serialize_result(serde_json::Value::Bool(!is_connected))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
