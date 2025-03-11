@@ -18,13 +18,15 @@
 struct triedb
 {
     explicit triedb(std::vector<std::filesystem::path> dbname_paths)
-        : db_{monad::mpt::ReadOnlyOnDiskDbConfig{
+        : io_ctx_{monad::mpt::ReadOnlyOnDiskDbConfig{
               .disable_mismatching_storage_pool_check = true,
               .dbname_paths = std::move(dbname_paths)}}
+        , db_{io_ctx_}
         , ctx_{monad::mpt::async_context_create(db_)}
     {
     }
 
+    monad::mpt::AsyncIOContext io_ctx_;
     monad::mpt::Db db_;
     monad::mpt::AsyncContextUniquePtr ctx_;
 };
