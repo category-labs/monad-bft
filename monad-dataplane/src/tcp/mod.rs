@@ -16,7 +16,6 @@ mod tx;
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 1024 * 1024 * 1024;
 
 const TCP_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_MESSAGE_TIMEOUT: Duration = Duration::from_secs(600);
 
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
@@ -46,4 +45,17 @@ pub fn spawn_tasks(
 ) {
     spawn(rx::task(local_addr, tcp_ingress_tx));
     spawn(tx::task(tcp_egress_rx));
+}
+
+// Minimum message receive/transmit speed in bytes per second.  Messages that are
+// transferred slower than this are aborted.
+const MINIMUM_TRANSFER_SPEED: u64 = 1_000_000;
+
+// Allow for at least this transfer time, so that very small messages still have
+// a chance to be transferred successfully.
+const MINIMUM_TRANSFER_TIME: Duration = Duration::from_secs(10);
+
+fn message_timeout(len: usize) -> Duration {
+    Duration::from_millis(u64::try_from(len).unwrap() / (MINIMUM_TRANSFER_SPEED / 1000))
+        .max(MINIMUM_TRANSFER_TIME)
 }

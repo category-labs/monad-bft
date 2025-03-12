@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
-use super::{TcpMsg, TcpMsgHdr, TCP_MESSAGE_TIMEOUT};
+use super::{message_timeout, TcpMsg, TcpMsgHdr};
 
 const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
 
@@ -108,7 +108,7 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
         // TODO: When we experience a transmission failure, we should consider zapping
         // all outbound messages that are linked to this one (i.e. that are part of the
         // same (large, multi-message) blocksync or statesync response).
-        if timeout(TCP_MESSAGE_TIMEOUT, send_message(conn_id, addr, message))
+        if timeout(message_timeout(len), send_message(conn_id, addr, message))
             .await
             .is_err()
         {

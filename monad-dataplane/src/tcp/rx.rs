@@ -19,8 +19,8 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
-    TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_HEADER_TIMEOUT, TCP_MESSAGE_LENGTH_LIMIT,
-    TCP_MESSAGE_TIMEOUT,
+    message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_HEADER_TIMEOUT,
+    TCP_MESSAGE_LENGTH_LIMIT,
 };
 
 const PER_PEER_CONNECTION_LIMIT: usize = 100;
@@ -228,7 +228,12 @@ async fn read_message(
 
     let message = BytesMut::with_capacity(message_length);
 
-    let message = match timeout(TCP_MESSAGE_TIMEOUT, tcp_stream.read_exact(message)).await {
+    let message = match timeout(
+        message_timeout(message_length),
+        tcp_stream.read_exact(message),
+    )
+    .await
+    {
         Ok((ret, message)) => match ret {
             Ok(_len) => message,
             Err(err) => {
