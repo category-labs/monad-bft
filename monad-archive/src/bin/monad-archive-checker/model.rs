@@ -271,7 +271,7 @@ impl CheckerModel {
     }
 }
 /// Types of faults that can be detected in blocks
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FaultKind {
     /// Block data is missing from the replica
     MissingBlock,
@@ -285,8 +285,51 @@ pub enum FaultKind {
     /// Number of traces doesn't match transaction count
     TraceCountMismatch { tx_count: usize, trace_count: usize },
     /// Block data is inconsistent with the majority of replicas
-    InconsistentBlock,
+    InconsistentBlock(InconsistentBlockReason),
     // Additional fault types can be added here
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InconsistentBlockReason {
+    Header,
+    BodyContents,
+    BodyLen,
+    ReceiptsContents,
+    ReceiptsLen,
+    TracesContents,
+    TracesLen,
+}
+
+impl InconsistentBlockReason {
+    pub fn metric_name(&self) -> &'static str {
+        match self {
+            InconsistentBlockReason::Header => "inconsistent_header",
+            InconsistentBlockReason::BodyContents => "inconsistent_body_contents",
+            InconsistentBlockReason::BodyLen => "inconsistent_body_len",
+            InconsistentBlockReason::ReceiptsContents => "inconsistent_receipts_contents",
+            InconsistentBlockReason::ReceiptsLen => "inconsistent_receipts_len",
+            InconsistentBlockReason::TracesContents => "inconsistent_traces_contents",
+            InconsistentBlockReason::TracesLen => "inconsistent_traces_len",
+        }
+    }
+}
+
+impl std::fmt::Display for InconsistentBlockReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "InconsistentBlockReason: {}",
+            match self {
+                InconsistentBlockReason::Header => "Header",
+                InconsistentBlockReason::BodyContents => "Body Contents",
+                InconsistentBlockReason::BodyLen => "Body Length",
+                InconsistentBlockReason::ReceiptsContents => "Receipts Contents",
+                InconsistentBlockReason::ReceiptsLen => "Receipts Length",
+                InconsistentBlockReason::TracesContents => "Traces Contents",
+                InconsistentBlockReason::TracesLen => "Traces Length",
+            }
+        )
+    }
 }
 
 impl FaultKind {
@@ -296,7 +339,17 @@ impl FaultKind {
             FaultKind::InvalidBlockNumber { .. } => "InvalidBlockNumber",
             FaultKind::ReceiptCountMismatch { .. } => "ReceiptCountMismatch",
             FaultKind::TraceCountMismatch { .. } => "TraceCountMismatch",
-            FaultKind::InconsistentBlock => "InconsistentBlock",
+            FaultKind::InconsistentBlock(_) => "InconsistentBlock",
+        }
+    }
+
+    pub fn metric_name(&self) -> &'static str {
+        match self {
+            FaultKind::MissingBlock => "missing_block",
+            FaultKind::InvalidBlockNumber { .. } => "invalid_block_number",
+            FaultKind::ReceiptCountMismatch { .. } => "receipt_count_mismatch",
+            FaultKind::TraceCountMismatch { .. } => "trace_count_mismatch",
+            FaultKind::InconsistentBlock(reason) => reason.metric_name(),
         }
     }
 }

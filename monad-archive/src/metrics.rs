@@ -8,6 +8,7 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
+use tracing::trace;
 
 #[derive(Clone)]
 pub struct Metrics(Option<Arc<MetricsInner>>);
@@ -15,7 +16,7 @@ pub struct Metrics(Option<Arc<MetricsInner>>);
 #[derive(Clone)]
 pub struct MetricsInner {
     pub gauges: Arc<DashMap<&'static str, Gauge<u64>>>,
-    pub periodic_gauges: Arc<DashMap<&'static str, (u64, Vec<KeyValue>)>>,
+    pub periodic_gauges: Arc<DashMap<(&'static str, Vec<KeyValue>), u64>>,
     pub counters: Arc<DashMap<&'static str, Counter<u64>>>,
     pub provider: SdkMeterProvider,
     pub meter: Meter,
@@ -49,14 +50,19 @@ impl Metrics {
             // Background worker to prevent no data for sparsely published gauges
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(interval / 2).await;
+                    tokio::time::sleep(interval / 5).await;
 
                     let inner = metrics.0.as_ref().unwrap();
                     for map_ref in inner.periodic_gauges.iter() {
-                        let metric = map_ref.key();
-                        let (value, attributes) = map_ref.value();
+                        let (metric, attributes) = map_ref.key();
+                        let value = map_ref.value();
                         metrics.gauge_with_attrs(metric, *value, attributes);
                     }
+
+                    trace!(
+                        num_periodic_gauges = inner.periodic_gauges.len(),
+                        "Published periodic gauges"
+                    );
                 }
             });
         }
@@ -95,7 +101,7 @@ impl Metrics {
     ) {
         self.gauge_with_attrs(metric, value, &attributes);
         if let Some(inner) = &self.0 {
-            inner.periodic_gauges.insert(metric, (value, attributes));
+            inner.periodic_gauges.insert((metric, attributes), value);
         }
     }
 

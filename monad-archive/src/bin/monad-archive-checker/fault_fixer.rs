@@ -340,7 +340,7 @@ mod tests {
     use super::*;
     use crate::{
         checker::tests::{create_test_block_data, setup_test_model},
-        model::GoodBlocks,
+        model::{GoodBlocks, InconsistentBlockReason},
         rechecker::recheck_fault_chunk,
     };
 
@@ -444,7 +444,7 @@ mod tests {
             Fault {
                 block_num: chunk_start + 2,
                 replica: replica_name.to_owned(),
-                fault: FaultKind::InconsistentBlock,
+                fault: FaultKind::InconsistentBlock(InconsistentBlockReason::Header),
             },
         ];
 

@@ -116,8 +116,8 @@ async fn main() -> Result<()> {
         }
         cli::Mode::FaultFixer(fixer_args) => {
             info!(
-                "Starting in fault fixer mode [dry_run: {}, verify: {}]",
-                fixer_args.dry_run, fixer_args.verify
+                "Starting in fault fixer mode [commit_changes: {}, verify: {}]",
+                fixer_args.commit_changes, fixer_args.verify
             );
 
             let model = CheckerModel::new(s3, &metrics, None).await?;
@@ -127,13 +127,13 @@ async fn main() -> Result<()> {
             let (total_fixed, total_failed) = fault_fixer::run_fixer(
                 &model,
                 &metrics,
-                fixer_args.dry_run,
+                !fixer_args.commit_changes,
                 fixer_args.verify,
                 fixer_args.replicas,
             )
             .await?;
 
-            if fixer_args.dry_run {
+            if !fixer_args.commit_changes {
                 info!(
                     "DRY RUN SUMMARY: Would fix {} faults ({} would fail)",
                     total_fixed, total_failed

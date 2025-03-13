@@ -61,9 +61,10 @@ pub struct Rechecker {
 
 #[derive(Parser, Debug)]
 pub struct FaultFixerArgs {
-    /// Dry run mode: show what would be fixed without making changes
+    /// Commit changes to replicas
+    /// Otherwise runs in dry-run mode
     #[clap(long)]
-    pub dry_run: bool,
+    pub commit_changes: bool,
 
     /// Verify fixed blocks after repair
     #[clap(long)]

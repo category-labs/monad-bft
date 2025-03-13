@@ -6,6 +6,7 @@ use monad_archive::prelude::*;
 
 use crate::{
     model::{CheckerModel, Fault, FaultKind, GoodBlocks},
+    rechecker::find_inconsistent_reason,
     CHUNK_SIZE,
 };
 
@@ -337,7 +338,12 @@ fn find_consensus(
                         .push(Fault {
                             block_num,
                             replica: replica_name.clone(),
-                            fault: FaultKind::InconsistentBlock {},
+                            fault: FaultKind::InconsistentBlock(find_inconsistent_reason(
+                                *valid_replicas.get(good_replica).unwrap(),
+                                *valid_replicas.get(replica_name).unwrap(),
+                                replica_name,
+                                block_num,
+                            )),
                         });
                 }
             }
@@ -451,6 +457,7 @@ pub mod tests {
     };
 
     use super::*;
+    use crate::model::InconsistentBlockReason;
 
     #[test]
     fn test_process_blocks_empty() {
@@ -533,7 +540,7 @@ pub mod tests {
         assert_eq!(replica3_faults.len(), 1);
         assert!(matches!(
             replica3_faults[0].fault,
-            FaultKind::InconsistentBlock {}
+            FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
         ));
 
         // Add another test with three different blocks
@@ -614,18 +621,27 @@ pub mod tests {
         vec![b"trace".to_vec(); count]
     }
 
-    pub(crate) fn create_test_block_data(
+    pub(crate) fn create_test_block_data_with_len(
         block_num: u64,
-        variant: u8,
+        header_variant: u8,
+        receipts_len: usize,
+        traces_len: usize,
     ) -> (Block, BlockReceipts, BlockTraces) {
         let mut block = create_test_block(block_num);
         // Make the block slightly different based on variant
-        block.header.extra_data = Bytes::from(vec![variant]);
+        block.header.extra_data = Bytes::from(vec![header_variant]);
 
-        let receipts = create_test_receipts(3);
-        let traces = create_test_traces(3);
+        let receipts = create_test_receipts(receipts_len);
+        let traces = create_test_traces(traces_len);
 
         (block, receipts, traces)
+    }
+
+    pub(crate) fn create_test_block_data(
+        block_num: u64,
+        header_variant: u8,
+    ) -> (Block, BlockReceipts, BlockTraces) {
+        create_test_block_data_with_len(block_num, header_variant, 3, 3)
     }
 
     #[test]
@@ -705,7 +721,7 @@ pub mod tests {
             assert_eq!(replica3_faults[0].block_num, block_num + 1);
             assert!(matches!(
                 replica3_faults[0].fault,
-                FaultKind::InconsistentBlock {}
+                FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
             ));
 
             // Second fault should be for block 102, invalid block number
@@ -866,7 +882,11 @@ pub mod tests {
                     .await
                     .unwrap();
                 let has_fault_for_block = faults.iter().any(|f| {
-                    f.block_num == block_num && matches!(f.fault, FaultKind::InconsistentBlock)
+                    f.block_num == block_num
+                        && matches!(
+                            f.fault,
+                            FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
+                        )
                 });
                 assert!(
                     has_fault_for_block,

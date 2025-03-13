@@ -5,7 +5,7 @@ use opentelemetry::KeyValue;
 use tokio::time::interval;
 
 use crate::{
-    model::{CheckerModel, Fault, FaultKind},
+    model::{CheckerModel, Fault, FaultKind, InconsistentBlockReason},
     CHUNK_SIZE,
 };
 
@@ -42,9 +42,7 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
             "Rechecking faults for replica"
         );
 
-        let mut total_faults = 0;
-        let mut total_missing = 0;
-        let mut total_inconsistent = 0;
+        let mut total_faults = Vec::new();
 
         // Process chunks of CHUNK_SIZE blocks at a time
         let chunks_to_process = latest_checked / CHUNK_SIZE;
@@ -65,17 +63,6 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
             // Recheck this chunk and get any current faults
             let new_faults = recheck_fault_chunk(model, chunk_start, replica).await?;
 
-            // Update fault statistics
-            total_faults += new_faults.len();
-            total_missing += new_faults
-                .iter()
-                .filter(|f| matches!(f.fault, FaultKind::MissingBlock))
-                .count();
-            total_inconsistent += new_faults
-                .iter()
-                .filter(|f| matches!(f.fault, FaultKind::InconsistentBlock))
-                .count();
-
             if new_faults.is_empty() {
                 debug!(
                     %replica,
@@ -91,6 +78,9 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
                     "Found faults in chunk"
                 );
 
+                // Update fault statistics
+                total_faults.extend(new_faults.iter().cloned());
+
                 // Store updated fault information back to S3
                 model
                     .set_faults_chunk(replica, chunk_start, new_faults)
@@ -98,31 +88,39 @@ async fn recheck(model: &CheckerModel, metrics: &Metrics) -> Result<()> {
             }
         }
 
-        info!(
-            %replica,
-            total_faults,
-            missing = total_missing,
-            inconsistent = total_inconsistent,
-            "Recheck completed for replica"
-        );
-
         // Update metrics with current fault counts
         metrics.periodic_gauge_with_attrs(
-            "replica_faults__total",
-            total_faults as u64,
+            "replica_faults_total",
+            total_faults.len() as u64,
             vec![KeyValue::new("replica", replica.to_owned())],
         );
 
-        metrics.periodic_gauge_with_attrs(
-            "replica_faults__missing_block",
-            total_missing as u64,
-            vec![KeyValue::new("replica", replica.to_owned())],
-        );
+        let grouped_by_faults = total_faults
+            .iter()
+            .map(|f| (f.fault.clone(), f.block_num))
+            .collect::<HashMap<FaultKind, u64>>();
 
-        metrics.periodic_gauge_with_attrs(
-            "replica_faults__inconsistent_block",
-            total_inconsistent as u64,
-            vec![KeyValue::new("replica", replica.to_owned())],
+        for (fault, count) in &grouped_by_faults {
+            metrics.periodic_gauge_with_attrs(
+                "replica_faults_by_kind",
+                *count,
+                vec![
+                    KeyValue::new("replica", replica.to_owned()),
+                    KeyValue::new("kind", fault.metric_name()),
+                ],
+            );
+        }
+
+        info!(
+            %replica,
+            total_faults = total_faults.len(),
+            missing = grouped_by_faults.get(&FaultKind::MissingBlock).unwrap_or(&0),
+            inconsistent = grouped_by_faults
+                .iter()
+                .filter(|(kind, _)| matches!(kind, FaultKind::InconsistentBlock(_)))
+                .map(|(_, count)| count)
+                .sum::<u64>(),
+            "Recheck completed for replica"
         );
     }
 
@@ -241,23 +239,24 @@ pub(crate) async fn recheck_fault_chunk(
     let mut fixed_count = 0;
     let mut still_inconsistent = 0;
     for (good, faulty) in good_blocks.into_iter().zip(faulty_blocks) {
-        if good != faulty {
-            debug!(
-                %replica,
-                block_num = faulty.0.header.number,
-                "Block still inconsistent with consensus"
-            );
+        let block_num = faulty.0.header.number;
 
+        if good != faulty {
             new_faults.push(Fault {
-                block_num: faulty.0.header.number,
+                block_num,
                 replica: replica.to_owned(),
-                fault: FaultKind::InconsistentBlock,
+                fault: FaultKind::InconsistentBlock(find_inconsistent_reason(
+                    (&good.0, &good.1, &good.2),
+                    (&faulty.0, &faulty.1, &faulty.2),
+                    replica,
+                    block_num,
+                )),
             });
             still_inconsistent += 1;
         } else {
             debug!(
                 %replica,
-                block_num = faulty.0.header.number,
+                block_num,
                 "Previously inconsistent block is now fixed"
             );
             fixed_count += 1;
@@ -277,13 +276,162 @@ pub(crate) async fn recheck_fault_chunk(
     Ok(new_faults)
 }
 
+pub fn find_inconsistent_reason(
+    good: (&Block, &BlockReceipts, &BlockTraces),
+    faulty: (&Block, &BlockReceipts, &BlockTraces),
+    replica: &str,
+    block_num: u64,
+) -> InconsistentBlockReason {
+    debug!(
+        %replica,
+        block_num,
+        "Replica still inconsistent with good replica"
+    );
+    let (good_block, good_receipts, good_traces) = good;
+    let (faulty_block, faulty_receipts, faulty_traces) = faulty;
+
+    if good_block != faulty_block {
+        debug!(
+            %replica,
+            block_num,
+            "Block does not match good replica"
+        );
+        if good_block.header != faulty_block.header {
+            debug!(
+                %replica,
+                block_num,
+                "Block header does not match good replica"
+            );
+            InconsistentBlockReason::Header
+        } else if good_block.body.transactions.len() != faulty_block.body.transactions.len() {
+            debug!(
+                %replica,
+                block_num,
+                good_len = good_block.body.transactions.len(),
+                faulty_len = faulty_block.body.transactions.len(),
+                "Block body length does not match good replica"
+            );
+            InconsistentBlockReason::BodyLen
+        } else {
+            debug!(
+                %replica,
+                block_num,
+                "Block body does not match good replica"
+            );
+            let mut count = 0;
+            for (good_tx, faulty_tx) in good_block
+                .body
+                .transactions
+                .iter()
+                .zip(faulty_block.body.transactions.iter())
+            {
+                if let (Ok(good_tx), Ok(faulty_tx)) = (
+                    serde_json::to_string(good_tx),
+                    serde_json::to_string(faulty_tx),
+                ) {
+                    debug!(
+                        %replica,
+                        block_num,
+                        count,
+                        max_count = 10,
+                        good_tx,
+                        faulty_tx,
+                        "Transaction does not match good replica"
+                    );
+                }
+                count += 1;
+                if count > 10 {
+                    break;
+                }
+            }
+            InconsistentBlockReason::BodyContents
+        }
+    } else if good_receipts.len() != faulty_receipts.len() {
+        debug!(
+            %replica,
+            block_num,
+            good_len = good_receipts.len(),
+            faulty_len = faulty_receipts.len(),
+            "Receipts length does not match good replica"
+        );
+        InconsistentBlockReason::ReceiptsLen
+    } else if good_receipts != faulty_receipts {
+        debug!(
+            %replica,
+            block_num,
+            "Receipts do not match good replica"
+        );
+        let mut count = 0;
+        for (good_receipt, faulty_receipt) in good_receipts.iter().zip(faulty_receipts.iter()) {
+            if let (Ok(good_receipt), Ok(faulty_receipt)) = (
+                serde_json::to_string(good_receipt),
+                serde_json::to_string(faulty_receipt),
+            ) {
+                debug!(
+                    %replica,
+                    block_num,
+                    count,
+                    max_count = 10,
+                    good_receipt,
+                    faulty_receipt,
+                    "Receipt does not match good replica"
+                );
+            }
+            count += 1;
+            if count > 10 {
+                break;
+            }
+        }
+        InconsistentBlockReason::ReceiptsContents
+    } else if good_traces.len() != faulty_traces.len() {
+        debug!(
+            %replica,
+            block_num,
+            good_len = good_traces.len(),
+            faulty_len = faulty_traces.len(),
+            "Traces length does not match good replica"
+        );
+        InconsistentBlockReason::TracesLen
+    } else {
+        debug!(
+            %replica,
+            block_num,
+            "Traces do not match good replica"
+        );
+        let mut count = 0;
+        for (good_trace, faulty_trace) in good_traces.iter().zip(faulty_traces.iter()) {
+            if let (Ok(good_trace), Ok(faulty_trace)) = (
+                serde_json::to_string(good_trace),
+                serde_json::to_string(faulty_trace),
+            ) {
+                debug!(
+                    %replica,
+                    block_num,
+                    count,
+                    max_count = 10,
+                    good_trace,
+                    faulty_trace,
+                    "Trace does not match good replica"
+                );
+            }
+            count += 1;
+            if count > 10 {
+                break;
+            }
+        }
+        InconsistentBlockReason::TracesContents
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use monad_archive::prelude::LatestKind;
 
     use super::*;
     use crate::{
-        checker::tests::{create_test_block_data, setup_test_model},
+        checker::tests::{
+            create_test_block_data, create_test_block_data_with_len, setup_test_model,
+        },
         model::GoodBlocks,
     };
 
@@ -304,7 +452,7 @@ mod tests {
             Fault {
                 block_num: chunk_start + 2,
                 replica: replica_name.to_owned(),
-                fault: FaultKind::InconsistentBlock,
+                fault: FaultKind::InconsistentBlock(InconsistentBlockReason::Header),
             },
         ];
 
@@ -405,10 +553,45 @@ mod tests {
 
         // Verify only the inconsistent fault remains
         assert_eq!(faults.len(), 1);
-        assert!(faults
-            .iter()
-            .any(|f| f.block_num == chunk_start + 2
-                && matches!(f.fault, FaultKind::InconsistentBlock)));
+        assert!(faults.iter().any(|f| f.block_num == chunk_start + 2
+            && matches!(
+                f.fault,
+                FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
+            )));
+
+        // Change the 2nd to have different receipts len to test correct reason
+        if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            // Add the second block but with different data (will be inconsistent)
+            let (block, receipts, traces) =
+                create_test_block_data_with_len(chunk_start + 2, 1, 3, 2); // Different variant
+            archiver.archive_block(block).await.unwrap();
+            archiver
+                .archive_receipts(receipts, chunk_start + 2)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 2)
+                .await
+                .unwrap();
+
+            archiver
+                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // Recheck again - first block should be fixed, second should be inconsistent
+        let faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
+
+        // Verify only the inconsistent fault remains
+        assert_eq!(faults.len(), 1);
+        assert!(faults.iter().any(|f| f.block_num == chunk_start + 2
+            && matches!(
+                f.fault,
+                FaultKind::InconsistentBlock(InconsistentBlockReason::TracesLen)
+            )));
 
         // Now fix the inconsistent block
         if let Some(archiver) = model.block_data_readers.get(replica_name) {
