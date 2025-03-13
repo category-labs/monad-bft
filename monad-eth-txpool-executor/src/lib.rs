@@ -4,7 +4,6 @@ use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
 use futures::Stream;
 use itertools::Itertools;
-use metrics::EthTxPoolExecutorMetrics;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
@@ -22,7 +21,7 @@ use tokio::{sync::mpsc, time::Instant};
 use tracing::error;
 
 pub use self::ipc::EthTxPoolIpcConfig;
-use self::ipc::EthTxPoolIpcServer;
+use self::{ipc::EthTxPoolIpcServer, metrics::EthTxPoolExecutorMetrics};
 
 mod ipc;
 mod metrics;
@@ -38,7 +37,8 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    ipc: Pin<Box<EthTxPoolIpcServer<ST, SCT, SBT>>>,
+    pool: EthTxPool<ST, SCT, SBT>,
+    ipc: Pin<Box<EthTxPoolIpcServer>>,
     block_policy: EthBlockPolicy<ST, SCT>,
     state_backend: SBT,
     chain_config: CCT,
@@ -82,9 +82,10 @@ where
         );
 
         Ok(Self {
+            pool,
+            ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config)?),
             block_policy,
             state_backend,
-            ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config, pool)?),
             chain_config,
 
             events_tx,
@@ -111,8 +112,6 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut ipc_events = Vec::default();
 
-        let ipc_projection = self.ipc.as_mut().project();
-
         let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut ipc_events);
 
         for command in commands {
@@ -127,15 +126,14 @@ where
                         let execution_revision = self.chain_config.get_execution_chain_revision(
                             committed_block.header().execution_inputs.timestamp,
                         );
-                        ipc_projection.pool.set_max_code_size(
+                        self.pool.set_max_code_size(
                             execution_revision.execution_chain_params().max_code_size,
                         );
 
-                        ipc_projection
-                            .pool
+                        self.pool
                             .update_committed_block(&mut event_tracker, committed_block);
 
-                        let Some(forwardable_txs) = ipc_projection
+                        let Some(forwardable_txs) = self
                             .pool
                             .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
                         else {
@@ -174,7 +172,7 @@ where
                 } => {
                     let create_proposal_start = Instant::now();
 
-                    match ipc_projection.pool.create_proposal(
+                    match self.pool.create_proposal(
                         &mut event_tracker,
                         seq_num,
                         tx_limit,
@@ -195,7 +193,7 @@ where
                             self.metrics.create_proposal_txs +=
                                 proposed_execution_inputs.body.transactions.len() as u64;
                             self.metrics.create_proposal_available_txs +=
-                                ipc_projection.pool.num_txs() as u64;
+                                self.pool.num_txs() as u64;
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {
@@ -255,7 +253,7 @@ where
                         );
                     }
 
-                    ipc_projection.pool.insert_txs(
+                    self.pool.insert_txs(
                         &mut event_tracker,
                         &self.block_policy,
                         &self.state_backend,
@@ -270,7 +268,7 @@ where
                         .get_chain_revision(round)
                         .chain_params()
                         .proposal_gas_limit;
-                    ipc_projection.pool.set_tx_gas_limit(proposal_gas_limit);
+                    self.pool.set_tx_gas_limit(proposal_gas_limit);
                 }
                 TxPoolCommand::Reset {
                     last_delay_committed_blocks,
@@ -284,12 +282,12 @@ where
                         let execution_revision = self.chain_config.get_execution_chain_revision(
                             block.header().execution_inputs.timestamp,
                         );
-                        ipc_projection.pool.set_max_code_size(
+                        self.pool.set_max_code_size(
                             execution_revision.execution_chain_params().max_code_size,
                         );
                     }
-                    ipc_projection
-                        .pool
+
+                    self.pool
                         .reset(&mut event_tracker, last_delay_committed_blocks);
                 }
             }
@@ -322,11 +320,12 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let Self {
+            pool,
+            ipc,
+
             block_policy,
             state_backend,
             chain_config: _,
-
-            ipc,
 
             events_tx: _,
             events,
@@ -343,12 +342,12 @@ where
             return Poll::Ready(Some(MonadEvent::MempoolEvent(event)));
         };
 
-        if let Poll::Ready(result) = ipc.as_mut().poll_next(cx) {
+        if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())
+        {
             let mut ipc_events = Vec::default();
             let mut inserted_txs = Vec::default();
 
             let recovered_txs = {
-                let unvalidated_txs = result.expect("txpool executor ipc server is alive");
                 let (recovered_txs, dropped_txs): (Vec<_>, Vec<_>) = unvalidated_txs
                     .into_par_iter()
                     .partition_map(|tx| match tx.recover_signer() {
@@ -364,9 +363,7 @@ where
                 recovered_txs
             };
 
-            let ipc_projection = ipc.as_mut().project();
-
-            ipc_projection.pool.insert_txs(
+            pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
                 block_policy,
                 state_backend,
