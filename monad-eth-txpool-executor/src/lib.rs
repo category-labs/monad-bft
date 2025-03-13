@@ -3,7 +3,6 @@ use std::{io, marker::PhantomData, pin::Pin, sync::atomic::AtomicU64, task::Poll
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_rlp::Decodable;
 use futures::Stream;
-use itertools::Itertools;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
@@ -16,18 +15,19 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
+use monad_types::DropTimer;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
-use tracing::error;
+use tracing::{debug, error, info};
 
 pub use self::ipc::EthTxPoolIpcConfig;
-use self::{ipc::EthTxPoolIpcServer, metrics::EthTxPoolExecutorMetrics};
+use self::{
+    forward::EthTxPoolForwardingManager, ipc::EthTxPoolIpcServer, metrics::EthTxPoolExecutorMetrics,
+};
 
+mod forward;
 mod ipc;
 mod metrics;
-
-const FORWARD_MIN_SEQ_NUM_DIFF: u64 = 5;
-const FORWARD_MAX_RETRIES: usize = 2;
 
 pub struct EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
@@ -48,6 +48,8 @@ where
 
     events_tx: mpsc::UnboundedSender<MempoolEvent<SCT, EthExecutionProtocol>>,
     events: mpsc::UnboundedReceiver<MempoolEvent<SCT, EthExecutionProtocol>>,
+
+    forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
 
     metrics: EthTxPoolExecutorMetrics,
     executor_metrics: ExecutorMetrics,
@@ -95,6 +97,8 @@ where
             events_tx,
             events,
 
+            forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+
             metrics: EthTxPoolExecutorMetrics::default(),
             executor_metrics: ExecutorMetrics::default(),
 
@@ -136,28 +140,12 @@ where
 
                         self.pool
                             .update_committed_block(&mut event_tracker, committed_block);
-
-                        let Some(forwardable_txs) = self
-                            .pool
-                            .get_forwardable_txs::<FORWARD_MIN_SEQ_NUM_DIFF, FORWARD_MAX_RETRIES>()
-                        else {
-                            continue;
-                        };
-
-                        let forwardable_txs = forwardable_txs
-                            .cloned()
-                            .map(alloy_rlp::encode)
-                            .map(Into::into)
-                            .collect_vec();
-
-                        if forwardable_txs.is_empty() {
-                            continue;
-                        }
-
-                        self.events_tx
-                            .send(MempoolEvent::ForwardTxs(forwardable_txs))
-                            .expect("events never dropped");
                     }
+
+                    self.forwarding_manager
+                        .as_mut()
+                        .project()
+                        .add_egress_txs(&mut self.pool);
                 }
                 TxPoolCommand::CreateProposal {
                     epoch,
@@ -219,10 +207,16 @@ where
                     }
                 }
                 TxPoolCommand::InsertForwardedTxs { sender, txs } => {
+                    debug!(
+                        ?sender,
+                        num_txs = txs.len(),
+                        "txpool executor received forwarded txs"
+                    );
+
                     let num_invalid_bytes = AtomicU64::default();
                     let num_invalid_signer = AtomicU64::default();
 
-                    let txs = txs
+                    let recovered_txs = txs
                         .into_par_iter()
                         .filter_map(|raw_tx| {
                             let Ok(tx) = TxEnvelope::decode(&mut raw_tx.as_ref()) else {
@@ -257,14 +251,10 @@ where
                         );
                     }
 
-                    self.pool.insert_txs(
-                        &mut event_tracker,
-                        &self.block_policy,
-                        &self.state_backend,
-                        txs,
-                        false,
-                        |_| {},
-                    );
+                    self.forwarding_manager
+                        .as_mut()
+                        .project()
+                        .add_ingress_txs(recovered_txs);
                 }
                 TxPoolCommand::EnterRound { epoch: _, round } => {
                     let proposal_gas_limit = self
@@ -325,6 +315,10 @@ where
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let _timer = DropTimer::start(Duration::from_millis(10), |elapsed| {
+            info!(?elapsed, "txpool executor long poll");
+        });
+
         let Self {
             pool,
             ipc,
@@ -336,6 +330,8 @@ where
 
             events_tx: _,
             events,
+
+            forwarding_manager,
 
             metrics,
             executor_metrics,
@@ -351,6 +347,31 @@ where
 
         if !*has_been_reset {
             return Poll::Pending;
+        }
+
+        if let Poll::Ready(forward_txs) = forwarding_manager.as_mut().poll_egress(cx) {
+            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::ForwardTxs(
+                forward_txs,
+            ))));
+        }
+
+        while let Poll::Ready(forwarded_txs) = forwarding_manager.as_mut().poll_ingress(cx) {
+            let mut ipc_events = Vec::default();
+
+            pool.insert_txs(
+                &mut EthTxPoolEventTracker::new(&mut metrics.pool, &mut ipc_events),
+                block_policy,
+                state_backend,
+                forwarded_txs,
+                false,
+                |_| {},
+            );
+
+            metrics.update(executor_metrics);
+
+            ipc.as_mut().broadcast_tx_events(&ipc_events);
+
+            forwarding_manager.as_mut().complete_ingress();
         }
 
         if let Poll::Ready(unvalidated_txs) = ipc.as_mut().poll_txs(cx, || pool.generate_snapshot())

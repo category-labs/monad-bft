@@ -20,9 +20,11 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-rlp = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
 pin-project = { workspace = true }

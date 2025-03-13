@@ -4838,6 +4838,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-rlp",
+ "bytes",
  "futures",
  "itertools 0.10.5",
  "monad-chain-config",
@@ -4851,6 +4852,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-state-backend",
+ "monad-types",
  "pin-project",
  "rayon",
  "serde",
