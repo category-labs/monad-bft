@@ -1,0 +1,22 @@
+[package]
+name = "monad-peer-disc-swarm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monad-crypto = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-peer-discovery = { workspace = true }
+monad-router-scheduler = { workspace = true }
+monad-transformer = { workspace = true }
+monad-types = { workspace = true }
+
+itertools = { workspace = true }
+priority-queue = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+monad-testutil = { workspace = true }

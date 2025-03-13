@@ -11,7 +11,12 @@ debug = true
 panic = "abort"
 
 [workspace.metadata.cargo-shear]
-ignored = ["alloy-transport-http", "getrandom", "pbjson"]
+ignored = [
+    "alloy-transport-http",
+    "getrandom",
+    "pbjson",
+    "monad-peer-disc-swarm",
+]
 
 [workspace.dependencies]
 monad-archive = { path = "./monad-archive" }
@@ -45,6 +50,8 @@ monad-merkle = { path = "./monad-merkle" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }
 monad-node-config = { path = "./monad-node-config" }
+monad-peer-disc-swarm = { path = "./monad-peer-disc-swarm" }
+monad-peer-discovery = { path = "./monad-peer-discovery" }
 monad-perf-util = { path = "./monad-perf-util" }
 monad-proto = { path = "./monad-proto" }
 monad-raptor = { path = "./monad-raptor" }
