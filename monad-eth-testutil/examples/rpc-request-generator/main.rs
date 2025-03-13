@@ -15,6 +15,7 @@ use alloy_rpc_types_trace::geth::{
 use clap::Parser;
 use futures::{stream::FuturesUnordered, StreamExt};
 use itertools::Itertools;
+use rand::seq::IteratorRandom;
 use tokio::{
     task::JoinHandle,
     time::{Duration, Instant},
@@ -76,7 +77,11 @@ pub struct Config {
     #[arg(long, global = true, default_value = "http://localhost:8080")]
     pub rpc_url: Url,
     #[arg(long, global = true, default_value_t = 5)]
-    pub requests_per_block: u64,
+    pub requests_per_new_block: u64,
+    #[arg(long, global = true, default_value_t = 5)]
+    pub historical_blocks_per_round: u64,
+    #[arg(long, global = true, default_value_t = 200)]
+    pub historical_block_window: u64,
     #[arg(long, global = true, default_value_t = 15)]
     pub max_distance_from_tip: u64,
 }
@@ -131,7 +136,9 @@ impl TipRefresher {
 
 struct RpcRequestGenerator {
     rpc_url: Url,
-    requests_per_block: u64,
+    requests_per_new_block: u64,
+    historical_blocks_per_round: u64,
+    historical_block_window: u64,
     max_distance_from_tip: u64,
     pending_indexing: BTreeMap<BlockNumber, JoinHandle<()>>,
     uniq_addrs: BTreeSet<Address>,
@@ -146,15 +153,54 @@ struct BlockIndexError {
 }
 
 impl RpcRequestGenerator {
-    fn new(rpc_url: Url, requests_per_block: u64, max_distance_from_tip: u64) -> Self {
+    fn new(
+        rpc_url: Url,
+        requests_per_new_block: u64,
+        historical_blocks_per_round: u64,
+        historical_block_window: u64,
+        max_distance_from_tip: u64,
+    ) -> Self {
         Self {
             rpc_url,
-            requests_per_block,
+            requests_per_new_block,
+            historical_blocks_per_round,
+            historical_block_window,
             max_distance_from_tip,
             pending_indexing: Default::default(),
             uniq_addrs: Default::default(),
             total_indexed: 0,
             total_failed: 0,
+        }
+    }
+
+    async fn process_new_block(
+        &mut self,
+        block_number: BlockNumber,
+        index_done_sender: tokio::sync::mpsc::Sender<
+            Result<(BlockNumber, Vec<Address>), BlockIndexError>,
+        >,
+    ) {
+        let url = self.rpc_url.clone();
+        let sender = index_done_sender.clone();
+        let requests_per_block = self.requests_per_new_block;
+        let join_handle = tokio::spawn(async move {
+            Self::index_block(url, requests_per_block, block_number, sender).await
+        });
+        self.pending_indexing.insert(block_number, join_handle);
+
+        let mut rng = rand::thread_rng();
+        let start_block = (block_number.saturating_sub(self.historical_block_window)).max(1);
+        let historical_blocks = (start_block..block_number)
+            .choose_multiple(&mut rng, self.historical_blocks_per_round as usize);
+
+        for block_number in historical_blocks {
+            let url = self.rpc_url.clone();
+            let sender = index_done_sender.clone();
+            let requests_per_block = self.requests_per_new_block;
+            let join_handle = tokio::spawn(async move {
+                Self::index_block(url, requests_per_block, block_number, sender).await
+            });
+            self.pending_indexing.insert(block_number, join_handle);
         }
     }
 
@@ -176,15 +222,8 @@ impl RpcRequestGenerator {
                 Some((index_from, index_to)) = tip_receiver.recv() => {
                     debug!(from=index_from, to=index_to, "index range");
 
-                    for b in index_from..=index_to {
-                        let url = self.rpc_url.clone();
-                        let requests_per_block = self.requests_per_block;
-                        let sender = index_done_sender.clone();
-                        let join_handle = tokio::spawn (
-                            async move {
-                                Self::index_block(url, requests_per_block, b, sender).await
-                            });
-                        self.pending_indexing.insert(b, join_handle);
+                    for block_number in index_from..=index_to {
+                        self.process_new_block(block_number, index_done_sender.clone()).await;
                     }
                 }
 
@@ -727,7 +766,9 @@ async fn main() {
 
     let mut indexer = RpcRequestGenerator::new(
         config.rpc_url,
-        config.requests_per_block,
+        config.requests_per_new_block,
+        config.historical_blocks_per_round,
+        config.historical_block_window,
         config.max_distance_from_tip,
     );
     indexer.run().await
