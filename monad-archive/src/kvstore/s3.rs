@@ -15,9 +15,9 @@ const AWS_S3_WRITES: &str = "aws_s3_writes";
 
 #[derive(Clone)]
 pub struct S3Bucket {
-    pub client: Client,
+    client: Client,
     pub bucket: String,
-    pub metrics: Metrics,
+    metrics: Metrics,
 }
 
 impl S3Bucket {
@@ -42,6 +42,7 @@ impl KVReader for S3Bucket {
             .get_object()
             .bucket(&self.bucket)
             .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
             .send()
             .await;
         trace!(key, "S3 get, got response");
@@ -93,6 +94,7 @@ impl KVStore for S3Bucket {
                     .bucket(bucket)
                     .key(&key)
                     .body(body)
+                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
                     .send()
                     .await
                     .wrap_err_with(|| {
@@ -124,7 +126,8 @@ impl KVStore for S3Bucket {
                     .client
                     .list_objects_v2()
                     .bucket(&self.bucket)
-                    .prefix(prefix);
+                    .prefix(prefix)
+                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester);
 
                 if let Some(token) = token {
                     request = request.continuation_token(token);
@@ -161,6 +164,7 @@ impl KVStore for S3Bucket {
                     .delete_object()
                     .bucket(bucket)
                     .key(&key)
+                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
                     .send()
                     .await
                     .wrap_err_with(|| {
