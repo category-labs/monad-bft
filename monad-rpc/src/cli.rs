@@ -54,8 +54,20 @@ pub struct Cli {
     pub eth_get_logs_max_block_range: u64,
 
     /// Set the max concurrent requests for eth_call and eth_estimateGas
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 1000)]
     pub eth_call_max_concurrent_requests: u32,
+
+    /// Set the number of threads used for executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 2)]
+    pub eth_call_executor_threads: u32,
+
+    /// Set the number of fibers used for executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 64)]
+    pub eth_call_executor_fibers: u32,
+
+    /// Set the size of the node cache when executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 102400)]
+    pub eth_call_executor_node_lru_size: u32,
 
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]

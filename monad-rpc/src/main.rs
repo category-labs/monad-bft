@@ -848,11 +848,14 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let eth_call_executor = args
-        .triedb_path
-        .clone()
-        .as_deref()
-        .map(|path| Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(1, path))));
+    let eth_call_executor = args.triedb_path.clone().as_deref().map(|path| {
+        Arc::new(tokio::sync::Mutex::new(EthCallExecutor::new(
+            args.eth_call_executor_threads,
+            args.eth_call_executor_fibers,
+            args.eth_call_executor_node_lru_size,
+            path,
+        )))
+    });
 
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
