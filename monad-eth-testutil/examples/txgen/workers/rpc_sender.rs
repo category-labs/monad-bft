@@ -5,6 +5,7 @@ use alloy_primitives::hex;
 use tokio::time::MissedTickBehavior;
 
 use super::*;
+use crate::cli::Config;
 
 pub struct RpcSender {
     pub gen_rx: mpsc::Receiver<AccountsWithTxs>,
@@ -30,25 +31,25 @@ impl RpcSender {
         refresh_sender: mpsc::UnboundedSender<AccountsWithTime>,
         recipient_sender: mpsc::UnboundedSender<AddrsWithTime>,
         client: ReqwestClient,
-        target_tps: u64,
         metrics: Arc<Metrics>,
         sent_txs: Arc<DashMap<TxHash, Instant>>,
-        use_dynamic_adjustment: bool,
+        config: &Config,
     ) -> Self {
         Self {
             gen_rx,
             refresh_sender,
             recipient_sender,
             client,
-            target_tps,
             metrics,
             sent_txs,
             // Initialize fields
             tx_history: VecDeque::new(),
             last_adjustment_time: Instant::now(),
-            adjustment_interval: Duration::from_secs(1), // Check every 5 seconds
-            use_dynamic_adjustment,
-            window_duration: Duration::from_secs(300), // 5 minute window for averaging
+            adjustment_interval: Duration::from_secs(1),
+            window_duration: Duration::from_secs(300),
+
+            use_dynamic_adjustment: !config.use_static_tps_interval,
+            target_tps: config.tps,
         }
     }
 

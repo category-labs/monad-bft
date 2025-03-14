@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub struct StorageDeletesTxGenerator {
-    pub recipient_keys: SeededKeyPool,
+    pub recipient_keys: KeyPool,
     pub erc20: ERC20,
     pub tx_per_sender: usize,
 }

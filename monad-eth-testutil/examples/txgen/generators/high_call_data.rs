@@ -1,7 +1,7 @@
 use crate::{prelude::*, shared::erc20::ERC20};
 
 pub struct HighCallDataTxGenerator {
-    pub(crate) recipient_keys: SeededKeyPool,
+    pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
     pub(crate) gas_limit: u64,
 }

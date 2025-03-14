@@ -2,7 +2,7 @@ use super::{erc20_transfer, native_transfer};
 use crate::{cli::TxType, prelude::*, shared::erc20::ERC20};
 
 pub struct CreateAccountsGenerator {
-    pub recipient_keys: SeededKeyPool,
+    pub recipient_keys: KeyPool,
     pub tx_per_sender: usize,
     pub tx_type: TxType,
     pub erc20: Option<ERC20>,
