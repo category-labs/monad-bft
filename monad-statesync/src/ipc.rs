@@ -131,12 +131,18 @@ struct WipResponse<PT: PubKey> {
     from: NodeId<PT>,
     rx_time: Instant,
     service_start_time: Instant,
+    /// send next message after this time even if we don't have a full batch
+    next_message_schedule: Instant,
     response: StateSyncResponse,
 
     // list of pending completions, max size of MAX_PENDING_RESPONSES
     // set to none if any of the completions have failed
     pending_response_completions: Option<VecDeque<oneshot::Receiver<()>>>,
 }
+
+// Schedule messages to be sent every second even if we don't have a full batch
+// This prevents the client from timing out as long as the server stays up
+const MESSAGE_SCHEDULE_DURATION: Duration = Duration::from_millis(500);
 
 impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
@@ -168,6 +174,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         enum Event<PT: PubKey> {
             Execution(Result<u8, tokio::io::Error>),
             Request((NodeId<PT>, StateSyncRequest)),
+            Timeout,
         }
         let fut1 = async {
             let event = self.stream.read_u8().await;
@@ -177,7 +184,15 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             let maybe_request = self.request_tx_reader.recv().await;
             Event::Request(maybe_request.expect("request_tx_writer dropped"))
         };
-        let (event, _, _) = futures::future::select_all(vec![fut1.boxed(), fut2.boxed()]).await;
+        let mut futures = vec![fut1.boxed(), fut2.boxed()];
+        if let Some(wip_response) = self.wip_response.as_ref() {
+            let fut = async {
+                tokio::time::sleep_until(wip_response.next_message_schedule.into()).await;
+                Event::Timeout
+            };
+            futures.push(fut.boxed());
+        }
+        let (event, _, _) = futures::future::select_all(futures).await;
 
         match event {
             Event::Execution(maybe_msg_type) => {
@@ -186,6 +201,83 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.handle_execution_message(execution_message).await
             }
             Event::Request((from, request)) => self.handle_request(from, request).await,
+            Event::Timeout => self.handle_timeout().await,
+        }
+    }
+
+    fn write_response(
+        response_writer: &mut tokio::sync::mpsc::Sender<(
+            NodeId<PT>,
+            StateSyncResponse,
+            oneshot::Sender<()>,
+        )>,
+        to: NodeId<PT>,
+        response: StateSyncResponse,
+    ) -> oneshot::Receiver<()> {
+        let (completion_sender, completion_receiver) = oneshot::channel();
+        if response_writer
+            .try_send((to, response, completion_sender))
+            .is_err()
+        {
+            tracing::warn!("dropping outbound statesync response, consensus state backlogged?");
+        }
+        completion_receiver
+    }
+
+    async fn send_batch(&mut self) {
+        let Some(wip_response) = &mut self.wip_response else {
+            tracing::warn!("send_batch called with no wip_response");
+            return;
+        };
+
+        let response = StateSyncResponse {
+            version: wip_response.response.version,
+            nonce: wip_response.response.nonce,
+            response_index: wip_response.response.response_index,
+
+            request: wip_response.response.request,
+            response: std::mem::take(&mut wip_response.response.response),
+            response_n: wip_response.response.response_n,
+        };
+        wip_response.response.response_index += 1;
+        // unnecessary but keeping for clarity
+        wip_response.response.response.clear();
+
+        // Reset timeout when sending message
+        wip_response.next_message_schedule = Instant::now() + MESSAGE_SCHEDULE_DURATION;
+
+        if let Some(pending_response_completions) = &mut wip_response.pending_response_completions {
+            let completion =
+                Self::write_response(self.response_rx_writer, wip_response.from, response);
+            pending_response_completions.push_back(completion);
+            if pending_response_completions.len() == MAX_PENDING_RESPONSES {
+                let oldest_completion = pending_response_completions.pop_front().expect("nonempty");
+
+                let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
+                    tracing::debug!(
+                        ?elapsed,
+                        ?wip_response.from,
+                        "waiting for statesync response chunk completion"
+                    )
+                });
+
+                // will block until oldest_response is fully written to the TCP socket
+                if oldest_completion.await.is_err() {
+                    wip_response.pending_response_completions = None;
+                    tracing::warn!(
+                        ?wip_response.from,
+                        "outbound statesync response TCP socket completion failed"
+                    )
+                }
+            }
+        } else {
+            tracing::warn!(
+                ?wip_response.from,
+                request =? response.request,
+                nonce =? response.nonce,
+                response_index = response.response_index,
+                "not sending statesync response, previous send failed"
+            )
         }
     }
 
@@ -193,18 +285,6 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         &mut self,
         message: ExecutionMessage,
     ) -> Result<(), tokio::io::Error> {
-        let write_response = |to, response| {
-            let (completion_sender, completion_receiver) = oneshot::channel();
-            if self
-                .response_rx_writer
-                .try_send((to, response, completion_sender))
-                .is_err()
-            {
-                tracing::warn!("dropping outbound statesync response, consensus state backlogged?");
-            }
-            completion_receiver
-        };
-
         match message {
             ExecutionMessage::SyncRequest(_request) => {
                 panic!("live-mode execution shouldn't send SyncRequest")
@@ -219,56 +299,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .response
                     .push(StateSyncUpsertV1::new(upsert_type, data.into()));
                 if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
-                    // send batch
-                    let response = StateSyncResponse {
-                        version: wip_response.response.version,
-                        nonce: wip_response.response.nonce,
-                        response_index: wip_response.response.response_index,
-
-                        request: wip_response.response.request,
-                        response: std::mem::take(&mut wip_response.response.response),
-                        response_n: wip_response.response.response_n,
-                    };
-                    wip_response.response.response_index += 1;
-                    // unnecessary but keeping for clarity
-                    wip_response.response.response.clear();
-                    let from = wip_response.from;
-
-                    if let Some(pending_response_completions) =
-                        &mut wip_response.pending_response_completions
-                    {
-                        let completion = write_response(from, response);
-                        pending_response_completions.push_back(completion);
-                        if pending_response_completions.len() == MAX_PENDING_RESPONSES {
-                            let oldest_completion =
-                                pending_response_completions.pop_front().expect("nonempty");
-
-                            let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
-                                tracing::debug!(
-                                    ?elapsed,
-                                    ?from,
-                                    "waiting for statesync response chunk completion"
-                                )
-                            });
-
-                            // will block until oldest_response is fully written to the TCP socket
-                            if oldest_completion.await.is_err() {
-                                wip_response.pending_response_completions = None;
-                                tracing::warn!(
-                                    ?from,
-                                    "outbound statesync response TCP socket completion failed"
-                                )
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            ?from,
-                            request =? response.request,
-                            nonce =? response.nonce,
-                            response_index = response.response_index,
-                            "not sending statesync response, previous send failed"
-                        )
-                    }
+                    self.send_batch().await;
                 }
             }
             ExecutionMessage::SyncDone(done) => {
@@ -290,7 +321,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     // response_n is overloaded to indicate that the response is done
                     wip_response.response.response_n = done.n;
                     if wip_response.pending_response_completions.is_some() {
-                        let _completion = write_response(wip_response.from, wip_response.response);
+                        let _completion = Self::write_response(
+                            self.response_rx_writer,
+                            wip_response.from,
+                            wip_response.response,
+                        );
                     } else {
                         tracing::warn!(
                             from =? wip_response.from,
@@ -308,6 +343,17 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 self.try_queue_response().await?;
             }
         };
+        Ok(())
+    }
+
+    async fn handle_timeout(&mut self) -> Result<(), tokio::io::Error> {
+        tracing::warn!(
+            "pushing incomplete batch due to timeout for prefix {:?}",
+            self.wip_response
+                .as_ref()
+                .map(|wip_response| wip_response.response.request.prefix)
+        );
+        self.send_batch().await;
         Ok(())
     }
 
@@ -377,6 +423,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             from: request.from,
             rx_time: request.rx_time,
             service_start_time: Instant::now(),
+            next_message_schedule: Instant::now() + MESSAGE_SCHEDULE_DURATION,
             response: StateSyncResponse {
                 version: SELF_STATESYNC_VERSION,
                 nonce: rand::random(),
