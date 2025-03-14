@@ -50,7 +50,8 @@ pub enum ExecutionMessage {
     SyncDone(bindings::monad_sync_done),
 }
 
-const MAX_UPSERTS_PER_RESPONSE: usize = 1_000_000;
+/// at 75 bytes per upsert, approx 1.5MB
+const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
 /// max number of chunked responses to send out before blocking on completions
 const MAX_PENDING_RESPONSES: usize = 2;
 
