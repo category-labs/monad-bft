@@ -6,6 +6,7 @@ pub trait ChainRevision: Copy + Clone {
     fn chain_params(&self) -> &'static ChainParams;
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum MonadChainRevision {
     V_0_7_0,

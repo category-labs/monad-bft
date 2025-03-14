@@ -87,18 +87,18 @@ where
             .open(&wal_path)
             .expect("failed to open WAL");
         let wal_len = wal.metadata().expect("failed to get wal metadata").len();
-        const event_len: u64 = 33; // FIXME don't hardcode
-        wal.set_len(wal_len / event_len * event_len)
+        const EVENT_LEN: u64 = 33; // FIXME don't hardcode
+        wal.set_len(wal_len / EVENT_LEN * EVENT_LEN)
             .expect("failed to set wal len");
-        let num_events = wal_len / event_len;
+        let num_events = wal_len / EVENT_LEN;
 
         let bft_block_persist = FileBlockPersist::new(ledger_path);
 
         let mut last_commit = None;
         for event_idx in (0..num_events).rev() {
-            wal.seek(SeekFrom::Start(event_idx * event_len))
+            wal.seek(SeekFrom::Start(event_idx * EVENT_LEN))
                 .expect("failed to seek to event in wal");
-            let mut buf = [0_u8; event_len as usize];
+            let mut buf = [0_u8; EVENT_LEN as usize];
             wal.read_exact(&mut buf)
                 .expect("failed to read event from wal");
             let block_id = BlockId(Hash(buf[1..].try_into().expect("blockid not 32 bytes")));

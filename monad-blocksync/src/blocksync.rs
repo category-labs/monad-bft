@@ -1521,7 +1521,7 @@ mod test {
         let full_blocks = context.get_blocks(num_blocks);
 
         // add the first num_in_blocktree blocks to the blocktree
-        let mut block_policy = PassthruBlockPolicy {};
+        let block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
         for full_block in full_blocks.iter().take(num_in_blocktree) {
             context
@@ -1717,7 +1717,7 @@ mod test {
     #[test_case(false; "headers received from ledger")]
     fn peer_headers_request(cached_in_blocktree: bool) {
         let mut context = setup();
-        let mut block_policy = PassthruBlockPolicy {};
+        let block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
 
         let num_blocks = 5;
@@ -1830,7 +1830,7 @@ mod test {
     #[test_case(false; "payload received from ledger")]
     fn peer_payload_request(cached_in_blocktree: bool) {
         let mut context = setup();
-        let mut block_policy = PassthruBlockPolicy {};
+        let block_policy = PassthruBlockPolicy {};
         let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(10));
 
         let num_blocks = 1;

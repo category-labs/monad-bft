@@ -86,7 +86,7 @@ mod websocket;
 
 const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
 
-pub async fn rpc_handler(
+pub(crate) async fn rpc_handler(
     root_span: RootSpan,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
