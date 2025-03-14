@@ -144,6 +144,38 @@ struct WipResponse<PT: PubKey> {
 // This prevents the client from timing out as long as the server stays up
 const MESSAGE_SCHEDULE_DURATION: Duration = Duration::from_millis(500);
 
+impl<PT: PubKey> WipResponse<PT> {
+    fn clear_ready_completions(&mut self) {
+        while let Some(oldest_completion) = self
+            .pending_response_completions
+            .as_mut()
+            .and_then(VecDeque::front_mut)
+        {
+            match oldest_completion.try_recv() {
+                Ok(Some(())) => {
+                    // chunk sent successfully, pop and check next completion
+                    let _ = self
+                        .pending_response_completions
+                        .as_mut()
+                        .expect("at least 1 completion exists")
+                        .pop_front();
+                }
+                // chunk completion not ready, stop checking completions
+                Ok(None) => break,
+                // chunk completion failed, abort entire response message
+                Err(futures::channel::oneshot::Canceled) => {
+                    self.pending_response_completions = None;
+                    tracing::warn!(
+                        from =? self.from,
+                        "outbound statesync response TCP socket completion failed"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
 impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
         request_timeout: Duration,
@@ -245,6 +277,8 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
         // Reset timeout when sending message
         wip_response.next_message_schedule = Instant::now() + MESSAGE_SCHEDULE_DURATION;
+
+        wip_response.clear_ready_completions();
 
         if let Some(pending_response_completions) = &mut wip_response.pending_response_completions {
             let completion =
