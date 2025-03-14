@@ -114,14 +114,10 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
 
 #[allow(non_snake_case)]
 /// Returns an object with data about the sync status or false.
-pub async fn monad_eth_syncing(
-    mempool_state: &Arc<EthTxPoolBridgeState>,
-) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_syncing() -> Result<Value, JsonRpcError> {
     trace!("monad_eth_syncing");
 
-    let is_connected = mempool_state.is_connected().await;
-
-    serialize_result(serde_json::Value::Bool(!is_connected))
+    serialize_result(serde_json::Value::Bool(false))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

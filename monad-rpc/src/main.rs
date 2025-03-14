@@ -409,7 +409,7 @@ async fn rpc_select(
         "eth_chainId" => monad_eth_chainId(app_state.chain_id)
             .await
             .map(serialize_result)?,
-        "eth_syncing" => monad_eth_syncing(&app_state.mempool_state).await,
+        "eth_syncing" => monad_eth_syncing().await,
         "eth_estimateGas" => {
             let Some(triedb_env) = &app_state.triedb_reader else {
                 return Err(JsonRpcError::method_not_supported());
@@ -673,21 +673,21 @@ async fn main() -> std::io::Result<()> {
     );
     let txpool_state = EthTxPoolBridgeState::new();
 
+
+    // Wait for bft to be in a ready state before starting the RPC server.
+    // Bft will bind to the ipc socket after state syncing.
+    let ipc_path = args.ipc_path;
+    let mut txpool_bridge = retry(
+        || async { EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await },
+        30,
+    )
+    .await
+    .expect("failed to create ipc sender");
+
     tokio::spawn({
         let txpool_state = txpool_state.clone();
 
         async move {
-            let ipc_path = args.ipc_path;
-            let mut bridge = retry(
-                || async { EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await },
-                30,
-            )
-            .await
-            .expect("failed to create ipc sender");
-
-            // Set connected to true so that rpc knows we are done syncing
-            txpool_state.connected(true).await;
-
             let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
             loop {
@@ -696,12 +696,12 @@ async fn main() -> std::io::Result<()> {
                         let tx = result.unwrap();
 
                         txpool_state.add_tx(&tx);
-                        if let Err(e) = bridge.send(&tx).await {
+                        if let Err(e) = txpool_bridge.send(&tx).await {
                             warn!("IPC send failed, monad-bft likely crashed: {}", e);
                         }
                     }
 
-                    result = bridge.next() => {
+                    result = txpool_bridge.next() => {
                         let Some(events) = result else {
                             continue;
                         };
