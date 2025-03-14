@@ -10,8 +10,8 @@ use zerocopy::{
 
 use super::TcpMsg;
 
-mod rx;
-mod tx;
+pub mod rx;
+pub mod tx;
 
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 1024 * 1024 * 1024;
 

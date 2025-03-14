@@ -15,7 +15,9 @@ use zerocopy::AsBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr};
 
-const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
+// These are per-peer limits.
+pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
+pub const QUEUED_MESSAGE_LIMIT: usize = 20;
 
 #[derive(Clone)]
 struct TxState {
@@ -53,13 +55,21 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
 
             let queued_messages = entry.or_default();
 
-            queued_messages.push_back(msg);
+            if queued_messages.len() < QUEUED_MESSAGE_LIMIT {
+                queued_messages.push_back(msg);
 
-            if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                    warn!(
+                        ?addr,
+                        message_count = queued_messages.len(),
+                        "excessive number of messages queued for peer"
+                    );
+                }
+            } else {
                 warn!(
                     ?addr,
                     message_count = queued_messages.len(),
-                    "excessive number of messages queued for peer"
+                    "peer message limit reached, dropping message"
                 );
             }
 

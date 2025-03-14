@@ -1,8 +1,9 @@
-use std::{sync::Once, thread::sleep, time::Duration};
+use std::{collections::VecDeque, sync::Once, thread::sleep, time::Duration};
 
 use futures::{channel::oneshot, executor};
 use monad_dataplane::{
-    udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, TcpMsg, UnicastMsg,
+    tcp::tx::QUEUED_MESSAGE_LIMIT, udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg,
+    TcpMsg, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -146,7 +147,7 @@ fn tcp_rapid() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    let mut completions = Vec::with_capacity(num_msgs);
+    let mut completions = VecDeque::with_capacity(QUEUED_MESSAGE_LIMIT);
 
     for _ in 0..num_msgs {
         let (sender, receiver) = oneshot::channel::<()>();
@@ -159,11 +160,15 @@ fn tcp_rapid() {
             },
         );
 
-        completions.push(receiver);
+        completions.push_back(receiver);
+
+        while completions.len() >= QUEUED_MESSAGE_LIMIT {
+            assert!(executor::block_on(completions.pop_front().unwrap()).is_ok());
+        }
     }
 
-    for receiver in completions {
-        assert!(executor::block_on(receiver).is_ok());
+    while !completions.is_empty() {
+        assert!(executor::block_on(completions.pop_front().unwrap()).is_ok());
     }
 
     for _ in 0..num_msgs {
@@ -175,7 +180,7 @@ fn tcp_rapid() {
 
 #[test]
 #[timeout(1000)]
-fn tcp_fail() {
+fn tcp_connect_fail() {
     once_setup();
 
     let rx_addr = "127.0.0.1:9008".parse().unwrap();
@@ -204,6 +209,63 @@ fn tcp_fail() {
     assert!(executor::block_on(receiver).is_err());
 }
 
+#[test]
+#[timeout(1000)]
+fn tcp_exceed_queue_limits() {
+    once_setup();
+
+    let rx_addr = "127.0.0.1:9010".parse().unwrap();
+    let tx_addr = "127.0.0.1:9011".parse().unwrap();
+    let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
+
+    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
+    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+
+    // Allow Dataplane threads to set themselves up.
+    sleep(Duration::from_millis(10));
+
+    let payload: Vec<u8> = (0..DEFAULT_SEGMENT_SIZE)
+        .map(|_| rand::thread_rng().gen_range(0..255))
+        .collect();
+
+    let mut completions = Vec::with_capacity(num_msgs);
+
+    for _ in 0..num_msgs {
+        let (sender, receiver) = oneshot::channel::<()>();
+
+        tx.tcp_write(
+            rx_addr,
+            TcpMsg {
+                msg: payload.clone().into(),
+                completion: Some(sender),
+            },
+        );
+
+        completions.push(receiver);
+    }
+
+    // At least QUEUED_MESSAGE_LIMIT messages should be delivered successfully.
+    for _ in 0..QUEUED_MESSAGE_LIMIT {
+        let (_src_addr, received_payload) = executor::block_on(rx.tcp_read());
+
+        assert_eq!(received_payload, payload);
+    }
+
+    let failures: usize = completions
+        .into_iter()
+        .map(|receiver| {
+            if executor::block_on(receiver).is_err() {
+                1
+            } else {
+                0
+            }
+        })
+        .sum();
+
+    // We should have at least some messages that failed to transmit.
+    assert_ne!(failures, 0);
+}
+
 const MINIMUM_SEGMENT_SIZE: u16 = 256;
 
 #[test]
@@ -211,8 +273,8 @@ const MINIMUM_SEGMENT_SIZE: u16 = 256;
 fn broadcast_all_strides() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9010".parse().unwrap();
-    let tx_addr = "127.0.0.1:9011".parse().unwrap();
+    let rx_addr = "127.0.0.1:9012".parse().unwrap();
+    let tx_addr = "127.0.0.1:9013".parse().unwrap();
 
     let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
     let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
@@ -254,8 +316,8 @@ fn broadcast_all_strides() {
 fn unicast_all_strides() {
     once_setup();
 
-    let rx_addr = "127.0.0.1:9012".parse().unwrap();
-    let tx_addr = "127.0.0.1:9013".parse().unwrap();
+    let rx_addr = "127.0.0.1:9014".parse().unwrap();
+    let tx_addr = "127.0.0.1:9015".parse().unwrap();
 
     let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
     let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
