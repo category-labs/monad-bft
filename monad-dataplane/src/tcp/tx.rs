@@ -33,6 +33,63 @@ impl TxState {
 
         TxState { inner }
     }
+
+    fn push(&self, addr: &SocketAddr, msg: TcpMsg) -> bool {
+        let mut inner_ref = self.inner.borrow_mut();
+
+        let entry = inner_ref.messages.entry(*addr);
+
+        let peer_connection_task_exists = matches!(entry, Entry::Occupied(..));
+
+        let queued_messages = entry.or_default();
+
+        if queued_messages.len() < QUEUED_MESSAGE_LIMIT {
+            queued_messages.push_back(msg);
+
+            if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                warn!(
+                    ?addr,
+                    message_count = queued_messages.len(),
+                    "excessive number of messages queued for peer"
+                );
+            }
+        } else {
+            warn!(
+                ?addr,
+                message_count = queued_messages.len(),
+                "peer message limit reached, dropping message"
+            );
+        }
+
+        peer_connection_task_exists
+    }
+
+    fn pop(&self, addr: &SocketAddr) -> Option<(u64, TcpMsg)> {
+        let mut inner_ref = self.inner.borrow_mut();
+
+        let queued_messages = inner_ref.messages.get_mut(addr).unwrap();
+
+        match queued_messages.pop_front() {
+            None => {
+                inner_ref.messages.remove(addr);
+                None
+            }
+            Some(message) => {
+                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                    warn!(
+                        ?addr,
+                        message_count = queued_messages.len(),
+                        "excessive number of messages queued for peer"
+                    );
+                }
+
+                let conn_id = inner_ref.conn_id;
+                inner_ref.conn_id += 1;
+
+                Some((conn_id, message))
+            }
+        }
+    }
 }
 
 struct TxStateInner {
@@ -46,37 +103,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     while let Some((addr, msg)) = tcp_egress_rx.recv().await {
         debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
 
-        let peer_task_exists = {
-            let mut inner_ref = tx_state.inner.borrow_mut();
-
-            let entry = inner_ref.messages.entry(addr);
-
-            let peer_task_exists = matches!(entry, Entry::Occupied(..));
-
-            let queued_messages = entry.or_default();
-
-            if queued_messages.len() < QUEUED_MESSAGE_LIMIT {
-                queued_messages.push_back(msg);
-
-                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
-                    warn!(
-                        ?addr,
-                        message_count = queued_messages.len(),
-                        "excessive number of messages queued for peer"
-                    );
-                }
-            } else {
-                warn!(
-                    ?addr,
-                    message_count = queued_messages.len(),
-                    "peer message limit reached, dropping message"
-                );
-            }
-
-            peer_task_exists
-        };
-
-        if !peer_task_exists {
+        if !tx_state.push(&addr, msg) {
             trace!(?addr, "spawning TCP tx task for peer");
 
             spawn(task_peer(tx_state.clone(), addr));
@@ -87,32 +114,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
 async fn task_peer(tx_state: TxState, addr: SocketAddr) {
     trace!(?addr, "starting TCP tx task for peer");
 
-    loop {
-        let (conn_id, message) = {
-            let mut inner_ref = tx_state.inner.borrow_mut();
-
-            let queued_messages = inner_ref.messages.get_mut(&addr).unwrap();
-
-            if let Some(message) = queued_messages.pop_front() {
-                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
-                    warn!(
-                        ?addr,
-                        message_count = queued_messages.len(),
-                        "excessive number of messages queued for peer"
-                    );
-                }
-
-                let conn_id = inner_ref.conn_id;
-                inner_ref.conn_id += 1;
-
-                (conn_id, message)
-            } else {
-                inner_ref.messages.remove(&addr);
-                trace!(?addr, "exiting TCP tx task for peer");
-                return;
-            }
-        };
-
+    while let Some((conn_id, message)) = tx_state.pop(&addr) {
         let len = message.msg.len();
 
         // TODO: When we experience a transmission failure, we should consider zapping
@@ -130,6 +132,8 @@ async fn task_peer(tx_state: TxState, addr: SocketAddr) {
             );
         }
     }
+
+    trace!(?addr, "exiting TCP tx task for peer");
 }
 
 async fn send_message(conn_id: u64, addr: SocketAddr, message: TcpMsg) {
