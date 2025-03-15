@@ -15,8 +15,6 @@ mod tx;
 
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 1024 * 1024 * 1024;
 
-const TCP_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
-
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
 

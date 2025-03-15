@@ -4,7 +4,7 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
-use super::{
-    message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_HEADER_TIMEOUT,
-    TCP_MESSAGE_LENGTH_LIMIT,
-};
+use super::{message_timeout, TcpMsgHdr, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT};
 
 const PER_PEER_CONNECTION_LIMIT: usize = 100;
+
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 struct RxState {
@@ -148,7 +147,7 @@ async fn read_message(
 
     let header_bytes = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
 
-    let header = match timeout(TCP_HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
+    let header = match timeout(HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
         Ok((ret, header_bytes)) => match ret {
             Ok(_len) => TcpMsgHdr::read_from(&header_bytes[..]).unwrap(),
             Err(err) => {
