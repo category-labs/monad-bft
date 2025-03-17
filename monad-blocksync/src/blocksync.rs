@@ -366,8 +366,8 @@ where
         override_peers: &[NodeId<CertificateSignaturePubKey<ST>>],
         rng: &mut ChaCha8Rng,
     ) -> NodeId<CertificateSignaturePubKey<ST>> {
-        if !override_peers.is_empty()
-            || (override_peers.len() == 1 && &override_peers[0] == self_node_id)
+        if !(override_peers.is_empty()
+            || (override_peers.len() == 1 && &override_peers[0] == self_node_id))
         {
             // uniformly choose from override peers
             let remote_peers: Vec<&NodeId<_>> = override_peers
