@@ -112,11 +112,18 @@ pub async fn rpc_handler(
         }
         RequestWrapper::Batch(json_batch_request) => {
             root_span.record("json_method", "batch");
-            if json_batch_request.is_empty()
-                || json_batch_request.len() > app_state.batch_request_limit as usize
-            {
-                return HttpResponse::Ok()
-                    .json(Response::from_error(JsonRpcError::invalid_request()));
+            if json_batch_request.is_empty() {
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
+                    "empty batch request".to_string(),
+                )));
+            }
+            if json_batch_request.len() > app_state.batch_request_limit as usize {
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
+                    format!(
+                        "number of requests in batch request exceeds limit of {}",
+                        app_state.batch_request_limit
+                    ),
+                )));
             }
             let batch_response =
                 futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
@@ -1045,7 +1052,7 @@ mod tests {
     }
 
     #[allow(non_snake_case)]
-    #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)); "empty batch")]
+    #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::custom("empty batch request".to_string())), Value::Null)); "empty batch")]
     #[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)]); "invalid batch but not empty")]
     #[test_case(json!([1, 2, 3, 4]),
     ResponseWrapper::Batch(vec![
@@ -1074,7 +1081,9 @@ mod tests {
         {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
         {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
     ]),
-    ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)); "exceed batch request limit")]
+    ResponseWrapper::Single(
+        Response::new(None, Some(JsonRpcError::custom("number of requests in batch request exceeds limit of 5".to_string())), Value::Null)
+    ); "exceed batch request limit")]
     #[actix_web::test]
     async fn json_rpc_specification_batch_compliance(
         payload: Value,
