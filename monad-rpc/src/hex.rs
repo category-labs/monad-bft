@@ -29,6 +29,10 @@ pub fn decode(s: &str) -> Result<Vec<u8>, DecodeHexError> {
         return Err(DecodeHexError::InvalidLen);
     }
 
+    if !s.is_ascii() {
+        return Err(DecodeHexError::ParseErr);
+    }
+
     let Some(noprefix) = s.strip_prefix("0x") else {
         return Err(DecodeHexError::ParseErr);
     };
@@ -89,6 +93,8 @@ mod test {
     fn test_hex_parse_err() {
         assert_eq!(Err(DecodeHexError::ParseErr), decode("1234"));
         assert_eq!(Err(DecodeHexError::ParseErr), decode("x012"));
+        assert_eq!(Err(DecodeHexError::ParseErr), decode("0xbbb˝a"));
+        assert_eq!(Err(DecodeHexError::ParseErr), decode("0xghijkl"));
     }
 
     #[test]
