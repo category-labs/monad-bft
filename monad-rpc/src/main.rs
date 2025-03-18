@@ -52,6 +52,7 @@ use crate::{
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
+    timing::TimingMiddleware,
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -78,6 +79,7 @@ mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod metrics;
+mod timing;
 mod trace;
 mod trace_handlers;
 mod txpool;
@@ -889,6 +891,7 @@ async fn main() -> std::io::Result<()> {
             App::new()
                 .wrap(metrics.clone())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
@@ -901,6 +904,7 @@ async fn main() -> std::io::Result<()> {
         None => HttpServer::new(move || {
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
                 .app_data(web::Data::new(resources.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
