@@ -90,10 +90,16 @@ message ProtoStateSyncResponse {
   uint64 n = 3;
 }
 
+message ProtoStateSyncBadVersion {
+  uint32 min_version = 1;
+  uint32 max_version = 2;
+}
+
 message ProtoStateSyncNetworkMessage {
   oneof OneofMessage {
     ProtoStateSyncRequest request = 1;
     ProtoStateSyncResponse response = 2;
+    ProtoStateSyncBadVersion bad_version = 3;
   }
 }
 

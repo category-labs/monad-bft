@@ -583,6 +583,7 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
 const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
 const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V1;
+pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
 pub struct StateSyncVersion {
@@ -603,15 +604,11 @@ impl StateSyncVersion {
     }
 
     pub fn is_compatible(&self) -> bool {
-        self.major == SELF_STATESYNC_VERSION.major
-    }
-
-    pub fn is_compatible_with(&self, with: &Self) -> bool {
-        self.major == with.major
+        *self >= STATESYNC_VERSION_MIN && *self <= SELF_STATESYNC_VERSION
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable)]
 pub struct StateSyncRequest {
     pub version: StateSyncVersion,
 
@@ -621,6 +618,44 @@ pub struct StateSyncRequest {
     pub from: u64,
     pub until: u64,
     pub old_target: u64,
+}
+
+impl Decodable for StateSyncRequest {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let version = StateSyncVersion::decode(&mut payload)?;
+
+        if version.is_compatible() {
+            let prefix = u64::decode(&mut payload)?;
+            let prefix_bytes = u8::decode(&mut payload)?;
+            let target = u64::decode(&mut payload)?;
+            let from = u64::decode(&mut payload)?;
+            let until = u64::decode(&mut payload)?;
+            let old_target = u64::decode(&mut payload)?;
+
+            Ok(Self {
+                version,
+                prefix,
+                prefix_bytes,
+                target,
+                from,
+                until,
+                old_target,
+            })
+        } else {
+            // If the version is not compatible, skip the rest of payload we may not understand
+            Ok(Self {
+                version,
+                prefix: 0,
+                prefix_bytes: 0,
+                target: 0,
+                from: 0,
+                until: 0,
+                old_target: 0,
+            })
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -721,6 +756,12 @@ impl Decodable for StateSyncUpsertType {
             )),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct StateSyncBadVersion {
+    pub min_version: StateSyncVersion,
+    pub max_version: StateSyncVersion,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -836,6 +877,7 @@ impl Debug for StateSyncResponse {
 pub enum StateSyncNetworkMessage {
     Request(StateSyncRequest),
     Response(StateSyncResponse),
+    BadVersion(StateSyncBadVersion),
 }
 
 impl Encodable for StateSyncNetworkMessage {
@@ -850,6 +892,10 @@ impl Encodable for StateSyncNetworkMessage {
                 let enc: [&dyn Encodable; 3] = [&name, &2u8, &resp];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::BadVersion(bad_version) => {
+                let enc: [&dyn Encodable; 3] = [&name, &3u8, &bad_version];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 
@@ -862,6 +908,10 @@ impl Encodable for StateSyncNetworkMessage {
             }
             Self::Response(resp) => {
                 let enc: Vec<&dyn Encodable> = vec![&name, &2u8, &resp];
+                Encodable::length(&enc)
+            }
+            Self::BadVersion(bad_version) => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &3u8, &bad_version];
                 Encodable::length(&enc)
             }
         }
@@ -881,6 +931,7 @@ impl Decodable for StateSyncNetworkMessage {
         match u8::decode(&mut payload)? {
             1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
             2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
+            3 => Ok(Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown StateSyncNetworkMessage",
             )),
@@ -1180,13 +1231,13 @@ where
 mod tests {
     use crate::{
         StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
-        StateSyncVersion, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
+        StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0, STATESYNC_VERSION_V1,
     };
 
     #[test]
     fn statesync_version_is_compatible() {
-        assert!(STATESYNC_VERSION_V0.is_compatible_with(&STATESYNC_VERSION_V1));
-        assert!(STATESYNC_VERSION_V1.is_compatible_with(&STATESYNC_VERSION_V0));
+        assert!(STATESYNC_VERSION_V0.is_compatible());
+        assert!(STATESYNC_VERSION_V1.is_compatible());
     }
 
     #[test]
@@ -1204,12 +1255,12 @@ mod tests {
             response_index: 0,
             request: StateSyncRequest {
                 version: client_version,
-                prefix: 0,
-                prefix_bytes: 0,
-                target: 0,
-                from: 0,
-                until: 0,
-                old_target: 0,
+                prefix: 100000,
+                prefix_bytes: 20,
+                target: 3000,
+                from: 10000000000,
+                until: 200000000,
+                old_target: 30000,
             },
             response: vec![StateSyncUpsertV1 {
                 upsert_type: StateSyncUpsertType::Account,
@@ -1267,5 +1318,62 @@ mod tests {
             v1_response.len(),
             "v1 server sent v1 response to v0 client"
         );
+    }
+
+    #[test]
+    fn statesync_request_bad_version() {
+        // version too low
+        let request = StateSyncRequest {
+            version: StateSyncVersion { major: 0, minor: 0 },
+            prefix: 10,
+            prefix_bytes: 1,
+            target: 10,
+            from: 9,
+            until: 8,
+            old_target: 7,
+        };
+        let serialized_request = alloy_rlp::encode(request);
+        let deserialized_request: StateSyncRequest =
+            alloy_rlp::decode_exact(&serialized_request).unwrap();
+        assert_eq!(
+            deserialized_request.version,
+            StateSyncVersion { major: 0, minor: 0 }
+        );
+        assert_eq!(deserialized_request.prefix, 0);
+        assert_eq!(deserialized_request.prefix_bytes, 0);
+        assert_eq!(deserialized_request.target, 0);
+        assert_eq!(deserialized_request.from, 0);
+        assert_eq!(deserialized_request.until, 0);
+        assert_eq!(deserialized_request.old_target, 0);
+
+        // version too high
+        let request = StateSyncRequest {
+            version: StateSyncVersion {
+                major: SELF_STATESYNC_VERSION.major + 1,
+                minor: 2,
+            },
+            prefix: 10,
+            prefix_bytes: 1,
+            target: 10,
+            from: 9,
+            until: 8,
+            old_target: 7,
+        };
+        let serialized_request = alloy_rlp::encode(request);
+        let deserialized_request: StateSyncRequest =
+            alloy_rlp::decode_exact(&serialized_request).unwrap();
+        assert_eq!(
+            deserialized_request.version,
+            StateSyncVersion {
+                major: SELF_STATESYNC_VERSION.major + 1,
+                minor: 2
+            }
+        );
+        assert_eq!(deserialized_request.prefix, 0);
+        assert_eq!(deserialized_request.prefix_bytes, 0);
+        assert_eq!(deserialized_request.target, 0);
+        assert_eq!(deserialized_request.from, 0);
+        assert_eq!(deserialized_request.until, 0);
+        assert_eq!(deserialized_request.old_target, 0);
     }
 }

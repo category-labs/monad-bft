@@ -12,7 +12,8 @@ use alloy_rlp::Encodable;
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, SELF_STATESYNC_VERSION,
+    StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    SELF_STATESYNC_VERSION,
 };
 use monad_types::{NodeId, SeqNum};
 use rand::seq::SliceRandom;
@@ -329,6 +330,19 @@ impl<PT: PubKey> StateSync<PT> {
                 .send(SyncResponse::Response(full_response))
                 .expect("response_rx dropped");
         }
+    }
+
+    pub fn handle_bad_version(&mut self, from: NodeId<PT>, bad_version: StateSyncBadVersion) {
+        if !self.state_sync_peers.iter().any(|trusted| trusted == &from) {
+            tracing::warn!(
+                ?from,
+                ?bad_version,
+                "dropping statesync bad version from untrusted peer",
+            );
+            return;
+        }
+
+        self.outbound_requests.handle_bad_version(from, bad_version);
     }
 
     /// An estimate of current sync progress in `Target` units

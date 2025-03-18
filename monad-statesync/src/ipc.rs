@@ -7,8 +7,8 @@ use std::{
 use futures::{channel::oneshot, FutureExt};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncRequest, StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1,
-    SELF_STATESYNC_VERSION,
+    StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
 };
 use monad_types::{DropTimer, NodeId};
 use tokio::{
@@ -26,7 +26,7 @@ pub(crate) struct StateSyncIpc<PT: PubKey> {
     /// response_rx yields (to, response, completion) tuples
     /// `completion` gets resolved when the message is serialized + written to the socket
     pub response_rx:
-        tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncResponse, oneshot::Sender<()>)>,
+        tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage, oneshot::Sender<()>)>,
 }
 
 // Flow:
@@ -112,8 +112,11 @@ struct StreamState<'a, PT: PubKey> {
     request_timeout: Duration,
     stream: BufReader<UnixStream>,
     request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
-    response_rx_writer:
-        &'a mut tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncResponse, oneshot::Sender<()>)>,
+    response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(
+        NodeId<PT>,
+        StateSyncNetworkMessage,
+        oneshot::Sender<()>,
+    )>,
 
     pending_requests: VecDeque<PendingRequest<PT>>,
     wip_response: Option<WipResponse<PT>>,
@@ -183,7 +186,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(
             NodeId<PT>,
-            StateSyncResponse,
+            StateSyncNetworkMessage,
             oneshot::Sender<()>,
         )>,
     ) -> Self {
@@ -240,11 +243,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn write_response(
         response_writer: &mut tokio::sync::mpsc::Sender<(
             NodeId<PT>,
-            StateSyncResponse,
+            StateSyncNetworkMessage,
             oneshot::Sender<()>,
         )>,
         to: NodeId<PT>,
-        response: StateSyncResponse,
+        response: StateSyncNetworkMessage,
     ) -> oneshot::Receiver<()> {
         let (completion_sender, completion_receiver) = oneshot::channel();
         if response_writer
@@ -281,8 +284,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         wip_response.clear_ready_completions();
 
         if let Some(pending_response_completions) = &mut wip_response.pending_response_completions {
-            let completion =
-                Self::write_response(self.response_rx_writer, wip_response.from, response);
+            let completion = Self::write_response(
+                self.response_rx_writer,
+                wip_response.from,
+                StateSyncNetworkMessage::Response(response),
+            );
             pending_response_completions.push_back(completion);
             if pending_response_completions.len() == MAX_PENDING_RESPONSES {
                 let oldest_completion = pending_response_completions.pop_front().expect("nonempty");
@@ -358,7 +364,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                         let _completion = Self::write_response(
                             self.response_rx_writer,
                             wip_response.from,
-                            wip_response.response,
+                            StateSyncNetworkMessage::Response(wip_response.response),
                         );
                     } else {
                         tracing::warn!(
@@ -401,8 +407,25 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 ?from,
                 ?request,
                 ?SELF_STATESYNC_VERSION,
-                "dropping statesync request, version incompatible"
+                "incompatible statesync request version"
             );
+            let bad_version = StateSyncBadVersion {
+                min_version: STATESYNC_VERSION_MIN,
+                max_version: SELF_STATESYNC_VERSION,
+            };
+            let (completion_sender, _) = oneshot::channel();
+            if self
+                .response_rx_writer
+                .try_send((
+                    from,
+                    StateSyncNetworkMessage::BadVersion(bad_version),
+                    completion_sender,
+                ))
+                .is_err()
+            {
+                tracing::warn!("dropping outbound statesync response, consensus state backlogged?");
+            }
+
             return Ok(());
         }
 

@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{StateSyncBadVersion, StateSyncRequest, StateSyncResponse};
 use monad_types::NodeId;
 
 pub(crate) struct OutboundRequests<PT: PubKey> {
@@ -204,6 +204,12 @@ impl<PT: PubKey> OutboundRequests<PT> {
             return Some(full_response);
         }
         None
+    }
+
+    pub fn handle_bad_version(&mut self, from: NodeId<PT>, bad_version: StateSyncBadVersion) {
+        // Ignore bad version, this version is always supported
+        // Future version will perform downgrade if client does not understand the current version
+        tracing::debug!("dropping bad version from {}", from);
     }
 
     #[must_use]

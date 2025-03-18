@@ -19,7 +19,7 @@ use monad_types::ExecutionProtocol;
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncBadVersion, StateSyncEvent,
     StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
@@ -728,6 +728,15 @@ impl From<&StateSyncResponse> for monad_proto::proto::message::ProtoStateSyncRes
     }
 }
 
+impl From<&StateSyncBadVersion> for monad_proto::proto::message::ProtoStateSyncBadVersion {
+    fn from(value: &StateSyncBadVersion) -> Self {
+        Self {
+            min_version: StateSyncVersion::to_u32(&value.min_version),
+            max_version: StateSyncVersion::to_u32(&value.max_version),
+        }
+    }
+}
+
 impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateSyncNetworkMessage {
     fn from(value: &StateSyncNetworkMessage) -> Self {
         use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
@@ -737,6 +746,9 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
             },
             StateSyncNetworkMessage::Response(response) => Self {
                 oneof_message: Some(OneofMessage::Response(response.into())),
+            },
+            StateSyncNetworkMessage::BadVersion(bad_version) => Self {
+                oneof_message: Some(OneofMessage::BadVersion(bad_version.into())),
             },
         }
     }
@@ -845,6 +857,15 @@ impl From<monad_proto::proto::message::ProtoStateSyncUpsertType> for StateSyncUp
     }
 }
 
+impl From<monad_proto::proto::message::ProtoStateSyncBadVersion> for StateSyncBadVersion {
+    fn from(value: monad_proto::proto::message::ProtoStateSyncBadVersion) -> Self {
+        Self {
+            min_version: StateSyncVersion::from_u32(value.min_version),
+            max_version: StateSyncVersion::from_u32(value.max_version),
+        }
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -891,6 +912,9 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
                         .collect::<Result<_, ProtoError>>()?,
                     response_n: response.n,
                 }))
+            }
+            OneofMessage::BadVersion(bad_version) => {
+                Ok(StateSyncNetworkMessage::BadVersion(bad_version.into()))
             }
         }
     }

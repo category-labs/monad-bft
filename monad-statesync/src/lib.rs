@@ -121,6 +121,22 @@ where
                     };
                     statesync.handle_response(from, response);
                 }
+                StateSyncCommand::Message((
+                    from,
+                    StateSyncNetworkMessage::BadVersion(bad_version),
+                )) => {
+                    let statesync = match &mut self.mode {
+                        StateSyncMode::Sync(sync) => sync,
+                        StateSyncMode::Live(_) => {
+                            tracing::trace!(
+                                ?from,
+                                "dropping statesync bad version, already done syncing"
+                            );
+                            continue;
+                        }
+                    };
+                    statesync.handle_bad_version(from, bad_version);
+                }
                 StateSyncCommand::Message((from, StateSyncNetworkMessage::Request(request))) => {
                     let execution_ipc = match &mut self.mode {
                         StateSyncMode::Sync(_) => {
@@ -196,19 +212,18 @@ where
             }
             StateSyncMode::Live(execution_ipc) => {
                 if let Poll::Ready(maybe_response) = execution_ipc.response_rx.poll_recv(cx) {
-                    let (to, response, completion) = maybe_response.expect("did StateSyncIpc die?");
+                    let (to, message, completion) = maybe_response.expect("did StateSyncIpc die?");
                     tracing::debug!(
                         ?to,
-                        ?response,
-                        upserts_len = response.response.len(),
+                        ?message,
+                        upserts_len = match &message {
+                            StateSyncNetworkMessage::Response(response) => response.response.len(),
+                            _ => 0,
+                        },
                         "sending response"
                     );
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(
-                        StateSyncEvent::Outbound(
-                            to,
-                            StateSyncNetworkMessage::Response(response),
-                            Some(completion),
-                        ),
+                        StateSyncEvent::Outbound(to, message, Some(completion)),
                     )));
                 }
             }

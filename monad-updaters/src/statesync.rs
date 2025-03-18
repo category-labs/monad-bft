@@ -166,6 +166,7 @@ where
                             ));
                         }
                     }
+                    StateSyncNetworkMessage::BadVersion(_) => {}
                 },
             }
         }
