@@ -30,4 +30,4 @@ jobs:
     - name: set rand env
       run: echo "RANDOM_TEST_SEED=$((RANDOM))" >> $GITHUB_ENV
     - name: Run all ignored test
-      run:  cargo test cron -- --ignored  --nocapture
+      run: ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" CC=gcc-13 CXX=g++-13 TRIEDB_TARGET=triedb_driver cargo test cron -- --ignored  --nocapture
