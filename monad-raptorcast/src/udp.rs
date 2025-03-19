@@ -417,7 +417,7 @@ where
 
     if seen_esis[encoding_symbol_id] {
         // duplicate symbol
-        tracing::warn!(
+        tracing::trace!(
             ?self_id,
             author =? parsed_message.author,
             unix_ts_ms = parsed_message.unix_ts_ms,
