@@ -298,20 +298,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
 
             try_rebroadcast_symbol();
 
-            let num_buffers_received = decoder_state.decoder.num_encoded_symbols_received() + 1;
-
-            if (num_buffers_received % 100) == 0 {
-                tracing::debug!(
-                    self_id =? self.self_id,
-                    author =? parsed_message.author,
-                    unix_ts_ms = parsed_message.unix_ts_ms,
-                    app_message_hash =? parsed_message.app_message_hash,
-                    encoding_symbol_id,
-                    num_buffers_received,
-                    "received encoded symbol (100th)"
-                );
-            }
-
             // can we assert!(!decoder_state.decoder.decoding_done()) ?
 
             decoder_state
