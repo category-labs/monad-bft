@@ -41,7 +41,11 @@ impl TxState {
         TxState { inner }
     }
 
-    fn push(&self, addr: &SocketAddr, msg: TcpMsg) -> Option<mpsc::Receiver<TcpMsg>> {
+    fn push(
+        &self,
+        addr: &SocketAddr,
+        msg: TcpMsg,
+    ) -> Option<(mpsc::Receiver<TcpMsg>, TxStatePeerHandle)> {
         let mut ret = None;
 
         let mut inner_ref = self.inner.borrow_mut();
@@ -49,7 +53,13 @@ impl TxState {
         let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
             let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
 
-            ret = Some(receiver);
+            ret = Some((
+                receiver,
+                TxStatePeerHandle {
+                    tx_state: self.clone(),
+                    addr: *addr,
+                },
+            ));
 
             sender
         });
@@ -79,15 +89,27 @@ impl TxState {
 
         ret
     }
+}
 
-    fn exit(&self, addr: &SocketAddr) {
-        self.inner.borrow_mut().peer_channels.remove(addr);
+struct TxStatePeerHandle {
+    tx_state: TxState,
+    addr: SocketAddr,
+}
+
+impl Drop for TxStatePeerHandle {
+    fn drop(&mut self) {
+        self.tx_state
+            .inner
+            .borrow_mut()
+            .peer_channels
+            .remove(&self.addr);
     }
 }
 
 struct TxStateInner {
     // There is a transmit connection task running for a given peer iff there is an
-    // entry for the peer address in this map.
+    // entry for the peer address in this map.  Exiting the transmit connection task
+    // drops a TxStatePeerHandle which removes the entry from this map.
     peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
 }
 
@@ -99,7 +121,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     while let Some((addr, msg)) = tcp_egress_rx.recv().await {
         debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
 
-        if let Some(msg_receiver) = tx_state.push(&addr, msg) {
+        if let Some((msg_receiver, tx_state_peer_handle)) = tx_state.push(&addr, msg) {
             trace!(
                 conn_id,
                 ?addr,
@@ -107,10 +129,10 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
             );
 
             spawn(task_connection(
-                tx_state.clone(),
                 conn_id,
                 addr,
                 msg_receiver,
+                tx_state_peer_handle,
             ));
 
             conn_id += 1;
@@ -119,10 +141,10 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
 }
 
 async fn task_connection(
-    tx_state: TxState,
     conn_id: u64,
     addr: SocketAddr,
     mut msg_receiver: mpsc::Receiver<TcpMsg>,
+    _tx_state_peer_handle: TxStatePeerHandle,
 ) {
     trace!(
         conn_id,
@@ -149,8 +171,6 @@ async fn task_connection(
         // Sleep to avoid reconnecting too soon.
         sleep(TCP_FAILURE_LINGER_WAIT).await;
     }
-
-    tx_state.exit(&addr);
 
     trace!(
         conn_id,
