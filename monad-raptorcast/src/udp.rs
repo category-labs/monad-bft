@@ -147,7 +147,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
                 Ok(message) => message,
                 Err(err) => {
-                    tracing::debug!(?err, "unable to parse message");
+                    tracing::debug!(src_addr = ?message.src_addr, ?err, "unable to parse message");
                     continue;
                 }
             };
@@ -158,6 +158,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     > parsed_message.chunk.len()
             {
                 tracing::debug!(
+                    src_addr = ?message.src_addr,
                     chunk_length = parsed_message.chunk.len(),
                     MIN_CHUNK_LENGTH,
                     "dropping undersized received message",
@@ -179,6 +180,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     .contains_key(&parsed_message.author)
                 {
                     tracing::debug!(
+                        src_addr = ?message.src_addr,
                         author =? parsed_message.author,
                         "not in validator set"
                     );
@@ -186,6 +188,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 }
             } else if self_hash != parsed_message.recipient_hash {
                 tracing::debug!(
+                    src_addr = ?message.src_addr,
                     ?self_hash,
                     recipient_hash =? parsed_message.recipient_hash,
                     "dropping spoofed message"
@@ -196,6 +199,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let encoding_symbol_id = parsed_message.chunk_id.into();
 
             tracing::trace!(
+                src_addr = ?message.src_addr,
                 self_id =? self.self_id,
                 author =? parsed_message.author,
                 unix_ts_ms = parsed_message.unix_ts_ms,
