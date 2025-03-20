@@ -14,7 +14,10 @@ use monoio::{
     spawn,
     time::{sleep, timeout},
 };
-use tokio::sync::{mpsc, mpsc::error::TrySendError};
+use tokio::sync::{
+    mpsc,
+    mpsc::error::{TryRecvError, TrySendError},
+};
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
@@ -23,6 +26,8 @@ use super::{message_timeout, TcpMsg, TcpMsgHdr};
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
 pub const QUEUED_MESSAGE_LIMIT: usize = 20;
+
+pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
@@ -200,7 +205,24 @@ async fn connect_and_send_messages(
 
     let mut message_id: u64 = 0;
 
-    while let Ok(message) = msg_receiver.try_recv() {
+    loop {
+        let msg = match msg_receiver.try_recv() {
+            Ok(msg) => msg,
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {
+                conn_cork(stream.as_raw_fd(), false);
+
+                match timeout(MSG_WAIT_TIMEOUT, msg_receiver.recv()).await {
+                    Ok(None) => break,
+                    Ok(Some(msg)) => {
+                        conn_cork(stream.as_raw_fd(), true);
+                        msg
+                    }
+                    Err(_) => break,
+                }
+            }
+        };
+
         let message_count = msg_receiver.max_capacity() - msg_receiver.capacity();
 
         if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
@@ -210,11 +232,11 @@ async fn connect_and_send_messages(
             );
         }
 
-        let len = message.msg.len();
+        let len = msg.msg.len();
 
         timeout(
             message_timeout(len),
-            send_message(conn_id, addr, &mut stream, message_id, message),
+            send_message(conn_id, addr, &mut stream, message_id, msg),
         )
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
