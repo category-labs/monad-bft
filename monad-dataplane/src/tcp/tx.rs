@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{btree_map::Entry, BTreeMap, VecDeque},
+    collections::BTreeMap,
     io::{Error, ErrorKind},
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
@@ -14,7 +14,7 @@ use monoio::{
     spawn,
     time::{sleep, timeout},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
@@ -35,85 +35,60 @@ struct TxState {
 impl TxState {
     fn new() -> TxState {
         let inner = Rc::new(RefCell::new(TxStateInner {
-            messages: BTreeMap::new(),
+            peer_channels: BTreeMap::new(),
         }));
 
         TxState { inner }
     }
 
-    fn push(&self, addr: &SocketAddr, msg: TcpMsg) -> bool {
+    fn push(&self, addr: &SocketAddr, msg: TcpMsg) -> Option<mpsc::Receiver<TcpMsg>> {
+        let mut ret = None;
+
         let mut inner_ref = self.inner.borrow_mut();
 
-        let entry = inner_ref.messages.entry(*addr);
+        let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
+            let (sender, receiver) = mpsc::channel(QUEUED_MESSAGE_LIMIT);
 
-        let peer_connection_task_exists = matches!(entry, Entry::Occupied(..));
+            ret = Some(receiver);
 
-        let queued_messages = entry.or_default();
+            sender
+        });
 
-        if queued_messages.len() < QUEUED_MESSAGE_LIMIT {
-            queued_messages.push_back(msg);
+        match msg_sender.try_send(msg) {
+            Ok(()) => {
+                let message_count = msg_sender.max_capacity() - msg_sender.capacity();
 
-            if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
-                warn!(
-                    ?addr,
-                    message_count = queued_messages.len(),
-                    "excessive number of messages queued for peer"
-                );
-            }
-        } else {
-            warn!(
-                ?addr,
-                message_count = queued_messages.len(),
-                "peer message limit reached, dropping message"
-            );
-        }
-
-        peer_connection_task_exists
-    }
-
-    fn pop(&self, addr: &SocketAddr) -> Option<TcpMsg> {
-        let mut inner_ref = self.inner.borrow_mut();
-
-        let queued_messages = inner_ref.messages.get_mut(addr).unwrap();
-
-        match queued_messages.pop_front() {
-            None => {
-                inner_ref.messages.remove(addr);
-                None
-            }
-            Some(message) => {
-                if queued_messages.len() >= QUEUED_MESSAGE_WARN_LIMIT {
+                if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
                     warn!(
                         ?addr,
-                        message_count = queued_messages.len(),
-                        "excessive number of messages queued for peer"
+                        message_count, "excessive number of messages queued for peer"
                     );
                 }
-
-                Some(message)
+            }
+            Err(TrySendError::Full(_)) => {
+                warn!(
+                    ?addr,
+                    message_count = msg_sender.max_capacity(),
+                    "peer message limit reached, dropping message"
+                );
+            }
+            Err(TrySendError::Closed(_)) => {
+                warn!(?addr, "channel unexpectedly closed");
             }
         }
+
+        ret
     }
 
-    // Throw away (and fail) all queued messages for the given peer address.
-    fn clear(&self, addr: &SocketAddr) {
-        self.inner
-            .borrow_mut()
-            .messages
-            .get_mut(addr)
-            .unwrap()
-            .clear();
-    }
-
-    // Remove this peer address from the messages map (and discard and fail all messages still
-    // queued for this peer) in case there was an I/O error communicating with this peer.
-    fn io_error_exit(&self, addr: &SocketAddr) {
-        self.inner.borrow_mut().messages.remove(addr);
+    fn exit(&self, addr: &SocketAddr) {
+        self.inner.borrow_mut().peer_channels.remove(addr);
     }
 }
 
 struct TxStateInner {
-    messages: BTreeMap<SocketAddr, VecDeque<TcpMsg>>,
+    // There is a transmit connection task running for a given peer iff there is an
+    // entry for the peer address in this map.
+    peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
 }
 
 pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
@@ -124,38 +99,58 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     while let Some((addr, msg)) = tcp_egress_rx.recv().await {
         debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
 
-        if !tx_state.push(&addr, msg) {
+        if let Some(msg_receiver) = tx_state.push(&addr, msg) {
             trace!(
                 conn_id,
                 ?addr,
                 "spawning TCP transmit connection task for peer"
             );
 
-            spawn(task_peer(tx_state.clone(), conn_id, addr));
+            spawn(task_connection(
+                tx_state.clone(),
+                conn_id,
+                addr,
+                msg_receiver,
+            ));
 
             conn_id += 1;
         }
     }
 }
 
-async fn task_peer(tx_state: TxState, conn_id: u64, addr: SocketAddr) {
+async fn task_connection(
+    tx_state: TxState,
+    conn_id: u64,
+    addr: SocketAddr,
+    mut msg_receiver: mpsc::Receiver<TcpMsg>,
+) {
     trace!(
         conn_id,
         ?addr,
         "starting TCP transmit connection task for peer"
     );
 
-    if let Err(err) = connect_and_send_messages(&tx_state, conn_id, &addr).await {
-        warn!(conn_id, ?addr, ?err, "error transmitting TCP messages");
+    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
+        let mut additional_messages_dropped = 0;
 
-        // Throw away (and fail) all queued messages.
-        tx_state.clear(&addr);
+        // Throw away (and fail) all remaining queued messages immediately.
+        while let Ok(_msg) = msg_receiver.try_recv() {
+            additional_messages_dropped += 1;
+        }
+
+        warn!(
+            conn_id,
+            ?addr,
+            ?err,
+            additional_messages_dropped,
+            "error transmitting TCP message"
+        );
 
         // Sleep to avoid reconnecting too soon.
         sleep(TCP_FAILURE_LINGER_WAIT).await;
-
-        tx_state.io_error_exit(&addr);
     }
+
+    tx_state.exit(&addr);
 
     trace!(
         conn_id,
@@ -165,9 +160,9 @@ async fn task_peer(tx_state: TxState, conn_id: u64, addr: SocketAddr) {
 }
 
 async fn connect_and_send_messages(
-    tx_state: &TxState,
     conn_id: u64,
     addr: &SocketAddr,
+    msg_receiver: &mut mpsc::Receiver<TcpMsg>,
 ) -> Result<(), Error> {
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -185,7 +180,16 @@ async fn connect_and_send_messages(
 
     let mut message_id: u64 = 0;
 
-    while let Some(message) = tx_state.pop(addr) {
+    while let Ok(message) = msg_receiver.try_recv() {
+        let message_count = msg_receiver.max_capacity() - msg_receiver.capacity();
+
+        if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
+            warn!(
+                ?addr,
+                message_count, "excessive number of messages queued for peer"
+            );
+        }
+
         let len = message.msg.len();
 
         timeout(
