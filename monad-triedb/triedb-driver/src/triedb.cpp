@@ -373,7 +373,7 @@ size_t triedb_poll(triedb *db, bool blocking, size_t count)
 
 int triedb_finalize(bytes value)
 {
-    delete value;
+    delete [] value;
     return 0;
 }
 

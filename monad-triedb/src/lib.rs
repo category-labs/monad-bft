@@ -70,7 +70,10 @@ pub unsafe extern "C" fn read_async_callback(
 
     let result = match value_len.cmp(&0) {
         Ordering::Less => None,
-        Ordering::Equal => Some(Vec::new()),
+        Ordering::Equal => {
+            unsafe { bindings::triedb_finalize(value_ptr) };
+            Some(Vec::new())
+        }
         Ordering::Greater => {
             let value =
                 unsafe { std::slice::from_raw_parts(value_ptr, value_len as usize).to_vec() };
