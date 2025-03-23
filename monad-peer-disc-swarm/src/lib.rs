@@ -10,7 +10,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_peer_discovery::algo::{
+use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};

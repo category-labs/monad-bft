@@ -6,7 +6,7 @@ use monad_peer_disc_swarm::{
     builder::PeerDiscSwarmBuilder,
 };
 use monad_peer_discovery::{
-    algo::{PeerDiscoveryAlgo, PeerDiscoveryMessage},
+    PeerDiscoveryAlgo, PeerDiscoveryMessage,
     mock::{PingPongDiscovery, PingPongDiscoveryBuilder},
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};

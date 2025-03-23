@@ -4,7 +4,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::RouterCommand;
-use monad_peer_discovery::algo::{
+use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
     PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
 };
@@ -127,9 +127,18 @@ where
         event: PeerDiscoveryEvent<ST>,
     ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
         let cmds = match event {
-            PeerDiscoveryEvent::SendPing { target } => self.algo.handle_send_ping(target),
+            PeerDiscoveryEvent::SendPing { to } => self.algo.send_ping(to),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.algo.handle_pong(from, pong),
+            PeerDiscoveryEvent::SendPeerLookup { to, target } => {
+                self.algo.send_peer_lookup_request(to, target)
+            }
+            PeerDiscoveryEvent::PeerLookupRequest { from, request } => {
+                self.algo.handle_peer_lookup_request(from, request)
+            }
+            PeerDiscoveryEvent::PeerLookupResponse { from, response } => {
+                self.algo.handle_peer_lookup_response(from, response)
+            }
         };
 
         self.filter_and_exec(cmds)

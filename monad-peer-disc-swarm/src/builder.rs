@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_peer_discovery::algo::PeerDiscoveryBuilder;
+use monad_peer_discovery::PeerDiscoveryBuilder;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
