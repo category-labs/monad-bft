@@ -81,7 +81,7 @@ where
     pub fn new(
         config_path: PathBuf,
         bootstrap_peers: Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>,
-        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
+        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, Option<SocketAddr>)>,
     ) -> Self {
         let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(10);
         let (response_tx, response_rx) = tokio::sync::mpsc::channel(10);
@@ -243,40 +243,52 @@ struct PeersTable<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> PeersTable<SCT> {
     fn new(
         bootstrap_peers: Vec<NodeBootstrapPeerConfig<SCT::NodeIdPubKey>>,
-        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
+        last_resolved: Vec<(NodeId<SCT::NodeIdPubKey>, Option<SocketAddr>)>,
     ) -> Self {
-        assert_eq!(bootstrap_peers.len(), last_resolved.len());
-        let resolved_map: BTreeMap<NodeId<SCT::NodeIdPubKey>, SocketAddr> =
-            last_resolved.into_iter().collect();
+        assert_eq!(
+            bootstrap_peers.len(),
+            last_resolved.len(),
+            "Peers are not resolved on startup"
+        );
+        let resolved_map: BTreeMap<_, _> = last_resolved.into_iter().collect();
+
         let mut peers_table = BTreeMap::new();
         for peer in bootstrap_peers {
             let node_id = NodeId::new(peer.secp256k1_pubkey);
-            let addr = resolved_map
+            let maybe_addr = resolved_map
                 .get(&node_id)
                 .expect("all peers are resolved on startup");
-            peers_table.insert(node_id, (peer.address, Some(*addr)));
+            peers_table.insert(node_id, (peer.address, *maybe_addr));
         }
         Self { peers: peers_table }
     }
 
-    async fn resolve_domain(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-        let mut dns_response = lookup_host(domain).await?;
-        Ok(dns_response.next())
+    async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
+        let dns_response = lookup_host(domain).await?;
+
+        for entry in dns_response {
+            match entry {
+                SocketAddr::V4(_) => return Ok(Some(entry)),
+                SocketAddr::V6(_) => continue,
+            }
+        }
+
+        Ok(None)
     }
 
-    async fn resolve_domains<P: PubKey>(
+    async fn resolve_domains_v4<P: PubKey>(
         peers: Vec<(NodeId<P>, &String)>,
     ) -> Vec<(NodeId<P>, Option<SocketAddr>)> {
         let mut resolved_peers = Vec::with_capacity(peers.len());
         for (node_id, address) in peers {
-            let maybe_addr = match Self::resolve_domain(address).await {
+            let maybe_addr = match Self::resolve_domain_v4(address).await {
                 Ok(Some(addr)) => Some(addr),
                 Ok(None) => {
-                    info!(?node_id, domain=?address, "No DNS record");
+                    warn!(?node_id, domain=?address, "No IPv4 DNS record");
                     None
                 }
-                Err(e) => {
-                    info!(?node_id, domain=?address, "Failed to resolve: {}", e);
+                Err(err) => {
+                    warn!(?node_id, domain=?address, ?err, "Unable to resolve");
                     None
                 }
             };
@@ -296,7 +308,7 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             .iter()
             .map(|(node_id, (hostname, _))| (*node_id, hostname))
             .collect::<Vec<_>>();
-        let resolved = Self::resolve_domains(peers).await;
+        let resolved = Self::resolve_domains_v4(peers).await;
         let mut table_changed = false;
         for (node_id, maybe_addr) in resolved {
             // retain old record if hostname fails to resolve

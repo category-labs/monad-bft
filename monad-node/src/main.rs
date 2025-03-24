@@ -14,7 +14,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
@@ -123,16 +123,27 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         .expect("no validator sets")
         .clone();
 
+    {
+        let mut bootstrap_peers_seen = BTreeSet::new();
+        for peer in node_state.node_config.bootstrap.peers.iter() {
+            if !bootstrap_peers_seen.insert(peer.secp256k1_pubkey) {
+                panic!(
+                    "Multiple bootstrap entries for pubkey={}",
+                    peer.secp256k1_pubkey
+                );
+            }
+        }
+    }
+
     let known_addresses: Vec<_> = node_state
         .node_config
         .bootstrap
         .peers
         .iter()
         .map(|peer| {
-            (
-                NodeId::new(peer.secp256k1_pubkey),
-                resolve_domain(&peer.address),
-            )
+            let node_id = NodeId::new(peer.secp256k1_pubkey);
+            let maybe_addr = resolve_domain_v4(&node_id, &peer.address);
+            (node_id, maybe_addr)
         })
         .collect();
 
@@ -145,7 +156,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         >(
             node_state.node_config.network.clone(),
             node_state.router_identity,
-            known_addresses.clone(),
+            known_addresses
+                .iter()
+                .cloned()
+                .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
+                .collect(),
             &node_state.node_config.fullnode.identities,
         )
         .await;
@@ -508,12 +523,24 @@ where
     })
 }
 
-fn resolve_domain(domain: &String) -> SocketAddr {
-    domain
-        .to_socket_addrs()
-        .unwrap_or_else(|err| panic!("unable to resolve address={}, err={:?}", domain, err))
-        .next()
-        .unwrap_or_else(|| panic!("couldn't look up address={}", domain))
+fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {
+    let resolved = match domain.to_socket_addrs() {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            warn!(?node_id, ?domain, ?err, "Unable to resolve");
+            return None;
+        }
+    };
+
+    for entry in resolved {
+        match entry {
+            SocketAddr::V4(_) => return Some(entry),
+            SocketAddr::V6(_) => continue,
+        }
+    }
+
+    warn!(?node_id, ?domain, "No IPv4 DNS record");
+    None
 }
 
 fn send_metrics(
