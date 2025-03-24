@@ -9,7 +9,6 @@ pub mod loopback;
 pub mod parent;
 pub mod state_root_hash;
 pub mod statesync;
-pub mod timestamp;
 pub mod txpool;
 
 #[cfg(feature = "tokio")]
@@ -20,9 +19,6 @@ pub mod triedb_state_root_hash;
 
 #[cfg(feature = "tokio")]
 pub mod timer;
-
-#[cfg(feature = "tokio")]
-pub mod tokio_timestamp;
 
 #[cfg(feature = "tokio")]
 pub mod local_router;

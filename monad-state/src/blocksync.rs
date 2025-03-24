@@ -5,7 +5,7 @@ use monad_blocksync::blocksync::{
 };
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock, metrics::Metrics,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -24,7 +24,7 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -33,6 +33,7 @@ where
     SBT: StateBackend,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CL: Clock,
 {
     block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
@@ -45,11 +46,11 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CL)>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -60,9 +61,10 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,

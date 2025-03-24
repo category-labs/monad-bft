@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, env, time::Duration};
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    block::PassthruBlockPolicy, block_validator::MockValidator, clock::TestClock, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -86,6 +86,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+        || TestClock::default(),
         // avoid state_root trigger in rand latency setting
         // TODO-1, cover cases with low state_root_delay once state_sync is done
         SeqNum::MAX,                         // execution_delay

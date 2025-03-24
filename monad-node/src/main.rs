@@ -11,7 +11,11 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    clock::{AdjusterConfig, SystemClock},
+    metrics::Metrics,
+    signature_collection::SignatureCollection,
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -34,8 +38,8 @@ use monad_types::{
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
-    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    triedb_state_root_hash::StateRootHashTriedbPoll, BoxUpdater, Updater,
+    parent::ParentExecutor, timer::TokioTimer, triedb_state_root_hash::StateRootHashTriedbPoll,
+    BoxUpdater, Updater,
 };
 use monad_validator::{
     validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
@@ -230,7 +234,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             checkpoint_validators_last.validators,
             val_set_update_interval,
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::new(
             create_block_policy(),
             StateBackendCache::new(
@@ -341,6 +344,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             timestamp_latency_estimate_ns: 20_000_000,
             _phantom: Default::default(),
         },
+        adjuster_config: AdjusterConfig::Enabled {
+            max_delta_ns: 100_000_000,
+            adjustment_period: 1201,
+        },
+        clock: SystemClock::default(),
         _phantom: PhantomData,
     };
 

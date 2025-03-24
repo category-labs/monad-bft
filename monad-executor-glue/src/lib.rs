@@ -22,7 +22,7 @@ use monad_consensus_types::{
     checkpoint::Checkpoint,
     metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
-    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
@@ -31,7 +31,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state_backend::StateBackend;
-use monad_types::{BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake};
+use monad_types::{
+    BlockId, Epoch, ExecutionProtocol, NodeId, PingSequence, Round, RouterTarget, SeqNum, Stake,
+};
 use serde::{Deserialize, Serialize};
 
 const STATESYNC_NETWORK_MESSAGE_NAME: &str = "StateSyncNetworkMessage";
@@ -70,6 +72,7 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockSyncRequestMessage),
     SendVote,
+    Ping,
 }
 
 #[derive(Debug)]
@@ -218,11 +221,6 @@ pub enum LoopbackCommand<E> {
     Forward(E),
 }
 
-#[derive(Debug)]
-pub enum TimestampCommand {
-    AdjustDelta(TimestampAdjustment),
-}
-
 pub enum StateSyncCommand<ST, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -304,7 +302,6 @@ where
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
     StateRootHashCommand(StateRootHashCommand<SCT>),
-    TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
     ControlPanelCommand(ControlPanelCommand<SCT>),
@@ -329,7 +326,6 @@ where
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
         Vec<StateRootHashCommand<SCT>>,
-        Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<SCT>>,
         Vec<LoopbackCommand<E>>,
@@ -341,7 +337,6 @@ where
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
-        let mut timestamp_cmds = Vec::new();
         let mut txpool_cmds = Vec::new();
         let mut control_panel_cmds = Vec::new();
         let mut loopback_cmds = Vec::new();
@@ -355,7 +350,6 @@ where
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
-                Command::TimestampCommand(cmd) => timestamp_cmds.push(cmd),
                 Command::TxPoolCommand(cmd) => txpool_cmds.push(cmd),
                 Command::ControlPanelCommand(cmd) => control_panel_cmds.push(cmd),
                 Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
@@ -370,7 +364,6 @@ where
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            timestamp_cmds,
             txpool_cmds,
             control_panel_cmds,
             loopback_cmds,
@@ -919,6 +912,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PingEvent<SCT: SignatureCollection> {
+    pub sender: NodeId<SCT::NodeIdPubKey>,
+    pub sequence: PingSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
@@ -986,6 +985,10 @@ where
     StateSyncEvent(StateSyncEvent<ST, SCT, EPT>),
     /// Config updates
     ConfigEvent(ConfigEvent<SCT>),
+    /// Ping events
+    PingRequestEvent(PingEvent<SCT>),
+    PingResponseEvent(PingEvent<SCT>),
+    PingTickEvent,
 }
 
 impl<ST, SCT, EPT> MonadEvent<ST, SCT, EPT>
@@ -1041,6 +1044,9 @@ where
                 MonadEvent::StateSyncEvent(event)
             }
             MonadEvent::ConfigEvent(event) => MonadEvent::ConfigEvent(event.clone()),
+            MonadEvent::PingRequestEvent(event) => MonadEvent::PingRequestEvent(event.clone()),
+            MonadEvent::PingResponseEvent(event) => MonadEvent::PingResponseEvent(event.clone()),
+            MonadEvent::PingTickEvent => MonadEvent::PingTickEvent,
         }
     }
 }
@@ -1107,6 +1113,13 @@ where
             MonadEvent::TimestampUpdateEvent(t) => format!("MempoolEvent::TimestampUpdate: {t}"),
             MonadEvent::StateSyncEvent(_) => "STATESYNC".to_string(),
             MonadEvent::ConfigEvent(_) => "CONFIGEVENT".to_string(),
+            MonadEvent::PingRequestEvent(e) => {
+                format!("PingRequestEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingResponseEvent(e) => {
+                format!("PingResponseEvent: {} {}", e.sender, e.sequence.0)
+            }
+            MonadEvent::PingTickEvent => "PingTickEvent".to_string(),
         };
 
         write!(f, "{}", s)

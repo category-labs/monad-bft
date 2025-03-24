@@ -13,7 +13,7 @@ use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, OptimisticPolicyCommit},
     checkpoint::Checkpoint,
     payload::RoundSignature,
-    quorum_certificate::{QuorumCertificate, TimestampAdjustment},
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
 };
@@ -90,7 +90,6 @@ where
     },
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
-    TimestampUpdate(TimestampAdjustment),
     ScheduleVote {
         duration: Duration,
         round: Round,

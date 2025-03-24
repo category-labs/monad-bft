@@ -59,6 +59,8 @@ where
                     VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
                     VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
                     VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
+                    VerifiedMonadMessage::PingRequest(_) => Some(cmd),
+                    VerifiedMonadMessage::PingResponse(_) => Some(cmd),
                 },
                 RouterCommand::AddEpochValidatorSet { .. } => Some(cmd),
                 RouterCommand::UpdateCurrentRound(..) => Some(cmd),

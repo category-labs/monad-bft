@@ -9,6 +9,7 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
+    clock::TestClock,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_mock_swarm::{
@@ -91,6 +92,7 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type ClockType = TestClock;
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -113,6 +115,7 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+        || TestClock::default(),
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

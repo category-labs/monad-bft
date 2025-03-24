@@ -13,16 +13,37 @@ use monad_crypto::certificate_signature::{
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{blocksync::ProtoBlockSyncSelfRequest, event::*},
+    proto::{
+        blocksync::ProtoBlockSyncSelfRequest,
+        event::{self, *},
+    },
 };
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, PingSequence};
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, PingEvent, ReloadConfig, StateSyncEvent,
     StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
+
+impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for event::PingRequestEvent {
+    fn from(value: &PingEvent<SCT>) -> Self {
+        Self {
+            sender: Some((&value.sender).into()),
+            sequence: value.sequence.0,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> From<&PingEvent<SCT>> for event::PingResponseEvent {
+    fn from(value: &PingEvent<SCT>) -> Self {
+        Self {
+            sender: Some((&value.sender).into()),
+            sequence: value.sequence.0,
+        }
+    }
+}
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
 where
@@ -58,8 +79,47 @@ where
                 proto_monad_event::Event::StateSyncEvent(event.into())
             }
             MonadEvent::ConfigEvent(event) => proto_monad_event::Event::ConfigEvent(event.into()),
+            MonadEvent::PingRequestEvent(event) => {
+                proto_monad_event::Event::PingRequest(event.into())
+            }
+            MonadEvent::PingResponseEvent(event) => {
+                proto_monad_event::Event::PingResponse(event.into())
+            }
+            MonadEvent::PingTickEvent => {
+                proto_monad_event::Event::PingTick(monad_proto::proto::event::PingTickEvent {})
+            }
         };
         Self { event: Some(event) }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<PingRequestEvent> for PingEvent<SCT> {
+    type Error = ProtoError;
+    fn try_from(value: PingRequestEvent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sender: match value.sender {
+                Some(sender) => sender.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "PingResponseEvent.sender".to_owned(),
+                ))?,
+            },
+            sequence: PingSequence(value.sequence),
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<PingResponseEvent> for PingEvent<SCT> {
+    type Error = ProtoError;
+    fn try_from(value: PingResponseEvent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sender: match value.sender {
+                Some(sender) => sender.try_into()?,
+                None => Err(ProtoError::MissingRequiredField(
+                    "PingResponseEvent.sender".to_owned(),
+                ))?,
+            },
+            sequence: PingSequence(value.sequence),
+        })
     }
 }
 
@@ -99,6 +159,13 @@ where
             Some(proto_monad_event::Event::ConfigEvent(event)) => {
                 MonadEvent::ConfigEvent(event.try_into()?)
             }
+            Some(proto_monad_event::Event::PingRequest(event)) => {
+                MonadEvent::PingRequestEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::PingResponse(event)) => {
+                MonadEvent::PingResponseEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::PingTick(_)) => MonadEvent::PingTickEvent,
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
             ))?,

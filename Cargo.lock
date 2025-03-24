@@ -4559,6 +4559,7 @@ name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-chain-config",
@@ -4573,8 +4574,10 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "sorted-vec",
  "test-case",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
 ]
 

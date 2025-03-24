@@ -6,6 +6,7 @@ use std::{
 
 use itertools::Itertools;
 use monad_consensus_types::{
+    clock::{AdjusterConfig, TestClock},
     signature_collection::SignatureCollection,
     validator_data::{ValidatorData, ValidatorSetData},
     voting::ValidatorMapping,
@@ -42,6 +43,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::BlockValidator,
         S::ChainConfigType,
         S::ChainRevisionType,
+        S::ClockType,
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
@@ -67,6 +69,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::ClockType,
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
@@ -127,7 +130,11 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 forkpoint: self.state_builder.forkpoint,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
-
+                adjuster_config: AdjusterConfig::Enabled {
+                    max_delta_ns: 100_000_000,
+                    adjustment_period: 9,
+                },
+                clock: TestClock::default(),
                 _phantom: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),

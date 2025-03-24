@@ -7,7 +7,8 @@ mod test {
     use itertools::Itertools;
     use monad_chain_config::{revision::ChainParams, MockChainConfig};
     use monad_consensus_types::{
-        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+        block::PassthruBlockPolicy, block_validator::MockValidator, clock::TestClock,
+        metrics::Metrics,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
@@ -58,6 +59,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -181,6 +183,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -266,6 +269,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -406,6 +410,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

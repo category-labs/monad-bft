@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    block::PassthruBlockPolicy, block_validator::MockValidator, clock::TestClock, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
@@ -79,6 +79,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+        || TestClock::default(),
         // due to the burst behavior of replay-transformer, its okay to
         // have delay as 1
         //

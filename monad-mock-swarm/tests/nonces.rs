@@ -12,6 +12,7 @@ mod test {
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
     };
+    use monad_consensus_types::clock::TestClock;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -110,6 +111,8 @@ mod test {
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
         >;
+
+        type ClockType = TestClock;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -147,6 +150,7 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
+            || TestClock::default(),
             execution_delay,                     // execution_delay
             CONSENSUS_DELTA,                     // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

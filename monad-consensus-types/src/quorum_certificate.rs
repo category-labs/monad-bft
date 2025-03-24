@@ -123,15 +123,3 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         self.info.id
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-pub enum TimestampAdjustmentDirection {
-    Forward,
-    Backward,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct TimestampAdjustment {
-    pub delta: u128,
-    pub direction: TimestampAdjustmentDirection,
-}

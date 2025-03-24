@@ -2,7 +2,9 @@ use std::{collections::BTreeSet, time::Duration};
 
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
-use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
+use monad_consensus_types::{
+    block::PassthruBlockPolicy, block_validator::MockValidator, clock::TestClock,
+};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
@@ -40,6 +42,7 @@ fn two_nodes_noser() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+        || TestClock::default(),
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

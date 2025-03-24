@@ -58,8 +58,10 @@ where
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
-            VerifiedMonadMessage::ForwardedTx(_) => false,
-            VerifiedMonadMessage::StateSyncMessage(_) => false,
+            VerifiedMonadMessage::ForwardedTx(_)
+            | VerifiedMonadMessage::StateSyncMessage(_)
+            | VerifiedMonadMessage::PingRequest(_)
+            | VerifiedMonadMessage::PingResponse(_) => false,
         };
 
         if should_drop {
@@ -150,6 +152,8 @@ where
                 TwinsCapture::Drop
             }
             VerifiedMonadMessage::StateSyncMessage(_) => TwinsCapture::Spread(pid),
+            VerifiedMonadMessage::PingRequest(_) => TwinsCapture::Spread(pid),
+            VerifiedMonadMessage::PingResponse(_) => TwinsCapture::Spread(pid),
         };
 
         match capture {

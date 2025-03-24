@@ -12,6 +12,7 @@ mod test {
     use monad_consensus_types::{
         block::{MockExecutionProtocol, PassthruBlockPolicy},
         block_validator::MockValidator,
+        clock::{SystemClock, TestClock},
         metrics::Metrics,
     };
     use monad_crypto::{
@@ -56,6 +57,7 @@ mod test {
         type BlockPolicyType = PassthruBlockPolicy;
         type ChainConfigType = MockChainConfig;
         type ChainRevisionType = MockChainRevision;
+        type ClockType = SystemClock;
 
         type TransportMessage = VerifiedMonadMessage<
             Self::SignatureType,
@@ -206,6 +208,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -308,6 +311,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || TestClock::default(),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -483,6 +487,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || SystemClock::default(),
             SeqNum::MAX,                         // execution_delay
             Duration::from_millis(delta),        // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -690,6 +695,7 @@ mod test {
             || MockValidator,
             || PassthruBlockPolicy,
             || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || SystemClock::default(),
             SeqNum(4),                           // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

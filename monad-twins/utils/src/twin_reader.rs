@@ -16,6 +16,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
+    clock::{AdjusterConfig, Clock},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::ValidatorSetData,
 };
@@ -71,7 +72,7 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -83,9 +84,10 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -97,8 +99,8 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Clone
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL> Clone
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -110,6 +112,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT> + Clone,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -134,7 +137,11 @@ where
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
 
                 consensus_config: self.state_config.consensus_config,
-
+                adjuster_config: AdjusterConfig::Enabled {
+                    max_delta_ns: 100_000_000,
+                    adjustment_period: 10001,
+                },
+                clock: self.state_config.clock,
                 _phantom: PhantomData,
             },
             partition: self.partition.clone(),
@@ -149,8 +156,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Debug
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL> Debug
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -162,6 +169,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT> + Debug,
     CRT: ChainRevision + Debug,
+    CL: Clock + Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -172,7 +180,7 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -184,16 +192,17 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>>
-    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>>
+    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -205,8 +214,11 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>) -> Self {
+    fn from(
+        value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
+    ) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -247,6 +259,7 @@ where
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::ClockType,
         >,
     >,
 }
@@ -342,6 +355,7 @@ where
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::ClockType,
         > {
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
@@ -372,6 +386,11 @@ where
                 _phantom: PhantomData,
             },
 
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta_ns: 100_000_000,
+                adjustment_period: 10001,
+            },
+            clock: S::ClockType::new(),
             _phantom: PhantomData,
         })
         .collect();

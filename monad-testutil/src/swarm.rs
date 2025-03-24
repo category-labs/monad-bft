@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::ConsensusFullBlock, signature_collection::SignatureCollection,
+    block::ConsensusFullBlock, clock::AdjusterConfig, signature_collection::SignatureCollection,
     validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
@@ -24,6 +24,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
+    clock: impl Fn() -> S::ClockType,
 
     execution_delay: SeqNum,
     delta: Duration,
@@ -43,6 +44,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::BlockValidator,
         S::ChainConfigType,
         S::ChainRevisionType,
+        S::ClockType,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -98,6 +100,11 @@ pub fn make_state_configs<S: SwarmRelation>(
                 _phantom: PhantomData,
             },
 
+            adjuster_config: AdjusterConfig::Enabled {
+                max_delta_ns: 100_000_000,
+                adjustment_period: 9,
+            },
+            clock: clock(),
             _phantom: PhantomData,
         })
         .collect()

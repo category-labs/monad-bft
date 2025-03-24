@@ -5,6 +5,7 @@ use monad_chain_config::{
     revision::{ChainParams, MockChainRevision},
     MockChainConfig,
 };
+use monad_consensus_types::clock::TestClock;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -92,6 +93,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type ClockType = TestClock;
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -236,6 +238,7 @@ fn forkpoint_restart_f(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        || TestClock::default(),
         state_root_delay,
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -269,6 +272,7 @@ fn forkpoint_restart_f(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || TestClock::default(),
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -289,6 +293,7 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || TestClock::default(),
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -551,6 +556,7 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        || TestClock::default(),
         state_root_delay,                    // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -594,6 +600,7 @@ fn forkpoint_restart_below_all(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || TestClock::default(),
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -608,6 +615,7 @@ fn forkpoint_restart_below_all(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            || TestClock::default(),
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

@@ -17,11 +17,15 @@ use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
+use monad_consensus_state::{
+    timestamp::{BlockTimestamp, PING_TICK_DURATION},
+    ConsensusConfig, ConsensusState,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
     checkpoint::Checkpoint,
+    clock::{AdjusterConfig, Clock},
     metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -35,14 +39,14 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
     ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, PingEvent, ReadCommand, ReloadConfig,
+    RouterCommand, StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
-    GENESIS_ROUND,
+    Epoch, ExecutionProtocol, MonadVersion, NodeId, PingSequence, Round, RouterTarget, SeqNum,
+    GENESIS_BLOCK_ID, GENESIS_ROUND,
 };
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -307,7 +311,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -318,6 +322,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
@@ -337,7 +342,7 @@ where
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
 
-    block_timestamp: BlockTimestamp,
+    block_timestamp: BlockTimestamp<SCT::NodeIdPubKey, CL>,
     block_validator: BVT,
     block_policy: BPT,
     state_backend: SBT,
@@ -348,10 +353,12 @@ where
 
     /// Versions for client and protocol validation
     version: MonadVersion,
+
+    clock: CL,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -362,6 +369,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         match &self.consensus {
@@ -392,6 +400,10 @@ where
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
     }
+
+    pub fn clock(&self) -> &CL {
+        &self.clock
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +418,8 @@ where
     BlockSyncResponse(BlockSyncResponseMessage<ST, SCT, EPT>),
     ForwardedTx(Vec<Bytes>),
     StateSyncMessage(StateSyncNetworkMessage),
+    PingRequest(PingSequence),
+    PingResponse(PingSequence),
 }
 
 impl<ST, SCT, EPT> From<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>>
@@ -453,6 +467,14 @@ where
                 let enc: [&dyn Encodable; 3] = [&monad_version, &5u8, &m];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::PingRequest(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &6u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::PingResponse(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &7u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 
@@ -483,6 +505,14 @@ where
                 let enc: Vec<&dyn Encodable> = vec![&monad_version, &5u8, &m];
                 Encodable::length(&enc)
             }
+            Self::PingRequest(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &6u8, &m];
+                Encodable::length(&enc)
+            }
+            Self::PingResponse(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &6u8, &m];
+                Encodable::length(&enc)
+            }
         }
     }
 }
@@ -507,6 +537,10 @@ where
     ForwardedTx(Vec<Bytes>),
     /// State Sync msgs
     StateSyncMessage(StateSyncNetworkMessage),
+
+    PingRequest(PingSequence),
+
+    PingResponse(PingSequence),
 }
 
 impl<ST, SCT, EPT> Decodable for MonadMessage<ST, SCT, EPT>
@@ -580,6 +614,8 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
+            VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
         }
     }
 }
@@ -624,6 +660,8 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
+            VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
         }
     }
 }
@@ -644,6 +682,7 @@ where
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
+
         match self {
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender: from,
@@ -671,11 +710,19 @@ where
             MonadMessage::StateSyncMessage(msg) => {
                 MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
             }
+            MonadMessage::PingRequest(sequence) => MonadEvent::PingRequestEvent(PingEvent {
+                sender: from,
+                sequence,
+            }),
+            MonadMessage::PingResponse(sequence) => MonadEvent::PingResponseEvent(PingEvent {
+                sender: from,
+                sequence,
+            }),
         }
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -686,6 +733,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub validator_set_factory: VTF,
     pub leader_election: LT,
@@ -701,12 +749,14 @@ where
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
+    pub adjuster_config: AdjusterConfig,
+    pub clock: CL,
 
     pub _phantom: PhantomData<EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -718,11 +768,12 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
@@ -749,9 +800,10 @@ where
         );
 
         let nodeid = NodeId::new(self.key.pubkey());
-        let block_timestamp = BlockTimestamp::new(
+        let block_timestamp = BlockTimestamp::<SCT::NodeIdPubKey, CL>::new(
             5 * self.consensus_config.delta.as_nanos(),
             self.consensus_config.timestamp_latency_estimate_ns,
+            self.adjuster_config,
         );
         let statesync_to_live_threshold = self.consensus_config.statesync_to_live_threshold;
         let mut monad_state = MonadState {
@@ -782,6 +834,7 @@ where
 
             metrics: Metrics::default(),
             version: MonadVersion::version(),
+            clock: self.clock,
         };
 
         let mut init_cmds = Vec::new();
@@ -801,12 +854,18 @@ where
         tracing::info!(?root, ?high_qc, "starting up, syncing");
         init_cmds.extend(monad_state.maybe_start_consensus());
 
+        init_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+            duration: PING_TICK_DURATION,
+            variant: TimeoutVariant::Ping,
+            on_timeout: MonadEvent::PingTickEvent,
+        }));
+
         (monad_state, init_cmds)
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -818,6 +877,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CL: Clock,
 {
     pub fn update(
         &mut self,
@@ -855,6 +915,13 @@ where
             }
 
             MonadEvent::ValidatorEvent(validator_event) => {
+                match &validator_event {
+                    ValidatorEvent::UpdateValidators((validators, epoch)) => {
+                        self.block_timestamp
+                            .update_validators(&validators.0, &self.nodeid);
+                    }
+                }
+
                 let validator_cmds = EpochChildState::new(self).update(validator_event);
 
                 validator_cmds
@@ -1097,6 +1164,45 @@ where
                     ))]
                 }
             },
+            MonadEvent::PingRequestEvent(PingEvent { sender, sequence }) => {
+                tracing::info!(?sender, ?sequence, "received ping request");
+                vec![Command::RouterCommand(RouterCommand::Publish {
+                    target: RouterTarget::TcpPointToPoint {
+                        to: sender,
+                        completion: None,
+                    },
+                    message: VerifiedMonadMessage::PingResponse(sequence),
+                })]
+            }
+            MonadEvent::PingResponseEvent(PingEvent { sender, sequence }) => {
+                tracing::info!(?sender, ?sequence, "received ping response");
+                self.block_timestamp.pong_received(sender, sequence);
+                vec![]
+            }
+            MonadEvent::PingTickEvent => {
+                tracing::info!("ping tick");
+                let mut cmds = self
+                    .block_timestamp
+                    .tick()
+                    .into_iter()
+                    .map(|(node, sequence)| {
+                        tracing::info!(?node, ?sequence, "sending ping request");
+                        Command::RouterCommand(RouterCommand::Publish {
+                            target: RouterTarget::TcpPointToPoint {
+                                to: node,
+                                completion: None,
+                            },
+                            message: VerifiedMonadMessage::PingRequest(sequence),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                    duration: std::time::Duration::from_secs(1),
+                    variant: TimeoutVariant::Ping,
+                    on_timeout: MonadEvent::PingTickEvent,
+                }));
+                cmds
+            }
         }
     }
 

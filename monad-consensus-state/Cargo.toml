@@ -19,6 +19,8 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-state-backend = { path = "../monad-state-backend" }
 
+sorted-vec = { workspace = true }
+bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -31,3 +33,4 @@ alloy-consensus = { workspace = true }
 itertools = { workspace = true }
 test-case = { workspace = true }
 tracing-test = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"]  }

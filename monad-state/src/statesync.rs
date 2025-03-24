@@ -105,6 +105,7 @@ where
     pub fn handle_proposal(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
+        _recv_ns: u128,
         proposal: ProposalMessage<ST, SCT, EPT>,
     ) -> Option<(ConsensusBlockHeader<ST, SCT, EPT>, QuorumCertificate<SCT>)> {
         // TODO more validation? leader checking? more sophisticated eviction?
