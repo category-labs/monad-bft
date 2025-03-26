@@ -9,30 +9,30 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-types = { path = "../monad-types" }
+monad-types = { workspace = true }
 
 auto_impl = { workspace = true }
 bytes = { workspace = true }
 
 [dev-dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-consensus = { path = "../monad-consensus" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-proto = { path = "../monad-proto" }
-monad-secp = { path = "../monad-secp" }
-monad-types = { path = "../monad-types" }
+monad-bls = { workspace = true }
+monad-consensus = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-proto = { workspace = true }
+monad-secp = { workspace = true }
+monad-types = { workspace = true }
 
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
-itertools = { workspace = true }
-tempfile = { workspace = true }
 crossterm = { workspace = true }
+itertools = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [[bench]]
 name = "raw_bench"

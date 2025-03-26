@@ -6,43 +6,40 @@ edition = "2021"
 
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
 [[bin]]
 name = "monad-node"
 bench = false
 
-[lib]
-bench = false
-
 [dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus-state = { path = "../monad-consensus-state" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-control-panel = { path = "../monad-control-panel" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-block-validator = { path = "../monad-eth-block-validator" }
-monad-eth-txpool-executor = { path = "../monad-eth-txpool-executor" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-executor = { path = "../monad-executor" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-keystore = { path = "../monad-keystore" }
-monad-ledger = { path = "../monad-ledger" }
-monad-node-config = { path = "../monad-node-config" }
-monad-raptorcast = { path = "../monad-raptorcast" }
-monad-router-filter = { path = "../monad-router-filter", optional = true }
-monad-secp = { path = "../monad-secp" }
-monad-state = { path = "../monad-state" }
-monad-statesync = { path = "../monad-statesync" }
-monad-triedb-cache = { path = "../monad-triedb-cache" }
-monad-triedb-utils = { path = "../monad-triedb-utils" }
-monad-types = { path = "../monad-types" }
-monad-updaters = { path = "../monad-updaters", features = [
-    "monad-triedb",
-    "tokio",
-] }
-monad-validator = { path = "../monad-validator" }
-monad-wal = { path = "../monad-wal" }
+monad-bls = { workspace = true }
+monad-chain-config = { workspace = true }
+monad-consensus-state = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-control-panel = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-block-policy = { workspace = true }
+monad-eth-block-validator = { workspace = true }
+monad-eth-txpool-executor = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-keystore = { workspace = true }
+monad-ledger = { workspace = true }
+monad-node-config = { workspace = true }
+monad-raptorcast = { workspace = true }
+monad-router-filter = { workspace = true, optional = true }
+monad-secp = { workspace = true }
+monad-state = { workspace = true }
+monad-statesync = { workspace = true }
+monad-triedb-cache = { workspace = true }
+monad-triedb-utils = { workspace = true }
+monad-types = { workspace = true }
+monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }
+monad-validator = { workspace = true }
+monad-wal = { workspace = true }
 
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -61,13 +58,13 @@ tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
-monad-block-persist = { path = "../monad-block-persist" }
+monad-block-persist = { workspace = true }
 
 inotify = { workspace = true }
 lru = { workspace = true }
 
 [build-dependencies]
-vergen-git2 = "1.0.5"
+vergen-git2 = { workspace = true }
 
 [features]
 full-node = ["monad-router-filter"]

@@ -9,11 +9,11 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-proto = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true, features = ["serde"] }
@@ -24,7 +24,7 @@ serde_cbor = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil" }
+monad-testutil = { workspace = true }
 
 criterion = { workspace = true }
 rand = { workspace = true }

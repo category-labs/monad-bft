@@ -3,14 +3,19 @@ name = "monad-blocksync"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
 [dependencies]
-monad-blocktree = { path = "../monad-blocktree" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
+monad-blocktree = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-proto = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 itertools = { workspace = true }
@@ -19,9 +24,9 @@ rand_chacha = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-eth-types = { path = "../monad-eth-types" }
-monad-multi-sig = { path = "../monad-multi-sig" }
-monad-testutil = { path = "../monad-testutil" }
+monad-eth-types = { workspace = true }
+monad-multi-sig = { workspace = true }
+monad-testutil = { workspace = true }
 
 bytes = { workspace = true }
 test-case = { workspace = true }

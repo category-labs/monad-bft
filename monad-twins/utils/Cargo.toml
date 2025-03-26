@@ -8,24 +8,23 @@ edition = "2021"
 [lib]
 bench = false
 
-
 [dependencies]
-monad-chain-config = { path = "../../monad-chain-config" }
-monad-consensus-state = { path = "../../monad-consensus-state" }
-monad-consensus-types = { path = "../../monad-consensus-types" }
-monad-crypto = { path = "../../monad-crypto" }
-monad-mock-swarm = { path = "../../monad-mock-swarm" }
-monad-router-scheduler = { path = "../../monad-router-scheduler" }
-monad-state = { path = "../../monad-state" }
-monad-testutil = { path = "../../monad-testutil" }
-monad-transformer = { path = "../../monad-transformer" }
-monad-types = { path = "../../monad-types" }
-monad-updaters = { path = "../../monad-updaters" }
-monad-validator = { path = "../../monad-validator" }
-monad-state-backend = { path = "../../monad-state-backend" }
+monad-chain-config = { workspace = true }
+monad-consensus-state = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-mock-swarm = { workspace = true }
+monad-router-scheduler = { workspace = true }
+monad-state = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-testutil = { workspace = true }
+monad-transformer = { workspace = true }
+monad-types = { workspace = true }
+monad-updaters = { workspace = true }
+monad-validator = { workspace = true }
 
 itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-serde = { version = "1.0.130", features = ["derive"] }
-serde_json = { version = "1.0.68", features = ["preserve_order"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }

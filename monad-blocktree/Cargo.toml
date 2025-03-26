@@ -9,12 +9,12 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-types = { path = "../monad-types" }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
 
 [dev-dependencies]
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-testutil = { path = "../monad-testutil" }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-testutil = { workspace = true }

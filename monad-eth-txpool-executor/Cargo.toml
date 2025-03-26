@@ -3,18 +3,23 @@ name = "monad-eth-txpool-executor"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
 [dependencies]
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-txpool = { path = "../monad-eth-txpool" }
-monad-eth-txpool-ipc = { path = "../monad-eth-txpool-ipc" }
-monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-executor = { path = "../monad-executor" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-state-backend = { path = "../monad-state-backend" }
+monad-chain-config = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-block-policy = { workspace = true }
+monad-eth-txpool = { workspace = true }
+monad-eth-txpool-ipc = { workspace = true }
+monad-eth-txpool-types = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-state-backend = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-rlp = { workspace = true }

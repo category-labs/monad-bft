@@ -3,6 +3,8 @@ name = "monad-compress"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
 bench = false
 
@@ -13,15 +15,15 @@ flate2 = { workspace = true }
 lz4 = { workspace = true }
 
 [dev-dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-consensus = { path = "../monad-consensus" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-secp = { path = "../monad-secp" }
-monad-state = { path = "../monad-state" }
-monad-testutil = { path = "../monad-testutil" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
+monad-bls = { workspace = true }
+monad-consensus = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-secp = { workspace = true }
+monad-state = { workspace = true }
+monad-testutil = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 criterion = { workspace = true }
 peak_alloc = { workspace = true }

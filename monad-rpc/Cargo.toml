@@ -4,21 +4,21 @@ description = "Monad JSON-RPC API server"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [[bin]]
 name = "monad-rpc"
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-monad-archive = { path = "../monad-archive" }
-monad-ethcall = { path = "../monad-ethcall" }
-monad-eth-txpool-ipc = { path = "../monad-eth-txpool-ipc" }
-monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-rpc-docs = { path = "./monad-rpc-docs" }
-monad-triedb-utils = { path = "../monad-triedb-utils" }
-monad-types = { path = "../monad-types" }
+monad-archive = { workspace = true }
+monad-eth-txpool-ipc = { workspace = true }
+monad-eth-txpool-types = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-ethcall = { workspace = true }
+monad-rpc-docs = { workspace = true }
+monad-triedb-utils = { workspace = true }
+monad-types = { workspace = true }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
@@ -44,7 +44,7 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true }
 pin-project = { workspace = true }
 rayon = { workspace = true }
-schemars = "0.8.21"
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
@@ -61,4 +61,4 @@ reqwest = { workspace = true }
 test-case = { workspace = true }
 
 [build-dependencies]
-vergen-git2 = "1.0.5"
+vergen-git2 = { workspace = true }

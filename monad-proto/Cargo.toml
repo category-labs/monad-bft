@@ -9,8 +9,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
-prost = { workspace = true }
 pbjson = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]

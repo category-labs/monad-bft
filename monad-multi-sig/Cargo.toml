@@ -8,21 +8,19 @@ edition = "2021"
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-monad-crypto = { path = "../monad-crypto" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-proto = { path = "../monad-proto" }
-monad-types = { path = "../monad-types" }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-proto = { workspace = true }
+monad-types = { workspace = true }
 
 alloy-rlp = { workspace = true }
 prost = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil" }
-monad-validator = { path = "../monad-validator" }
+monad-testutil = { workspace = true }
+monad-validator = { workspace = true }
 
 rand = { workspace = true }
 rand_chacha = { workspace = true }

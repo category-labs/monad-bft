@@ -9,9 +9,9 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-types = { path = "../monad-types" }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-types = { workspace = true }
 
 alloy-rlp = {workspace = true }
 hex = { workspace = true }

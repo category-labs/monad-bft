@@ -3,16 +3,18 @@ name = "monad-eth-block-policy"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-txpool-types = { path = "../monad-eth-txpool-types" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-types = { path = "../monad-types" }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-txpool-types = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
@@ -21,7 +23,7 @@ sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil" }
+monad-testutil = { workspace = true }
 
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }

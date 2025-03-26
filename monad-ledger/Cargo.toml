@@ -9,20 +9,15 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-block-persist = { path = "../monad-block-persist" }
-monad-blocksync = { path = "../monad-blocksync" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-executor = { path = "../monad-executor" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-types = { path = "../monad-types" }
+monad-block-persist = { workspace = true }
+monad-blocksync = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-types = { workspace = true }
 
 futures = { workspace = true }
-tokio = { workspace = true, features = [
-    "macros",
-    "net",
-    "rt",
-    "sync",
-]}
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync"] }
 tracing = { workspace = true }

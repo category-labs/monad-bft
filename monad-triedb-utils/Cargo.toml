@@ -3,18 +3,20 @@ name = "monad-triedb-utils"
 version = "0.1.0"
 edition = "2021"
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
 bench = false
 
 [dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-secp = { path = "../monad-secp" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-triedb = { path = "../monad-triedb" }
-monad-types = { path = "../monad-types" }
+monad-bls = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-secp = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-triedb = { workspace = true }
+monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-primitives = { workspace = true }
@@ -26,7 +28,7 @@ tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]
-monad-eth-testutil = { path = "../monad-eth-testutil" }
+monad-eth-testutil = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }

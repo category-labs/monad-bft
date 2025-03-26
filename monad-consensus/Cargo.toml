@@ -9,20 +9,20 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
-monad-state-backend = { path = "../monad-state-backend" }
+monad-chain-config = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-proto = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-multi-sig = { path = "../monad-multi-sig" }
-monad-testutil = { path = "../monad-testutil" }
+monad-bls = { workspace = true }
+monad-multi-sig = { workspace = true }
+monad-testutil = { workspace = true }
 
 test-case = { workspace = true }

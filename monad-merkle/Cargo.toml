@@ -9,5 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-crypto = { path = "../monad-crypto" }
+monad-crypto = { workspace = true }
+
 serde = { workspace = true, features = ["derive"] }

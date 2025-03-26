@@ -3,25 +3,24 @@ name = "monad-randomized-tests"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[[bin]]
+name = "monad-randomized-tests"
+bench = false
 
 [dependencies]
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-mock-swarm = { path = "../monad-mock-swarm" }
-monad-router-scheduler = { path = "../monad-router-scheduler" }
-monad-testutil = { path = "../monad-testutil" }
-monad-updaters = { path = "../monad-updaters" }
-monad-transformer = { path = "../monad-transformer" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
-monad-state-backend = { path = "../monad-state-backend" }
+monad-chain-config = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-mock-swarm = { workspace = true }
+monad-router-scheduler = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-testutil = { workspace = true }
+monad-transformer = { workspace = true }
+monad-types = { workspace = true }
+monad-updaters = { workspace = true }
+monad-validator = { workspace = true }
 
 inventory = { workspace = true }
 simple-xml-builder = { workspace = true }
-
-[[bin]]
-name = "randomized-tests"
-path = "src/main.rs"
-bench = false

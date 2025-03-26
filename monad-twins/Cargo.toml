@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dev-dependencies]
-monad-mock-swarm = { path = "../monad-mock-swarm" }
-monad-twins-utils = { path = "utils" }
+monad-mock-swarm = { workspace = true }
+monad-twins-utils = { workspace = true }
+
 test-case = { workspace = true }

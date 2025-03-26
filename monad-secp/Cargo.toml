@@ -9,20 +9,19 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-crypto = { path = "../monad-crypto" }
+monad-crypto = { workspace = true }
 
 alloy-rlp = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil" }
+monad-testutil = { workspace = true }
 
 criterion = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
-
 
 [[bench]]
 name = "secp"

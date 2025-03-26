@@ -9,18 +9,18 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-blocksync = { path = "../monad-blocksync" }
-monad-blocktree = { path = "../monad-blocktree" }
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus = { path = "../monad-consensus" }
-monad-consensus-state = { path = "../monad-consensus-state" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-proto = { path = "../monad-proto" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
+monad-blocksync = { workspace = true }
+monad-blocktree = { workspace = true }
+monad-chain-config = { workspace = true }
+monad-consensus = { workspace = true }
+monad-consensus-state = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-proto = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
@@ -29,10 +29,10 @@ prost = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-secp = { path = "../monad-secp" }
-monad-testutil = { path = "../monad-testutil" }
+monad-bls = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-secp = { workspace = true }
+monad-testutil = { workspace = true }
 
 toml = { workspace = true }
 tracing = { workspace = true }

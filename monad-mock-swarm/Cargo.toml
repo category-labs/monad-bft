@@ -3,30 +3,28 @@ name = "monad-mock-swarm"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
 bench = false
 
 [dependencies]
-monad-blocksync = { path = "../monad-blocksync" }
-monad-chain-config = { path = "../monad-chain-config" }
-monad-consensus = { path = "../monad-consensus" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
-monad-executor = { path = "../monad-executor" }
-monad-executor-glue = { path = "../monad-executor-glue" }
-monad-multi-sig = { path = "../monad-multi-sig" }
-monad-router-scheduler = { path = "../monad-router-scheduler" }
-monad-state = { path = "../monad-state" }
-monad-state-backend = { path = "../monad-state-backend" }
-monad-transformer = { path = "../monad-transformer" }
-monad-types = { path = "../monad-types" }
-monad-updaters = { path = "../monad-updaters" }
-monad-validator = { path = "../monad-validator" }
+monad-blocksync = { workspace = true }
+monad-chain-config = { workspace = true }
+monad-consensus = { workspace = true }
+monad-consensus-types = { workspace = true }
+monad-crypto = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-executor = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-multi-sig = { workspace = true }
+monad-router-scheduler = { workspace = true }
+monad-state = { workspace = true }
+monad-state-backend = { workspace = true }
+monad-transformer = { workspace = true }
+monad-types = { workspace = true }
+monad-updaters = { workspace = true }
+monad-validator = { workspace = true }
 
 bytes = { workspace = true }
 futures = { workspace = true }
@@ -38,13 +36,13 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-bls = { path = "../monad-bls" }
-monad-eth-block-policy = { path = "../monad-eth-block-policy" }
-monad-eth-block-validator = { path = "../monad-eth-block-validator" }
-monad-eth-ledger = { path = "../monad-eth-ledger" }
-monad-eth-testutil = { path = "../monad-eth-testutil" }
-monad-secp = { path = "../monad-secp" }
-monad-testutil = { path = "../monad-testutil" }
+monad-bls = { workspace = true }
+monad-eth-block-policy = { workspace = true }
+monad-eth-block-validator = { workspace = true }
+monad-eth-ledger = { workspace = true }
+monad-eth-testutil = { workspace = true }
+monad-secp = { workspace = true }
+monad-testutil = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }

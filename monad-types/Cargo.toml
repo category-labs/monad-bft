@@ -9,8 +9,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto" }
+monad-crypto = { workspace = true }
+monad-proto = { workspace = true }
 
 alloy-rlp = { workspace = true, features = ["derive"] }
 futures = { workspace = true }

@@ -9,6 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-types = { path = "../monad-types" }
+monad-types = { workspace = true }
 
 bytes = { workspace = true }
