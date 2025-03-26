@@ -9,9 +9,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_block_policy::{
-    compute_txn_max_value_to_u128, static_validate_transaction, EthBlockPolicy,
-};
+use monad_eth_block_policy::{compute_txn_max_value, static_validate_transaction, EthBlockPolicy};
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
 use monad_types::SeqNum;
@@ -25,7 +23,7 @@ pub struct ValidEthTransaction {
     owned: bool,
     forward_last_seqnum: SeqNum,
     forward_retries: usize,
-    max_value: u128,
+    max_value: Balance,
     effective_tip_per_gas: u128,
 }
 
@@ -63,7 +61,7 @@ impl ValidEthTransaction {
             return None;
         }
 
-        let max_value = compute_txn_max_value_to_u128(&tx);
+        let max_value = compute_txn_max_value(&tx);
         let effective_tip_per_gas = tx
             .effective_tip_per_gas(BASE_FEE_PER_GAS)
             .unwrap_or_default();

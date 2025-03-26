@@ -27,7 +27,7 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
 
         return None;
     };
-    let Ok(balance) = u128::decode(&mut buf) else {
+    let Ok(balance) = U256::decode(&mut buf) else {
         warn!("rlp balance decode failed: {:?}", buf);
         return None;
     };

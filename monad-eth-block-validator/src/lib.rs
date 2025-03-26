@@ -18,8 +18,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{
-    checked_sum, compute_txn_max_value, static_validate_transaction, EthBlockPolicy,
-    EthValidatedBlock,
+    compute_txn_max_value, static_validate_transaction, EthBlockPolicy, EthValidatedBlock,
 };
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, Nonce, ProposedEthHeader, BASE_FEE_PER_GAS,
@@ -132,7 +131,7 @@ where
 
             let txn_fee_entry = txn_fees.entry(eth_txn.signer()).or_insert(U256::ZERO);
 
-            *txn_fee_entry = checked_sum(*txn_fee_entry, compute_txn_max_value(eth_txn));
+            *txn_fee_entry = txn_fee_entry.saturating_add(compute_txn_max_value(eth_txn));
         }
 
         let total_gas: u64 = eth_txns.iter().map(|tx| tx.gas_limit()).sum();

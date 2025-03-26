@@ -31,27 +31,6 @@ pub enum ReserveBalanceCheck {
     Validate,
 }
 
-pub fn checked_sum(arg1: U256, arg2: U256) -> U256 {
-    let max_u128 = U256::from(u128::MAX);
-    match arg1.checked_add(arg2) {
-        Some(val) => {
-            if val > max_u128 {
-                max_u128
-            } else {
-                val
-            }
-        }
-        None => max_u128,
-    }
-}
-
-fn checked_from(arg: U256) -> u128 {
-    match u128::try_from(arg) {
-        Ok(val) => val,
-        Err(_err) => u128::MAX,
-    }
-}
-
 fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
@@ -91,16 +70,7 @@ pub fn compute_txn_max_value(txn: &TxEnvelope) -> U256 {
     let txn_value = U256::try_from(txn.value()).unwrap();
     let gas_cost = U256::from(txn.gas_limit() as u128 * txn.max_fee_per_gas());
 
-    checked_sum(txn_value, gas_cost)
-}
-
-pub fn compute_txn_max_value_to_u128(txn: &TxEnvelope) -> u128 {
-    let txn_value = compute_txn_max_value(txn);
-    trace!(
-        "compute_txn_max_value gas_cost + txn_value: {:?} ",
-        txn_value
-    );
-    checked_from(txn_value)
+    txn_value.saturating_add(gas_cost)
 }
 
 /// Stateless helper function to check validity of an Ethereum transaction
@@ -165,7 +135,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<Recovered<TxEnvelope>>,
     pub nonces: BTreeMap<Address, Nonce>,
-    pub txn_fees: BTreeMap<Address, U256>,
+    pub txn_fees: BTreeMap<Address, Balance>,
 }
 
 impl<ST, SCT> Deref for EthValidatedBlock<ST, SCT>
@@ -264,11 +234,11 @@ impl BlockAccountNonce {
 
 #[derive(Debug)]
 struct BlockTxnFees {
-    txn_fees: BTreeMap<Address, U256>,
+    txn_fees: BTreeMap<Address, Balance>,
 }
 
 impl BlockTxnFees {
-    fn get(&self, eth_address: &Address) -> Option<U256> {
+    fn get(&self, eth_address: &Address) -> Option<Balance> {
         self.txn_fees.get(eth_address).cloned()
     }
 }
@@ -291,7 +261,7 @@ struct CommittedBlkBuffer<ST, SCT> {
 }
 
 struct CommittedTxnFeeResult {
-    txn_fee: U256,
+    txn_fee: Balance,
     next_validate: SeqNum, // next block number to validate; included for assertions only
 }
 
@@ -328,14 +298,14 @@ where
         base_seq_num: SeqNum,
         eth_address: &Address,
     ) -> CommittedTxnFeeResult {
-        let mut txn_fee: U256 = U256::ZERO;
+        let mut txn_fee: Balance = Balance::ZERO;
         let mut next_validate = base_seq_num + SeqNum(1);
 
         // start iteration from base_seq_num (non inclusive)
         for (&cache_seq_num, block) in self.blocks.range(next_validate..) {
             assert_eq!(next_validate, cache_seq_num);
             if let Some(account_txn_fee) = block.fees.get(eth_address) {
-                txn_fee = checked_sum(txn_fee, account_txn_fee);
+                txn_fee = txn_fee.saturating_add(account_txn_fee);
             }
             next_validate += SeqNum(1);
         }
@@ -549,7 +519,7 @@ where
                 &base_seq_num,
             )?
             .into_iter()
-            .map(|maybe_status| maybe_status.map_or(0, |status| status.balance))
+            .map(|maybe_status| maybe_status.map_or(Balance::ZERO, |status| status.balance))
             .collect_vec();
 
         let account_balances = addresses
@@ -562,19 +532,17 @@ where
                     mut next_validate,
                 } = self.committed_cache.compute_txn_fee(base_seq_num, address);
 
-                let txn_fee_committed_u128 = checked_from(txn_fee_committed);
-
-                if account_balance < txn_fee_committed_u128 {
+                if account_balance < txn_fee_committed {
                     panic!(
                         "Committed block with incoherent transaction fee 
                             Not sufficient balance: {:?} \
                             Transaction Fee Committed: {:?} \
                             consensus block:seq num {:?} \
                             for address: {:?}",
-                        account_balance, txn_fee_committed_u128, consensus_block_seq_num, address
+                        account_balance, txn_fee_committed, consensus_block_seq_num, address
                     );
                 } else {
-                    account_balance -= txn_fee_committed_u128;
+                    account_balance -= txn_fee_committed;
                     trace!(
                         "AccountBalance compute 4: \
                             updated balance to: {:?} \
@@ -582,14 +550,14 @@ where
                             consensus block:seq num {:?} \
                             for address: {:?}",
                         account_balance,
-                        txn_fee_committed_u128,
+                        txn_fee_committed,
                         consensus_block_seq_num,
                         address
                     );
                 }
 
                 // Apply Txn Fees for txns in extending blocks
-                let mut txn_fee_pending: U256 = U256::ZERO;
+                let mut txn_fee_pending: Balance = Balance::ZERO;
                 if let Some(blocks) = extending_blocks {
                     // handle the case where base_seq_num is a pending block
                     let next_blocks = blocks
@@ -598,25 +566,23 @@ where
                     for extending_block in next_blocks {
                         assert_eq!(next_validate, extending_block.get_seq_num());
                         if let Some(txn_fee) = extending_block.txn_fees.get(address) {
-                            txn_fee_pending = checked_sum(txn_fee_pending, *txn_fee);
+                            txn_fee_pending = txn_fee_pending.saturating_add(*txn_fee);
                         }
                         next_validate += SeqNum(1);
                     }
                 }
 
-                let txn_fee_pending_u128 = checked_from(txn_fee_pending);
-
-                if account_balance < txn_fee_pending_u128 {
+                if account_balance < txn_fee_pending {
                     panic!(
                         "Majority extended a block with an incoherent balance \
                             Not sufficient balance: {:?} \
                             Txn Fees Pending: {:?} \
                             consensus block:seq num {:?} \
                             for address: {:?}",
-                        account_balance, txn_fee_pending_u128, consensus_block_seq_num, address
+                        account_balance, txn_fee_pending, consensus_block_seq_num, address
                     );
                 } else {
-                    account_balance -= txn_fee_pending_u128;
+                    account_balance -= txn_fee_pending;
                     trace!(
                         "AccountBalance compute 6: \
                             updated balance to: {:?} \
@@ -624,7 +590,7 @@ where
                             consensus block:seq num {:?} \
                             for address: {:?}",
                         account_balance,
-                        txn_fee_pending_u128,
+                        txn_fee_pending,
                         consensus_block_seq_num,
                         address
                     );
@@ -735,7 +701,7 @@ where
                 .get_mut(&eth_address)
                 .expect("account_balances should have been populated");
 
-            let txn_fee = compute_txn_max_value_to_u128(txn);
+            let txn_fee = compute_txn_max_value(txn);
 
             if *account_balance >= txn_fee {
                 *account_balance -= txn_fee;
@@ -830,8 +796,8 @@ mod test {
             },
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
-                    (address1, U256::from(100)),
-                    (address2, U256::from(200)),
+                    (address1, Balance::from(100)),
+                    (address2, Balance::from(200)),
                 ]),
             },
         };
@@ -844,8 +810,8 @@ mod test {
             },
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
-                    (address1, U256::from(150)),
-                    (address3, U256::from(300)),
+                    (address1, Balance::from(150)),
+                    (address3, Balance::from(300)),
                 ]),
             },
         };
@@ -858,8 +824,8 @@ mod test {
             },
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
-                    (address2, U256::from(250)),
-                    (address3, U256::from(350)),
+                    (address2, Balance::from(250)),
+                    (address3, Balance::from(350)),
                 ]),
             },
         };
@@ -915,8 +881,8 @@ mod test {
             },
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
-                    (address1, U256::from(u128::MAX - 1)),
-                    (address2, U256::from(u128::MAX)),
+                    (address1, U256::MAX - U256::from(1)),
+                    (address2, U256::MAX),
                 ]),
             },
         };
@@ -930,7 +896,7 @@ mod test {
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
                     (address1, U256::from(1)),
-                    (address3, U256::from(u128::MAX / 2)),
+                    (address3, U256::MAX.div_ceil(U256::from(2))),
                 ]),
             },
         };
@@ -943,8 +909,8 @@ mod test {
             },
             fees: BlockTxnFees {
                 txn_fees: BTreeMap::from([
-                    (address2, U256::from(u128::MAX)),
-                    (address3, U256::from(u128::MAX / 2 + 1)),
+                    (address2, U256::MAX),
+                    (address3, U256::MAX.div_ceil(U256::from(2)) + U256::from(1)),
                 ]),
             },
         };
@@ -956,7 +922,7 @@ mod test {
         // test compute_txn_fee for different addresses and base sequence numbers
         assert_eq!(
             buffer.compute_txn_fee(SeqNum(0), &address1).txn_fee,
-            U256::from(u128::MAX)
+            U256::MAX
         );
         assert_eq!(
             buffer.compute_txn_fee(SeqNum(1), &address1).txn_fee,
@@ -969,11 +935,11 @@ mod test {
 
         assert_eq!(
             buffer.compute_txn_fee(SeqNum(0), &address2).txn_fee,
-            U256::from(u128::MAX)
+            U256::MAX
         );
         assert_eq!(
             buffer.compute_txn_fee(SeqNum(0), &address3).txn_fee,
-            U256::from(u128::MAX)
+            U256::MAX
         );
     }
 

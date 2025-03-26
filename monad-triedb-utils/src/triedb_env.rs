@@ -11,7 +11,7 @@ use std::{
 };
 
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
-use alloy_primitives::{keccak256, Address, FixedBytes};
+use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
 use monad_triedb::{TraverseEntry, TriedbHandle};
@@ -79,7 +79,7 @@ struct AsyncRequest {
 #[derive(Debug, Clone, Default)]
 pub struct Account {
     pub nonce: u64,
-    pub balance: u128,
+    pub balance: U256,
     pub code_hash: [u8; 32],
 }
 
@@ -793,7 +793,7 @@ impl Triedb for TriedbEnv {
                         }),
                     None => Ok(Account {
                         nonce: 0,
-                        balance: 0,
+                        balance: U256::ZERO,
                         code_hash: [0u8; 32],
                     }),
                 }

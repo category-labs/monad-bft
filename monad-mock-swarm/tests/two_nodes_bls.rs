@@ -11,6 +11,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -112,7 +113,7 @@ fn two_nodes_bls() {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

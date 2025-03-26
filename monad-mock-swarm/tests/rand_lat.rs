@@ -6,6 +6,7 @@ use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_types::Balance;
 use monad_mock_swarm::{
     fetch_metric,
     mock::TimestamperConfig,
@@ -85,7 +86,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+        || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
         // avoid state_root trigger in rand latency setting
         // TODO-1, cover cases with low state_root_delay once state_sync is done
         SeqNum::MAX,                         // execution_delay

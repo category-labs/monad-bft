@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{block::PassthruBlockPolicy, block_validator::MockValidator};
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_types::Balance;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::BytesSwarm,
@@ -45,7 +46,7 @@ pub fn simulation_make() -> *mut Simulation {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
             SeqNum(4),                           // execution_delay
             Duration::from_millis(20),           // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

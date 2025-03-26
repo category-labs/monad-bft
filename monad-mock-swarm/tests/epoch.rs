@@ -18,6 +18,7 @@ mod test {
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
     };
+    use monad_eth_types::Balance;
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
@@ -205,7 +206,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -307,7 +308,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -482,7 +483,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum::MAX),
+            || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
             SeqNum::MAX,                         // execution_delay
             Duration::from_millis(delta),        // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -689,7 +690,7 @@ mod test {
             SimpleRoundRobin::default,
             || MockValidator,
             || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(u128::MAX, SeqNum(4)),
+            || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
             SeqNum(4),                           // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config

@@ -1654,7 +1654,9 @@ mod test {
     };
     use monad_eth_block_policy::EthBlockPolicy;
     use monad_eth_block_validator::EthValidator;
-    use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS};
+    use monad_eth_types::{
+        Balance, EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS,
+    };
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
     use monad_testutil::{
@@ -2258,7 +2260,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2317,7 +2319,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2361,7 +2363,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2422,7 +2424,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2455,7 +2457,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2518,7 +2520,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2609,7 +2611,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2701,7 +2703,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2779,7 +2781,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -2990,7 +2992,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3037,7 +3039,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3114,7 +3116,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3180,7 +3182,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3286,7 +3288,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3356,7 +3358,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3403,7 +3405,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3526,7 +3528,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3597,7 +3599,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3665,7 +3667,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3771,7 +3773,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3868,7 +3870,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -3981,7 +3983,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4131,7 +4133,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4251,7 +4253,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4297,7 +4299,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4405,7 +4407,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4531,7 +4533,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(0),
             execution_delay,
         );
@@ -4700,7 +4702,7 @@ mod test {
             ValidatorSetFactory::default(),
             SimpleRoundRobin::default(),
             || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
-            || InMemoryStateInner::genesis(u128::MAX, execution_delay),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
             || EthValidator::new(1337),
             execution_delay,
         );

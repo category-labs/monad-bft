@@ -19,6 +19,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignatureRecoverable,
 };
 use monad_dataplane::udp::DEFAULT_MTU;
+use monad_eth_types::Balance;
 use monad_executor::Executor;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
@@ -334,7 +335,7 @@ async fn run<ST, SCT>(
     <ST as CertificateSignature>::KeyPairType: Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let state_backend = InMemoryStateInner::genesis(u128::MAX, SeqNum(4));
+    let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
     let nodeid = config.executor_config.nodeid;
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
     let mut executor = make_monad_executor(index, state_backend, config.executor_config);

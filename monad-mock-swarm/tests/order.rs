@@ -10,6 +10,7 @@ use monad_consensus_types::{
     block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_eth_types::Balance;
 use monad_mock_swarm::{
     fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
@@ -78,7 +79,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         SimpleRoundRobin::default,
         || MockValidator,
         || PassthruBlockPolicy,
-        || InMemoryStateInner::genesis(u128::MAX, SeqNum(1)),
+        || InMemoryStateInner::genesis(Balance::MAX, SeqNum(1)),
         // due to the burst behavior of replay-transformer, its okay to
         // have delay as 1
         //

@@ -11,7 +11,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_types::EthExecutionProtocol;
+use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace};
@@ -300,7 +300,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         tx_heap: TrackedTxHeap<'_>,
-        mut account_balances: BTreeMap<&Address, u128>,
+        mut account_balances: BTreeMap<&Address, Balance>,
     ) -> (u64, Vec<Recovered<TxEnvelope>>) {
         assert!(tx_limit > 0);
 
