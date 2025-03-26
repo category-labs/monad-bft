@@ -11,14 +11,18 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::{Balance, EthExecutionProtocol};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use tx_heap::TrackedTxHeapDrainAction;
 
 use self::{list::TrackedTxList, tx_heap::TrackedTxHeap};
-use super::{pending::PendingTxMap, transaction::ValidEthTransaction};
+use super::{
+    pending::{PendingTxList, PendingTxMap},
+    transaction::ValidEthTransaction,
+};
 use crate::EthTxPoolEventTracker;
 
 mod list;
@@ -156,7 +160,7 @@ where
             debug!(?elapsed, "txpool create_proposal");
         });
 
-        if let Err(err) = self.promote_pending(
+        if !self.try_promote_pending(
             event_tracker,
             block_policy,
             state_backend,
@@ -164,10 +168,7 @@ where
             0,
             MAX_PROMOTABLE_ON_CREATE_PROPOSAL,
         ) {
-            error!(
-                ?err,
-                "txpool failed to promote pending txs during create_proposal"
-            );
+            error!("txpool failed to promote pending txs during create_proposal");
         }
 
         if self.txs.is_empty() || tx_limit == 0 {
@@ -211,7 +212,7 @@ where
         Ok(proposal_tx_list)
     }
 
-    pub fn promote_pending(
+    pub fn try_promote_pending(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
         block_policy: &EthBlockPolicy<ST, SCT>,
@@ -219,30 +220,31 @@ where
         pending: &mut PendingTxMap,
         min_promotable: usize,
         max_promotable: usize,
-    ) -> Result<(), StateBackendError> {
+    ) -> bool {
         let Some(last_commit) = &self.last_commit else {
-            return Ok(());
+            warn!("txpool attempted to promote pending before first committed block");
+            return false;
         };
         let last_commit_seq_num = last_commit.seq_num;
 
         let Some(insertable) = MAX_ADDRESSES.checked_sub(self.txs.len()) else {
-            return Ok(());
+            return false;
         };
 
         if insertable < min_promotable {
-            return Ok(());
+            return true;
         }
 
         let insertable = insertable.min(max_promotable);
 
         if insertable == 0 {
-            return Ok(());
+            return true;
         }
 
         let to_insert = pending.split_off(insertable);
 
         if to_insert.is_empty() {
-            return Ok(());
+            return true;
         }
 
         let addresses = to_insert.len();
@@ -256,12 +258,29 @@ where
         // delay k. Since block_policy looks up seqnum - execution_delay, passing the last commit
         // seqnum will result in a lookup outside that range. As a fix, we add 1 so the seqnum is on
         // the edge of the range.
-        let account_nonces = block_policy.get_account_base_nonces(
+        let account_nonces = match block_policy.get_account_base_nonces(
             last_commit_seq_num + SeqNum(1),
             state_backend,
             &Vec::default(),
             addresses.iter(),
-        )?;
+        ) {
+            Ok(account_nonces) => account_nonces,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "failed to lookup account nonces during promote pending"
+                );
+                event_tracker.drop_all(
+                    to_insert
+                        .into_values()
+                        .map(PendingTxList::into_map)
+                        .flat_map(BTreeMap::into_values)
+                        .map(ValidEthTransaction::into_raw),
+                    EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::StateBackendError),
+                );
+                return false;
+            }
+        };
 
         for (address, pending_tx_list) in to_insert {
             let Some(account_nonce) = account_nonces.get(&address) else {
@@ -291,7 +310,7 @@ where
             }
         }
 
-        Ok(())
+        true
     }
 
     fn create_proposal_tx_list(

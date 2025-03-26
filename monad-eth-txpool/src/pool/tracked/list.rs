@@ -52,13 +52,11 @@ impl TrackedTxList {
 
         event_tracker.pending_promote(txs.values().map(ValidEthTransaction::hash));
 
-        let now = Instant::now();
-
         Some(Self {
             account_nonce,
             txs: txs
                 .into_iter()
-                .map(|(nonce, tx)| (nonce, (tx, now)))
+                .map(|(nonce, tx)| (nonce, (tx, event_tracker.now)))
                 .collect(),
         })
     }

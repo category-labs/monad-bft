@@ -182,20 +182,16 @@ where
             on_insert(tx);
         }
 
-        if let Err(state_backend_error) = self.tracked.promote_pending(
+        if !self.tracked.try_promote_pending(
             event_tracker,
             block_policy,
             state_backend,
             &mut self.pending,
             0,
             INSERT_TXS_MAX_PROMOTE,
-        ) {
-            if self.pending.is_at_promote_txs_watermark() {
-                warn!(
-                    ?state_backend_error,
-                    "txpool failed to promote at pending promote txs watermark"
-                );
-            }
+        ) && self.pending.is_at_promote_txs_watermark()
+        {
+            warn!("txpool failed to promote at pending promote txs watermark");
         }
 
         self.update_aggregate_metrics(event_tracker);
