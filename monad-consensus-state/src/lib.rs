@@ -4282,6 +4282,68 @@ mod test {
     }
 
     #[test]
+    fn test_blocksync_requests() {
+        let num_states = 2;
+        let execution_delay = SeqNum(4);
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthExecutionProtocol,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal(Vec::new());
+        let (author_1, _, proposal_message_1) = cp.destructure();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(1))
+        );
+        // no blocksync requests
+        assert!(find_blocksync_request(&cmds).is_none());
+
+        // generate block 2
+        let cp = env.next_proposal(Vec::new());
+        let (_author_2, _, _proposal_message_2) = cp.destructure();
+
+        // generate block 3
+        let cp = env.next_proposal(Vec::new());
+        let (author_3, _, proposal_message_3) = cp.destructure();
+
+        // state receives block 3
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // expect blocksync request for block 2
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 1);
+
+        // generate block 4
+        let cp = env.next_proposal(Vec::new());
+        let (author_4, _, proposal_message_4) = cp.destructure();
+
+        // state receives block 4
+        let cmds = n1.handle_proposal_message(author_4, proposal_message_4);
+        // expect no blocksync request since the missing ancestor is the same
+        let requested_ranges = extract_blocksync_requests(cmds);
+        assert_eq!(requested_ranges.len(), 0);
+    }
+
+    #[test]
     fn test_vote_sent_to_leader_in_next_epoch() {
         let num_states = 2;
         let execution_delay = SeqNum::MAX;

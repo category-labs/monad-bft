@@ -4457,7 +4457,6 @@ dependencies = [
  "monad-blocktree",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-types",
  "monad-multi-sig",
  "monad-proto",
  "monad-state-backend",
