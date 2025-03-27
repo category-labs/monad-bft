@@ -705,7 +705,7 @@ async fn main() -> std::io::Result<()> {
     let ipc_path = args.ipc_path;
 
     let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
-    let mut retry_timer = tokio::time::interval(Duration::from_secs(30));
+    let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
     let mut txpool_bridge = loop {
         tokio::select! {
             _ = print_message_timer.tick() => {
