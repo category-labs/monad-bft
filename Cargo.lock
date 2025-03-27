@@ -5329,6 +5329,7 @@ dependencies = [
  "monad-eth-types",
  "monad-types",
  "serde",
+ "tracing",
 ]
 
 [[package]]

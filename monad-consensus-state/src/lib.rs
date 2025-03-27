@@ -1615,7 +1615,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{ops::Deref, time::Duration};
+    use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
     use alloy_consensus::TxEnvelope;
     use itertools::Itertools;
@@ -1658,7 +1658,7 @@ mod test {
         Balance, EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS,
     };
     use monad_multi_sig::MultiSig;
-    use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend};
+    use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_key},
@@ -1709,7 +1709,7 @@ mod test {
         EPT::FinalizedHeader: MockableFinalizedHeader,
         EPT::ProposedHeader: MockableProposedHeader,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend + StateBackendTest,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1743,7 +1743,7 @@ mod test {
         EPT::FinalizedHeader: MockableFinalizedHeader,
         EPT::ProposedHeader: MockableProposedHeader,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend + StateBackendTest,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
@@ -1815,6 +1815,20 @@ mod test {
         ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
             self.wrapped_state()
                 .handle_block_sync(block_range, full_blocks)
+        }
+
+        fn ledger_commit(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) {
+            self.state_backend.ledger_commit(&block.get_id());
+        }
+
+        fn ledger_propose(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) {
+            self.state_backend.ledger_propose(
+                block.get_id(),
+                block.seq_num,
+                block.round,
+                block.qc.get_round(),
+                BTreeMap::default(),
+            );
         }
     }
 
@@ -1911,7 +1925,7 @@ mod test {
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         EPT: ExecutionProtocol,
         BPT: BlockPolicy<ST, SCT, EPT, SBT>,
-        SBT: StateBackend,
+        SBT: StateBackend + StateBackendTest,
         BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
@@ -4839,5 +4853,111 @@ mod test {
         }
         assert_eq!(wrapped_state.consensus.get_current_epoch(), Epoch(2));
         assert_eq!(wrapped_state.consensus.get_current_round(), epoch_2_start);
+    }
+
+    #[test]
+    fn test_ledger_propose_and_commit() {
+        let num_states = 2;
+        let execution_delay = SeqNum(4);
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            EthExecutionProtocol,
+            BlockPolicyType,
+            StateBackendType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0, 1337),
+            || InMemoryStateInner::genesis(Balance::MAX, execution_delay),
+            || EthValidator::new(0),
+            execution_delay,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+
+        // prepare execution_delay blocks
+        let mut proposed_block_headers = BTreeMap::new();
+        for _ in 0..execution_delay.0 - 1 {
+            let p = env.next_proposal(Vec::new());
+            let (author, _, p) = p.destructure();
+            proposed_block_headers.insert(p.block_header.seq_num, p.block_header.clone());
+            let _cmds = n1.handle_proposal_message(author, p.clone());
+        }
+        assert!(
+            matches!(n1.wrapped_state().consensus.scheduled_vote, Some(OutgoingVoteStatus::VoteReady(v)) if v.round == Round(execution_delay.0 - 1))
+        );
+
+        // The author_<n>, proposal_message_<n> refer to the messages after the initial setup with execution_delay proposals.
+        let cp = env.next_proposal(Vec::new());
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block_header.get_id();
+
+        let _ = n1.handle_proposal_message(author_1, proposal_message_1);
+
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        let cp = env.next_proposal(Vec::new());
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block_header.get_id();
+
+        let cp = env.next_proposal(Vec::new());
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block_header.get_id();
+
+        let _ = n1.handle_proposal_message(author_2, proposal_message_2);
+
+        // block 2 should be in the blocktree but its not coherent yet
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(!block_2_blocktree_entry.is_coherent);
+
+        // add blocks to state_backend
+        n1.ledger_propose(
+            proposed_block_headers
+                .get(&(GENESIS_SEQ_NUM + SeqNum(1)))
+                .unwrap(),
+        );
+        n1.ledger_commit(
+            proposed_block_headers
+                .get(&(GENESIS_SEQ_NUM + SeqNum(1)))
+                .unwrap(),
+        );
+
+        n1.ledger_propose(
+            proposed_block_headers
+                .get(&(GENESIS_SEQ_NUM + SeqNum(2)))
+                .unwrap(),
+        );
+
+        let _ = n1.handle_proposal_message(author_3, proposal_message_3);
+
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 3 should be in the blocktree as coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
     }
 }

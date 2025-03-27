@@ -7,6 +7,7 @@ use alloy_primitives::Address;
 use monad_eth_types::{Balance, EthAccount, Nonce};
 use monad_types::{BlockId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 #[derive(Debug, PartialEq)]
 pub enum StateBackendError {
@@ -31,6 +32,19 @@ pub trait StateBackend {
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
     /// Fetches latest block from storage backend
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
+}
+
+pub trait StateBackendTest {
+    fn ledger_propose(
+        &mut self,
+        block_id: BlockId,
+        seq_num: SeqNum,
+        round: Round,
+        parent_round: Round,
+        new_account_nonces: BTreeMap<Address, Nonce>,
+    );
+
+    fn ledger_commit(&mut self, block_id: &BlockId);
 }
 
 pub type InMemoryState = Arc<Mutex<InMemoryStateInner>>;
@@ -93,10 +107,21 @@ impl InMemoryStateInner {
         }))
     }
 
+    pub fn committed_state(&self, block: &SeqNum) -> Option<&InMemoryBlockState> {
+        self.commits.get(block)
+    }
+
+    pub fn reset_state(&mut self, state: InMemoryBlockState) {
+        self.proposals = Default::default();
+        self.commits = std::iter::once((state.seq_num, state)).collect();
+    }
+}
+
+impl StateBackendTest for InMemoryStateInner {
     // new_account_nonces is the changeset of nonces from a given block
     // if account A's last tx nonce in a block is N, then new_account_nonces should include A=N+1
     // this is because N+1 is the next valid nonce for A
-    pub fn ledger_propose(
+    fn ledger_propose(
         &mut self,
         block_id: BlockId,
         seq_num: SeqNum,
@@ -112,6 +137,7 @@ impl InMemoryStateInner {
                     + SeqNum(1)
         );
 
+        trace!(?block_id, ?seq_num, ?round, "ledger_propose");
         let mut last_state_nonces = if let Some(parent_state) = self.proposals.get(&parent_round) {
             parent_state.nonces.clone()
         } else {
@@ -140,7 +166,7 @@ impl InMemoryStateInner {
         );
     }
 
-    pub fn ledger_commit(&mut self, block_id: &BlockId) {
+    fn ledger_commit(&mut self, block_id: &BlockId) {
         let proposal_round = self
             .proposals
             .values()
@@ -169,21 +195,18 @@ impl InMemoryStateInner {
             .expect("last_commit doesn't exist");
         assert_eq!(last_commit.seq_num + SeqNum(1), proposal.seq_num);
         assert_eq!(last_commit.round, proposal.parent_round);
+        trace!(
+            "ledger_commit insert block_id: {:?}, proposal_seq_num: {:?}, proposal: {:?}",
+            block_id,
+            proposal.seq_num,
+            proposal
+        );
         self.commits.insert(proposal.seq_num, proposal);
         if self.commits.len() > (self.execution_delay.0 as usize).saturating_mul(1000)
         // this is big just for statesync/blocksync. TODO don't hardcode
         {
             self.commits.pop_first();
         }
-    }
-
-    pub fn committed_state(&self, block: &SeqNum) -> Option<&InMemoryBlockState> {
-        self.commits.get(block)
-    }
-
-    pub fn reset_state(&mut self, state: InMemoryBlockState) {
-        self.proposals = Default::default();
-        self.commits = std::iter::once((state.seq_num, state)).collect();
     }
 }
 
@@ -215,9 +238,17 @@ impl StateBackend for InMemoryStateInner {
             state
         } else {
             let Some(proposal) = self.proposals.get(round) else {
+                trace!(
+                    ?round,
+                    ?seq_num,
+                    ?block_id,
+                    ?is_finalized,
+                    "NotAvailableYet"
+                );
                 return Err(StateBackendError::NotAvailableYet);
             };
             if &proposal.block_id != block_id {
+                trace!(?block_id, proposal_block_id=?proposal.block_id, "does not matcn proposal block_id");
                 return Err(StateBackendError::NotAvailableYet);
             }
             proposal
@@ -270,5 +301,24 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         let state = self.lock().unwrap();
         state.raw_read_latest_finalized_block()
+    }
+}
+
+impl<T: StateBackendTest> StateBackendTest for Arc<Mutex<T>> {
+    fn ledger_commit(&mut self, block_id: &BlockId) {
+        let mut state = self.lock().unwrap();
+        state.ledger_commit(block_id);
+    }
+
+    fn ledger_propose(
+        &mut self,
+        block_id: BlockId,
+        seq_num: SeqNum,
+        round: Round,
+        parent_round: Round,
+        new_account_nonces: BTreeMap<Address, Nonce>,
+    ) {
+        let mut state = self.lock().unwrap();
+        state.ledger_propose(block_id, seq_num, round, parent_round, new_account_nonces);
     }
 }

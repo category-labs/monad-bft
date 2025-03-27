@@ -22,7 +22,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthExecutionProtocol;
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_state_backend::InMemoryState;
+use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 

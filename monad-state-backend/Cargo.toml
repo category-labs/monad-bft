@@ -13,4 +13,5 @@ monad-eth-types = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-primitives = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
