@@ -215,6 +215,7 @@ mod tests {
     use std::process::Command;
 
     use mongodb::bson::uuid::Uuid;
+    use serial_test::serial;
 
     use super::*;
 
@@ -306,6 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_basic_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -324,6 +326,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_bulk_operations() {
         let (_container, storage) = setup().await.unwrap();
 
@@ -342,6 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_prefix_scan() {
         let (_container, storage) = setup().await.unwrap();
 

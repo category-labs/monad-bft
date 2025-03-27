@@ -69,4 +69,5 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
 
 [dev-dependencies]
+serial_test = { workspace = true } 
 monad-eth-testutil = { workspace = true }
