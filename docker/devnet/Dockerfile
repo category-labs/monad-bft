@@ -90,9 +90,9 @@ ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 
-COPY --from=builder /usr/src/monad-bft/monad-node /usr/local/bin/monad-node
+COPY --from=builder /usr/src/monad-bft/monad-node/monad-node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/keystore /usr/local/bin/keystore
-COPY --from=builder /usr/src/monad-bft/monad-debug-node /usr/local/bin/monad-debug-node
+COPY --from=builder /usr/src/monad-bft/monad-debug-node/monad-debug-node /usr/local/bin/monad-debug-node
 COPY --from=builder /usr/src/monad-bft/ledger-tail /usr/local/bin/ledger-tail
 COPY --from=builder /usr/src/monad-bft/wal2json /usr/local/bin/wal2json
 COPY --from=builder /usr/src/monad-bft/wal-tool /usr/local/bin/wal-tool
