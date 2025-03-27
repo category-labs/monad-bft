@@ -4,7 +4,7 @@ use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -145,11 +145,9 @@ impl<'a> BenchController<'a> {
                             TRANSACTION_SIZE_BYTES,
                         );
 
-                        let signer = tx.recover_signer().unwrap();
-
                         *nonce += 1;
 
-                        Recovered::new_unchecked(tx, signer)
+                        recover_tx(tx)
                     })
                     .collect_vec();
 
@@ -176,9 +174,7 @@ impl<'a> BenchController<'a> {
                     TRANSACTION_SIZE_BYTES,
                 );
 
-                let signer = tx.recover_signer().unwrap();
-
-                Recovered::new_unchecked(tx, signer)
+                recover_tx(tx)
             })
             .collect_vec();
 

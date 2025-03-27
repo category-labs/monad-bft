@@ -15,7 +15,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
@@ -146,8 +146,7 @@ fn run_custom_iter<const N: usize>(
                 let pool_previous_num_txs = pool.num_txs();
 
                 for (tx, should_insert) in txs {
-                    let signer = tx.recover_signer().unwrap();
-                    let tx = Recovered::new_unchecked(tx.to_owned(), signer);
+                    let tx = recover_tx(tx.to_owned());
 
                     let mut was_inserted = false;
 
@@ -194,10 +193,8 @@ fn run_custom_iter<const N: usize>(
                     &eth_block_policy,
                     &state_backend,
                     txs.into_iter()
-                        .map(|tx| {
-                            let signer = tx.recover_signer().unwrap();
-                            Recovered::new_unchecked(tx.to_owned(), signer)
-                        })
+                        .map(ToOwned::to_owned)
+                        .map(recover_tx)
                         .collect(),
                     owned,
                     |_| {

@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{hex, B256};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx};
+use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
@@ -29,16 +28,13 @@ fn with_txpool(
         &mut EthTxPoolEventTracker,
     ),
 ) {
-    let tx = make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10);
-    let signer = tx.recover_signer().unwrap();
-    let tx = Recovered::new_unchecked(tx, signer);
-
+    let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
     let eth_block_policy =
         EthBlockPolicy::<SignatureType, SignatureCollectionType>::new(GENESIS_SEQ_NUM, 4, 1337);
     let state_backend = InMemoryStateInner::new(
         Balance::MAX,
         SeqNum(4),
-        InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(signer, 0u64)])),
+        InMemoryBlockState::genesis(BTreeMap::from_iter(vec![(tx.signer(), 0u64)])),
     );
     let mut pool = EthTxPool::default_testing();
 

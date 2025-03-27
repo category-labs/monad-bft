@@ -70,6 +70,11 @@ pub fn make_eip1559_tx(
     transaction.into_signed(signature).into()
 }
 
+pub fn recover_tx(tx: TxEnvelope) -> Recovered<TxEnvelope> {
+    let signer = tx.recover_signer().unwrap();
+    Recovered::new_unchecked(tx, signer)
+}
+
 pub fn make_receipt(logs_len: usize) -> ReceiptWithBloom {
     ReceiptWithBloom::new(
         Receipt::<Log> {
