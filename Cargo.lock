@@ -4837,6 +4837,7 @@ name = "monad-eth-txpool-executor"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "futures",
@@ -4845,6 +4846,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-block-policy",
+ "monad-eth-testutil",
  "monad-eth-txpool",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",

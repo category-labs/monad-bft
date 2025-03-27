@@ -32,3 +32,9 @@ rayon = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+monad-eth-testutil = { workspace = true }
+
+alloy-primitives = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
