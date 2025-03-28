@@ -148,10 +148,6 @@ impl DynamoDBArchive {
                         inc_err(&self.metrics);
                         format!("Request keys (0x stripped in req): {:?}", &batch)
                     })
-                    .map_err(|e| {
-                        error!(?e);
-                        e
-                    })
             })
             .await?;
 
@@ -177,10 +173,6 @@ impl DynamoDBArchive {
                         .wrap_err_with(|| {
                             inc_err(&self.metrics);
                             "Failed to get unprocessed keys"
-                        })
-                        .map_err(|e| {
-                            error!(?e);
-                            e
                         })
                 })
                 .await?;
@@ -225,10 +217,6 @@ impl DynamoDBArchive {
                     .wrap_err_with(|| {
                         inc_err(metrics);
                         format!("Failed to upload to table {}. Retrying...", table)
-                    })
-                    .map_err(|e| {
-                        error!(?e);
-                        e
                     })?;
 
                 // Check for unprocessed items
