@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     eth_json_types::{EthAddress, EthHash},
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    txpool::{EthTxPoolBridgeState, TxStatus},
+    txpool::{EthTxPoolBridgeClient, TxStatus},
 };
 
 #[derive(Serialize, Debug, schemars::JsonSchema)]
@@ -51,10 +51,10 @@ pub struct TxPoolStatusByHashParams {
 #[rpc(method = "txpool_statusByHash")]
 #[allow(non_snake_case)]
 pub async fn monad_txpool_statusByHash(
-    txpool_state: &EthTxPoolBridgeState,
+    txpool_bridge_client: &EthTxPoolBridgeClient,
     params: TxPoolStatusByHashParams,
 ) -> JsonRpcResult<TxPoolStatusResult> {
-    let Some(status) = txpool_state.get_status_by_hash(&TxHash::new(params.hash.0)) else {
+    let Some(status) = txpool_bridge_client.get_status_by_hash(&TxHash::new(params.hash.0)) else {
         return Err(JsonRpcError::custom("Unknown tx hash".to_string()));
     };
 
@@ -72,10 +72,12 @@ pub struct TxPoolStatusByAddressResult(BTreeMap<EthHash, TxPoolStatusResult>);
 #[rpc(method = "txpool_statusByAddress")]
 #[allow(non_snake_case)]
 pub async fn monad_txpool_statusByAddress(
-    txpool_state: &EthTxPoolBridgeState,
+    txpool_bridge_client: &EthTxPoolBridgeClient,
     params: TxPoolStatusByAddressParams,
 ) -> JsonRpcResult<TxPoolStatusByAddressResult> {
-    let Some(statuses) = txpool_state.get_status_by_address(&Address::new(params.address.0)) else {
+    let Some(statuses) =
+        txpool_bridge_client.get_status_by_address(&Address::new(params.address.0))
+    else {
         return Err(JsonRpcError::custom("No transactions ".to_string()));
     };
 

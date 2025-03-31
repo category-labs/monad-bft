@@ -5,10 +5,8 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use alloy_consensus::TxEnvelope;
 use clap::Parser;
 use eth_json_types::serialize_result;
-use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
@@ -18,7 +16,7 @@ use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -61,7 +59,7 @@ use crate::{
     trace_handlers::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
-    txpool::{EthTxPoolBridge, EthTxPoolBridgeState},
+    txpool::{EthTxPoolBridge, EthTxPoolBridgeClient},
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
     websocket::Disconnect,
 };
@@ -269,8 +267,7 @@ async fn rpc_select(
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             monad_eth_sendRawTransaction(
                 triedb_env,
-                app_state.mempool_sender.clone(),
-                &app_state.mempool_state,
+                &app_state.txpool_bridge_client,
                 app_state.base_fee_per_gas.clone(),
                 params,
                 app_state.chain_id,
@@ -528,13 +525,13 @@ async fn rpc_select(
         }
         "txpool_statusByHash" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByHash(&app_state.mempool_state, params)
+            monad_txpool_statusByHash(&app_state.txpool_bridge_client, params)
                 .await
                 .map(serialize_result)?
         }
         "txpool_statusByAddress" => {
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByAddress(&app_state.mempool_state, params)
+            monad_txpool_statusByAddress(&app_state.txpool_bridge_client, params)
                 .await
                 .map(serialize_result)?
         }
@@ -545,8 +542,7 @@ async fn rpc_select(
 
 #[derive(Clone)]
 struct MonadRpcResources {
-    mempool_sender: flume::Sender<TxEnvelope>,
-    mempool_state: Arc<EthTxPoolBridgeState>,
+    txpool_bridge_client: EthTxPoolBridgeClient,
     triedb_reader: Option<TriedbEnv>,
     eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
     archive_reader: Option<ArchiveReader>,
@@ -569,8 +565,7 @@ impl Handler<Disconnect> for MonadRpcResources {
 
 impl MonadRpcResources {
     pub fn new(
-        mempool_sender: flume::Sender<TxEnvelope>,
-        mempool_state: Arc<EthTxPoolBridgeState>,
+        txpool_bridge_client: EthTxPoolBridgeClient,
         triedb_reader: Option<TriedbEnv>,
         eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
         archive_reader: Option<ArchiveReader>,
@@ -583,8 +578,7 @@ impl MonadRpcResources {
         logs_max_block_range: u64,
     ) -> Self {
         Self {
-            mempool_sender,
-            mempool_state,
+            txpool_bridge_client,
             triedb_reader,
             eth_call_executor,
             archive_reader,
@@ -692,31 +686,22 @@ async fn main() -> std::io::Result<()> {
         args.eth_call_max_concurrent_requests as usize,
     ));
 
-    // channels and thread for communicating over the mempool ipc socket
-    // RPC handlers that need to send to the mempool can clone the ipc_sender
-    // channel to send
-    let (ipc_sender, ipc_receiver) = flume::bounded::<TxEnvelope>(
-        // TODO configurable
-        10_000,
-    );
-    let txpool_state = EthTxPoolBridgeState::new();
-
     // Wait for bft to be in a ready state before starting the RPC server.
     // Bft will bind to the ipc socket after state syncing.
     let ipc_path = args.ipc_path;
 
     let mut print_message_timer = tokio::time::interval(Duration::from_secs(60));
     let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
-    let mut txpool_bridge = loop {
+    let (txpool_bridge_client, txpool_bridge_handle) = loop {
         tokio::select! {
             _ = print_message_timer.tick() => {
                 info!("Waiting for statesync to complete");
             }
             _= retry_timer.tick() => {
-                match EthTxPoolBridge::new(&ipc_path, txpool_state.clone()).await  {
-                    Ok(bridge) => {
+                match EthTxPoolBridge::start(&ipc_path).await  {
+                    Ok((client, handle)) => {
                         info!("Statesync complete, starting RPC server");
-                        break bridge
+                        break (client, handle)
                     },
                     Err(e) => {
                         debug!("caught error: {e}, retrying");
@@ -725,46 +710,6 @@ async fn main() -> std::io::Result<()> {
             },
         }
     };
-
-    tokio::spawn({
-        let txpool_state = txpool_state.clone();
-
-        async move {
-            let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
-
-            loop {
-                tokio::select! {
-                    result = ipc_receiver.recv_async() => {
-                        let tx = result.unwrap();
-
-                        for tx in std::iter::once(tx).chain(ipc_receiver.drain()) {
-                            txpool_state.add_tx(&tx);
-
-                            if let Err(e) = txpool_bridge.feed(&tx).await {
-                                warn!("IPC feed failed, monad-bft likely crashed: {}", e);
-                            }
-                        }
-
-                        if let Err(e) = txpool_bridge.flush().await {
-                            warn!("IPC flush failed, monad-bft likely crashed: {}", e);
-                        }
-                    }
-
-                    result = txpool_bridge.next() => {
-                        let Some(events) = result else {
-                            continue;
-                        };
-
-                        txpool_state.handle_events(events);
-                    }
-
-                    now = cleanup_timer.tick() => {
-                        txpool_state.cleanup(now);
-                    }
-                }
-            }
-        }
-    });
 
     let triedb_env = args.triedb_path.clone().as_deref().map(|path| {
         TriedbEnv::new(
@@ -864,8 +809,7 @@ async fn main() -> std::io::Result<()> {
     });
 
     let resources = MonadRpcResources::new(
-        ipc_sender.clone(),
-        txpool_state,
+        txpool_bridge_client,
         triedb_env,
         eth_call_executor,
         archive_reader,
@@ -895,7 +839,7 @@ async fn main() -> std::io::Result<()> {
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
     // main server app
-    match with_metrics {
+    let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
                 .wrap(metrics.clone())
@@ -923,8 +867,17 @@ async fn main() -> std::io::Result<()> {
         .shutdown_timeout(1)
         .workers(2)
         .run(),
+    };
+
+    tokio::select! {
+        result = app => {
+            let () = result?;
+        }
+
+        () = txpool_bridge_handle => {
+            error!("txpool bridge crashed");
+        }
     }
-    .await?;
 
     Ok(())
 }
@@ -937,25 +890,15 @@ mod tests {
         dev::{Service, ServiceResponse},
         test, Error,
     };
-    use alloy_consensus::TxEnvelope;
     use serde_json::{json, Number};
     use test_case::test_case;
 
     use super::*;
 
-    pub struct MonadRpcResourcesState {
-        pub ipc_receiver: flume::Receiver<TxEnvelope>,
-    }
-
-    pub async fn init_server() -> (
-        impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
-        MonadRpcResourcesState,
-    ) {
-        let (ipc_sender, ipc_receiver) = flume::bounded(1_000);
-        let m = MonadRpcResourcesState { ipc_receiver };
+    pub async fn init_server(
+    ) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
         let resources = MonadRpcResources {
-            mempool_sender: ipc_sender.clone(),
-            mempool_state: EthTxPoolBridgeState::new(),
+            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
             triedb_reader: None,
             eth_call_executor: None,
             archive_reader: None,
@@ -967,7 +910,8 @@ mod tests {
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
         };
-        let app = test::init_service(
+
+        test::init_service(
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
@@ -975,8 +919,7 @@ mod tests {
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
         )
-        .await;
-        (app, m)
+        .await
     }
 
     async fn recover_response_body(resp: ServiceResponse<impl MessageBody>) -> serde_json::Value {
@@ -992,7 +935,7 @@ mod tests {
 
     #[actix_web::test]
     async fn test_rpc_request_size() {
-        let (app, _) = init_server().await;
+        let app = init_server().await;
 
         // payload within limit
         let payload = json!(
@@ -1034,7 +977,7 @@ mod tests {
 
     #[actix_web::test]
     async fn test_rpc_method_not_found() {
-        let (app, _) = init_server().await;
+        let app = init_server().await;
 
         let payload = json!(
             {
@@ -1097,7 +1040,7 @@ mod tests {
         payload: Value,
         expected: ResponseWrapper<Response>,
     ) {
-        let (app, _) = init_server().await;
+        let app = init_server().await;
 
         let req = test::TestRequest::post()
             .uri("/")

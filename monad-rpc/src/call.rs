@@ -531,7 +531,7 @@ mod tests {
     #[allow(non_snake_case)]
     #[actix_web::test]
     async fn test_monad_eth_call_sha256_precompile() {
-        let (app, _monad) = init_server().await;
+        let app = init_server().await;
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "eth_call",
@@ -557,7 +557,7 @@ mod tests {
     #[allow(non_snake_case)]
     #[actix_web::test]
     async fn test_monad_eth_call() {
-        let (app, _monad) = init_server().await;
+        let app = init_server().await;
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "eth_call",

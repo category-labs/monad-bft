@@ -7,40 +7,35 @@ use std::{
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use dashmap::DashMap;
-use monad_eth_txpool_types::{
-    EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEvictReason, EthTxPoolSnapshot,
-};
+use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
 use tokio::time::Instant;
+
+use super::TxStatus;
 
 const TX_EVICT_DURATION_SECONDS: u64 = 15 * 60;
 
-pub struct EthTxPoolBridgeState {
-    status: DashMap<TxHash, TxStatusEntry>,
-    hash_address: DashMap<TxHash, Address>,
-    address_hashes: DashMap<Address, HashSet<TxHash>>,
-
-    pub pending_send_raw_tx: Arc<()>,
+struct TxStatusEntry {
+    pub status: TxStatus,
+    pub last_updated: Instant,
 }
 
-impl EthTxPoolBridgeState {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            status: DashMap::default(),
-
-            hash_address: DashMap::default(),
-            address_hashes: DashMap::default(),
-
-            pending_send_raw_tx: Default::default(),
-        })
+impl TxStatusEntry {
+    pub fn new(status: TxStatus, last_updated: Instant) -> Self {
+        Self {
+            status,
+            last_updated,
+        }
     }
+}
 
-    pub fn add_tx(&self, tx: &TxEnvelope) {
-        let hash = tx.tx_hash();
-        self.status
-            .entry(*hash)
-            .insert(TxStatusEntry::new(TxStatus::Unknown, Instant::now()));
-    }
+#[derive(Clone)]
+pub struct EthTxPoolBridgeStateView {
+    status: Arc<DashMap<TxHash, TxStatusEntry>>,
+    hash_address: Arc<DashMap<TxHash, Address>>,
+    address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+}
 
+impl EthTxPoolBridgeStateView {
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
         Some(self.status.get(hash)?.value().status.to_owned())
     }
@@ -58,8 +53,54 @@ impl EthTxPoolBridgeState {
 
         Some(statuses)
     }
+}
 
-    pub fn apply_snapshot(&self, snapshot: EthTxPoolSnapshot) {
+#[cfg(test)]
+impl EthTxPoolBridgeStateView {
+    pub fn for_testing() -> Self {
+        Self {
+            status: Default::default(),
+            hash_address: Default::default(),
+            address_hashes: Default::default(),
+        }
+    }
+}
+
+pub struct EthTxPoolBridgeState {
+    status: Arc<DashMap<TxHash, TxStatusEntry>>,
+    hash_address: Arc<DashMap<TxHash, Address>>,
+    address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+}
+
+impl EthTxPoolBridgeState {
+    pub fn new(snapshot: EthTxPoolSnapshot) -> Self {
+        let this = Self {
+            status: Default::default(),
+            hash_address: Default::default(),
+            address_hashes: Default::default(),
+        };
+
+        this.apply_snapshot(snapshot);
+
+        this
+    }
+
+    pub(super) fn create_view(&self) -> EthTxPoolBridgeStateView {
+        EthTxPoolBridgeStateView {
+            status: Arc::clone(&self.status),
+            hash_address: Arc::clone(&self.hash_address),
+            address_hashes: Arc::clone(&self.address_hashes),
+        }
+    }
+
+    pub(super) fn add_tx(&self, tx: &TxEnvelope) {
+        let hash = tx.tx_hash();
+        self.status
+            .entry(*hash)
+            .insert(TxStatusEntry::new(TxStatus::Unknown, Instant::now()));
+    }
+
+    pub(super) fn apply_snapshot(&self, snapshot: EthTxPoolSnapshot) {
         let EthTxPoolSnapshot {
             mut pending,
             mut tracked,
@@ -102,7 +143,7 @@ impl EthTxPoolBridgeState {
         // note that self.hash_addresses and self.address_hashes aren't populated for snapshots
     }
 
-    pub fn handle_events(&self, events: Vec<EthTxPoolEvent>) {
+    pub(super) fn handle_events(&self, events: Vec<EthTxPoolEvent>) {
         let tx_status = &self.status;
 
         let now = Instant::now();
@@ -171,7 +212,7 @@ impl EthTxPoolBridgeState {
         }
     }
 
-    pub fn cleanup(&self, now: Instant) {
+    pub(super) fn cleanup(&self, now: Instant) {
         self.status.retain(|hash, status| {
             if now.duration_since(status.last_updated)
                 < Duration::from_secs(TX_EVICT_DURATION_SECONDS)
@@ -190,34 +231,4 @@ impl EthTxPoolBridgeState {
 
         self.address_hashes.retain(|_, hashes| !hashes.is_empty());
     }
-}
-
-pub struct TxStatusEntry {
-    status: TxStatus,
-    last_updated: Instant,
-}
-
-impl TxStatusEntry {
-    pub fn new(status: TxStatus, now: Instant) -> Self {
-        Self {
-            status,
-            last_updated: now,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum TxStatus {
-    // No response
-    Unknown,
-
-    // Alive
-    Pending,
-    Tracked,
-
-    // Dead
-    Dropped { reason: EthTxPoolDropReason },
-    Evicted { reason: EthTxPoolEvictReason },
-    Replaced,
-    Committed,
 }
