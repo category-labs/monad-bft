@@ -10,7 +10,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use monoio::{
     io::AsyncReadRentExt,
-    net::{TcpListener, TcpStream},
+    net::{ListenerOpts, TcpListener, TcpStream},
     spawn,
     time::timeout,
 };
@@ -70,7 +70,8 @@ struct RxStateInner {
 }
 
 pub async fn task(local_addr: SocketAddr, tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>) {
-    let tcp_listener = TcpListener::bind(local_addr).unwrap();
+    let opts = ListenerOpts::new().reuse_addr(true);
+    let tcp_listener = TcpListener::bind_with_config(local_addr, &opts).unwrap();
     let rx_state = RxState::new();
 
     let mut conn_id: u64 = 0;
