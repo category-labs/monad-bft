@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-blocksync = { path = "../monad-blocksync" }
 monad-chain-config = { path = "../monad-chain-config" }
+monad-compress = { path = "../monad-compress" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }

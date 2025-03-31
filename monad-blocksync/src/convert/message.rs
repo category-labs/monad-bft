@@ -6,8 +6,10 @@ use monad_proto::{
     error::ProtoError,
     proto::{
         blocksync::{
-            proto_block_sync_body_response, proto_block_sync_headers_response,
-            ProtoBlockSyncBodyResponse, ProtoBlockSyncHeaders, ProtoBlockSyncHeadersResponse,
+            proto_block_sync_body_response, proto_block_sync_compressed_body_response,
+            proto_block_sync_headers_response, ProtoBlockSyncBodyResponse,
+            ProtoBlockSyncCompressedBodyResponse, ProtoBlockSyncHeaders,
+            ProtoBlockSyncHeadersResponse,
         },
         message::{
             proto_block_sync_request_message, proto_block_sync_response_message,
@@ -20,8 +22,8 @@ use monad_types::ExecutionProtocol;
 use crate::{
     blocksync::BlockSyncSelfRequester,
     messages::message::{
-        BlockSyncBodyResponse, BlockSyncHeadersResponse, BlockSyncRequestMessage,
-        BlockSyncResponseMessage,
+        BlockSyncBodyResponse, BlockSyncCompressedBodyResponse, BlockSyncHeadersResponse,
+        BlockSyncRequestMessage, BlockSyncResponseMessage,
     },
 };
 
@@ -185,6 +187,45 @@ where
             }
             None => Err(ProtoError::MissingRequiredField(
                 "BlockSyncBodyResponse.one_of_message".to_owned(),
+            ))?,
+        };
+
+        Ok(blocksync_payload_response)
+    }
+}
+
+impl From<&BlockSyncCompressedBodyResponse> for ProtoBlockSyncCompressedBodyResponse {
+    fn from(value: &BlockSyncCompressedBodyResponse) -> Self {
+        Self {
+            body_response: Some(match value {
+                BlockSyncCompressedBodyResponse::Found(payload) => {
+                    proto_block_sync_compressed_body_response::BodyResponse::BodyFound(
+                        payload.into(),
+                    )
+                }
+                BlockSyncCompressedBodyResponse::NotAvailable(payload_id) => {
+                    proto_block_sync_compressed_body_response::BodyResponse::NotAvailable(
+                        payload_id.into(),
+                    )
+                }
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtoBlockSyncCompressedBodyResponse> for BlockSyncCompressedBodyResponse {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockSyncCompressedBodyResponse) -> Result<Self, Self::Error> {
+        let blocksync_payload_response = match value.body_response {
+            Some(proto_block_sync_compressed_body_response::BodyResponse::BodyFound(payload)) => {
+                BlockSyncCompressedBodyResponse::Found(payload.try_into()?)
+            }
+            Some(proto_block_sync_compressed_body_response::BodyResponse::NotAvailable(
+                payload_id,
+            )) => BlockSyncCompressedBodyResponse::NotAvailable(payload_id.try_into()?),
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockSyncCompressedBodyResponse.one_of_message".to_owned(),
             ))?,
         };
 

@@ -12,6 +12,7 @@ use monad_chain_config::{
     revision::{ChainParams, ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
+use monad_compress::{nop::NopCompression, CompressionAlgo};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockPolicy,
@@ -71,7 +72,7 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -83,9 +84,10 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -97,8 +99,8 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Clone
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA> Clone
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -110,6 +112,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT> + Clone,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -132,6 +135,7 @@ where
                 epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
                 block_sync_override_peers: self.state_config.block_sync_override_peers.clone(),
+                compression_algo: self.state_config.compression_algo.clone(),
 
                 consensus_config: self.state_config.consensus_config,
 
@@ -149,8 +153,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT> Debug
-    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA> Debug
+    for FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -162,6 +166,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT> + Debug,
     CRT: ChainRevision + Debug,
+    CA: CompressionAlgo,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -172,7 +177,7 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -184,16 +189,17 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    pub state_config: MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>>
-    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    From<FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>>
+    for TwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -205,8 +211,11 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>) -> Self {
+    fn from(
+        value: FullTwinsNodeConfig<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
+    ) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -247,6 +256,7 @@ where
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::CompressionAlgo,
         >,
     >,
 }
@@ -264,6 +274,7 @@ where
         StateBackendType = InMemoryState,
         ChainConfigType = MockChainConfig,
         ChainRevisionType = MockChainRevision,
+        CompressionAlgo = NopCompression,
     >,
     S::ValidatorSetTypeFactory: Default + Clone,
     S::LeaderElection: Default + Clone,
@@ -342,6 +353,7 @@ where
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::CompressionAlgo,
         > {
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
@@ -360,6 +372,7 @@ where
             epoch_start_delay: Round(50),
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
+            compression_algo: NopCompression {},
 
             consensus_config: ConsensusConfig {
                 execution_delay: SeqNum(TWINS_STATE_ROOT_DELAY),

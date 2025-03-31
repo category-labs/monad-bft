@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
 
 use itertools::Itertools;
-use monad_consensus::messages::consensus_message::ProtocolMessage;
+use monad_consensus::messages::consensus_message::{CompressedProtocolMessage, ProtocolMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -54,6 +54,13 @@ where
                     ProtocolMessage::Proposal(_) => self.drop_proposal,
                     ProtocolMessage::Vote(_) => self.drop_vote,
                     ProtocolMessage::Timeout(_) => self.drop_timeout,
+                }
+            }
+            VerifiedMonadMessage::CompressedConsensus(consensus_msg) => {
+                match consensus_msg.deref().deref().message {
+                    CompressedProtocolMessage::CompressedProposal(_) => self.drop_proposal,
+                    CompressedProtocolMessage::Vote(_) => self.drop_vote,
+                    CompressedProtocolMessage::Timeout(_) => self.drop_timeout,
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)
@@ -135,6 +142,16 @@ where
                     ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
+                }
+            }
+            VerifiedMonadMessage::CompressedConsensus(consensus_msg) => {
+                match &consensus_msg.deref().deref().message {
+                    CompressedProtocolMessage::CompressedProposal(p) => {
+                        TwinsCapture::Process(pid, p.block_header.round)
+                    }
+                    CompressedProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.round),
+                    // timeout naturally spread because liveness
+                    CompressedProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
                 }
             }
             VerifiedMonadMessage::BlockSyncRequest(_)

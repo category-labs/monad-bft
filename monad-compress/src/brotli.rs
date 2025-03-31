@@ -10,6 +10,7 @@ use crate::CompressionAlgo;
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 11;
 
+#[derive(Clone)]
 pub struct BrotliCompression {
     // quality range 0..=11
     quality: u32,

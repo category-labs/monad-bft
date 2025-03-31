@@ -465,6 +465,7 @@ where
             proposal_gas_limit,
             proposal_byte_limit,
             vote_pace: _,
+            compressed_msgs_start: _,
         } = self
             .config
             .chain_config
@@ -783,6 +784,7 @@ where
                     proposal_gas_limit,
                     proposal_byte_limit,
                     vote_pace: _,
+                    compressed_msgs_start: _,
                 } = self
                     .config
                     .chain_config
@@ -1689,6 +1691,7 @@ mod test {
         proposal_gas_limit: 300_000_000,
         proposal_byte_limit: 4_000_000,
         vote_pace: Duration::from_millis(1000),
+        compressed_msgs_start: Round::MAX,
     };
 
     type SignatureType = NopSignature;

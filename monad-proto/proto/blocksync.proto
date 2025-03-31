@@ -40,3 +40,10 @@ message ProtoBlockSyncBodyResponse {
     monad_proto.basic.ProtoBlockBodyId not_available = 2;
   }
 }
+
+message ProtoBlockSyncCompressedBodyResponse {
+  oneof body_response {
+    monad_proto.block.ProtoCompressedBlockBody body_found = 1;
+    monad_proto.basic.ProtoBlockBodyId not_available = 2;
+  }
+}

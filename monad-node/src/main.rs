@@ -10,6 +10,7 @@ use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_compress::nop::NopCompression;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -343,6 +344,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         beneficiary: node_state.node_config.beneficiary.into(),
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
+        compression_algo: NopCompression {},
         consensus_config: ConsensusConfig {
             execution_delay: SeqNum(node_state.node_config.consensus.execution_delay),
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),

@@ -2,6 +2,7 @@ use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
     metrics::Metrics,
@@ -191,7 +192,7 @@ where
     BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
 }
 
-pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF>
+pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -199,6 +200,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CA: CompressionAlgo,
 {
     pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
@@ -208,9 +210,10 @@ where
     pub current_epoch: Epoch,
     pub epoch_manager: &'a EpochManager,
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
+    pub compression_algo: &'a CA,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF>
+impl<ST, SCT, EPT, BPT, SBT, VTF, CA> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -218,6 +221,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CA: CompressionAlgo,
 {
     #[must_use]
     pub fn handle_self_request(
@@ -983,6 +987,7 @@ mod test {
     use bytes::Bytes;
     use itertools::Itertools;
     use monad_blocktree::blocktree::BlockTree;
+    use monad_compress::{nop::NopCompression, CompressionAlgo};
     use monad_consensus_types::{
         block::{
             BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock, MockExecutionBody,
@@ -1030,7 +1035,7 @@ mod test {
         messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
     };
 
-    struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT>
+    struct BlockSyncContext<ST, SCT, EPT, BPT, SBT, VTF, LT, CA>
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -1039,6 +1044,7 @@ mod test {
         SBT: StateBackend,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        CA: CompressionAlgo,
     {
         block_sync: BlockSync<ST, SCT, EPT>,
 
@@ -1049,6 +1055,7 @@ mod test {
         current_epoch: Epoch,
         epoch_manager: EpochManager,
         val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
+        compression_algo: CA,
 
         keys: Vec<ST::KeyPairType>,
         cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
@@ -1063,7 +1070,7 @@ mod test {
     type StateBackendType = InMemoryState;
     type LeaderElectionType = SimpleRoundRobin<PubKeyType>;
 
-    impl<BPT, SBT, VTF, LT>
+    impl<BPT, SBT, VTF, LT, CA>
         BlockSyncContext<
             SignatureType,
             SignatureCollectionType,
@@ -1072,12 +1079,14 @@ mod test {
             SBT,
             VTF,
             LT,
+            CA,
         >
     where
         BPT: BlockPolicy<SignatureType, SignatureCollectionType, ExecutionProtocolType, SBT>,
         SBT: StateBackend,
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
+        CA: CompressionAlgo,
     {
         fn wrapped_state(
             &mut self,
@@ -1088,6 +1097,7 @@ mod test {
             BPT,
             SBT,
             VTF,
+            CA,
         > {
             let block_cache = BlockCache::BlockTree(&self.blocktree);
             BlockSyncWrapper {
@@ -1098,6 +1108,7 @@ mod test {
                 current_epoch: self.current_epoch,
                 epoch_manager: &self.epoch_manager,
                 val_epoch_map: &self.val_epoch_map,
+                compression_algo: &self.compression_algo,
             }
         }
 
@@ -1276,6 +1287,7 @@ mod test {
         StateBackendType,
         ValidatorSetFactory<PubKeyType>,
         LeaderElectionType,
+        NopCompression,
     > {
         let (keys, cert_keys, valset, _valmap) = create_keys_w_validators::<
             SignatureType,
@@ -1316,6 +1328,7 @@ mod test {
             current_epoch: Epoch(1),
             epoch_manager,
             val_epoch_map,
+            compression_algo: NopCompression {},
 
             keys,
             cert_keys,

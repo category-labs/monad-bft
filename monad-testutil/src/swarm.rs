@@ -24,6 +24,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     block_validator: impl Fn() -> S::BlockValidator,
     block_policy: impl Fn() -> S::BlockPolicyType,
     state_backend: impl Fn() -> S::StateBackendType,
+    compression_algo: impl Fn() -> S::CompressionAlgo,
 
     execution_delay: SeqNum,
     delta: Duration,
@@ -43,6 +44,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::BlockValidator,
         S::ChainConfigType,
         S::ChainRevisionType,
+        S::CompressionAlgo,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -82,6 +84,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             epoch_start_delay,
             beneficiary: Default::default(),
             block_sync_override_peers: Default::default(),
+            compression_algo: compression_algo(),
 
             consensus_config: ConsensusConfig {
                 execution_delay,

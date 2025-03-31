@@ -7,21 +7,27 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_proto::{error::ProtoError, proto::message::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{
+        event::{proto_unverified_consensus_message_type, ProtoUnverifiedConsensusMessageType},
+        message::*,
+    },
+};
 use monad_types::ExecutionProtocol;
 
 use crate::{
     messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        consensus_message::{
+            CompressedConsensusMessage, CompressedProtocolMessage, ConsensusMessage,
+            ProtocolMessage, UnverifiedCompressedConsensusMessage, UnverifiedConsensusMessage,
+            UnverifiedConsensusMessageType, VerifiedCompressedConsensusMessage,
+            VerifiedConsensusMessage,
+        },
+        message::{CompressedProposalMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    validation::signing::{Unvalidated, Unverified, Validated, Verified},
+    validation::signing::{Unvalidated, Unverified},
 };
-
-pub(crate) type VerifiedConsensusMessage<ST, SCT, EPT> =
-    Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>;
-pub(crate) type UnverifiedConsensusMessage<ST, SCT, EPT> =
-    Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>;
 
 impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
     fn from(value: &VoteMessage<SCT>) -> Self {
@@ -91,6 +97,21 @@ where
     }
 }
 
+impl<ST, SCT, EPT> From<&CompressedProposalMessage<ST, SCT, EPT>> for ProtoCompressedProposalMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &CompressedProposalMessage<ST, SCT, EPT>) -> Self {
+        Self {
+            block_header: Some((&value.block_header).into()),
+            compressed_block_body: Some((&value.compressed_block_body).into()),
+            last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
+        }
+    }
+}
+
 impl<ST, SCT, EPT> TryFrom<ProtoProposalMessage> for ProposalMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -118,6 +139,35 @@ where
     }
 }
 
+impl<ST, SCT, EPT> TryFrom<ProtoCompressedProposalMessage>
+    for CompressedProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoCompressedProposalMessage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block_header: value
+                .block_header
+                .ok_or(Self::Error::MissingRequiredField(
+                    "CompressedProposalMessage<AggregateSignatures>.block_header".to_owned(),
+                ))?
+                .try_into()?,
+            compressed_block_body: value
+                .compressed_block_body
+                .ok_or(Self::Error::MissingRequiredField(
+                    "CompressedProposalMessage<AggregateSignatures>.compressed_block_body"
+                        .to_owned(),
+                ))?
+                .try_into()?,
+            last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
+        })
+    }
+}
+
 impl<ST, SCT, EPT> From<&VerifiedConsensusMessage<ST, SCT, EPT>> for ProtoUnverifiedConsensusMessage
 where
     ST: CertificateSignatureRecoverable,
@@ -134,6 +184,35 @@ where
             }
             ProtocolMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+        };
+        Self {
+            version: value.version,
+            oneof_message: Some(oneof_message),
+            author_signature: Some(certificate_signature_to_proto(value.author_signature())),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> From<&VerifiedCompressedConsensusMessage<ST, SCT, EPT>>
+    for ProtoUnverifiedCompressedConsensusMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &VerifiedCompressedConsensusMessage<ST, SCT, EPT>) -> Self {
+        let oneof_message = match &value.deref().deref().message {
+            CompressedProtocolMessage::CompressedProposal(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::CompressedProposal(
+                    msg.into(),
+                )
+            }
+            CompressedProtocolMessage::Vote(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::Vote(msg.into())
+            }
+            CompressedProtocolMessage::Timeout(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::Timeout(msg.into())
             }
         };
         Self {
@@ -174,5 +253,69 @@ where
         let version = value.version;
         let consensus_msg = ConsensusMessage { version, message };
         Ok(Unverified::new(Unvalidated::new(consensus_msg), signature))
+    }
+}
+
+impl<ST, SCT, EPT> TryFrom<ProtoUnverifiedCompressedConsensusMessage>
+    for UnverifiedCompressedConsensusMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoUnverifiedCompressedConsensusMessage) -> Result<Self, Self::Error> {
+        let message = match value.oneof_message {
+            Some(
+                proto_unverified_compressed_consensus_message::OneofMessage::CompressedProposal(
+                    msg,
+                ),
+            ) => CompressedProtocolMessage::CompressedProposal(msg.try_into()?),
+            Some(proto_unverified_compressed_consensus_message::OneofMessage::Timeout(msg)) => {
+                CompressedProtocolMessage::Timeout(msg.try_into()?)
+            }
+            Some(proto_unverified_compressed_consensus_message::OneofMessage::Vote(msg)) => {
+                CompressedProtocolMessage::Vote(msg.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "Unverified<CompressedConsensusMessage>.oneofmessage".to_owned(),
+            ))?,
+        };
+        let signature = proto_to_certificate_signature(value.author_signature.ok_or(
+            Self::Error::MissingRequiredField(
+                "Unverified<CompressedConsensusMessage>.signature".to_owned(),
+            ),
+        )?)?;
+        let version = value.version;
+        let compressed_consensus_msg = CompressedConsensusMessage { version, message };
+        Ok(Unverified::new(
+            Unvalidated::new(compressed_consensus_msg),
+            signature,
+        ))
+    }
+}
+
+impl<ST, SCT, EPT> TryFrom<ProtoUnverifiedConsensusMessageType>
+    for UnverifiedConsensusMessageType<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoUnverifiedConsensusMessageType) -> Result<Self, Self::Error> {
+        match value.oneof_message {
+            Some(proto_unverified_consensus_message_type::OneofMessage::UncompressedMessage(
+                msg,
+            )) => Ok(Self::Uncompressed(msg.try_into()?)),
+            Some(proto_unverified_consensus_message_type::OneofMessage::CompressedMessage(msg)) => {
+                Ok(Self::Compressed(msg.try_into()?))
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "UnverifiedConsensusMessageType.oneofmessage".to_owned(),
+            ))?,
+        }
     }
 }

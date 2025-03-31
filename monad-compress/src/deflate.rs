@@ -6,6 +6,7 @@ use crate::CompressionAlgo;
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 9;
 
+#[derive(Clone)]
 pub struct DeflateCompression {
     // compression level range 0..=9
     level: Compression,

@@ -15,10 +15,14 @@ use monad_crypto::{
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
-use monad_proto::proto::message::{
-    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
+use monad_proto::proto::{
+    event::{proto_unverified_consensus_message_type, ProtoUnverifiedConsensusMessageType},
+    message::{
+        proto_unverified_compressed_consensus_message, proto_unverified_consensus_message,
+        ProtoUnverifiedCompressedConsensusMessage, ProtoUnverifiedConsensusMessage,
+    },
 };
-use monad_types::{ExecutionProtocol, NodeId, Stake, GENESIS_ROUND};
+use monad_types::{ExecutionProtocol, NodeId, Round, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
     validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
@@ -26,10 +30,13 @@ use monad_validator::{
 };
 
 use crate::{
-    convert::message::UnverifiedConsensusMessage,
     messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        consensus_message::{
+            CompressedConsensusMessage, CompressedProtocolMessage, ConsensusMessage,
+            ProtocolMessage, UnverifiedCompressedConsensusMessage, UnverifiedConsensusMessage,
+            UnverifiedConsensusMessageType,
+        },
+        message::{CompressedProposalMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::message::well_formed,
 };
@@ -125,6 +132,10 @@ where
     pub fn is_proposal(&self) -> bool {
         matches!(&self.obj.obj.message, ProtocolMessage::Proposal(_))
     }
+
+    pub fn get_round(&self) -> Round {
+        self.obj.obj.get_round()
+    }
 }
 
 impl<S: CertificateSignatureRecoverable, M> Unverified<S, Unvalidated<M>> {
@@ -176,7 +187,69 @@ where
         // next epoch is starting. The epoch retrieved here may be incorrect.
         // TODO: Need to check that case. Should trigger statesync.
         let epoch = epoch_manager
-            .get_epoch(self.obj.obj.get_round())
+            .get_epoch(self.get_round())
+            .ok_or(Error::InvalidEpoch)?;
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch)
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
+
+        let author = verify_author(
+            validator_set.get_members(),
+            sender,
+            &msg,
+            &self.author_signature,
+        )?;
+
+        let result = Verified {
+            author: NodeId::new(author),
+            message: self,
+        };
+
+        Ok(result)
+    }
+}
+
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn is_proposal(&self) -> bool {
+        matches!(
+            &self.obj.obj.message,
+            CompressedProtocolMessage::CompressedProposal(_)
+        )
+    }
+
+    pub fn get_round(&self) -> Round {
+        self.obj.obj.get_round()
+    }
+}
+
+impl<ST, SCT, EPT> Unverified<ST, Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn verify<VTF, VT>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        sender: &SCT::NodeIdPubKey,
+    ) -> Result<Verified<ST, Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        let msg = HasherType::hash_object(&self.obj);
+
+        // If the node is lagging too far behind, it wouldn't know when the
+        // next epoch is starting. The epoch retrieved here may be incorrect.
+        // TODO: Need to check that case. Should trigger statesync.
+        let epoch = epoch_manager
+            .get_epoch(self.get_round())
             .ok_or(Error::InvalidEpoch)?;
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
@@ -241,6 +314,17 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Hashable for Validated<CompressedConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        self.as_ref().hash(state)
+    }
+}
+
 // TODO RlpEncodableWrapper?
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct Unvalidated<M> {
@@ -260,6 +344,17 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
 }
 
 impl<ST, SCT, EPT> Hashable for Unvalidated<ConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        self.obj.hash(state)
+    }
+}
+
+impl<ST, SCT, EPT> Hashable for Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -313,6 +408,55 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn validate<VTF, VT>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        version: u32,
+    ) -> Result<Validated<CompressedProtocolMessage<ST, SCT, EPT>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        if self.obj.version != version {
+            return Err(Error::InvalidVersion);
+        }
+
+        Ok(match self.obj.message {
+            CompressedProtocolMessage::CompressedProposal(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                Validated {
+                    message: Unvalidated::new(CompressedProtocolMessage::CompressedProposal(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+            CompressedProtocolMessage::Vote(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager)?;
+                Validated {
+                    message: Unvalidated::new(CompressedProtocolMessage::Vote(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+            CompressedProtocolMessage::Timeout(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                Validated {
+                    message: Unvalidated::new(CompressedProtocolMessage::Timeout(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+        })
+    }
+}
+
 impl<ST, SCT, EPT> Unvalidated<ProposalMessage<ST, SCT, EPT>>
 where
     ST: CertificateSignatureRecoverable,
@@ -327,6 +471,56 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> Result<Validated<ProposalMessage<ST, SCT, EPT>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        self.well_formed_proposal()?;
+        self.verify_epoch(epoch_manager)?;
+        verify_certificates(
+            epoch_manager,
+            val_epoch_map,
+            &self.obj.last_round_tc,
+            &self.obj.block_header.qc,
+        )?;
+
+        Ok(Validated { message: self })
+    }
+
+    /// A well-formed proposal
+    /// 1. carries a QC/TC from r-1, proving that the block is proposed on a
+    ///    valid round
+    fn well_formed_proposal(&self) -> Result<(), Error> {
+        well_formed(
+            self.obj.block_header.round,
+            self.obj.block_header.qc.get_round(),
+            &self.obj.last_round_tc,
+        )
+    }
+
+    /// Check local epoch manager record for block.round is equal to block.epoch
+    fn verify_epoch(&self, epoch_manager: &EpochManager) -> Result<(), Error> {
+        match epoch_manager.get_epoch(self.obj.block_header.round) {
+            Some(epoch) if self.obj.block_header.epoch == epoch => Ok(()),
+            _ => Err(Error::InvalidEpoch),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Unvalidated<CompressedProposalMessage<ST, SCT, EPT>>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    // A verified proposal is one which is well-formed, has valid signatures for
+    // the present TC or QC, and epoch number is consistent with local records
+    // for block.round
+    pub fn validate<VTF, VT>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+    ) -> Result<Validated<CompressedProposalMessage<ST, SCT, EPT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -608,6 +802,59 @@ where
             author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
             oneof_message: Some(oneof_message),
             version: value.obj.obj.version,
+        }
+    }
+}
+
+impl<ST, SCT, EPT> From<&UnverifiedCompressedConsensusMessage<ST, SCT, EPT>>
+    for ProtoUnverifiedCompressedConsensusMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &UnverifiedCompressedConsensusMessage<ST, SCT, EPT>) -> Self {
+        let oneof_message = match &value.obj.obj.message {
+            CompressedProtocolMessage::CompressedProposal(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::CompressedProposal(
+                    msg.into(),
+                )
+            }
+            CompressedProtocolMessage::Vote(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::Vote(msg.into())
+            }
+            CompressedProtocolMessage::Timeout(msg) => {
+                proto_unverified_compressed_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+        };
+        Self {
+            author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
+            oneof_message: Some(oneof_message),
+            version: value.obj.obj.version,
+        }
+    }
+}
+
+impl<ST, SCT, EPT> From<&UnverifiedConsensusMessageType<ST, SCT, EPT>>
+    for ProtoUnverifiedConsensusMessageType
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: &UnverifiedConsensusMessageType<ST, SCT, EPT>) -> Self {
+        let oneof_message = match &value {
+            UnverifiedConsensusMessageType::Uncompressed(msg) => {
+                proto_unverified_consensus_message_type::OneofMessage::UncompressedMessage(
+                    msg.into(),
+                )
+            }
+            UnverifiedConsensusMessageType::Compressed(msg) => {
+                proto_unverified_consensus_message_type::OneofMessage::CompressedMessage(msg.into())
+            }
+        };
+        Self {
+            oneof_message: Some(oneof_message),
         }
     }
 }

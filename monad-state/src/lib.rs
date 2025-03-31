@@ -13,9 +13,14 @@ use monad_chain_config::{
     revision::{ChainParams, ChainRevision},
     ChainConfig,
 };
+use monad_compress::CompressionAlgo;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
-    validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
+    messages::consensus_message::{
+        CompressedConsensusMessage, ConsensusMessage, UnverifiedCompressedConsensusMessage,
+        UnverifiedConsensusMessage, UnverifiedConsensusMessageType,
+        VerifiedCompressedConsensusMessage, VerifiedConsensusMessage,
+    },
+    validation::signing::{verify_qc, Validated, Verified},
 };
 use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
@@ -307,7 +312,7 @@ where
     }
 }
 
-pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -318,6 +323,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
@@ -343,6 +349,8 @@ where
     state_backend: SBT,
     beneficiary: [u8; 20],
 
+    compression_algo: CA,
+
     /// Metrics counters for events and errors
     metrics: Metrics,
 
@@ -350,8 +358,8 @@ where
     version: MonadVersion,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -362,6 +370,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub fn consensus(&self) -> Option<&ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
         match &self.consensus {
@@ -401,7 +410,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    Consensus(Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>),
+    Consensus(VerifiedConsensusMessage<ST, SCT, EPT>),
+    CompressedConsensus(VerifiedCompressedConsensusMessage<ST, SCT, EPT>),
     BlockSyncRequest(BlockSyncRequestMessage),
     BlockSyncResponse(BlockSyncResponseMessage<ST, SCT, EPT>),
     ForwardedTx(Vec<Bytes>),
@@ -420,6 +430,18 @@ where
     }
 }
 
+impl<ST, SCT, EPT> From<Verified<ST, Validated<CompressedConsensusMessage<ST, SCT, EPT>>>>
+    for VerifiedMonadMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn from(value: Verified<ST, Validated<CompressedConsensusMessage<ST, SCT, EPT>>>) -> Self {
+        Self::CompressedConsensus(value)
+    }
+}
+
 impl<ST, SCT, EPT> Encodable for VerifiedMonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -427,12 +449,19 @@ where
     EPT: ExecutionProtocol,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
-        let monad_version = MonadVersion::version();
+        let mut monad_version = MonadVersion::version();
 
         match self {
             Self::Consensus(m) => {
-                let wire: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>> =
-                    m.clone().into();
+                let wire: UnverifiedConsensusMessage<ST, SCT, EPT> = m.clone().into();
+                let enc: [&dyn Encodable; 3] = [&monad_version, &1u8, &wire];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::CompressedConsensus(m) => {
+                // remove this and encode round number with message
+                monad_version.serialize_version = 2;
+
+                let wire: UnverifiedCompressedConsensusMessage<ST, SCT, EPT> = m.clone().into();
                 let enc: [&dyn Encodable; 3] = [&monad_version, &1u8, &wire];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
@@ -457,12 +486,18 @@ where
     }
 
     fn length(&self) -> usize {
-        let monad_version = MonadVersion::version();
+        let mut monad_version = MonadVersion::version();
 
         match self {
             Self::Consensus(m) => {
-                let wire: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>> =
-                    m.clone().into();
+                let wire: UnverifiedConsensusMessage<ST, SCT, EPT> = m.clone().into();
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &1u8, &wire];
+                Encodable::length(&enc)
+            }
+            Self::CompressedConsensus(m) => {
+                monad_version.serialize_version = 2;
+
+                let wire: UnverifiedCompressedConsensusMessage<ST, SCT, EPT> = m.clone().into();
                 let enc: Vec<&dyn Encodable> = vec![&monad_version, &1u8, &wire];
                 Encodable::length(&enc)
             }
@@ -495,7 +530,8 @@ where
     EPT: ExecutionProtocol,
 {
     /// Consensus protocol message
-    Consensus(Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>),
+    Consensus(UnverifiedConsensusMessage<ST, SCT, EPT>),
+    CompressedConsensus(UnverifiedCompressedConsensusMessage<ST, SCT, EPT>),
 
     /// Request a missing block given BlockId
     BlockSyncRequest(BlockSyncRequestMessage),
@@ -520,10 +556,20 @@ where
         let monad_version = MonadVersion::decode(&mut payload)?;
 
         match u8::decode(&mut payload)? {
-            1 => Ok(Self::Consensus(Unverified::<
-                ST,
-                Unvalidated<ConsensusMessage<ST, SCT, EPT>>,
-            >::decode(&mut payload)?)),
+            1 => {
+                if monad_version.serialize_version == 1 {
+                    let uncompressed_msg = UnverifiedConsensusMessage::decode(&mut payload)?;
+                    Ok(Self::Consensus(uncompressed_msg))
+                } else if monad_version.serialize_version == 2 {
+                    let compressed_msg =
+                        UnverifiedCompressedConsensusMessage::decode(&mut payload)?;
+                    Ok(Self::CompressedConsensus(compressed_msg))
+                } else {
+                    Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown ConsensusMessage",
+                    ))
+                }
+            }
             2 => Ok(Self::BlockSyncRequest(BlockSyncRequestMessage::decode(
                 &mut payload,
             )?)),
@@ -566,24 +612,6 @@ where
     buf.into()
 }
 
-impl<ST, SCT, EPT> monad_types::Serializable<MonadMessage<ST, SCT, EPT>>
-    for VerifiedMonadMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn serialize(&self) -> MonadMessage<ST, SCT, EPT> {
-        match self.clone() {
-            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
-            VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
-            VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
-            VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
-            VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
-        }
-    }
-}
-
 impl<ST, SCT, EPT> monad_types::Deserializable<Bytes> for MonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -620,6 +648,9 @@ where
     fn from(value: VerifiedMonadMessage<ST, SCT, EPT>) -> Self {
         match value {
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
+            VerifiedMonadMessage::CompressedConsensus(msg) => {
+                MonadMessage::CompressedConsensus(msg.into())
+            }
             VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
@@ -647,9 +678,14 @@ where
         match self {
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
                 sender: from,
-                unverified_message: msg,
+                unverified_message: UnverifiedConsensusMessageType::Uncompressed(msg),
             }),
-
+            MonadMessage::CompressedConsensus(msg) => {
+                MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+                    sender: from,
+                    unverified_message: UnverifiedConsensusMessageType::Compressed(msg),
+                })
+            }
             MonadMessage::BlockSyncRequest(request) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::Request {
                     sender: from,
@@ -675,7 +711,7 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -686,6 +722,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub validator_set_factory: VTF,
     pub leader_election: LT,
@@ -699,14 +736,15 @@ where
     pub epoch_start_delay: Round,
     pub beneficiary: [u8; 20],
     pub block_sync_override_peers: Vec<NodeId<SCT::NodeIdPubKey>>,
+    pub compression_algo: CA,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
     pub _phantom: PhantomData<EPT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    MonadStateBuilder<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -718,11 +756,12 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
@@ -780,6 +819,8 @@ where
             state_backend: self.state_backend,
             beneficiary: self.beneficiary,
 
+            compression_algo: self.compression_algo,
+
             metrics: Metrics::default(),
             version: MonadVersion::version(),
         };
@@ -805,8 +846,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -818,6 +859,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub fn update(
         &mut self,
@@ -1215,6 +1257,7 @@ where
                     proposal_gas_limit,
                     proposal_byte_limit,
                     vote_pace: _,
+                    compressed_msgs_start: _,
                 } = self
                     .consensus_config
                     .chain_config

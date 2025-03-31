@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }
+monad-compress = { path = "../monad-compress" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }

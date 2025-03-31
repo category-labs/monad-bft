@@ -1,5 +1,7 @@
 use std::{fmt::Debug, time::Duration};
 
+use monad_types::Round;
+
 pub const CHAIN_PARAMS_LATEST: ChainParams = CHAIN_PARAMS_V_0_8_0;
 
 pub trait ChainRevision: Copy + Clone {
@@ -11,6 +13,7 @@ pub trait ChainRevision: Copy + Clone {
 pub enum MonadChainRevision {
     V_0_7_0,
     V_0_8_0,
+    V_0_10_0,
 }
 
 impl ChainRevision for MonadChainRevision {
@@ -18,6 +21,7 @@ impl ChainRevision for MonadChainRevision {
         match &self {
             MonadChainRevision::V_0_7_0 => &CHAIN_PARAMS_V_0_7_0,
             MonadChainRevision::V_0_8_0 => &CHAIN_PARAMS_V_0_8_0,
+            MonadChainRevision::V_0_10_0 => &CHAIN_PARAMS_V_0_10_0,
         }
     }
 }
@@ -40,6 +44,7 @@ pub struct ChainParams {
     // Max proposal size in bytes (average transactions ~400 bytes)
     pub proposal_byte_limit: u64,
     pub vote_pace: Duration,
+    pub compressed_msgs_start: Round,
 }
 
 const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
@@ -47,6 +52,7 @@ const CHAIN_PARAMS_V_0_7_0: ChainParams = ChainParams {
     proposal_gas_limit: 300_000_000,
     proposal_byte_limit: 4_000_000,
     vote_pace: Duration::from_millis(1000),
+    compressed_msgs_start: Round::MAX,
 };
 
 const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
@@ -54,6 +60,16 @@ const CHAIN_PARAMS_V_0_8_0: ChainParams = ChainParams {
     proposal_gas_limit: 150_000_000,
     proposal_byte_limit: 2_000_000,
     vote_pace: Duration::from_millis(500),
+    compressed_msgs_start: Round::MAX,
+};
+
+const CHAIN_PARAMS_V_0_10_0: ChainParams = ChainParams {
+    tx_limit: 5_000,
+    proposal_gas_limit: 150_000_000,
+    proposal_byte_limit: 2_000_000,
+    vote_pace: Duration::from_millis(500),
+    // Update to actual round
+    compressed_msgs_start: Round::MAX,
 };
 
 #[cfg(test)]

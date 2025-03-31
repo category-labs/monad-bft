@@ -11,7 +11,10 @@ use monad_blocksync::{
     messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
 };
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
+    messages::consensus_message::{
+        CompressedConsensusMessage, ConsensusMessage, UnverifiedCompressedConsensusMessage,
+        UnverifiedConsensusMessageType,
+    },
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
@@ -389,7 +392,7 @@ where
 {
     Message {
         sender: NodeId<SCT::NodeIdPubKey>,
-        unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
+        unverified_message: UnverifiedConsensusMessageType<ST, SCT, EPT>,
     },
     Timeout,
     /// a block that was previously requested

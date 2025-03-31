@@ -6,6 +6,7 @@ use crate::CompressionAlgo;
 
 pub const MAX_COMPRESSION_LEVEL: u32 = 16;
 
+#[derive(Clone)]
 pub struct Lz4Compression {
     // compression level range 0..=16
     builder: EncoderBuilder,

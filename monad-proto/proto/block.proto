@@ -10,6 +10,10 @@ message ProtoBlockBody {
   bytes execution_body = 1;
 }
 
+message ProtoCompressedBlockBody {
+  bytes compressed_execution_body = 1;
+}
+
 message ProtoBlockHeader {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoEpoch epoch = 2;

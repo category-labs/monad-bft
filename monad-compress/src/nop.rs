@@ -1,5 +1,6 @@
 use crate::CompressionAlgo;
 
+#[derive(Clone)]
 pub struct NopCompression;
 
 #[derive(Debug)]

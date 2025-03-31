@@ -19,6 +19,9 @@ where
                 VerifiedMonadMessage::Consensus(msg) => {
                     proto_monad_message::OneofMessage::Consensus(msg.into())
                 }
+                VerifiedMonadMessage::CompressedConsensus(msg) => {
+                    proto_monad_message::OneofMessage::CompressedConsensus(msg.into())
+                }
                 VerifiedMonadMessage::BlockSyncRequest(msg) => {
                     proto_monad_message::OneofMessage::BlockSyncRequest(msg.into())
                 }
@@ -50,6 +53,9 @@ where
         let msg = match value.oneof_message {
             Some(proto_monad_message::OneofMessage::Consensus(msg)) => {
                 MonadMessage::Consensus(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::CompressedConsensus(msg)) => {
+                MonadMessage::CompressedConsensus(msg.try_into()?)
             }
             Some(proto_monad_message::OneofMessage::BlockSyncRequest(msg)) => {
                 MonadMessage::BlockSyncRequest(msg.try_into()?)

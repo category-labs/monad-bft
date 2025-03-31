@@ -3,6 +3,7 @@ use monad_chain_config::{
     revision::{ChainRevision, MockChainRevision},
     ChainConfig, MockChainConfig,
 };
+use monad_compress::{nop::NopCompression, CompressionAlgo};
 use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
@@ -45,6 +46,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::ChainConfigType,
     <S as SwarmRelation>::ChainRevisionType,
+    <S as SwarmRelation>::CompressionAlgo,
 >;
 pub trait SwarmRelation
 where
@@ -68,6 +70,7 @@ where
     type StateBackendType: StateBackend + Send + Sync + Unpin;
     type ChainConfigType: ChainConfig<Self::ChainRevisionType> + Send + Unpin;
     type ChainRevisionType: ChainRevision + Send + Unpin;
+    type CompressionAlgo: CompressionAlgo + Send + Unpin;
 
     type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
 
@@ -163,6 +166,7 @@ impl SwarmRelation for DebugSwarmRelation {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type CompressionAlgo = NopCompression;
 
     type TransportMessage = Bytes;
 
@@ -295,6 +299,7 @@ impl SwarmRelation for NoSerSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type CompressionAlgo = NopCompression;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,
@@ -356,6 +361,7 @@ impl SwarmRelation for BytesSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type CompressionAlgo = NopCompression;
 
     type TransportMessage = Bytes;
     type BlockValidator = MockValidator;
@@ -412,6 +418,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type StateBackendType = InMemoryState;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
+    type CompressionAlgo = NopCompression;
 
     type TransportMessage = VerifiedMonadMessage<
         Self::SignatureType,

@@ -55,6 +55,7 @@ where
             .filter_map(|cmd| match &cmd {
                 RouterCommand::Publish { target: _, message } => match message {
                     VerifiedMonadMessage::Consensus(_) => None,
+                    VerifiedMonadMessage::CompressedConsensus(_) => None,
                     VerifiedMonadMessage::BlockSyncRequest(_) => Some(cmd),
                     VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
                     VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),

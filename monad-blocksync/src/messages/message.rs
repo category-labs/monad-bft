@@ -1,7 +1,8 @@
 use alloy_rlp::{bytes, encode_list, Decodable, Encodable, Header};
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::{
     block::{BlockRange, ConsensusBlockHeader},
-    payload::{ConsensusBlockBody, ConsensusBlockBodyId},
+    payload::{CompressedConsensusBlockBody, ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -13,6 +14,7 @@ const BLOCK_SYNC_REQUEST_MESSAGE_NAME: &str = "BlockSyncRequestMessage";
 const BLOCK_SYNC_RESPONSE_MESSAGE_NAME: &str = "BlockSyncResponseMessage";
 const BLOCK_SYNC_HEADERS_RESPONSE_NAME: &str = "BlockSyncHeadersResponse";
 const BLOCK_SYNC_PAYLOAD_RESPONSE_NAME: &str = "BlockSyncBodyResponse";
+const BLOCK_SYNC_COMPRESSED_PAYLOAD_RESPONSE_NAME: &str = "BlockSyncCompressedBodyResponse";
 
 /// Request block sync message sent to a peer
 ///
@@ -151,6 +153,20 @@ where
             BlockSyncBodyResponse::NotAvailable(payload_id) => *payload_id,
         }
     }
+
+    pub fn compress<CA: CompressionAlgo>(
+        self,
+        compression_algo: &CA,
+    ) -> BlockSyncCompressedBodyResponse {
+        match self {
+            BlockSyncBodyResponse::Found(block_body) => {
+                BlockSyncCompressedBodyResponse::Found(block_body.compress(compression_algo))
+            }
+            BlockSyncBodyResponse::NotAvailable(block_body_id) => {
+                BlockSyncCompressedBodyResponse::NotAvailable(block_body_id)
+            }
+        }
+    }
 }
 
 impl<EPT> Encodable for BlockSyncBodyResponse<EPT>
@@ -186,6 +202,67 @@ where
         }
         match u8::decode(&mut payload)? {
             1 => Ok(Self::Found(ConsensusBlockBody::decode(&mut payload)?)),
+            2 => Ok(Self::NotAvailable(ConsensusBlockBodyId::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncBodyResponse",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockSyncCompressedBodyResponse {
+    Found(CompressedConsensusBlockBody),
+    NotAvailable(ConsensusBlockBodyId),
+}
+
+impl BlockSyncCompressedBodyResponse {
+    pub fn decompress<CA: CompressionAlgo, EPT: ExecutionProtocol>(
+        self,
+        compression_algo: &CA,
+    ) -> BlockSyncBodyResponse<EPT> {
+        match self {
+            BlockSyncCompressedBodyResponse::Found(compressed_block_body) => {
+                BlockSyncBodyResponse::Found(compressed_block_body.decompress(compression_algo))
+            }
+            BlockSyncCompressedBodyResponse::NotAvailable(payload_id) => {
+                BlockSyncBodyResponse::NotAvailable(payload_id)
+            }
+        }
+    }
+}
+
+impl Encodable for BlockSyncCompressedBodyResponse {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let name = BLOCK_SYNC_COMPRESSED_PAYLOAD_RESPONSE_NAME;
+        match self {
+            Self::Found(payload) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &payload];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::NotAvailable(payload_id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &payload_id];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for BlockSyncCompressedBodyResponse {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != BLOCK_SYNC_COMPRESSED_PAYLOAD_RESPONSE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type BlockSyncBodyResponse",
+            ));
+        }
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Found(CompressedConsensusBlockBody::decode(
+                &mut payload,
+            )?)),
             2 => Ok(Self::NotAvailable(ConsensusBlockBodyId::decode(
                 &mut payload,
             )?)),

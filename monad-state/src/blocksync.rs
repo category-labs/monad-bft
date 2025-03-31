@@ -4,6 +4,7 @@ use monad_blocksync::blocksync::{
     BlockCache, BlockSync, BlockSyncCommand, BlockSyncSelfRequester, BlockSyncWrapper,
 };
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::{
     block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
     signature_collection::SignatureCollection,
@@ -24,7 +25,7 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -33,6 +34,7 @@ where
     SBT: StateBackend,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    CA: CompressionAlgo,
 {
     block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
@@ -43,13 +45,15 @@ where
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
 
+    compression_algo: &'a CA,
+
     metrics: &'a mut Metrics,
 
     _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -60,9 +64,10 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,
@@ -71,6 +76,7 @@ where
             val_epoch_map: &monad_state.val_epoch_map,
             delta: &monad_state.consensus_config.delta,
             nodeid: &monad_state.nodeid,
+            compression_algo: &monad_state.compression_algo,
             metrics: &mut monad_state.metrics,
             _phantom: PhantomData,
         }
@@ -95,6 +101,7 @@ where
             current_epoch: self.consensus.current_epoch(),
             epoch_manager: self.epoch_manager,
             val_epoch_map: self.val_epoch_map,
+            compression_algo: self.compression_algo,
         };
 
         let cmds = match event {

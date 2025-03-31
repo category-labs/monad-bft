@@ -1,9 +1,10 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::{
     block::ConsensusBlockHeader,
-    payload::ConsensusBlockBody,
+    payload::{CompressedConsensusBlockBody, ConsensusBlockBody},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
@@ -105,6 +106,87 @@ where
 {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(alloy_rlp::encode(self));
+    }
+}
+
+impl<ST, SCT, EPT> ProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn compress<CA: CompressionAlgo>(
+        self,
+        compression_algo: &CA,
+    ) -> CompressedProposalMessage<ST, SCT, EPT> {
+        CompressedProposalMessage {
+            block_header: self.block_header,
+            compressed_block_body: self.block_body.compress(compression_algo),
+            last_round_tc: self.last_round_tc,
+        }
+    }
+}
+
+/// Consensus protocol proposal message
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
+pub struct CompressedProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub block_header: ConsensusBlockHeader<ST, SCT, EPT>,
+    pub compressed_block_body: CompressedConsensusBlockBody,
+    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
+}
+
+impl<ST, SCT, EPT> Debug for CompressedProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressedProposalMessage")
+            .field("block_header", &self.block_header)
+            .field(
+                "compressed_block_body len",
+                &self.compressed_block_body.len(),
+            )
+            .field("last_round_tc", &self.last_round_tc)
+            .finish()
+    }
+}
+
+/// The last_round_tc can be independently verified. The message hash is over
+/// the block only
+impl<ST, SCT, EPT> Hashable for CompressedProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+impl<ST, SCT, EPT> CompressedProposalMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn decompress<CA: CompressionAlgo>(
+        self,
+        compression_algo: &CA,
+    ) -> ProposalMessage<ST, SCT, EPT> {
+        ProposalMessage {
+            block_header: self.block_header,
+            block_body: self.compressed_block_body.decompress(compression_algo),
+            last_round_tc: self.last_round_tc,
+        }
     }
 }
 

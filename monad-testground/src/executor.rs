@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, time::Duration};
 
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
+use monad_compress::nop::NopCompression;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
@@ -149,6 +150,7 @@ type MonadStateType<ST, SCT> = MonadState<
     MockValidator,
     MockChainConfig,
     MockChainRevision,
+    NopCompression,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -202,6 +204,7 @@ where
         forkpoint: Forkpoint::genesis(config.validators),
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
+        compression_algo: NopCompression {},
 
         _phantom: PhantomData,
     }

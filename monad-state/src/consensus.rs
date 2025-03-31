@@ -1,9 +1,13 @@
 use itertools::Itertools;
 use monad_blocksync::blocksync::BlockSyncSelfRequester;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_compress::CompressionAlgo;
 use monad_consensus::{
     messages::{
-        consensus_message::{ConsensusMessage, ProtocolMessage},
+        consensus_message::{
+            CompressedConsensusMessage, CompressedProtocolMessage, ConsensusMessage,
+            ProtocolMessage, UnverifiedConsensusMessageType,
+        },
         message::ProposalMessage,
     },
     validation::signing::{Unvalidated, Unverified},
@@ -45,7 +49,7 @@ use crate::{
 // TODO configurable
 const NUM_LEADERS_FORWARD: usize = 3;
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -57,6 +61,7 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
@@ -75,12 +80,14 @@ where
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
     consensus_config: &'a ConsensusConfig<CCT, CRT>,
 
+    compression_algo: &'a CA,
+
     keypair: &'a ST::KeyPairType,
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
+    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -92,9 +99,10 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    CA: CompressionAlgo,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CA>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -114,6 +122,8 @@ where
             nodeid: &monad_state.nodeid,
             consensus_config: &monad_state.consensus_config,
 
+            compression_algo: &monad_state.compression_algo,
+
             keypair: &monad_state.keypair,
             cert_keypair: &monad_state.cert_keypair,
         }
@@ -131,42 +141,58 @@ where
                 ..
             } => {
                 let mut cmds = Vec::new();
-                if let ConsensusEvent::Message {
-                    sender,
-                    unverified_message,
-                } = event.clone()
-                {
-                    if let Ok((author, ProtocolMessage::Proposal(proposal))) =
-                        Self::verify_and_validate_consensus_message(
-                            self.epoch_manager,
-                            self.val_epoch_map,
-                            self.version,
-                            self.metrics,
-                            sender,
-                            unverified_message,
-                        )
-                    {
-                        if let Some((new_root, new_high_qc)) =
-                            block_buffer.handle_proposal(author, proposal)
-                        {
-                            if !*updating_target {
-                                // used for deduplication, because RequestStateSync isn't synchronous
-                                *updating_target = true;
-                                info!(
-                                    ?new_root,
-                                    consensus_tip =? new_root.seq_num,
-                                    "setting new statesync target",
-                                );
-                                cmds.push(WrappedConsensusCommand {
-                                    state_root_delay: self.consensus_config.execution_delay,
-                                    command: ConsensusCommand::RequestStateSync {
-                                        root: new_root,
-                                        high_qc: new_high_qc,
-                                    },
-                                });
+                match event.clone() {
+                    ConsensusEvent::Message {
+                        sender,
+                        unverified_message,
+                    } => {
+                        if let Ok((author, ProtocolMessage::Proposal(proposal))) = match unverified_message {
+                            UnverifiedConsensusMessageType::Uncompressed(uncompressed_msg) => {
+                                Self::verify_and_validate_consensus_message(
+                                    self.epoch_manager,
+                                    self.val_epoch_map,
+                                    self.version,
+                                    self.metrics,
+                                    sender,
+                                    uncompressed_msg,
+                                )
+                            }
+                            UnverifiedConsensusMessageType::Compressed(compressed_msg) => {
+                                Self::verify_and_validate_compressed_consensus_message(
+                                    self.epoch_manager,
+                                    self.val_epoch_map,
+                                    self.version,
+                                    self.metrics,
+                                    sender,
+                                    compressed_msg,
+                                ).map(|(author, compressed_protocol_message)| {
+                                    (author, compressed_protocol_message.decompress(self.compression_algo))
+                                })
+                            }
+                        } {
+                            if let Some((new_root, new_high_qc)) =
+                                block_buffer.handle_proposal(author, proposal)
+                            {
+                                if !*updating_target {
+                                    // used for deduplication, because RequestStateSync isn't synchronous
+                                    *updating_target = true;
+                                    info!(
+                                        ?new_root,
+                                        consensus_tip =? new_root.seq_num,
+                                        "setting new statesync target",
+                                    );
+                                    cmds.push(WrappedConsensusCommand {
+                                        state_root_delay: self.consensus_config.execution_delay,
+                                        command: ConsensusCommand::RequestStateSync {
+                                            root: new_root,
+                                            high_qc: new_high_qc,
+                                        },
+                                    });
+                                }
                             }
                         }
                     }
+                    _ => {}
                 }
                 tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
                 return cmds;
@@ -200,14 +226,32 @@ where
                 sender,
                 unverified_message,
             } => {
-                match Self::verify_and_validate_consensus_message(
-                    consensus.epoch_manager,
-                    consensus.val_epoch_map,
-                    self.version,
-                    consensus.metrics,
-                    sender,
-                    unverified_message,
-                ) {
+                let maybe_protocol_message = match unverified_message {
+                    UnverifiedConsensusMessageType::Uncompressed(uncompressed_msg) => {
+                        Self::verify_and_validate_consensus_message(
+                            consensus.epoch_manager,
+                            consensus.val_epoch_map,
+                            self.version,
+                            consensus.metrics,
+                            sender,
+                            uncompressed_msg,
+                        )
+                    }
+                    UnverifiedConsensusMessageType::Compressed(compressed_msg) => {
+                        Self::verify_and_validate_compressed_consensus_message(
+                            consensus.epoch_manager,
+                            consensus.val_epoch_map,
+                            self.version,
+                            consensus.metrics,
+                            sender,
+                            compressed_msg,
+                        ).map(|(author, compressed_protocol_message)| {
+                            (author, compressed_protocol_message.decompress(self.compression_algo))
+                        })
+                    }
+                };
+
+                match maybe_protocol_message {
                     Ok((author, ProtocolMessage::Proposal(msg))) => {
                         consensus.handle_proposal_message(author, msg)
                     }
@@ -219,7 +263,7 @@ where
                     }
                     Err(evidence) => evidence,
                 }
-            }
+            },
             ConsensusEvent::Timeout => consensus.handle_timeout_expiry(),
             ConsensusEvent::BlockSync {
                 block_range,
@@ -311,21 +355,31 @@ where
                     round_signature,
                 );
 
-                let p = ProposalMessage {
+                let proposal = ProposalMessage {
                     block_header,
                     block_body,
                     last_round_tc,
                 };
 
-                let msg = ConsensusMessage {
-                    version: consensus.version.to_owned(),
-                    message: ProtocolMessage::Proposal(p),
-                }
-                .sign(self.keypair);
+                let round = proposal.block_header.round;
+                let verified_message = {
+                    if round >= self.consensus_config.chain_config.get_chain_revision(round).chain_params().compressed_msgs_start {
+                        let compressed_proposal = proposal.compress(self.compression_algo);
+                        VerifiedMonadMessage::CompressedConsensus(CompressedConsensusMessage {
+                            version: consensus.version.to_owned(),
+                            message: CompressedProtocolMessage::CompressedProposal(compressed_proposal),
+                        }.sign(self.keypair))
+                    } else {
+                        VerifiedMonadMessage::Consensus(ConsensusMessage {
+                            version: consensus.version.to_owned(),
+                            message: ProtocolMessage::Proposal(proposal),
+                        }.sign(self.keypair))
+                    }
+                };
 
                 vec![Command::RouterCommand(RouterCommand::Publish {
                     target: RouterTarget::Raptorcast(epoch),
-                    message: VerifiedMonadMessage::Consensus(msg),
+                    message: verified_message,
                 })]
             }
             MempoolEvent::ForwardedTxs { sender, txs } => {
@@ -470,6 +524,43 @@ where
         (
             NodeId<CertificateSignaturePubKey<ST>>,
             ProtocolMessage<ST, SCT, EPT>,
+        ),
+        Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
+    > {
+        let verified_message = message
+            .verify(epoch_manager, val_epoch_map, &sender.pubkey())
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        let (author, _, verified_message) = verified_message.destructure();
+
+        // Validated message according to consensus protocol spec
+        let validated_mesage = verified_message
+            .validate(epoch_manager, val_epoch_map, version.protocol_version)
+            .map_err(|e| {
+                handle_validation_error(e, metrics);
+                // TODO-2: collect evidence
+                Vec::new()
+            })?;
+
+        Ok((author, validated_mesage.into_inner()))
+    }
+
+    fn verify_and_validate_compressed_consensus_message(
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        version: &MonadVersion,
+        metrics: &mut Metrics,
+
+        sender: NodeId<CertificateSignaturePubKey<ST>>,
+        message: Unverified<ST, Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>>,
+    ) -> Result<
+        (
+            NodeId<CertificateSignaturePubKey<ST>>,
+            CompressedProtocolMessage<ST, SCT, EPT>,
         ),
         Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>>,
     > {

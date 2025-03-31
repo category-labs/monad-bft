@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 monad-chain-config = { path = "../monad-chain-config" }
+monad-compress = { path = "../monad-compress" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor-glue = { path = "../monad-executor-glue" }

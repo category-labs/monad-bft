@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
@@ -8,12 +9,14 @@ use monad_crypto::{
 };
 use monad_types::{ExecutionProtocol, Round};
 
+use super::message::CompressedProposalMessage;
 use crate::{
     messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
-    validation::signing::{Validated, Verified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 
 const PROTOCOL_MESSAGE_NAME: &str = "ProtocolMessage";
+const COMPRESSED_PROTOCOL_MESSAGE_NAME: &str = "CompressedProtocolMessage";
 
 /// Consensus protocol messages
 #[derive(Clone, PartialEq, Eq)]
@@ -120,6 +123,135 @@ where
     }
 }
 
+/// Consensus protocol messages
+#[derive(Clone, PartialEq, Eq)]
+pub enum CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    /// Consensus protocol proposal message
+    CompressedProposal(CompressedProposalMessage<ST, SCT, EPT>),
+
+    /// Consensus protocol vote message
+    Vote(VoteMessage<SCT>),
+
+    /// Consensus protocol timeout message
+    Timeout(TimeoutMessage<SCT>),
+}
+
+impl<ST, SCT, EPT> CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn decompress<CA: CompressionAlgo>(
+        self,
+        compression_algo: &CA,
+    ) -> ProtocolMessage<ST, SCT, EPT> {
+        match self {
+            CompressedProtocolMessage::CompressedProposal(compressed_proposal_message) => {
+                ProtocolMessage::Proposal(compressed_proposal_message.decompress(compression_algo))
+            },
+            CompressedProtocolMessage::Vote(vote) => ProtocolMessage::Vote(vote),
+            CompressedProtocolMessage::Timeout(timeout) => ProtocolMessage::Timeout(timeout),
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Debug for CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompressedProtocolMessage::CompressedProposal(p) => {
+                f.debug_tuple("").field(&p).finish()
+            }
+            CompressedProtocolMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
+            CompressedProtocolMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+        }
+    }
+}
+
+/// Integrity hash
+impl<ST, SCT, EPT> Hashable for CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+// FIXME-2:
+// it can be confusing as we are hashing only part of the message
+// in the signature refactoring, we might want a clean split between:
+//      integrity sig: sign over the entire serialized struct
+//      protocol sig: signatures outlined in the protocol
+impl<ST, SCT, EPT> Encodable for CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let name = COMPRESSED_PROTOCOL_MESSAGE_NAME;
+        match self {
+            CompressedProtocolMessage::CompressedProposal(m) => {
+                let enc: [&dyn Encodable; 3] = [&name, &1u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            CompressedProtocolMessage::Vote(m) => {
+                let enc: [&dyn Encodable; 3] = [&name, &2u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            CompressedProtocolMessage::Timeout(m) => {
+                let enc: [&dyn Encodable; 3] = [&name, &3u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for CompressedProtocolMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let name = String::decode(&mut payload)?;
+        if name != COMPRESSED_PROTOCOL_MESSAGE_NAME {
+            return Err(alloy_rlp::Error::Custom(
+                "expected to decode type CompressedProtocolMessage",
+            ));
+        }
+
+        match u8::decode(&mut payload)? {
+            1 => Ok(CompressedProtocolMessage::CompressedProposal(
+                CompressedProposalMessage::decode(&mut payload)?,
+            )),
+            2 => Ok(CompressedProtocolMessage::Vote(VoteMessage::decode(
+                &mut payload,
+            )?)),
+            3 => Ok(CompressedProtocolMessage::Timeout(TimeoutMessage::decode(
+                &mut payload,
+            )?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown CompressedProtocolMessage",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct ConsensusMessage<ST, SCT, EPT>
 where
@@ -164,6 +296,96 @@ where
             ProtocolMessage::Proposal(p) => p.block_header.round,
             ProtocolMessage::Vote(v) => v.vote.round,
             ProtocolMessage::Timeout(t) => t.timeout.tminfo.round,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct CompressedConsensusMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub version: u32,
+    pub message: CompressedProtocolMessage<ST, SCT, EPT>,
+}
+
+impl<ST, SCT, EPT> Hashable for CompressedConsensusMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(alloy_rlp::encode(self));
+    }
+}
+
+impl<ST, SCT, EPT> CompressedConsensusMessage<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn sign(
+        self,
+        keypair: &ST::KeyPairType,
+    ) -> Verified<ST, Validated<CompressedConsensusMessage<ST, SCT, EPT>>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        Verified::new(Validated::new(self), keypair)
+    }
+
+    pub fn get_round(&self) -> Round {
+        match &self.message {
+            CompressedProtocolMessage::CompressedProposal(p) => p.block_header.round,
+            CompressedProtocolMessage::Vote(v) => v.vote.round,
+            CompressedProtocolMessage::Timeout(t) => t.timeout.tminfo.round,
+        }
+    }
+}
+
+pub type VerifiedConsensusMessage<ST, SCT, EPT> =
+    Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>;
+pub type UnverifiedConsensusMessage<ST, SCT, EPT> =
+    Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>;
+
+pub type VerifiedCompressedConsensusMessage<ST, SCT, EPT> =
+    Verified<ST, Validated<CompressedConsensusMessage<ST, SCT, EPT>>>;
+pub type UnverifiedCompressedConsensusMessage<ST, SCT, EPT> =
+    Unverified<ST, Unvalidated<CompressedConsensusMessage<ST, SCT, EPT>>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnverifiedConsensusMessageType<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    Uncompressed(UnverifiedConsensusMessage<ST, SCT, EPT>),
+    Compressed(UnverifiedCompressedConsensusMessage<ST, SCT, EPT>),
+}
+
+impl<ST, SCT, EPT> UnverifiedConsensusMessageType<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    pub fn is_proposal(&self) -> bool {
+        match self {
+            Self::Uncompressed(msg) => msg.is_proposal(),
+            Self::Compressed(msg) => msg.is_proposal(),
+        }
+    }
+
+    pub fn get_round(&self) -> Round {
+        match &self {
+            Self::Uncompressed(msg) => msg.get_round(),
+            Self::Compressed(msg) => msg.get_round(),
         }
     }
 }

@@ -42,6 +42,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::BlockValidator,
         S::ChainConfigType,
         S::ChainRevisionType,
+        S::CompressionAlgo,
     >,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
@@ -67,6 +68,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::BlockValidator,
             S::ChainConfigType,
             S::ChainRevisionType,
+            S::CompressionAlgo,
         >,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
@@ -104,6 +106,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             ChainConfigType = <DebugSwarmRelation as SwarmRelation>::ChainConfigType,
             ChainRevisionType = <DebugSwarmRelation as SwarmRelation>::ChainRevisionType,
+            CompressionAlgo = <DebugSwarmRelation as SwarmRelation>::CompressionAlgo,
         >,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
@@ -127,6 +130,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 forkpoint: self.state_builder.forkpoint,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
+                compression_algo: self.state_builder.compression_algo,
 
                 _phantom: PhantomData,
             },

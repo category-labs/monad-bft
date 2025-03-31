@@ -23,7 +23,10 @@ use crate::{
         BlockRange, ConsensusBlockHeader, ConsensusFullBlock, ExecutionResult,
         ProposedExecutionInputs, ProposedExecutionResult,
     },
-    payload::{ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature},
+    payload::{
+        CompressedConsensusBlockBody, ConsensusBlockBody, ConsensusBlockBodyId,
+        ConsensusBlockBodyInner, RoundSignature,
+    },
     signature_collection::SignatureCollection,
 };
 
@@ -259,6 +262,21 @@ where
                 |_err| Self::Error::DeserializeError("BlockBody.execution_body".to_owned()),
             )?,
         }))
+    }
+}
+
+impl From<&CompressedConsensusBlockBody> for ProtoCompressedBlockBody {
+    fn from(value: &CompressedConsensusBlockBody) -> Self {
+        ProtoCompressedBlockBody {
+            compressed_execution_body: value.0.clone().into(),
+        }
+    }
+}
+
+impl TryFrom<ProtoCompressedBlockBody> for CompressedConsensusBlockBody {
+    type Error = ProtoError;
+    fn try_from(value: ProtoCompressedBlockBody) -> Result<Self, Self::Error> {
+        Ok(Self(value.compressed_execution_body.into()))
     }
 }
 

@@ -41,9 +41,25 @@ message ProtoProposalMessage {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 3;
 }
 
+message ProtoCompressedProposalMessage {
+  monad_proto.block.ProtoBlockHeader block_header = 1;
+  monad_proto.block.ProtoCompressedBlockBody compressed_block_body = 2;
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 3;
+}
+
 message ProtoUnverifiedConsensusMessage {
   oneof OneofMessage {
     ProtoProposalMessage proposal = 1;
+    ProtoTimeoutMessage timeout = 2;
+    ProtoVoteMessage vote = 3;
+  }
+  uint32 version = 4;
+  monad_proto.signing.ProtoSignature author_signature = 6;
+}
+
+message ProtoUnverifiedCompressedConsensusMessage {
+  oneof OneofMessage {
+    ProtoCompressedProposalMessage compressed_proposal = 1;
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
   }
@@ -104,6 +120,7 @@ message ProtoMonadMessage {
     ProtoBlockSyncResponseMessage block_sync_response = 3;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
+    ProtoUnverifiedCompressedConsensusMessage compressed_consensus = 7;
   }
 }
 message ProtoDiscoveryRequest {
