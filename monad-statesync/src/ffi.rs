@@ -15,7 +15,7 @@ use monad_executor_glue::{
     StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     SELF_STATESYNC_VERSION,
 };
-use monad_types::{NodeId, SeqNum};
+use monad_types::{DropTimer, NodeId, SeqNum};
 use rand::seq::SliceRandom;
 
 use crate::{bindings, outbound_requests::OutboundRequests};
@@ -216,6 +216,15 @@ impl<PT: PubKey> StateSync<PT> {
                     }
                     SyncResponse::Response(response) => {
                         assert!(current_target.is_some());
+
+                        let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
+                            tracing::debug!(
+                                ?elapsed,
+                                ?response,
+                                "statesync client thread applied response"
+                            );
+                        });
+
                         // handle_response can only be called on an active SyncCtx
                         let ctx = sync_ctx.ctx.expect("received response on inactive ctx");
                         unsafe {
