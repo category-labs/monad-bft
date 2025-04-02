@@ -9,9 +9,11 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
+    metrics::StateMetrics,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::Balance;
+use monad_metrics::NoopMetricsPolicy;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -79,6 +81,7 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+        Self::MetricsPolicy,
     >;
     type TxPoolExecutor = MockTxPoolExecutor<
         Self::SignatureType,
@@ -86,12 +89,14 @@ impl SwarmRelation for BLSSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::MetricsPolicy,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type MetricsPolicy = NoopMetricsPolicy;
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -114,6 +119,7 @@ fn two_nodes_bls() {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum(4)),
+        StateMetrics::default,
         SeqNum(4),                           // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config

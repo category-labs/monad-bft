@@ -12,6 +12,7 @@ mod test {
         revision::{ChainParams, MockChainRevision},
         MockChainConfig,
     };
+    use monad_consensus_types::metrics::StateMetrics;
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
         NopPubKey, NopSignature,
@@ -20,7 +21,9 @@ mod test {
     use monad_eth_block_validator::EthValidator;
     use monad_eth_ledger::MockEthLedger;
     use monad_eth_testutil::{make_legacy_tx, secret_to_eth_address};
+    use monad_eth_txpool_metrics::TxPoolExecutorMetrics;
     use monad_eth_types::{Balance, EthExecutionProtocol, BASE_FEE_PER_GAS};
+    use monad_metrics::NoopMetricsPolicy;
     use monad_mock_swarm::{
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
@@ -97,6 +100,7 @@ mod test {
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
+            Self::MetricsPolicy,
         >;
         type TxPoolExecutor = MockTxPoolExecutor<
             Self::SignatureType,
@@ -104,12 +108,14 @@ mod test {
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
             Self::StateBackendType,
+            Self::MetricsPolicy,
         >;
         type StateSyncExecutor = MockStateSyncExecutor<
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
         >;
+        type MetricsPolicy = NoopMetricsPolicy;
     }
 
     const CONSENSUS_DELTA: Duration = Duration::from_millis(100);
@@ -147,6 +153,7 @@ mod test {
                     InMemoryBlockState::genesis(existing_nonces.clone()),
                 )
             },
+            StateMetrics::default,
             execution_delay,                     // execution_delay
             CONSENSUS_DELTA,                     // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -170,7 +177,11 @@ mod test {
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), SeqNum(2000)),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                        MockTxPoolExecutor::new(
+                            create_block_policy(),
+                            state_backend.clone(),
+                            TxPoolExecutorMetrics::default(),
+                        ),
                         MockEthLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -204,7 +215,9 @@ mod test {
         for node_id in node_ids {
             let state = swarm.states().get(&node_id).unwrap();
             let mut txns_to_see = txns.clone();
-            for (round, block) in state.executor.ledger().get_finalized_blocks() {
+            for (round, block) in
+                MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(state.executor.ledger())
+            {
                 for txn in &block.body().execution_body.transactions {
                     let txn_hash = txn.tx_hash();
                     if txns_to_see.contains(txn_hash) {

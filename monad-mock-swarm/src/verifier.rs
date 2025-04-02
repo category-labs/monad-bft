@@ -1,20 +1,21 @@
 use std::{collections::BTreeMap, fmt::Debug, time::Duration};
 
-use monad_consensus_types::metrics::Metrics;
+use monad_consensus_types::metrics::StateMetrics;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_metrics::Counter;
 use monad_transformer::ID;
 use monad_types::Round;
 use monad_updaters::ledger::MockableLedger;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 
-type FetchMetricFunction = fn(&Metrics) -> u64;
+type FetchMetricFunction<MP> = fn(&StateMetrics<MP>) -> u64;
 type MetricName = &'static str;
 
 #[macro_export]
-macro_rules! fetch_metric {
+macro_rules! fetch_metric_counter {
     ( $( $k:ident ).+ ) => {{
-        (stringify!($($k).+), |s: &Metrics| { s.$($k).+ })
+        (stringify!($($k).+), |s: &StateMetrics<_>| { Counter::read(&s.$($k).+) })
     }};
 }
 
@@ -45,7 +46,7 @@ pub struct MockSwarmVerifier<S: SwarmRelation> {
     tick: ExpectedTick,
     metrics: BTreeMap<
         (ID<CertificateSignaturePubKey<S::SignatureType>>, MetricName),
-        (FetchMetricFunction, ExpectedMetric),
+        (FetchMetricFunction<S::MetricsPolicy>, ExpectedMetric),
     >,
 }
 
@@ -93,7 +94,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_exact(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: (MetricName, FetchMetricFunction),
+        fetch_metric: (MetricName, FetchMetricFunction<S::MetricsPolicy>),
         value: u64,
     ) -> &mut Self {
         for node_id in node_ids {
@@ -108,7 +109,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_range(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: (MetricName, FetchMetricFunction),
+        fetch_metric: (MetricName, FetchMetricFunction<S::MetricsPolicy>),
         lower: u64,
         upper: u64,
     ) -> &mut Self {
@@ -124,7 +125,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_minimum(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: (MetricName, FetchMetricFunction),
+        fetch_metric: (MetricName, FetchMetricFunction<S::MetricsPolicy>),
         minimum: u64,
     ) -> &mut Self {
         for node_id in node_ids {
@@ -139,7 +140,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn metric_maximum(
         &mut self,
         node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
-        fetch_metric: (MetricName, FetchMetricFunction),
+        fetch_metric: (MetricName, FetchMetricFunction<S::MetricsPolicy>),
         maximum: u64,
     ) -> &mut Self {
         for node_id in node_ids {
@@ -163,93 +164,101 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
         let max_byzantine_nodes = num_nodes_total - super_majority_nodes;
 
         // initial local timeout
-        self.metric_exact(node_ids, fetch_metric!(consensus_events.local_timeout), 1)
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.failed_txn_validation),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.invalid_proposal_round_leader),
-                0,
-            )
-            // should not miss a block in between
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.out_of_order_proposals),
-                0,
-            )
-            // initial TC. If the node is in the happy path, it should never create a TC otherwise
-            .metric_exact(node_ids, fetch_metric!(consensus_events.created_tc), 1)
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.rx_execution_lagging),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.rx_no_path_to_root),
-                0,
-            )
-            // first proposal in Round 2 with TC
-            .metric_maximum(
-                node_ids,
-                fetch_metric!(consensus_events.proposal_with_tc),
-                1,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.failed_verify_randao_reveal_sig),
-                0,
-            )
-            // blocksync metrics:
-            // should not request blocksync
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.self_headers_request),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.self_payload_request),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.headers_response_successful),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.headers_response_failed),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.headers_response_unexpected),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.headers_validation_failed),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.payload_response_successful),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.payload_response_failed),
-                0,
-            )
-            .metric_exact(
-                node_ids,
-                fetch_metric!(blocksync_events.payload_response_unexpected),
-                0,
-            );
+        self.metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.local_timeout),
+            1,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.failed_txn_validation),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.invalid_proposal_round_leader),
+            0,
+        )
+        // should not miss a block in between
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.out_of_order_proposals),
+            0,
+        )
+        // initial TC. If the node is in the happy path, it should never create a TC otherwise
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.created_tc),
+            1,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.rx_execution_lagging),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.rx_no_path_to_root),
+            0,
+        )
+        // first proposal in Round 2 with TC
+        .metric_maximum(
+            node_ids,
+            fetch_metric_counter!(consensus_events.proposal_with_tc),
+            1,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(consensus_events.failed_verify_randao_reveal_sig),
+            0,
+        )
+        // blocksync metrics:
+        // should not request blocksync
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.self_headers_request),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.self_payload_request),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.headers_response_successful),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.headers_response_failed),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.headers_response_unexpected),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.headers_validation_failed),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.payload_response_successful),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.payload_response_failed),
+            0,
+        )
+        .metric_exact(
+            node_ids,
+            fetch_metric_counter!(blocksync_events.payload_response_unexpected),
+            0,
+        );
 
         for node_id in node_ids {
             let node = swarm.states.get(node_id).unwrap();
@@ -270,47 +279,47 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             // should handle proposal for all blocks in ledger
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.handle_proposal),
+                fetch_metric_counter!(consensus_events.handle_proposal),
                 ledger_len,
             );
             // should vote for every block in the ledger
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.created_vote),
+                fetch_metric_counter!(consensus_events.created_vote),
                 ledger_len,
             );
             // votes from f peers after receiving 2f+1 votes as a leader
             // NOTE: malicious votes should be rejected before reaching consensus
             self.metric_maximum(
                 node_ids,
-                fetch_metric!(consensus_events.old_vote_received),
+                fetch_metric_counter!(consensus_events.old_vote_received),
                 (num_blocks_authored + 1) * max_byzantine_nodes,
             );
             // votes from 2f+1 peers as a leader
             // except if the node is a leader in round 2 when it receives timeouts instead
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.vote_received),
+                fetch_metric_counter!(consensus_events.vote_received),
                 (num_blocks_authored.saturating_sub(1)) * super_majority_nodes,
             );
             // should create a QC everytime the node is a leader
             // except for block produced in round 2 which uses TC from round 1
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.created_qc),
+                fetch_metric_counter!(consensus_events.created_qc),
                 num_blocks_authored.saturating_sub(1),
             );
             // a node processes an old QC (generated by itself) when it receives it
             // in the proposal for next round
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.process_old_qc),
+                fetch_metric_counter!(consensus_events.process_old_qc),
                 num_blocks_authored,
             );
             // should create proposals for all blocks authored in ledger
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.creating_proposal),
+                fetch_metric_counter!(consensus_events.creating_proposal),
                 num_blocks_authored,
             );
             // should update state root for all blocks in ledger
@@ -319,7 +328,7 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             // NOTE: doesn't take into account the execution delay
             self.metric_minimum(
                 &vec![*node_id],
-                fetch_metric!(consensus_events.state_root_update),
+                fetch_metric_counter!(consensus_events.state_root_update),
                 ledger_len.saturating_sub(1),
             );
         }

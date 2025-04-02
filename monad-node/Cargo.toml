@@ -18,10 +18,13 @@ monad-crypto = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-txpool-executor = { workspace = true }
+monad-eth-txpool-metrics = { workspace = true }
+monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-keystore = { workspace = true }
 monad-ledger = { workspace = true }
+monad-metrics = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-raptorcast = { workspace = true }
 monad-router-filter = { workspace = true, optional = true }

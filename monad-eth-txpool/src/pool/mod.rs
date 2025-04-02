@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{marker::PhantomData, time::Duration};
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
@@ -14,6 +14,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
 use tracing::warn;
@@ -31,11 +32,12 @@ mod transaction;
 const INSERT_TXS_MAX_PROMOTE: usize = 64;
 
 #[derive(Clone, Debug)]
-pub struct EthTxPool<ST, SCT, SBT>
+pub struct EthTxPool<ST, SCT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
     do_local_insert: bool,
     pending: PendingTxMap,
@@ -46,13 +48,16 @@ where
     proposal_gas_limit: u64,
 
     max_code_size: usize,
+
+    _phantom: PhantomData<MP>,
 }
 
-impl<ST, SCT, SBT> EthTxPool<ST, SCT, SBT>
+impl<ST, SCT, SBT, MP> EthTxPool<ST, SCT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
     pub fn new(
         do_local_insert: bool,
@@ -66,7 +71,10 @@ where
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
+
             max_code_size,
+
+            _phantom: PhantomData,
         }
     }
 
@@ -103,7 +111,7 @@ where
 
     pub fn insert_txs(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
         txs: Vec<Recovered<TxEnvelope>>,
@@ -199,7 +207,7 @@ where
 
     pub fn create_proposal(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -269,7 +277,7 @@ where
 
     pub fn update_committed_block(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         committed_block: EthValidatedBlock<ST, SCT>,
     ) {
         self.tracked
@@ -297,7 +305,7 @@ where
 
     pub fn reset(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         last_delay_committed_blocks: Vec<EthValidatedBlock<ST, SCT>>,
     ) {
         self.tracked.reset(last_delay_committed_blocks);
@@ -305,7 +313,7 @@ where
         self.update_aggregate_metrics(event_tracker);
     }
 
-    fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
+    fn update_aggregate_metrics(&self, event_tracker: &mut EthTxPoolEventTracker<'_, MP>) {
         event_tracker.update_aggregate_metrics(
             self.pending.num_addresses() as u64,
             self.pending.num_txs() as u64,

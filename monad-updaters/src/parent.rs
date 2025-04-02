@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
@@ -9,19 +10,23 @@ use monad_consensus_types::{block::BlockPolicy, signature_collection::SignatureC
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateRootHashCommand, StateSyncCommand, TimerCommand,
     TimestampCommand, TxPoolCommand,
 };
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
+
+// TODO(andr-dev): Move MP forward here \/
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL, E, OM, ST, SCT, EPT, BPT, SBT, MP>
+{
     pub router: R,
     pub timer: T,
     pub ledger: L,
@@ -33,34 +38,72 @@ pub struct ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
     pub loopback: LO,
     pub state_sync: SS,
     pub config_loader: CL,
-    // if you add an executor here, you must add it to BOTH exec AND poll_next !
+    // if you add an executor here, you must add it to:
+    //   1) ParentExecutorMetrics
+    //   2) exec
+    //   3) poll_next
+    pub _phantom: PhantomData<(E, OM, ST, SCT, EPT, BPT, SBT, MP)>,
 }
 
-impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT> Executor
-    for ParentExecutor<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE>
-where
-    RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
-    TE: Executor<Command = TimerCommand<E>>,
-    LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
-    CE: Executor<Command = CheckpointCommand<SCT>>,
-    SE: Executor<Command = StateRootHashCommand<SCT>>,
-    TSE: Executor<Command = TimestampCommand>,
+pub struct ParentExecutorMetrics<'a, RM, TM, LM, CM, SM, TSM, TPM, CPM, LOM, SSM, CLM> {
+    pub router: &'a RM,
+    pub timer: &'a TM,
+    pub ledger: &'a LM,
+    pub checkpoint: &'a CM,
+    pub state_root_hash: &'a SM,
+    pub timestamp: &'a TSM,
 
-    TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
-    CPE: Executor<Command = ControlPanelCommand<SCT>>,
-    LOE: Executor<Command = LoopbackCommand<E>>,
-    SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
-    CLE: Executor<Command = ConfigReloadCommand>,
+    pub txpool: &'a TPM,
+    pub control_panel: &'a CPM,
+    pub loopback: &'a LOM,
+    pub state_sync: &'a SSM,
+    pub config_loader: &'a CLM,
+}
+
+impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT, MP>
+    ParentExecutor<
+        RE,
+        TE,
+        LE,
+        CE,
+        SE,
+        TSE,
+        TPE,
+        CPE,
+        LOE,
+        SSE,
+        CLE,
+        E,
+        OM,
+        ST,
+        SCT,
+        EPT,
+        BPT,
+        SBT,
+        MP,
+    >
+where
+    RE: Executor<MP, Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
+    TE: Executor<MP, Command = TimerCommand<E>>,
+    LE: Executor<MP, Command = LedgerCommand<ST, SCT, EPT>>,
+    CE: Executor<MP, Command = CheckpointCommand<SCT>>,
+    SE: Executor<MP, Command = StateRootHashCommand<SCT>>,
+    TSE: Executor<MP, Command = TimestampCommand>,
+
+    TPE: Executor<MP, Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
+    CPE: Executor<MP, Command = ControlPanelCommand<SCT>>,
+    LOE: Executor<MP, Command = LoopbackCommand<E>>,
+    SSE: Executor<MP, Command = StateSyncCommand<ST, EPT>>,
+    CLE: Executor<MP, Command = ConfigReloadCommand>,
 
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
-    type Command = Command<E, OM, ST, SCT, EPT, BPT, SBT>;
-
-    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT>>) {
+    pub fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
@@ -89,24 +132,40 @@ where
         self.config_loader.exec(config_reload_cmds);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default()
-            .chain(self.router.metrics())
-            .chain(self.timer.metrics())
-            .chain(self.ledger.metrics())
-            .chain(self.checkpoint.metrics())
-            .chain(self.state_root_hash.metrics())
-            .chain(self.timestamp.metrics())
-            .chain(self.txpool.metrics())
-            .chain(self.control_panel.metrics())
-            .chain(self.loopback.metrics())
-            .chain(self.state_sync.metrics())
-            .chain(self.config_loader.metrics())
+    pub fn metrics(
+        &self,
+    ) -> ParentExecutorMetrics<
+        '_,
+        RE::Metrics,
+        TE::Metrics,
+        LE::Metrics,
+        CE::Metrics,
+        SE::Metrics,
+        TSE::Metrics,
+        TPE::Metrics,
+        CPE::Metrics,
+        LOE::Metrics,
+        SSE::Metrics,
+        CLE::Metrics,
+    > {
+        ParentExecutorMetrics {
+            router: self.router.metrics(),
+            timer: self.timer.metrics(),
+            ledger: self.ledger.metrics(),
+            checkpoint: self.checkpoint.metrics(),
+            state_root_hash: self.state_root_hash.metrics(),
+            timestamp: self.timestamp.metrics(),
+            txpool: self.txpool.metrics(),
+            control_panel: self.control_panel.metrics(),
+            loopback: self.loopback.metrics(),
+            state_sync: self.state_sync.metrics(),
+            config_loader: self.config_loader.metrics(),
+        }
     }
 }
 
-impl<E, R, T, L, C, S, TS, TP, CP, LO, SS, CL> Stream
-    for ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL>
+impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL, E, OM, ST, SCT, EPT, BPT, SBT, MP> Stream
+    for ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL, E, OM, ST, SCT, EPT, BPT, SBT, MP>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
@@ -144,7 +203,9 @@ where
     }
 }
 
-impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL> {
+impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL, E, OM, ST, SCT, EPT, BPT, SBT, MP>
+    ParentExecutor<R, T, L, C, S, TS, TP, CP, LO, SS, CL, E, OM, ST, SCT, EPT, BPT, SBT, MP>
+{
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

@@ -10,6 +10,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_metrics::{MetricsPolicy, NoopMetricsPolicy};
 use monad_peer_discovery::algo::{
     PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
 };
@@ -101,11 +102,15 @@ enum MockPeerDiscExecutorEvent<E, PT: PubKey, TransportMessage> {
     Send(NodeId<PT>, TransportMessage),
 }
 
-impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
+impl<S: PeerDiscSwarmRelation, MP> Executor<MP> for MockPeerDiscExecutor<S>
+where
+    MP: MetricsPolicy,
+{
     type Command = RouterCommand<
         SwarmPubKeyType<S>,
         <S::RouterSchedulerType as RouterScheduler>::OutboundMessage,
     >;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for cmd in commands {
@@ -123,8 +128,8 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -196,7 +201,7 @@ where
             router: router_scheduler,
             tick: Default::default(),
         };
-        executor.exec(init_cmds);
+        Executor::<NoopMetricsPolicy>::exec(&mut executor, init_cmds);
 
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let current_seed = rng.r#gen();
@@ -260,7 +265,7 @@ where
                             tracing::trace_span!("node", id = format!("{}", self.id)).entered();
                         let router_cmds = self.peer_disc_driver.update(event);
                         self.executor.update_tick(tick);
-                        self.executor.exec(router_cmds);
+                        Executor::<NoopMetricsPolicy>::exec(&mut self.executor, router_cmds);
                         return true;
                     }
                 }
@@ -273,7 +278,7 @@ where
                                         .entered();
                                 let cmds = self.peer_disc_driver.update(event);
                                 self.executor.update_tick(tick);
-                                self.executor.exec(cmds);
+                                Executor::<NoopMetricsPolicy>::exec(&mut self.executor, cmds);
                                 return true;
                             }
                             MockPeerDiscExecutorEvent::Send(to, ser) => {

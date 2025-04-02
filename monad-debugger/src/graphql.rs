@@ -1,12 +1,13 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
-use monad_consensus_types::{block::ExecutionResult, metrics::Metrics};
+use monad_consensus_types::{block::ExecutionResult, metrics::StateMetrics};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
     StateSyncEvent, ValidatorEvent,
 };
+use monad_metrics::{Counter, MockMetricsPolicy};
 use monad_mock_swarm::{
     node::Node,
     swarm_relation::{DebugSwarmRelation, SwarmRelation},
@@ -136,22 +137,38 @@ impl<'s> GraphQLNode<'s> {
     }
 }
 
-struct GraphQLMetrics<'s>(&'s Metrics);
+struct GraphQLMetrics<'s>(&'s StateMetrics<MockMetricsPolicy>);
 #[Object]
 impl GraphQLMetrics<'_> {
     async fn consensus_created_qc(&self) -> u32 {
-        self.0.consensus_events.created_qc.try_into().unwrap()
+        self.0
+            .consensus_events
+            .created_qc
+            .read()
+            .try_into()
+            .unwrap()
     }
     async fn consensus_local_timeout(&self) -> u32 {
-        self.0.consensus_events.local_timeout.try_into().unwrap()
+        self.0
+            .consensus_events
+            .local_timeout
+            .read()
+            .try_into()
+            .unwrap()
     }
     async fn consensus_handle_proposal(&self) -> u32 {
-        self.0.consensus_events.handle_proposal.try_into().unwrap()
+        self.0
+            .consensus_events
+            .handle_proposal
+            .read()
+            .try_into()
+            .unwrap()
     }
     async fn consensus_failed_txn_validation(&self) -> u32 {
         self.0
             .consensus_events
             .failed_txn_validation
+            .read()
             .try_into()
             .unwrap()
     }
@@ -159,6 +176,7 @@ impl GraphQLMetrics<'_> {
         self.0
             .consensus_events
             .invalid_proposal_round_leader
+            .read()
             .try_into()
             .unwrap()
     }
@@ -166,6 +184,7 @@ impl GraphQLMetrics<'_> {
         self.0
             .consensus_events
             .out_of_order_proposals
+            .read()
             .try_into()
             .unwrap()
     }

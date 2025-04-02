@@ -6,6 +6,7 @@ use std::{
 use alloy_primitives::Address;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::Nonce;
+use monad_metrics::MetricsPolicy;
 use tracing::error;
 
 use crate::{
@@ -32,11 +33,14 @@ impl TrackedTxList {
         self.txs.values_mut().map(|(tx, _)| tx)
     }
 
-    pub fn new_from_promote_pending(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+    pub fn new_from_promote_pending<MP>(
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         account_nonce: u64,
         tx_list: PendingTxList,
-    ) -> Option<Self> {
+    ) -> Option<Self>
+    where
+        MP: MetricsPolicy,
+    {
         let mut tx_list = tx_list.into_map();
 
         let txs = tx_list.split_off(&account_nonce);
@@ -85,12 +89,15 @@ impl TrackedTxList {
             })
     }
 
-    pub(crate) fn try_insert_tx(
+    pub(crate) fn try_insert_tx<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         tx: ValidEthTransaction,
         tx_expiry: Duration,
-    ) -> Option<&ValidEthTransaction> {
+    ) -> Option<&ValidEthTransaction>
+    where
+        MP: MetricsPolicy,
+    {
         if tx.nonce() < self.account_nonce {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::NonceTooLow);
             return None;
@@ -118,11 +125,13 @@ impl TrackedTxList {
         }
     }
 
-    pub fn update_committed_account_nonce(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+    pub fn update_committed_account_nonce<MP>(
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         mut this: indexmap::map::OccupiedEntry<'_, Address, Self>,
         account_nonce: u64,
-    ) {
+    ) where
+        MP: MetricsPolicy,
+    {
         this.get_mut().account_nonce = account_nonce;
 
         let Some((lowest_nonce, _)) = this.get().txs.first_key_value() else {
@@ -152,11 +161,14 @@ impl TrackedTxList {
     }
 
     // Produces true when the entry was removed and false otherwise
-    pub fn evict_expired_txs(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+    pub fn evict_expired_txs<MP>(
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         mut this: indexmap::map::IndexedEntry<'_, Address, Self>,
         tx_expiry: Duration,
-    ) -> bool {
+    ) -> bool
+    where
+        MP: MetricsPolicy,
+    {
         let now = Instant::now();
 
         let txs = &mut this.get_mut().txs;

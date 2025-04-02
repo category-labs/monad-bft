@@ -13,6 +13,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason};
 use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::{DropTimer, SeqNum};
 use tracing::{debug, error, info, trace, warn};
@@ -108,11 +109,14 @@ where
     /// Produces a reference to the tx if it was inserted, producing None when the tx signer was
     /// tracked but the tx was not inserted. If the tx signer is not tracked or the tracked pool is
     /// not ready to accept txs, an error is produced with the original tx.
-    pub fn try_insert_tx(
+    pub fn try_insert_tx<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         tx: ValidEthTransaction,
-    ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction> {
+    ) -> Result<Option<&ValidEthTransaction>, ValidEthTransaction>
+    where
+        MP: MetricsPolicy,
+    {
         if self.last_commit.is_none() {
             return Err(tx);
         }
@@ -124,9 +128,9 @@ where
         Ok(tx_list.try_insert_tx(event_tracker, tx, self.hard_tx_expiry))
     }
 
-    pub fn create_proposal(
+    pub fn create_proposal<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         proposed_seq_num: SeqNum,
         tx_limit: usize,
         proposal_gas_limit: u64,
@@ -135,7 +139,10 @@ where
         extending_blocks: Vec<&EthValidatedBlock<ST, SCT>>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
-    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, StateBackendError>
+    where
+        MP: MetricsPolicy,
+    {
         let Some(last_commit) = &self.last_commit else {
             return Ok(Vec::new());
         };
@@ -212,15 +219,18 @@ where
         Ok(proposal_tx_list)
     }
 
-    pub fn try_promote_pending(
+    pub fn try_promote_pending<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
         pending: &mut PendingTxMap,
         min_promotable: usize,
         max_promotable: usize,
-    ) -> bool {
+    ) -> bool
+    where
+        MP: MetricsPolicy,
+    {
         let Some(last_commit) = &self.last_commit else {
             warn!("txpool attempted to promote pending before first committed block");
             return false;
@@ -372,12 +382,14 @@ where
         (total_gas, txs)
     }
 
-    pub fn update_committed_block(
+    pub fn update_committed_block<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         committed_block: EthValidatedBlock<ST, SCT>,
         pending: &mut PendingTxMap,
-    ) {
+    ) where
+        MP: MetricsPolicy,
+    {
         {
             let seqnum = committed_block.get_seq_num();
             debug!(?seqnum, "txpool updating committed block");
@@ -430,7 +442,10 @@ where
         }
     }
 
-    pub fn evict_expired_txs(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_>) {
+    pub fn evict_expired_txs<MP>(&mut self, event_tracker: &mut EthTxPoolEventTracker<'_, MP>)
+    where
+        MP: MetricsPolicy,
+    {
         let num_txs = self.num_txs();
 
         let tx_expiry = if num_txs < SOFT_EVICT_ADDRESSES_WATERMARK {

@@ -22,7 +22,7 @@ use monad_consensus_types::{
     },
     block_validator::{BlockValidationError, BlockValidator},
     checkpoint::{Checkpoint, RootInfo},
-    metrics::Metrics,
+    metrics::ConsensusEventsStateMetrics,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -33,6 +33,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_metrics::{Counter, MetricsPolicy};
 use monad_state_backend::StateBackend;
 use monad_types::{
     BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, GENESIS_ROUND,
@@ -132,7 +133,7 @@ enum OutgoingVoteStatus {
     VoteReady(Vote),
 }
 
-pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub struct ConsensusStateWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -144,10 +145,11 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
     pub consensus: &'a mut ConsensusState<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
 
-    pub metrics: &'a mut Metrics,
+    pub metrics: &'a mut ConsensusEventsStateMetrics<MP>,
     pub epoch_manager: &'a mut EpochManager,
     /// Policy for validating chain extension
     /// Mutable because consensus tip will be updated
@@ -311,8 +313,8 @@ where
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
+    ConsensusStateWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -324,12 +326,13 @@ where
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
     /// handles the local timeout expiry event
     pub fn handle_timeout_expiry(&mut self) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         let mut cmds = Vec::new();
 
-        self.metrics.consensus_events.local_timeout += 1;
+        self.metrics.local_timeout.inc();
         debug!(
             round = ?self.consensus.pacemaker.get_current_round(),
             "local timeout"
@@ -402,7 +405,7 @@ where
             tracing::info_span!("handle_proposal_span", "{}", author).entered();
         info!(round = ?p.block_header.round, "received proposal");
         debug!(proposal = ?p, "proposal message");
-        self.metrics.consensus_events.handle_proposal += 1;
+        self.metrics.handle_proposal.inc();
 
         let mut cmds = Vec::new();
 
@@ -445,7 +448,7 @@ where
                 block_author =? p.block_header.author,
                 "Invalid Proposal"
             );
-            self.metrics.consensus_events.invalid_proposal_round_leader += 1;
+            self.metrics.invalid_proposal_round_leader.inc();
             return cmds;
         }
 
@@ -507,7 +510,7 @@ where
                     ?block_seq_num,
                     "dropping proposal, transaction validation failed"
                 );
-                self.metrics.consensus_events.failed_txn_validation += 1;
+                self.metrics.failed_txn_validation.inc();
                 return cmds;
             }
             Err(BlockValidationError::RandaoError) => {
@@ -517,9 +520,7 @@ where
                     ?block_seq_num,
                     "dropping proposal, randao validation failed"
                 );
-                self.metrics
-                    .consensus_events
-                    .failed_verify_randao_reveal_sig += 1;
+                self.metrics.failed_verify_randao_reveal_sig.inc();
                 return cmds;
             }
             Err(BlockValidationError::HeaderPayloadMismatchError) => {
@@ -590,7 +591,7 @@ where
                 round = ?block_round,
                 "out-of-order proposal"
             );
-            self.metrics.consensus_events.out_of_order_proposals += 1;
+            self.metrics.out_of_order_proposals.inc();
         }
 
         cmds
@@ -606,10 +607,10 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
         debug!(?vote_msg, "Vote Message");
         if vote_msg.vote.round < self.consensus.pacemaker.get_current_round() {
-            self.metrics.consensus_events.old_vote_received += 1;
+            self.metrics.old_vote_received.inc();
             return Default::default();
         }
-        self.metrics.consensus_events.vote_received += 1;
+        self.metrics.vote_received.inc();
 
         let mut cmds = Vec::new();
 
@@ -635,7 +636,7 @@ where
 
         if let Some(qc) = maybe_qc {
             debug!(?qc, "Created QC");
-            self.metrics.consensus_events.created_qc += 1;
+            self.metrics.created_qc.inc();
 
             cmds.extend(self.process_certificate_qc(&qc));
             cmds.extend(self.try_propose());
@@ -654,12 +655,12 @@ where
         let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
         if tm.tminfo.round < self.consensus.pacemaker.get_current_round() {
-            self.metrics.consensus_events.old_remote_timeout += 1;
+            self.metrics.old_remote_timeout.inc();
             return cmds;
         }
 
         debug!(timeout_msg = ?tm, "Remote timeout msg");
-        self.metrics.consensus_events.remote_timeout_msg += 1;
+        self.metrics.remote_timeout_msg.inc();
 
         let epoch = self
             .epoch_manager
@@ -679,7 +680,7 @@ where
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
             info!(?last_round_tc, "advance round from remote TC");
-            self.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
+            self.metrics.remote_timeout_msg_with_tc.inc();
             let advance_round_cmds = self
                 .consensus
                 .pacemaker
@@ -718,7 +719,7 @@ where
         }));
         if let Some(tc) = tc {
             info!(?tc, "Created TC");
-            self.metrics.consensus_events.created_tc += 1;
+            self.metrics.created_tc.inc();
             let advance_round_cmds = self
                 .consensus
                 .pacemaker
@@ -869,7 +870,7 @@ where
             message: msg,
         };
         debug!(?round, ?vote, ?next_leader, "created vote");
-        self.metrics.consensus_events.created_vote += 1;
+        self.metrics.created_vote.inc();
 
         // start the vote-timer for the next round
         let vote_timer_cmd = ConsensusCommand::ScheduleVote {
@@ -897,10 +898,10 @@ where
         trace!(?qc, our_high_qc = ?self.consensus.high_qc, "process qc");
 
         if Rank(qc.info) <= Rank(self.consensus.high_qc.info) {
-            self.metrics.consensus_events.process_old_qc += 1;
+            self.metrics.process_old_qc.inc();
             return Vec::new();
         }
-        self.metrics.consensus_events.process_qc += 1;
+        self.metrics.process_qc.inc();
 
         self.consensus.high_qc = qc.clone();
         let mut cmds = Vec::new();
@@ -1032,7 +1033,7 @@ where
         for block in blocks_to_commit.iter() {
             // when epoch boundary block is committed, this updates
             // epoch manager records
-            self.metrics.consensus_events.commit_block += 1;
+            self.metrics.commit_block.inc();
             self.block_policy.update_committed_block(block);
             self.epoch_manager
                 .schedule_epoch_start(block.header().seq_num, block.get_round());
@@ -1239,7 +1240,7 @@ where
             )
             .is_none()
         {
-            self.metrics.consensus_events.failed_ts_validation += 1;
+            self.metrics.failed_ts_validation.inc();
             warn!(
                 prev_block_ts = ?parent_timestamp,
                 curr_block_ts = ?validated_block.get_timestamp(),
@@ -1418,7 +1419,7 @@ where
                 ?last_round_tc,
                 "no eth_header found, can't propose"
             );
-            self.metrics.consensus_events.rx_execution_lagging += 1;
+            self.metrics.rx_execution_lagging.inc();
             return Vec::new();
         };
         let _create_proposal_span = tracing::info_span!("create_proposal_span", ?round).entered();
@@ -1522,7 +1523,7 @@ where
             .get_blocks_on_path_from_root(&p.block_header.get_parent_id())
         else {
             debug!("no path to root, unable to verify");
-            self.metrics.consensus_events.rx_no_path_to_root += 1;
+            self.metrics.rx_no_path_to_root.inc();
             return StateRootAction::Defer;
         };
 
@@ -1533,18 +1534,18 @@ where
                 block_seq_num =? p.block_header.seq_num,
                 "execution result not ready, unable to verify"
             );
-            self.metrics.consensus_events.rx_execution_lagging += 1;
+            self.metrics.rx_execution_lagging.inc();
             return StateRootAction::Defer;
         };
 
         if expected_execution_results != p.block_header.delayed_execution_results {
             debug!("State root hash in proposal conflicts with local value");
-            self.metrics.consensus_events.rx_bad_state_root += 1;
+            self.metrics.rx_bad_state_root.inc();
             return StateRootAction::Reject;
         }
 
         debug!("Received Proposal Message with valid state root hash");
-        self.metrics.consensus_events.rx_proposal += 1;
+        self.metrics.rx_proposal.inc();
         StateRootAction::Proceed
     }
 
@@ -1560,7 +1561,7 @@ where
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             debug!(?last_round_tc, "Handled proposal with TC");
-            self.metrics.consensus_events.proposal_with_tc += 1;
+            self.metrics.proposal_with_tc.inc();
             let advance_round_cmds = self
                 .consensus
                 .pacemaker
@@ -1638,7 +1639,7 @@ mod test {
         },
         block_validator::BlockValidator,
         checkpoint::RootInfo,
-        metrics::Metrics,
+        metrics::ConsensusEventsStateMetrics,
         payload::{ConsensusBlockBody, ConsensusBlockBodyInner},
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1657,6 +1658,7 @@ mod test {
     use monad_eth_types::{
         Balance, EthBlockBody, EthExecutionProtocol, EthHeader, BASE_FEE_PER_GAS,
     };
+    use monad_metrics::{Counter, MockMetricsPolicy};
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, InMemoryStateInner, StateBackend, StateBackendTest};
     use monad_testutil::{
@@ -1715,7 +1717,7 @@ mod test {
     {
         consensus_state: ConsensusState<ST, SCT, EPT, BPT, SBT, MockChainConfig, MockChainRevision>,
 
-        metrics: Metrics,
+        metrics: ConsensusEventsStateMetrics<MockMetricsPolicy>,
         epoch_manager: EpochManager,
 
         val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
@@ -1760,6 +1762,7 @@ mod test {
             BVT,
             MockChainConfig,
             MockChainRevision,
+            MockMetricsPolicy,
         > {
             ConsensusStateWrapper {
                 consensus: &mut self.consensus_state,
@@ -2006,7 +2009,7 @@ mod test {
                 NodeContext {
                     consensus_state: cs,
 
-                    metrics: Metrics::default(),
+                    metrics: ConsensusEventsStateMetrics::default(),
                     epoch_manager,
 
                     val_epoch_map,
@@ -2311,7 +2314,7 @@ mod test {
             wrapped_state.consensus.high_qc.get_round(),
             expected_qc_high_round
         );
-        assert_eq!(wrapped_state.metrics.consensus_events.vote_received, 3);
+        assert_eq!(wrapped_state.metrics.vote_received.read(), 3);
     }
 
     // When a node locally timesout on a round, it no longer produces votes in that round
@@ -3029,7 +3032,7 @@ mod test {
             ConsensusCommand::Schedule { duration: _ }
         ));
         assert!(matches!(cmds[3], ConsensusCommand::RequestSync { .. }));
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_no_path_to_root, 1);
+        assert_eq!(wrapped_state.metrics.rx_no_path_to_root.read(), 1);
     }
 
     /// Test consensus behavior when a state root hash is missing. This is
@@ -3077,7 +3080,7 @@ mod test {
         let (author, _, p) = p.destructure();
         let _cmds = wrapped_state.handle_proposal_message(author, p);
 
-        assert_eq!(wrapped_state.metrics.consensus_events.rx_proposal, 5);
+        assert_eq!(wrapped_state.metrics.rx_proposal.read(), 5);
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(5));
 
         // only execution update for block 3 comes
@@ -3095,10 +3098,7 @@ mod test {
         let cmds = wrapped_state.handle_proposal_message(author, p);
 
         assert_eq!(wrapped_state.consensus.get_current_round(), Round(6));
-        assert_eq!(
-            wrapped_state.metrics.consensus_events.rx_execution_lagging,
-            1
-        );
+        assert_eq!(wrapped_state.metrics.rx_execution_lagging.read(), 1);
         assert_eq!(cmds.len(), 4);
         assert!(matches!(
             cmds[0],
@@ -3589,10 +3589,7 @@ mod test {
 
         // p2 is not added because author is not the round leader
         assert_eq!(node.consensus_state.blocktree().size(), 1);
-        assert_eq!(
-            node.metrics.consensus_events.invalid_proposal_round_leader,
-            1
-        );
+        assert_eq!(node.metrics.invalid_proposal_round_leader.read(), 1);
     }
 
     #[test]

@@ -9,16 +9,19 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
     StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
 };
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
 
-pub trait MockableStateSync:
-    Executor<Command = StateSyncCommand<Self::Signature, Self::ExecutionProtocol>> + Unpin
+pub trait MockableStateSync<MP>:
+    Executor<MP, Command = StateSyncCommand<Self::Signature, Self::ExecutionProtocol>> + Unpin
+where
+    MP: MetricsPolicy,
 {
     type Signature: CertificateSignatureRecoverable;
     type SignatureCollection: SignatureCollection<
@@ -32,7 +35,11 @@ pub trait MockableStateSync:
     ) -> Option<MonadEvent<Self::Signature, Self::SignatureCollection, Self::ExecutionProtocol>>;
 }
 
-impl<T: MockableStateSync + ?Sized> MockableStateSync for Box<T> {
+impl<T, MP> MockableStateSync<MP> for Box<T>
+where
+    T: MockableStateSync<MP> + ?Sized,
+    MP: MetricsPolicy,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -66,13 +73,15 @@ where
     waker: Option<Waker>,
 }
 
-impl<ST, SCT, EPT> Executor for MockStateSyncExecutor<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
 {
     type Command = StateSyncCommand<ST, EPT>;
+    type Metrics = ();
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
@@ -172,8 +181,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -203,11 +212,12 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableStateSync for MockStateSyncExecutor<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockableStateSync<MP> for MockStateSyncExecutor<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
 {
     type Signature = ST;
     type SignatureCollection = SCT;

@@ -15,8 +15,10 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_metrics::NoopMetricsPolicy;
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
+    metrics::RaptorCastExecutorMetrics,
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
     RaptorCast, RaptorCastConfig, RaptorCastEvent,
@@ -395,12 +397,14 @@ pub fn set_up_test(
                 mtu: DEFAULT_MTU,
             };
 
-            let mut service = RaptorCast::<
-                SignatureType,
-                MockMessage,
-                MockMessage,
-                <MockMessage as Message>::Event,
-            >::new(service_config);
+            let mut service =
+                RaptorCast::<
+                    SignatureType,
+                    MockMessage,
+                    MockMessage,
+                    <MockMessage as Message>::Event,
+                    NoopMetricsPolicy,
+                >::new(service_config, RaptorCastExecutorMetrics::default());
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

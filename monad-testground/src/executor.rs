@@ -13,7 +13,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_metrics::{MockMetricsPolicy, NoopMetricsPolicy};
+use monad_raptorcast::{metrics::RaptorCastExecutorMetrics, RaptorCast, RaptorCastConfig};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -22,6 +23,7 @@ use monad_updaters::{
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
     state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
     tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
+    VoidMetricUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -72,22 +74,45 @@ pub fn make_monad_executor<ST, SCT>(
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
+        MonadEvent<ST, SCT, MockExecutionProtocol>,
+        NoopMetricsPolicy,
         RouterCommand<
             CertificateSignaturePubKey<ST>,
             VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
         >,
-        MonadEvent<ST, SCT, MockExecutionProtocol>,
+        (),
     >,
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
-    BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    BoxUpdater<
+        'static,
+        MonadEvent<ST, SCT, MockExecutionProtocol>,
+        NoopMetricsPolicy,
+        StateRootHashCommand<SCT>,
+        (),
+    >,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
-    MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
+    MockTxPoolExecutor<
+        ST,
+        SCT,
+        MockExecutionProtocol,
+        PassthruBlockPolicy,
+        InMemoryState,
+        NoopMetricsPolicy,
+    >,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockStateSyncExecutor<ST, SCT, MockExecutionProtocol>,
     MockConfigLoader<ST, SCT, MockExecutionProtocol>,
+    MonadEvent<ST, SCT, MockExecutionProtocol>,
+    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+    ST,
+    SCT,
+    MockExecutionProtocol,
+    PassthruBlockPolicy,
+    InMemoryState,
+    NoopMetricsPolicy,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -96,15 +121,22 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
-                ST,
-                MonadMessage<ST, SCT, MockExecutionProtocol>,
-                VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
-                MonadEvent<ST, SCT, MockExecutionProtocol>,
-            >::new(config)),
+            RouterConfig::RaptorCast(config) => {
+                Updater::boxed(VoidMetricUpdater::new(RaptorCast::<
+                    ST,
+                    MonadMessage<ST, SCT, MockExecutionProtocol>,
+                    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                    MonadEvent<ST, SCT, MockExecutionProtocol>,
+                    NoopMetricsPolicy,
+                >::new(
+                    config,
+                    RaptorCastExecutorMetrics::default(),
+                )))
+            }
         },
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
@@ -135,6 +167,7 @@ where
             Vec::new(),
         ),
         config_loader: MockConfigLoader::default(),
+        _phantom: PhantomData,
     }
 }
 
@@ -149,6 +182,7 @@ type MonadStateType<ST, SCT> = MonadState<
     MockValidator,
     MockChainConfig,
     MockChainRevision,
+    MockMetricsPolicy,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -201,6 +235,7 @@ where
         beneficiary: Default::default(),
         forkpoint: Forkpoint::genesis(config.validators),
         block_sync_override_peers: Default::default(),
+        metrics: Default::default(),
         consensus_config: config.consensus_config,
 
         _phantom: PhantomData,

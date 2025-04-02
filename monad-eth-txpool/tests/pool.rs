@@ -16,9 +16,11 @@ use monad_consensus_types::{
 use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_eip1559_tx, make_legacy_tx, recover_tx};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::PoolTxPoolExecutorMetrics;
 use monad_eth_txpool_types::EthTxPoolSnapshot;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_metrics::NoopMetricsPolicy;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -84,7 +86,18 @@ enum TxPoolTestEvent<'a> {
         num_blocks: usize,
         expected_committed_seq_num: u64,
     },
-    Block(Arc<dyn Fn(&mut EthTxPool<SignatureType, SignatureCollectionType, StateBackendType>)>),
+    Block(
+        Arc<
+            dyn Fn(
+                &mut EthTxPool<
+                    SignatureType,
+                    SignatureCollectionType,
+                    StateBackendType,
+                    NoopMetricsPolicy,
+                >,
+            ),
+        >,
+    ),
 }
 
 fn run_custom_iter<const N: usize>(
@@ -124,7 +137,7 @@ fn run_custom_iter<const N: usize>(
     };
 
     let mut pool = EthTxPool::default_testing();
-    let mut metrics = EthTxPoolMetrics::default();
+    let mut metrics = PoolTxPoolExecutorMetrics::default();
     let mut ipc_events = Vec::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
 

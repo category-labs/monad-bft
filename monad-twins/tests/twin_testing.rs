@@ -19,7 +19,7 @@ mod test {
             test_case.description,
         );
 
-        run_twins_test::<_, _, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
+        run_twins_test::<_, _, _, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
     }
 
     #[should_panic]
@@ -34,6 +34,6 @@ mod test {
             test_case.description
         );
 
-        run_twins_test::<_, _, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
+        run_twins_test::<_, _, _, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
     }
 }

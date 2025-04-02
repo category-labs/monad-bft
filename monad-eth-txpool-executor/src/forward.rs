@@ -11,6 +11,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_txpool::EthTxPool;
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::StateBackend;
 use pin_project::pin_project;
 
@@ -116,11 +117,12 @@ impl EthTxPoolForwardingManagerProjected<'_> {
         }
     }
 
-    pub fn add_egress_txs<ST, SCT, SBT>(&mut self, pool: &mut EthTxPool<ST, SCT, SBT>)
+    pub fn add_egress_txs<ST, SCT, SBT, MP>(&mut self, pool: &mut EthTxPool<ST, SCT, SBT, MP>)
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         SBT: StateBackend,
+        MP: MetricsPolicy,
     {
         let Some(forwardable_txs) =
             pool.get_forwardable_txs::<EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF, EGRESS_MAX_RETRIES>()

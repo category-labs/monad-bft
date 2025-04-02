@@ -1,6 +1,6 @@
 pub mod convert;
 
-use std::{fmt::Debug, net::SocketAddr};
+use std::{collections::HashMap, fmt::Debug, net::SocketAddr};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -20,7 +20,6 @@ use monad_consensus_types::{
         OptimisticCommit, ProposedExecutionInputs,
     },
     checkpoint::Checkpoint,
-    metrics::Metrics,
     payload::{ConsensusBlockBodyId, RoundSignature},
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
@@ -146,7 +145,7 @@ pub enum GetValidatorSet<SCT: SignatureCollection> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GetMetrics {
     Request,
-    Response(Metrics),
+    Response(HashMap<String, u64>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -187,7 +186,7 @@ pub enum UpdateValidatorSet<SCT: SignatureCollection> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClearMetrics {
     Request,
-    Response(Metrics),
+    Response,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

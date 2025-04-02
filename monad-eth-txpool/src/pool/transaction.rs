@@ -12,6 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_block_policy::{compute_txn_max_value, static_validate_transaction, EthBlockPolicy};
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::{Balance, EthExecutionProtocol, Nonce, BASE_FEE_PER_GAS};
+use monad_metrics::MetricsPolicy;
 use monad_types::SeqNum;
 use tracing::trace;
 
@@ -28,8 +29,8 @@ pub struct ValidEthTransaction {
 }
 
 impl ValidEthTransaction {
-    pub fn validate<ST, SCT>(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+    pub fn validate<ST, SCT, MP>(
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         block_policy: &EthBlockPolicy<ST, SCT>,
         proposal_gas_limit: u64,
         max_code_size: usize,
@@ -40,6 +41,7 @@ impl ValidEthTransaction {
     where
         ST: CertificateSignatureRecoverable,
         SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        MP: MetricsPolicy,
     {
         // TODO(andr-dev): Block base fee is hardcoded we need to update
         // this logic once its included in the consensus proposal

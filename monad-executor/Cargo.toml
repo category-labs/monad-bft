@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-metrics = { workspace = true }
 monad-types = { workspace = true }
 
 bytes = { workspace = true }

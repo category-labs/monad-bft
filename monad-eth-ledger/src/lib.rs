@@ -20,8 +20,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, Round, SeqNum};
 use monad_updaters::ledger::MockableLedger;
@@ -108,12 +109,14 @@ where
     }
 }
 
-impl<ST, SCT> Executor for MockEthLedger<ST, SCT>
+impl<ST, SCT, MP> Executor<MP> for MockEthLedger<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     type Command = LedgerCommand<ST, SCT, EthExecutionProtocol>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -181,8 +184,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -206,10 +209,11 @@ where
     }
 }
 
-impl<ST, SCT> MockableLedger for MockEthLedger<ST, SCT>
+impl<ST, SCT, MP> MockableLedger<MP> for MockEthLedger<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     type Signature = ST;
     type SignatureCollection = SCT;

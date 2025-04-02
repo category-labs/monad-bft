@@ -18,8 +18,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_metrics::MetricsPolicy;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{BlockId, Epoch, Round, SeqNum};
 use tracing::{debug, error, trace, warn};
@@ -67,7 +68,6 @@ where
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
     phantom: PhantomData<ST>,
 }
 
@@ -160,7 +160,6 @@ where
             val_set_update_interval,
 
             waker: None,
-            metrics: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -240,12 +239,14 @@ where
     }
 }
 
-impl<ST, SCT> Executor for StateRootHashTriedbPoll<ST, SCT>
+impl<ST, SCT, MP> Executor<MP> for StateRootHashTriedbPoll<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     type Command = StateRootHashCommand<SCT>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -290,7 +291,7 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }

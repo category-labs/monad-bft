@@ -5,13 +5,16 @@ use monad_chain_config::{
     revision::{ChainParams, MockChainRevision},
     MockChainConfig,
 };
+use monad_consensus_types::metrics::StateMetrics;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
+use monad_eth_txpool_metrics::TxPoolExecutorMetrics;
 use monad_eth_types::{Balance, EthExecutionProtocol};
+use monad_metrics::{Counter, NoopMetricsPolicy};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
     swarm_relation::SwarmRelation, terminator::UntilTerminator,
@@ -79,6 +82,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
+        Self::MetricsPolicy,
     >;
     type TxPoolExecutor = MockTxPoolExecutor<
         Self::SignatureType,
@@ -86,12 +90,14 @@ impl SwarmRelation for ForkpointSwarm {
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
         Self::StateBackendType,
+        Self::MetricsPolicy,
     >;
     type StateSyncExecutor = MockStateSyncExecutor<
         Self::SignatureType,
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
     >;
+    type MetricsPolicy = NoopMetricsPolicy;
 }
 
 static CHAIN_PARAMS: ChainParams = ChainParams {
@@ -236,6 +242,7 @@ fn forkpoint_restart_f(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        StateMetrics::default,
         state_root_delay,
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -269,6 +276,7 @@ fn forkpoint_restart_f(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            StateMetrics::default,
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -289,6 +297,7 @@ fn forkpoint_restart_f(
                 )
             },
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            StateMetrics::default,
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -318,7 +327,11 @@ fn forkpoint_restart_f(
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                        MockTxPoolExecutor::new(
+                            create_block_policy(),
+                            state_backend.clone(),
+                            TxPoolExecutorMetrics::default(),
+                        ),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -408,7 +421,11 @@ fn forkpoint_restart_f(
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
             MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
-            MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
+            MockTxPoolExecutor::new(
+                create_block_policy(),
+                restart_builder_state_backend.clone(),
+                TxPoolExecutorMetrics::default(),
+            ),
             MockLedger::new(restart_builder_state_backend.clone()),
             MockStateSyncExecutor::new(
                 restart_builder_state_backend,
@@ -449,12 +466,14 @@ fn forkpoint_restart_f(
             .metrics()
             .consensus_events
             .trigger_state_sync
+            .read()
             > 0;
         let invalid_epoch_error = restarted_node
             .state
             .metrics()
             .validation_errors
             .invalid_epoch
+            .read()
             > 0;
         let close_to_threshold =
             SeqNum(statesync_threshold.0.saturating_sub(recovery_time.0)) < SeqNum(5);
@@ -462,12 +481,11 @@ fn forkpoint_restart_f(
         // epoch it's joining scheduled. It can't validate any message in the
         // new epoch and must go through out-of-band validator set syncing
         let epoch_cross_over = network_current_epoch > failed_node_high_epoch;
-        let maybe_last_block = restarted_node
-            .executor
-            .ledger()
-            .get_finalized_blocks()
-            .values()
-            .last();
+        let maybe_last_block = MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(
+            restarted_node.executor.ledger(),
+        )
+        .values()
+        .last();
         // SeqNum(terminate_block as u64 - 2): if all nodes are in sync, the
         // shortest ledger is at most 2 blocks behind the longest
         let restarted_node_caught_up = maybe_last_block
@@ -551,6 +569,7 @@ fn forkpoint_restart_below_all(
             )
         },
         || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+        StateMetrics::default,
         state_root_delay,                    // execution_delay
         delta,                               // delta
         MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -594,6 +613,7 @@ fn forkpoint_restart_below_all(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            StateMetrics::default,
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -608,6 +628,7 @@ fn forkpoint_restart_below_all(
             || EthValidator::new(0),
             create_block_policy,
             || InMemoryStateInner::genesis(Balance::MAX, state_root_delay),
+            StateMetrics::default,
             state_root_delay,                    // execution_delay
             delta,                               // delta
             MockChainConfig::new(&CHAIN_PARAMS), // chain config
@@ -632,7 +653,11 @@ fn forkpoint_restart_below_all(
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                        MockTxPoolExecutor::new(
+                            create_block_policy(),
+                            state_backend.clone(),
+                            TxPoolExecutorMetrics::default(),
+                        ),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
@@ -738,7 +763,11 @@ fn forkpoint_restart_below_all(
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
                 MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
-                MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
+                MockTxPoolExecutor::new(
+                    create_block_policy(),
+                    state_backend.clone(),
+                    TxPoolExecutorMetrics::default(),
+                ),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(
                     state_backend,
@@ -778,9 +807,7 @@ fn forkpoint_restart_below_all(
             .states()
             .iter()
             .map(|(_id, node)| {
-                node.executor
-                    .ledger()
-                    .get_finalized_blocks()
+                MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(node.executor.ledger())
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)
@@ -793,9 +820,7 @@ fn forkpoint_restart_below_all(
             .states()
             .iter()
             .map(|(_id, node)| {
-                node.executor
-                    .ledger()
-                    .get_finalized_blocks()
+                MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(node.executor.ledger())
                     .values()
                     .last()
                     .map(|block| block.get_seq_num().0)

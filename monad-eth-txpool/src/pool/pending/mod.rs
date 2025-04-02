@@ -1,6 +1,7 @@
 use alloy_primitives::Address;
 use indexmap::IndexMap;
 use monad_eth_txpool_types::EthTxPoolDropReason;
+use monad_metrics::MetricsPolicy;
 
 pub use self::list::PendingTxList;
 use super::transaction::ValidEthTransaction;
@@ -47,11 +48,14 @@ impl PendingTxMap {
         self.txs.values_mut().flat_map(PendingTxList::iter_mut)
     }
 
-    pub fn try_insert_tx(
+    pub fn try_insert_tx<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         tx: ValidEthTransaction,
-    ) -> Option<&ValidEthTransaction> {
+    ) -> Option<&ValidEthTransaction>
+    where
+        MP: MetricsPolicy,
+    {
         if self.num_txs >= MAX_TXS {
             event_tracker.drop(tx.hash(), EthTxPoolDropReason::PoolFull);
             return None;

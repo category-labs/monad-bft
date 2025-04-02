@@ -18,13 +18,15 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::{InMemoryState, StateBackendTest};
 use monad_types::{BlockId, ExecutionProtocol, Round, SeqNum};
 
-pub trait MockableLedger:
+pub trait MockableLedger<MP>:
     Executor<
+        MP,
         Command = LedgerCommand<
             Self::Signature,
             Self::SignatureCollection,
@@ -32,6 +34,8 @@ pub trait MockableLedger:
         >,
     > + Stream<Item = Self::Event>
     + Unpin
+where
+    MP: MetricsPolicy,
 {
     type Signature: CertificateSignatureRecoverable;
     type SignatureCollection: SignatureCollection<
@@ -50,7 +54,11 @@ pub trait MockableLedger:
     >;
 }
 
-impl<T: MockableLedger + ?Sized> MockableLedger for Box<T> {
+impl<T, MP> MockableLedger<MP> for Box<T>
+where
+    T: MockableLedger<MP> + ?Sized,
+    MP: MetricsPolicy,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -145,13 +153,15 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockLedger<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
 {
     type Command = LedgerCommand<ST, SCT, EPT>;
+    type Metrics = ();
 
     fn exec(&mut self, cmds: Vec<Self::Command>) {
         for cmd in cmds {
@@ -209,8 +219,8 @@ where
             }
         }
     }
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -235,11 +245,12 @@ where
     }
 }
 
-impl<ST, SCT, EPT> MockableLedger for MockLedger<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> MockableLedger<MP> for MockLedger<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
 {
     type Signature = ST;
     type SignatureCollection = SCT;

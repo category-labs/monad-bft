@@ -5,7 +5,7 @@ use monad_blocksync::blocksync::{
 };
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, metrics::Metrics,
+    block::BlockPolicy, block_validator::BlockValidator, metrics::StateMetrics,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
@@ -15,6 +15,7 @@ use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent,
     RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, RouterTarget};
 use monad_validator::{
@@ -24,7 +25,7 @@ use monad_validator::{
 
 use crate::{ConsensusMode, MonadState, VerifiedMonadMessage};
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -33,6 +34,7 @@ where
     SBT: StateBackend,
     BVT: BlockValidator<ST, SCT, EPT, BPT, SBT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
@@ -43,13 +45,13 @@ where
     delta: &'a Duration,
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
 
-    metrics: &'a mut Metrics,
+    metrics: &'a mut StateMetrics<MP>,
 
     _phantom: PhantomData<(ST, SCT, EPT, BPT, SBT, VTF, LT, BVT)>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
+    BlockSyncChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -60,9 +62,10 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
+    MP: MetricsPolicy,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, MP>,
     ) -> Self {
         Self {
             block_sync: &mut monad_state.block_sync,
@@ -90,7 +93,7 @@ where
         let mut block_sync_wrapper = BlockSyncWrapper {
             block_sync: self.block_sync,
             block_cache,
-            metrics: self.metrics,
+            metrics: &mut self.metrics.blocksync_events,
             nodeid: self.nodeid,
             current_epoch: self.consensus.current_epoch(),
             epoch_manager: self.epoch_manager,

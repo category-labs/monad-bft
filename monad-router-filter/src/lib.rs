@@ -8,20 +8,22 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{ConsensusEvent, MonadEvent, RouterCommand};
+use monad_metrics::MetricsPolicy;
 use monad_state::VerifiedMonadMessage;
 use monad_types::ExecutionProtocol;
-
-pub struct FullNodeRouterFilter<ST, SCT, EPT, R> {
+pub struct FullNodeRouterFilter<ST, SCT, EPT, MP, R> {
     router: R,
-    _phantom: PhantomData<(ST, SCT, EPT)>,
+    _phantom: PhantomData<(ST, SCT, EPT, MP)>,
 }
 
-impl<ST, SCT, EPT, R> FullNodeRouterFilter<ST, SCT, EPT, R>
+impl<ST, SCT, EPT, MP, R> FullNodeRouterFilter<ST, SCT, EPT, MP, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
     R: Executor<
+            MP,
             Command = RouterCommand<
                 CertificateSignaturePubKey<ST>,
                 VerifiedMonadMessage<ST, SCT, EPT>,
@@ -37,17 +39,20 @@ where
     }
 }
 
-impl<ST, SCT, EPT, R> Executor for FullNodeRouterFilter<ST, SCT, EPT, R>
+impl<ST, SCT, EPT, MP, R> Executor<MP> for FullNodeRouterFilter<ST, SCT, EPT, MP, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
     R: Executor<
+        MP,
         Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
     >,
 {
     type Command =
         RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
+    type Metrics = R::Metrics;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands
@@ -72,16 +77,17 @@ where
         self.router.exec(filtered);
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
+    fn metrics(&self) -> &Self::Metrics {
         self.router.metrics()
     }
 }
 
-impl<ST, SCT, EPT, R> Stream for FullNodeRouterFilter<ST, SCT, EPT, R>
+impl<ST, SCT, EPT, MP, R> Stream for FullNodeRouterFilter<ST, SCT, EPT, MP, R>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    MP: MetricsPolicy,
     R: Stream<Item = MonadEvent<ST, SCT, EPT>> + Unpin,
 
     Self: Unpin,

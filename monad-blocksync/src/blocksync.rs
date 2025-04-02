@@ -4,13 +4,14 @@ use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus_types::{
     block::{BlockPolicy, BlockRange, ConsensusBlockHeader, ConsensusFullBlock},
-    metrics::Metrics,
+    metrics::BlockSyncEventsStateMetrics,
     payload::{ConsensusBlockBody, ConsensusBlockBodyId},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_metrics::{Counter, Gauge, MetricsPolicy};
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, SeqNum};
 use monad_validator::{
@@ -191,7 +192,7 @@ where
     BlockBuffer(&'a HashMap<ConsensusBlockBodyId, ConsensusBlockBody<EPT>>),
 }
 
-pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF>
+pub struct BlockSyncWrapper<'a, ST, SCT, EPT, BPT, SBT, VTF, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -199,18 +200,19 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     pub block_sync: &'a mut BlockSync<ST, SCT, EPT>,
 
     pub block_cache: BlockCache<'a, ST, SCT, EPT, BPT, SBT>,
-    pub metrics: &'a mut Metrics,
+    pub metrics: &'a mut BlockSyncEventsStateMetrics<MP>,
     pub nodeid: &'a NodeId<SCT::NodeIdPubKey>,
     pub current_epoch: Epoch,
     pub epoch_manager: &'a EpochManager,
     pub val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, VTF> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF>
+impl<ST, SCT, EPT, BPT, SBT, VTF, MP> BlockSyncWrapper<'_, ST, SCT, EPT, BPT, SBT, VTF, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -218,6 +220,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     #[must_use]
     pub fn handle_self_request(
@@ -284,7 +287,7 @@ where
 
         match request {
             BlockSyncRequestMessage::Headers(block_range) => {
-                self.metrics.blocksync_events.peer_headers_request += 1;
+                self.metrics.peer_headers_request.inc();
                 debug!(?sender, ?block_range, "blocksync: peer headers request");
 
                 let cached_blocks = match self.block_cache {
@@ -333,7 +336,7 @@ where
                 }
             }
             BlockSyncRequestMessage::Payload(payload_id) => {
-                self.metrics.blocksync_events.peer_payload_request += 1;
+                self.metrics.peer_payload_request.inc();
                 debug!(?sender, ?payload_id, "blocksync: peer payload request");
 
                 if let Some(cached_payload) = self.get_cached_payload(payload_id) {
@@ -469,9 +472,7 @@ where
                                 .payload_cache
                                 .insert(payload_id, payload.clone());
 
-                            self.metrics
-                                .blocksync_events
-                                .self_payload_response_successful += 1;
+                            self.metrics.self_payload_response_successful.inc();
                         }
                     }
                 }
@@ -494,9 +495,7 @@ where
                 });
 
                 self.block_sync.self_payload_requests_in_flight += 1;
-                self.metrics
-                    .blocksync_events
-                    .self_payload_requests_in_flight += 1;
+                self.metrics.self_payload_requests_in_flight.inc()
             } else {
                 // all payload requests initiated
                 break;
@@ -527,7 +526,7 @@ where
 
         if self_request.to != sender {
             // unexpected sender, but use the headers if it's valid
-            self.metrics.blocksync_events.headers_response_unexpected += 1;
+            self.metrics.headers_response_unexpected.inc();
         }
 
         match headers_response {
@@ -547,17 +546,16 @@ where
                     entry.remove();
 
                     if sender.is_some() {
-                        self.metrics.blocksync_events.headers_response_successful += 1;
+                        self.metrics.headers_response_successful.inc();
                         cmds.push(BlockSyncCommand::ResetTimeout(
                             BlockSyncRequestMessage::Headers(block_range),
                         ));
                     } else {
-                        self.metrics
-                            .blocksync_events
-                            .self_headers_response_successful += 1;
+                        self.metrics.self_headers_response_successful.inc();
                     }
-                    self.metrics.blocksync_events.num_headers_received +=
-                        block_headers.len() as u64;
+                    self.metrics
+                        .num_headers_received
+                        .add(block_headers.len() as u64);
 
                     // add payloads to be requested
                     for payload_id in block_headers.iter().map(|block| block.block_body_id) {
@@ -594,7 +592,7 @@ where
                     // response from ledger shouldn't fail headers verification
                     assert!(sender.is_some());
 
-                    self.metrics.blocksync_events.headers_validation_failed += 1;
+                    self.metrics.headers_validation_failed.inc();
                     // headers response from peer is invalid, re-request after timeout
                 }
             }
@@ -607,10 +605,10 @@ where
                 if sender.is_some() {
                     // received not available from a peer. ignore the response and re-request
                     // after timeout
-                    self.metrics.blocksync_events.headers_response_failed += 1;
+                    self.metrics.headers_response_failed.inc();
                 } else if self_request.to.is_none() {
                     // tried to fetch from ledger and received not available
-                    self.metrics.blocksync_events.self_headers_response_failed += 1;
+                    self.metrics.self_headers_response_failed.inc();
 
                     // request from a peer
                     let to = Self::pick_peer(
@@ -621,7 +619,7 @@ where
                         &mut self.block_sync.rng,
                     );
                     self_request.to = Some(to);
-                    self.metrics.blocksync_events.self_headers_request += 1;
+                    self.metrics.self_headers_request.inc();
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Headers(block_range),
@@ -658,14 +656,14 @@ where
 
         let Some(self_request) = entry.get_mut() else {
             // got payload response when the request was never initiated
-            self.metrics.blocksync_events.payload_response_unexpected += 1;
+            self.metrics.payload_response_unexpected.inc();
             // TODO use it if valid ?
             return cmds;
         };
 
         if self_request.to != sender {
             // unexpected sender, but use the payload if it's valid
-            self.metrics.blocksync_events.payload_response_unexpected += 1;
+            self.metrics.payload_response_unexpected.inc();
         }
 
         let self_requester = self_request.requester;
@@ -676,18 +674,16 @@ where
                 self.block_sync.self_payload_requests_in_flight -= 1;
 
                 self.metrics
-                    .blocksync_events
-                    .self_payload_requests_in_flight -= 1;
+                    .self_payload_requests_in_flight
+                    .sub_saturating(1);
                 if sender.is_some() {
                     // reset timeout if requested from peer
                     cmds.push(BlockSyncCommand::ResetTimeout(
                         BlockSyncRequestMessage::Payload(payload_id),
                     ));
-                    self.metrics.blocksync_events.payload_response_successful += 1;
+                    self.metrics.payload_response_successful.inc();
                 } else {
-                    self.metrics
-                        .blocksync_events
-                        .self_payload_response_successful += 1;
+                    self.metrics.self_payload_response_successful.inc();
                 }
 
                 debug!(?sender, ?payload_id, "blocksync: received payload response");
@@ -712,10 +708,10 @@ where
                 if sender.is_some() {
                     // received not available from a peer. ignore the response and re-request
                     // after timeout
-                    self.metrics.blocksync_events.payload_response_failed += 1;
+                    self.metrics.payload_response_failed.inc();
                 } else if self_request.to.is_none() {
                     // tried to fetch from ledger and received not available
-                    self.metrics.blocksync_events.self_payload_response_failed += 1;
+                    self.metrics.self_payload_response_failed.inc();
 
                     // request from peer
                     let to = Self::pick_peer(
@@ -726,7 +722,7 @@ where
                         &mut self.block_sync.rng,
                     );
                     self_request.to = Some(to);
-                    self.metrics.blocksync_events.self_payload_request += 1;
+                    self.metrics.self_payload_request.inc();
                     cmds.push(BlockSyncCommand::SendRequest {
                         to,
                         request: BlockSyncRequestMessage::Payload(payload_id),
@@ -820,9 +816,7 @@ where
                     let headers_response = match headers_response.clone() {
                         BlockSyncHeadersResponse::Found((_, mut requested_blocks)) => {
                             requested_blocks.extend(cached_blocks);
-                            self.metrics
-                                .blocksync_events
-                                .peer_headers_request_successful += 1;
+                            self.metrics.peer_headers_request_successful.inc();
                             assert!(requested_blocks
                                 .iter()
                                 .zip(requested_blocks.iter().skip(1))
@@ -833,7 +827,7 @@ where
                             ))
                         }
                         BlockSyncHeadersResponse::NotAvailable(_) => {
-                            self.metrics.blocksync_events.peer_headers_request_failed += 1;
+                            self.metrics.peer_headers_request_failed.inc();
                             BlockSyncHeadersResponse::NotAvailable(requested_block_range)
                         }
                     };
@@ -851,12 +845,10 @@ where
 
                 match payload_response {
                     BlockSyncBodyResponse::Found(_) => {
-                        self.metrics
-                            .blocksync_events
-                            .peer_payload_request_successful += 1
+                        self.metrics.peer_payload_request_successful.inc();
                     }
                     BlockSyncBodyResponse::NotAvailable(_) => {
-                        self.metrics.blocksync_events.peer_payload_request_failed += 1
+                        self.metrics.peer_payload_request_failed.inc()
                     }
                 }
 
@@ -904,7 +896,7 @@ where
         request: BlockSyncRequestMessage,
     ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
         debug!(?request, "blocksync: self request timeout");
-        self.metrics.blocksync_events.request_timeout += 1;
+        self.metrics.request_timeout.inc();
         let mut cmds = Vec::new();
 
         match request {
@@ -981,7 +973,7 @@ mod test {
             PassthruWrappedBlock, GENESIS_TIMESTAMP,
         },
         checkpoint::RootInfo,
-        metrics::Metrics,
+        metrics::BlockSyncEventsStateMetrics,
         payload::{
             ConsensusBlockBody, ConsensusBlockBodyId, ConsensusBlockBodyInner, RoundSignature,
         },
@@ -996,6 +988,7 @@ mod test {
         },
         NopPubKey, NopSignature,
     };
+    use monad_metrics::MockMetricsPolicy;
     use monad_multi_sig::MultiSig;
     use monad_state_backend::{InMemoryState, StateBackend};
     use monad_testutil::validators::create_keys_w_validators;
@@ -1034,7 +1027,7 @@ mod test {
 
         // TODO: include BlockBuffer
         blocktree: BlockTree<ST, SCT, EPT, BPT, SBT>,
-        metrics: Metrics,
+        metrics: BlockSyncEventsStateMetrics<MockMetricsPolicy>,
         self_node_id: NodeId<SCT::NodeIdPubKey>,
         peer_id: NodeId<SCT::NodeIdPubKey>,
         current_epoch: Epoch,
@@ -1079,6 +1072,7 @@ mod test {
             BPT,
             SBT,
             VTF,
+            MockMetricsPolicy,
         > {
             let block_cache = BlockCache::BlockTree(&self.blocktree);
             BlockSyncWrapper {
@@ -1313,7 +1307,7 @@ mod test {
         BlockSyncContext {
             block_sync: BlockSync::new(Default::default()),
             blocktree,
-            metrics: Metrics::default(),
+            metrics: BlockSyncEventsStateMetrics::default(),
             self_node_id,
             peer_id,
             current_epoch: Epoch(1),

@@ -6,8 +6,9 @@ use std::{
 };
 
 use futures::Stream;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{TimeoutVariant, TimerCommand};
+use monad_metrics::MetricsPolicy;
 use tokio::task::{AbortHandle, JoinSet};
 
 /// This updater allows timer events to be scheduled to fire in the future
@@ -15,7 +16,6 @@ pub struct TokioTimer<E> {
     timers: JoinSet<Option<E>>,
     aborts: HashMap<TimeoutVariant, AbortHandle>,
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
 }
 impl<E> Default for TokioTimer<E> {
     fn default() -> Self {
@@ -23,15 +23,16 @@ impl<E> Default for TokioTimer<E> {
             timers: JoinSet::new(),
             aborts: HashMap::new(),
             waker: None,
-            metrics: Default::default(),
         }
     }
 }
-impl<E> Executor for TokioTimer<E>
+impl<E, MP> Executor<MP> for TokioTimer<E>
 where
     E: Send + 'static,
+    MP: MetricsPolicy,
 {
     type Command = TimerCommand<E>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
@@ -74,8 +75,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -116,6 +117,7 @@ mod tests {
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
     use monad_consensus_types::{block::BlockRange, payload::ConsensusBlockBodyId};
     use monad_crypto::hasher::Hash;
+    use monad_metrics::NoopMetricsPolicy;
     use monad_types::{BlockId, SeqNum};
     use ntest::timeout;
 
@@ -157,11 +159,14 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(0),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: (),
-        }]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(0),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: (),
+            }],
+        );
 
         assert_eq!(timer.next().await, Some(()));
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
@@ -173,16 +178,22 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(0),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: (),
-        }]);
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(0),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: (),
-        }]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(0),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: (),
+            }],
+        );
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(0),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: (),
+            }],
+        );
 
         assert_eq!(timer.next().await, Some(()));
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
@@ -194,13 +205,19 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(0),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: (),
-        }]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(0),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: (),
+            }],
+        );
 
-        timer.exec(vec![TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker)]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker)],
+        );
 
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
     }
@@ -211,18 +228,21 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![
-            TimerCommand::Schedule {
-                duration: Duration::from_millis(0),
-                variant: TimeoutVariant::Pacemaker,
-                on_timeout: (),
-            },
-            TimerCommand::Schedule {
-                duration: Duration::from_millis(0),
-                variant: TimeoutVariant::Pacemaker,
-                on_timeout: (),
-            },
-        ]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![
+                TimerCommand::Schedule {
+                    duration: Duration::from_millis(0),
+                    variant: TimeoutVariant::Pacemaker,
+                    on_timeout: (),
+                },
+                TimerCommand::Schedule {
+                    duration: Duration::from_millis(0),
+                    variant: TimeoutVariant::Pacemaker,
+                    on_timeout: (),
+                },
+            ],
+        );
 
         assert_eq!(timer.next().await, Some(()));
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
@@ -234,14 +254,17 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![
-            TimerCommand::Schedule {
-                duration: Duration::from_millis(0),
-                variant: TimeoutVariant::Pacemaker,
-                on_timeout: (),
-            },
-            TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
-        ]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![
+                TimerCommand::Schedule {
+                    duration: Duration::from_millis(0),
+                    variant: TimeoutVariant::Pacemaker,
+                    on_timeout: (),
+                },
+                TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
+            ],
+        );
 
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
     }
@@ -252,14 +275,17 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![
-            TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
-            TimerCommand::Schedule {
-                duration: Duration::from_millis(0),
-                variant: TimeoutVariant::Pacemaker,
-                on_timeout: (),
-            },
-        ]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![
+                TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
+                TimerCommand::Schedule {
+                    duration: Duration::from_millis(0),
+                    variant: TimeoutVariant::Pacemaker,
+                    on_timeout: (),
+                },
+            ],
+        );
 
         assert_eq!(timer.next().await, Some(()));
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
@@ -271,12 +297,15 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(1),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: (),
-        }]);
-        timer.exec(Vec::new());
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(1),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: (),
+            }],
+        );
+        Executor::<NoopMetricsPolicy>::exec(&mut timer, Vec::new());
 
         assert_eq!(timer.next().await, Some(()));
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
@@ -288,20 +317,26 @@ mod tests {
         let mut timer = TokioTimer::default();
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
-        timer.exec(vec![TimerCommand::Schedule {
-            duration: Duration::from_millis(1),
-            variant: TimeoutVariant::Pacemaker,
-            on_timeout: TimeoutVariant::Pacemaker,
-        }]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(1),
+                variant: TimeoutVariant::Pacemaker,
+                on_timeout: TimeoutVariant::Pacemaker,
+            }],
+        );
 
         let mut requests = HashSet::from(get_blocksync_requests());
 
         for (i, req) in requests.iter().enumerate() {
-            timer.exec(vec![TimerCommand::Schedule {
-                duration: Duration::from_millis((i + 100) as u64),
-                variant: TimeoutVariant::BlockSync(*req),
-                on_timeout: TimeoutVariant::BlockSync(*req),
-            }]);
+            Executor::<NoopMetricsPolicy>::exec(
+                &mut timer,
+                vec![TimerCommand::Schedule {
+                    duration: Duration::from_millis((i + 100) as u64),
+                    variant: TimeoutVariant::BlockSync(*req),
+                    on_timeout: TimeoutVariant::BlockSync(*req),
+                }],
+            );
         }
 
         let mut regular_tmo_observed = false;
@@ -340,11 +375,14 @@ mod tests {
 
         for i in 0..3 {
             for req in requests.iter() {
-                timer.exec(vec![TimerCommand::Schedule {
-                    duration: Duration::from_millis(i * 10),
-                    variant: TimeoutVariant::BlockSync(*req),
-                    on_timeout: TimeoutVariant::BlockSync(*req),
-                }]);
+                Executor::<NoopMetricsPolicy>::exec(
+                    &mut timer,
+                    vec![TimerCommand::Schedule {
+                        duration: Duration::from_millis(i * 10),
+                        variant: TimeoutVariant::BlockSync(*req),
+                        on_timeout: TimeoutVariant::BlockSync(*req),
+                    }],
+                );
             }
         }
 
@@ -370,38 +408,49 @@ mod tests {
         assert_eq!(futures::poll!(timer.next()), Poll::Pending);
 
         // fetch reset submitted earlier should have no impact.
-        timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
-                last_block_id: BlockId(Hash([0x00_u8; 32])),
-                num_blocks: SeqNum(1),
-            })),
-        )]);
-        timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(
-                Hash([0x05_u8; 32]),
-            ))),
-        )]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::ScheduleReset(TimeoutVariant::BlockSync(
+                BlockSyncRequestMessage::Headers(BlockRange {
+                    last_block_id: BlockId(Hash([0x00_u8; 32])),
+                    num_blocks: SeqNum(1),
+                }),
+            ))],
+        );
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::ScheduleReset(TimeoutVariant::BlockSync(
+                BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x05_u8; 32]))),
+            ))],
+        );
 
         let mut requests = HashSet::from(get_blocksync_requests());
 
         for (i, req) in requests.iter().enumerate() {
-            timer.exec(vec![TimerCommand::Schedule {
-                duration: Duration::from_millis((i + 100) as u64),
-                variant: TimeoutVariant::BlockSync(*req),
-                on_timeout: TimeoutVariant::BlockSync(*req),
-            }]);
+            Executor::<NoopMetricsPolicy>::exec(
+                &mut timer,
+                vec![TimerCommand::Schedule {
+                    duration: Duration::from_millis((i + 100) as u64),
+                    variant: TimeoutVariant::BlockSync(*req),
+                    on_timeout: TimeoutVariant::BlockSync(*req),
+                }],
+            );
         }
-        timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Headers(BlockRange {
-                last_block_id: BlockId(Hash([0x01_u8; 32])),
-                num_blocks: SeqNum(1),
-            })),
-        )]);
-        timer.exec(vec![TimerCommand::ScheduleReset(
-            TimeoutVariant::BlockSync(BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(
-                Hash([0x05_u8; 32]),
-            ))),
-        )]);
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::ScheduleReset(TimeoutVariant::BlockSync(
+                BlockSyncRequestMessage::Headers(BlockRange {
+                    last_block_id: BlockId(Hash([0x01_u8; 32])),
+                    num_blocks: SeqNum(1),
+                }),
+            ))],
+        );
+        Executor::<NoopMetricsPolicy>::exec(
+            &mut timer,
+            vec![TimerCommand::ScheduleReset(TimeoutVariant::BlockSync(
+                BlockSyncRequestMessage::Payload(ConsensusBlockBodyId(Hash([0x05_u8; 32]))),
+            ))],
+        );
 
         for _ in 0..8 {
             match timer.next().await {
@@ -437,11 +486,14 @@ mod tests {
         let requests = get_blocksync_requests();
 
         for (i, id) in requests.iter().enumerate() {
-            timer.exec(vec![TimerCommand::Schedule {
-                duration: Duration::from_millis((i as u64) + 3),
-                variant: TimeoutVariant::BlockSync(*id),
-                on_timeout: TimeoutVariant::BlockSync(*id),
-            }]);
+            Executor::<NoopMetricsPolicy>::exec(
+                &mut timer,
+                vec![TimerCommand::Schedule {
+                    duration: Duration::from_millis((i as u64) + 3),
+                    variant: TimeoutVariant::BlockSync(*id),
+                    on_timeout: TimeoutVariant::BlockSync(*id),
+                }],
+            );
         }
 
         for request in requests {

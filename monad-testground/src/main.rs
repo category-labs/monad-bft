@@ -20,7 +20,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_eth_types::Balance;
-use monad_executor::Executor;
+use monad_metrics::NoopMetricsPolicy;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
@@ -35,7 +35,7 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 
-use crate::executor::{
+use self::executor::{
     make_monad_executor, make_monad_state, ExecutorConfig, RouterConfig, StateConfig,
 };
 
@@ -347,7 +347,8 @@ async fn run<ST, SCT>(
     let mut last_printed_len = 0;
     const BLOCK_INTERVAL: usize = 100;
 
-    let mut last_ledger_len = executor.ledger().get_finalized_blocks().len();
+    let mut last_ledger_len =
+        MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(executor.ledger()).len();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);
     if let Some(cx) = &cx {
         ledger_span.set_parent(cx.clone());
@@ -359,7 +360,8 @@ async fn run<ST, SCT>(
             let commands = state.update(event);
             executor.exec(commands);
         }
-        let ledger_len = executor.ledger().get_finalized_blocks().len();
+        let ledger_len =
+            MockableLedger::<NoopMetricsPolicy>::get_finalized_blocks(executor.ledger()).len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
             ledger_span = tracing::info_span!("ledger_span", last_ledger_len, ?nodeid);

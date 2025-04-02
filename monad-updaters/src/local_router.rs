@@ -8,8 +8,9 @@ use std::{
 
 use futures::Stream;
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_metrics::MetricsPolicy;
 use monad_types::{NodeId, RouterTarget};
 
 /// Implementation of the Router which uses tokio channels (as opposed to network links)
@@ -81,8 +82,6 @@ pub struct LocalPeerRouter<M: Message, OM> {
     >,
     rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId<M::NodeIdPubKey>, M)>,
 
-    metrics: ExecutorMetrics,
-
     _pd: PhantomData<OM>,
 }
 
@@ -99,18 +98,19 @@ impl<M: Message, OM> LocalPeerRouter<M, OM> {
             me,
             rx,
             txs,
-            metrics: Default::default(),
             _pd: PhantomData,
         }
     }
 }
 
-impl<M, OM> Executor for LocalPeerRouter<M, OM>
+impl<M, OM, MP> Executor<MP> for LocalPeerRouter<M, OM>
 where
     M: Message,
     OM: Into<M>,
+    MP: MetricsPolicy,
 {
     type Command = RouterCommand<M::NodeIdPubKey, OM>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -151,8 +151,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

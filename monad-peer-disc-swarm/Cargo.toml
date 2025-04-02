@@ -7,6 +7,7 @@ edition = "2024"
 monad-crypto = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
+monad-metrics = { workspace = true }
 monad-peer-discovery = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-transformer = { workspace = true }

@@ -18,15 +18,18 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_block_policy::EthBlockPolicy;
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::TxPoolExecutorMetrics;
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_metrics::MetricsPolicy;
 use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 
-pub trait MockableTxPool:
+pub trait MockableTxPool<MP>:
     Executor<
+        MP,
         Command = TxPoolCommand<
             Self::Signature,
             Self::SignatureCollection,
@@ -36,6 +39,8 @@ pub trait MockableTxPool:
         >,
     > + Stream<Item = Self::Event>
     + Unpin
+where
+    MP: MetricsPolicy,
 {
     type Signature: CertificateSignatureRecoverable;
     type SignatureCollection: SignatureCollection<
@@ -57,7 +62,11 @@ pub trait MockableTxPool:
     fn send_transaction(&mut self, tx: Bytes);
 }
 
-impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
+impl<T, MP> MockableTxPool<MP> for Box<T>
+where
+    T: MockableTxPool<MP> + ?Sized,
+    MP: MetricsPolicy,
+{
     type Signature = T::Signature;
     type SignatureCollection = T::SignatureCollection;
     type ExecutionProtocol = T::ExecutionProtocol;
@@ -75,28 +84,32 @@ impl<T: MockableTxPool + ?Sized> MockableTxPool for Box<T> {
     }
 }
 
-pub struct MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT>
+pub struct MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
     // This field is only populated when the execution protocol is EthExecutionProtocol
-    eth: Option<(EthTxPool<ST, SCT, SBT>, BPT, SBT)>,
+    eth: Option<(EthTxPool<ST, SCT, SBT, MP>, BPT, SBT)>,
 
     events: VecDeque<MempoolEvent<SCT, EPT>>,
     waker: Option<Waker>,
 
-    metrics: EthTxPoolMetrics,
-    executor_metrics: ExecutorMetrics,
+    metrics: TxPoolExecutorMetrics<MP>,
 }
 
-impl<ST, SCT, BPT, SBT> Default for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
+impl<ST, SCT, BPT, SBT, MP> Default
+    for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
+    MP::Counter: Default,
+    MP::Gauge: Default,
 {
     fn default() -> Self {
         Self {
@@ -105,39 +118,46 @@ where
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics: TxPoolExecutorMetrics::default(),
         }
     }
 }
 
-impl<ST, SCT, SBT> MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+impl<ST, SCT, SBT, MP>
+    MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
-    pub fn new(block_policy: EthBlockPolicy<ST, SCT>, state_backend: SBT) -> Self {
+    pub fn new(
+        block_policy: EthBlockPolicy<ST, SCT>,
+        state_backend: SBT,
+        metrics: TxPoolExecutorMetrics<MP>,
+    ) -> Self {
         Self {
             eth: Some((EthTxPool::default_testing(), block_policy, state_backend)),
 
             events: VecDeque::default(),
             waker: None,
 
-            metrics: EthTxPoolMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+            metrics,
         }
     }
 }
 
-impl<ST, SCT, BPT, SBT> Executor for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
+impl<ST, SCT, BPT, SBT, MP> Executor<MP>
+    for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<ST, SCT, MockExecutionProtocol, SBT>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
     type Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>;
+    type Metrics = TxPoolExecutorMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -187,25 +207,27 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
-impl<ST, SCT, SBT> Executor
-    for MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+impl<ST, SCT, SBT, MP> Executor<MP>
+    for MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 {
     type Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>;
+    type Metrics = TxPoolExecutorMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (pool, block_policy, state_backend) = self.eth.as_mut().unwrap();
 
         let mut events = Vec::default();
-        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics, &mut events);
+        let mut event_tracker = EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut events);
 
         for command in commands {
             match command {
@@ -295,22 +317,21 @@ where
                 TxPoolCommand::EnterRound { .. } => {}
             }
         }
-
-        self.metrics.update(&mut self.executor_metrics);
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        ExecutorMetricsChain::default().push(&self.executor_metrics)
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
-impl<ST, SCT, EPT, BPT, SBT> Stream for MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT>
+impl<ST, SCT, EPT, BPT, SBT, MP> Stream for MockTxPoolExecutor<ST, SCT, EPT, BPT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 
     Self: Unpin,
 {
@@ -329,15 +350,16 @@ where
     }
 }
 
-impl<ST, SCT, BPT, SBT> MockableTxPool
-    for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT>
+impl<ST, SCT, BPT, SBT, MP> MockableTxPool<MP>
+    for MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, BPT, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BPT: BlockPolicy<ST, SCT, MockExecutionProtocol, SBT>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 
-    Self: Executor<Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>> + Unpin,
+    Self: Executor<MP, Command = TxPoolCommand<ST, SCT, MockExecutionProtocol, BPT, SBT>> + Unpin,
 {
     type Signature = ST;
     type SignatureCollection = SCT;
@@ -358,14 +380,16 @@ where
     }
 }
 
-impl<ST, SCT, SBT> MockableTxPool
-    for MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>
+impl<ST, SCT, SBT, MP> MockableTxPool<MP>
+    for MockTxPoolExecutor<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
+    MP: MetricsPolicy,
 
     Self: Executor<
+            MP,
             Command = TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>,
         > + Unpin,
 {
@@ -395,7 +419,7 @@ where
         let tx = Recovered::new_unchecked(tx, signer);
 
         pool.insert_txs(
-            &mut EthTxPoolEventTracker::new(&mut self.metrics, &mut Vec::default()),
+            &mut EthTxPoolEventTracker::new(&mut self.metrics.pool, &mut Vec::default()),
             block_policy,
             state_backend,
             vec![tx],

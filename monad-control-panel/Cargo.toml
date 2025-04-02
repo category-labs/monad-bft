@@ -13,6 +13,7 @@ monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
+monad-metrics = { workspace = true }
 monad-types = { workspace = true }
 
 futures = { workspace = true }

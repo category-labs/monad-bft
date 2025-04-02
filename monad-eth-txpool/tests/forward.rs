@@ -4,8 +4,10 @@ use alloy_primitives::{hex, B256};
 use monad_crypto::NopSignature;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_testutil::{generate_block_with_txs, make_legacy_tx, recover_tx};
-use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
+use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker};
+use monad_eth_txpool_metrics::PoolTxPoolExecutorMetrics;
 use monad_eth_types::{Balance, BASE_FEE_PER_GAS};
+use monad_metrics::NoopMetricsPolicy;
 use monad_state_backend::{InMemoryBlockState, InMemoryState, InMemoryStateInner};
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
@@ -24,8 +26,8 @@ const FORWARD_MAX_RETRIES: usize = 2;
 fn with_txpool(
     insert_tx_owned: bool,
     f: impl FnOnce(
-        EthTxPool<SignatureType, SignatureCollectionType, InMemoryState>,
-        &mut EthTxPoolEventTracker,
+        EthTxPool<SignatureType, SignatureCollectionType, InMemoryState, NoopMetricsPolicy>,
+        &mut EthTxPoolEventTracker<NoopMetricsPolicy>,
     ),
 ) {
     let tx = recover_tx(make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 10));
@@ -38,7 +40,7 @@ fn with_txpool(
     );
     let mut pool = EthTxPool::default_testing();
 
-    let mut metrics = EthTxPoolMetrics::default();
+    let mut metrics = PoolTxPoolExecutorMetrics::default();
     let mut ipc_events = Vec::default();
     let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
 
@@ -57,10 +59,6 @@ fn with_txpool(
             .count(),
         0
     );
-
-    let mut metrics = EthTxPoolMetrics::default();
-    let mut ipc_events = Vec::default();
-    let mut event_tracker = EthTxPoolEventTracker::new(&mut metrics, &mut ipc_events);
 
     pool.insert_txs(
         &mut event_tracker,

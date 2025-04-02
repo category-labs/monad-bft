@@ -3,6 +3,7 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use alloy_primitives::Address;
 use monad_eth_txpool_types::EthTxPoolDropReason;
 use monad_eth_types::Nonce;
+use monad_metrics::MetricsPolicy;
 
 use crate::{pool::transaction::ValidEthTransaction, EthTxPoolEventTracker};
 
@@ -22,11 +23,14 @@ impl PendingTxList {
         self.nonce_map.values_mut()
     }
 
-    pub fn insert_entry<'a>(
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+    pub fn insert_entry<'a, MP>(
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         entry: indexmap::map::VacantEntry<'a, Address, Self>,
         tx: ValidEthTransaction,
-    ) -> &'a ValidEthTransaction {
+    ) -> &'a ValidEthTransaction
+    where
+        MP: MetricsPolicy,
+    {
         let mut nonce_map = BTreeMap::new();
 
         let nonce = tx.nonce();
@@ -45,11 +49,14 @@ impl PendingTxList {
 
     /// Produces a reference to the tx if it is present in the tx list after attempting to insert
     /// it.
-    pub fn try_insert(
+    pub fn try_insert<MP>(
         &mut self,
-        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        event_tracker: &mut EthTxPoolEventTracker<'_, MP>,
         tx: ValidEthTransaction,
-    ) -> Option<&ValidEthTransaction> {
+    ) -> Option<&ValidEthTransaction>
+    where
+        MP: MetricsPolicy,
+    {
         match self.nonce_map.entry(tx.nonce()) {
             Entry::Vacant(v) => {
                 event_tracker.insert_pending(tx.raw(), tx.is_owned());

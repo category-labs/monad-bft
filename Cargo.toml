@@ -39,6 +39,7 @@ monad-eth-testutil = { path = "./monad-eth-testutil" }
 monad-eth-txpool = { path = "./monad-eth-txpool" }
 monad-eth-txpool-executor = { path = "./monad-eth-txpool-executor" }
 monad-eth-txpool-ipc = { path = "./monad-eth-txpool-ipc" }
+monad-eth-txpool-metrics = { path = "./monad-eth-txpool-metrics" }
 monad-eth-txpool-types = { path = "./monad-eth-txpool-types" }
 monad-eth-types = { path = "./monad-eth-types" }
 monad-ethcall = { path = "./monad-ethcall" }
@@ -47,6 +48,8 @@ monad-executor-glue = { path = "./monad-executor-glue" }
 monad-keystore = { path = "./monad-keystore" }
 monad-ledger = { path = "./monad-ledger" }
 monad-merkle = { path = "./monad-merkle" }
+monad-metrics = { path = "./monad-metrics" }
+monad-metrics-macro = { path = "./monad-metrics-macro" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }
 monad-node-config = { path = "./monad-node-config" }
@@ -146,6 +149,7 @@ opentelemetry = "0.24"
 opentelemetry_sdk = "0.24"
 opentelemetry-otlp = "0.17"
 opentelemetry-semantic-conventions = "0.16"
+paste = "1.0.14"
 pbjson = "0.7"
 pbjson-build = "0.7"
 pbkdf2 = "0.12"

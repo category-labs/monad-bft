@@ -13,10 +13,11 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
 };
+use monad_metrics::MockMetricsPolicy;
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
@@ -264,22 +265,25 @@ impl<S: SwarmRelation> MockExecutor<S> {
     }
 }
 
-impl<S: SwarmRelation> Executor for MockExecutor<S> {
-    type Command = Command<
-        MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
-        VerifiedMonadMessage<
-            S::SignatureType,
-            S::SignatureCollectionType,
-            S::ExecutionProtocolType,
+impl<S: SwarmRelation> MockExecutor<S> {
+    pub fn exec(
+        &mut self,
+        commands: Vec<
+            Command<
+                MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
+                VerifiedMonadMessage<
+                    S::SignatureType,
+                    S::SignatureCollectionType,
+                    S::ExecutionProtocolType,
+                >,
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::ExecutionProtocolType,
+                S::BlockPolicyType,
+                S::StateBackendType,
+            >,
         >,
-        S::SignatureType,
-        S::SignatureCollectionType,
-        S::ExecutionProtocolType,
-        S::BlockPolicyType,
-        S::StateBackendType,
-    >;
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
+    ) {
         let (
             router_cmds,
             timer_cmds,
@@ -292,7 +296,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             loopback_cmds,
             statesync_cmds,
             _config_reload_cmds,
-        ) = Self::Command::split_commands(commands);
+        ) = Command::split_commands(commands);
 
         for command in timer_cmds {
             match command {
@@ -320,9 +324,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
 
         self.ledger.exec(ledger_cmds);
         self.txpool.exec(txpool_cmds);
-        self.checkpoint.exec(checkpoint_cmds);
+        Executor::<S::MetricsPolicy>::exec(&mut self.checkpoint, checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
-        self.loopback.exec(loopback_cmds);
+        Executor::<S::MetricsPolicy>::exec(&mut self.loopback, loopback_cmds);
         self.statesync.exec(statesync_cmds);
 
         for command in router_cmds {
@@ -350,11 +354,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 }
             }
         }
-    }
-
-    fn metrics(&self) -> ExecutorMetricsChain {
-        // TODO do we want to see executor metrics in mock?
-        Default::default()
     }
 }
 
@@ -451,11 +450,12 @@ impl<E> Default for MockTimer<E> {
         }
     }
 }
-impl<E> Executor for MockTimer<E>
+impl<E> Executor<MockMetricsPolicy> for MockTimer<E>
 where
     E: PartialEq + Eq,
 {
     type Command = TimerCommand<E>;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
@@ -484,8 +484,8 @@ where
             }
         }
     }
-    fn metrics(&self) -> ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 impl<E> Stream for MockTimer<E>

@@ -13,6 +13,7 @@ monad-consensus = { workspace = true }
 monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-metrics = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-state = { workspace = true }
 monad-types = { workspace = true }

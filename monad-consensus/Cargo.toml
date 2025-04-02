@@ -12,6 +12,7 @@ bench = false
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-metrics = { workspace = true }
 monad-proto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }

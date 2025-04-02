@@ -1,0 +1,7 @@
+[package]
+name = "monad-eth-txpool-metrics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monad-metrics = { workspace = true }

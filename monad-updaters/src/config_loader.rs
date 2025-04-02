@@ -12,6 +12,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{
     ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent,
 };
+use monad_metrics::MetricsPolicy;
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{DropTimer, ExecutionProtocol, NodeId};
 use tokio::{
@@ -48,16 +49,18 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for MockConfigLoader<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for MockConfigLoader<ST, SCT, EPT>
 where
     SCT: SignatureCollection,
+    MP: MetricsPolicy,
 {
     type Command = ConfigReloadCommand;
+    type Metrics = ();
 
     fn exec(&mut self, _commands: Vec<Self::Command>) {}
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 
@@ -215,11 +218,13 @@ where
     }
 }
 
-impl<ST, SCT, EPT> Executor for ConfigLoader<ST, SCT, EPT>
+impl<ST, SCT, EPT, MP> Executor<MP> for ConfigLoader<ST, SCT, EPT>
 where
     SCT: SignatureCollection,
+    MP: MetricsPolicy,
 {
     type Command = ConfigReloadCommand;
+    type Metrics = ();
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -231,8 +236,8 @@ where
         }
     }
 
-    fn metrics(&self) -> monad_executor::ExecutorMetricsChain {
-        Default::default()
+    fn metrics(&self) -> &Self::Metrics {
+        &()
     }
 }
 

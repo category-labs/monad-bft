@@ -220,6 +220,7 @@ where
             StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
             ChainConfigType = <DebugSwarmRelation as SwarmRelation>::ChainConfigType,
             ChainRevisionType = <DebugSwarmRelation as SwarmRelation>::ChainRevisionType,
+            MetricsPolicy = <DebugSwarmRelation as SwarmRelation>::MetricsPolicy
         > + 'static,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,

@@ -6,6 +6,7 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_metrics::MetricsPolicy;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -27,12 +28,13 @@ use twin_reader::TWINS_STATE_ROOT_DELAY;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<ST, SCT, EPT, S>(seed: u64, test_case: TwinsTestCase<S>)
+pub fn run_twins_test<ST, SCT, EPT, MP, S>(seed: u64, test_case: TwinsTestCase<S>)
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
+    MP: MetricsPolicy,
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
@@ -43,9 +45,10 @@ where
             MonadMessage<ST, SCT, EPT>,
             VerifiedMonadMessage<ST, SCT, EPT>,
         >,
-        StateRootHashExecutor = MockStateRootHashNop<ST, SCT, EPT>,
+        StateRootHashExecutor = MockStateRootHashNop<ST, SCT, EPT, MP>,
         StateSyncExecutor = MockStateSyncExecutor<ST, SCT, EPT>,
         Ledger = MockLedger<ST, SCT, EPT>,
+        MetricsPolicy = MP,
     >,
     S::TxPoolExecutor: Default,
 {

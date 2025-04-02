@@ -14,6 +14,7 @@ monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
+monad-metrics = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true }

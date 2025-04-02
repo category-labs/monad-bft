@@ -13,6 +13,7 @@ monad-chain-config = { workspace = true }
 monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-metrics = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-state = { workspace = true }

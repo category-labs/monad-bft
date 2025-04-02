@@ -7,12 +7,13 @@ use std::{
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
 use monad_consensus_types::{
-    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::StateMetrics,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_eth_types::Balance;
+use monad_metrics::Counter;
 use monad_mock_swarm::{
-    fetch_metric,
+    fetch_metric_counter,
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
@@ -96,6 +97,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
         || MockValidator,
         || PassthruBlockPolicy,
         || InMemoryStateInner::genesis(Balance::MAX, SeqNum::MAX),
+        StateMetrics::default,
         // avoid state_root trigger in rand latency setting
         // TODO-1, cover cases with low state_root_delay once state_sync is done
         SeqNum::MAX,                         // execution_delay
@@ -170,18 +172,18 @@ fn nodes_with_random_latency(latency_seed: u64) {
         // should be no branching
         .metric_range(
             &node_ids,
-            fetch_metric!(consensus_events.process_qc),
+            fetch_metric_counter!(consensus_events.process_qc),
             min_ledger_len as u64 - max_blocksync_requests,
             last_block as u64 + 2,
         )
         .metric_maximum(
             &node_ids,
-            fetch_metric!(blocksync_events.self_headers_request),
+            fetch_metric_counter!(blocksync_events.self_headers_request),
             max_blocksync_requests,
         )
         .metric_maximum(
             &node_ids,
-            fetch_metric!(blocksync_events.self_payload_request),
+            fetch_metric_counter!(blocksync_events.self_payload_request),
             max_blocksync_requests,
         );
 

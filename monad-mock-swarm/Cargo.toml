@@ -14,9 +14,11 @@ monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
+monad-eth-txpool-metrics = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
+monad-metrics = { workspace = true }
 monad-multi-sig = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-state = { workspace = true }

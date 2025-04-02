@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    metrics::Metrics,
+    metrics::ConsensusEventsStateMetrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -10,6 +10,7 @@ use monad_consensus_types::{
     timeout::{Timeout, TimeoutCertificate},
     voting::ValidatorMapping,
 };
+use monad_metrics::{Counter, MetricsPolicy};
 use monad_types::{Epoch, NodeId, Round};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
 use tracing::{debug, info};
@@ -316,16 +317,19 @@ where
     /// sets the last_round_tc to this TC
     /// TCs from older rounds are ignored
     #[must_use]
-    pub fn advance_round_tc(
+    pub fn advance_round_tc<MP>(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
         epoch_manager: &EpochManager,
-        metrics: &mut Metrics,
-    ) -> Vec<PacemakerCommand<SCT>> {
+        metrics: &mut ConsensusEventsStateMetrics<MP>,
+    ) -> Vec<PacemakerCommand<SCT>>
+    where
+        MP: MetricsPolicy,
+    {
         if tc.round < self.current_round {
             return Default::default();
         }
-        metrics.consensus_events.enter_new_round_tc += 1;
+        metrics.enter_new_round_tc.inc();
         let new_round = tc.round + Round(1);
         let new_epoch = epoch_manager
             .get_epoch(new_round)
@@ -338,16 +342,19 @@ where
     /// clears last_round_tc
     /// QCs from older rounds are ignored
     #[must_use]
-    pub fn advance_round_qc(
+    pub fn advance_round_qc<MP>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &EpochManager,
-        metrics: &mut Metrics,
-    ) -> Vec<PacemakerCommand<SCT>> {
+        metrics: &mut ConsensusEventsStateMetrics<MP>,
+    ) -> Vec<PacemakerCommand<SCT>>
+    where
+        MP: MetricsPolicy,
+    {
         if qc.get_round() < self.current_round {
             return Default::default();
         }
-        metrics.consensus_events.enter_new_round_qc += 1;
+        metrics.enter_new_round_qc.inc();
         self.last_round_tc = None;
         let new_round = qc.get_round() + Round(1);
         let new_epoch = epoch_manager
@@ -388,6 +395,7 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
+    use monad_metrics::NoopMetricsPolicy;
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys},

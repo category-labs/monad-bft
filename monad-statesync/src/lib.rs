@@ -6,17 +6,19 @@ use std::{
     time::Duration,
 };
 
-use ffi::SyncRequest;
 use futures::{Stream, StreamExt};
-use ipc::StateSyncIpc;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_types::EthExecutionProtocol;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage};
+use monad_metrics::{Gauge, MetricsPolicy};
 use monad_types::{NodeId, SeqNum};
+
+pub use self::metrics::StateSyncExecutorMetrics;
+use self::{ffi::SyncRequest, ipc::StateSyncIpc};
 
 #[allow(dead_code, non_camel_case_types, non_upper_case_globals)]
 pub mod bindings {
@@ -25,15 +27,13 @@ pub mod bindings {
 
 mod ffi;
 mod ipc;
+mod metrics;
 mod outbound_requests;
 
-const GAUGE_STATESYNC_SYNCING: &str = "monad.statesync.syncing";
-const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
-const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
-
-pub struct StateSync<ST, SCT>
+pub struct StateSync<ST, SCT, MP>
 where
     ST: CertificateSignatureRecoverable,
+    MP: MetricsPolicy,
 {
     incoming_request_timeout: Duration,
     uds_path: String,
@@ -41,13 +41,14 @@ where
     mode: StateSyncMode<CertificateSignaturePubKey<ST>>,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
+    metrics: StateSyncExecutorMetrics<MP>,
     _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT> StateSync<ST, SCT>
+impl<ST, SCT, MP> StateSync<ST, SCT, MP>
 where
     ST: CertificateSignatureRecoverable,
+    MP: MetricsPolicy,
 {
     pub fn new(
         db_paths: Vec<String>,
@@ -58,6 +59,7 @@ where
         request_timeout: Duration,
         incoming_request_timeout: Duration,
         uds_path: String,
+        metrics: StateSyncExecutorMetrics<MP>,
     ) -> Self {
         Self {
             incoming_request_timeout,
@@ -73,16 +75,16 @@ where
             )),
 
             waker: None,
-            metrics: Default::default(),
+            metrics,
             _phantom: Default::default(),
         }
     }
 
     fn update_syncing_metrics(&mut self) {
-        self.metrics[GAUGE_STATESYNC_SYNCING] = match &self.mode {
+        self.metrics.syncing.set(match &self.mode {
             StateSyncMode::Sync(_) => 1,
             StateSyncMode::Live(_) => 0,
-        };
+        });
     }
 }
 
@@ -93,12 +95,14 @@ enum StateSyncMode<PT: PubKey> {
     Live(StateSyncIpc<PT>),
 }
 
-impl<ST, SCT> Executor for StateSync<ST, SCT>
+impl<ST, SCT, MP> Executor<MP> for StateSync<ST, SCT, MP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    MP: MetricsPolicy,
 {
     type Command = StateSyncCommand<ST, EthExecutionProtocol>;
+    type Metrics = StateSyncExecutorMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -110,7 +114,7 @@ where
                             unreachable!("Live -> Sync is not a valid state transition")
                         }
                     };
-                    self.metrics[GAUGE_STATESYNC_LAST_TARGET] = header.0.number;
+                    self.metrics.last_target.set(header.0.number);
                     statesync.update_target(header.0);
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
@@ -177,16 +181,17 @@ where
         self.update_syncing_metrics();
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
-impl<ST, SCT> Stream for StateSync<ST, SCT>
+impl<ST, SCT, MP> Stream for StateSync<ST, SCT, MP>
 where
     Self: Unpin,
     ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
+    MP: MetricsPolicy,
 {
     type Item = MonadEvent<ST, SCT, EthExecutionProtocol>;
 
@@ -200,7 +205,7 @@ where
         match &mut this.mode {
             StateSyncMode::Sync(sync) => {
                 if let Some(progress) = sync.progress_estimate() {
-                    this.metrics[GAUGE_STATESYNC_PROGRESS_ESTIMATE] = progress.0;
+                    this.metrics.progress_estimate.set(progress.0);
                 }
 
                 if let Poll::Ready(event) = sync.poll_next_unpin(cx) {

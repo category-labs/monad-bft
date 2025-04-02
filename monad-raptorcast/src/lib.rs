@@ -17,17 +17,23 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{udp::segment_size_for_mtu, BroadcastMsg, Dataplane, TcpMsg, UnicastMsg};
 use monad_discovery::message::InboundRouterMessage;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
+use monad_executor::Executor;
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
 };
+use monad_metrics::MetricsPolicy;
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
 
+use self::{
+    metrics::RaptorCastExecutorMetrics,
+    util::{BuildTarget, EpochValidators, FullNodes, Validator},
+};
+
+pub mod metrics;
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -51,11 +57,12 @@ where
     pub mtu: u16,
 }
 
-pub struct RaptorCast<ST, M, OM, SE>
+pub struct RaptorCast<ST, M, OM, SE, MP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    MP: MetricsPolicy,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -74,7 +81,7 @@ where
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
     waker: Option<Waker>,
-    metrics: ExecutorMetrics,
+    metrics: RaptorCastExecutorMetrics<MP>,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -88,13 +95,14 @@ pub enum RaptorCastEvent<E, P: PubKey> {
     PeerManagerResponse(PeerManagerResponse<P>),
 }
 
-impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, MP> RaptorCast<ST, M, OM, SE, MP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    MP: MetricsPolicy,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST>, metrics: RaptorCastExecutorMetrics<MP>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
@@ -114,7 +122,7 @@ where
             pending_events: Default::default(),
 
             waker: None,
-            metrics: Default::default(),
+            metrics,
             _phantom: PhantomData,
         }
     }
@@ -150,13 +158,15 @@ where
     }
 }
 
-impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, MP> Executor<MP> for RaptorCast<ST, M, OM, SE, MP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    MP: MetricsPolicy,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Metrics = RaptorCastExecutorMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -351,8 +361,8 @@ where
         }
     }
 
-    fn metrics(&self) -> ExecutorMetricsChain {
-        self.metrics.as_ref().into()
+    fn metrics(&self) -> &Self::Metrics {
+        &self.metrics
     }
 }
 
@@ -376,12 +386,14 @@ fn handle_message<
     Ok(inbound)
 }
 
-impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
+impl<ST, M, OM, E, MP> Stream for RaptorCast<ST, M, OM, E, MP>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    MP: MetricsPolicy,
+
     Self: Unpin,
 {
     type Item = E;
