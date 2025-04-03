@@ -202,4 +202,11 @@ where
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
+
+    fn get_sock_addr_by_id(
+        &self,
+        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<std::net::SocketAddr> {
+        None
+    }
 }

@@ -1,10 +1,16 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    time::Duration,
+};
 
+use alloy_rlp::{Decodable, Encodable, encode_list};
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::Message;
 use monad_types::NodeId;
+use tracing::warn;
 
 pub mod discovery;
 pub mod mock;
@@ -33,14 +39,90 @@ pub struct PeerLookupRequest<ST: CertificateSignatureRecoverable> {
 pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
     lookup_id: u32,
     target: NodeId<CertificateSignaturePubKey<ST>>,
-    name_records: Vec<(NodeId<CertificateSignaturePubKey<ST>>, MonadNameRecord<ST>)>,
+    name_records: Vec<MonadNameRecord<ST>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NameRecord {
+    pub address: SocketAddr,
+    pub seq: u64,
+}
+
+impl Encodable for NameRecord {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self.address {
+            SocketAddr::V4(addr) => {
+                let enc: [&dyn Encodable; 4] = [&1u8, &addr.ip().octets(), &addr.port(), &self.seq];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            SocketAddr::V6(addr) => {
+                let enc: [&dyn Encodable; 4] = [&2u8, &addr.ip().octets(), &addr.port(), &self.seq];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for NameRecord {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let buf = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let addr_type = u8::decode(buf)?;
+        let addr = match addr_type {
+            1 => {
+                let Ok(ip) = <[u8; 4]>::decode(buf) else {
+                    warn!("ip address decode failed: {:?}", buf);
+                    return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
+                };
+                let port = u16::decode(buf)?;
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port))
+            }
+            2 => {
+                let Ok(ip) = <[u8; 16]>::decode(buf) else {
+                    warn!("ip address decode failed: {:?}", buf);
+                    return Err(alloy_rlp::Error::Custom("Invalid IPv6 address"));
+                };
+                let port = u16::decode(buf)?;
+                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(ip), port, 0, 0))
+            }
+            _ => {
+                warn!("ip address decode failed: {:?}", buf);
+                return Err(alloy_rlp::Error::Custom("Invalid IP enum"));
+            }
+        };
+        let seq = u64::decode(buf)?;
+
+        Ok(Self { address: addr, seq })
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
-    pub address: SocketAddr,
-    pub seq: u64,
+    pub name_record: NameRecord,
     pub signature: ST,
+}
+
+impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
+    pub fn recover_pubkey(
+        &self,
+    ) -> Result<NodeId<CertificateSignaturePubKey<ST>>, <ST as CertificateSignature>::Error> {
+        let mut encoded = Vec::new();
+        self.name_record.encode(&mut encoded);
+        let pubkey = self.signature.recover_pubkey(&encoded)?;
+        Ok(NodeId::new(pubkey))
+        // let mut encoded = Vec::new();
+        // self.name_record.encode(&mut encoded);
+        // self.signature.recover_pubkey(&encoded)
+        // self.signature.verify(&encoded, &node_id.pubkey())
+    }
+
+    pub fn address(&self) -> SocketAddr {
+        self.name_record.address
+    }
+
+    pub fn seq(&self) -> u64 {
+        self.name_record.seq
+    }
 }
 
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
@@ -153,6 +235,11 @@ pub trait PeerDiscoveryAlgo {
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;
+
+    fn get_sock_addr_by_id(
+        &self,
+        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddr>;
 }
 
 pub trait PeerDiscoveryBuilder {
@@ -166,4 +253,41 @@ pub trait PeerDiscoveryBuilder {
             PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
         >,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn test_name_record_v4_rlp() {
+        let name_record = NameRecord {
+            address: SocketAddr::V4(SocketAddrV4::from_str("1.1.1.1:8000").unwrap()),
+            seq: 2,
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+
+        let result = NameRecord::decode(&mut encoded.as_slice());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), name_record);
+    }
+
+    #[test]
+    fn test_name_record_v6_rlp() {
+        let name_record = NameRecord {
+            address: SocketAddr::V6(SocketAddrV6::from_str("[1:1::1:1:1]:8000").unwrap()),
+            seq: 2,
+        };
+
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+
+        let result = NameRecord::decode(&mut encoded.as_slice());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), name_record);
+    }
 }

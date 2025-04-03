@@ -7,13 +7,16 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::NodeId;
-use rand::random;
+use rand::RngCore;
+use rand_chacha::ChaCha8Rng;
 use tracing::{debug, warn};
 
 use crate::{
     MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryCommand,
     PeerDiscoveryMessage, PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
+
+const MAX_PEER_IN_RESPONSE: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
@@ -22,13 +25,13 @@ pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
     pub name_record: MonadNameRecord<ST>,
 }
 
-#[derive(Default)]
 pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
-    pub local_record_seq: u64,
+    pub self_record: MonadNameRecord<ST>,
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     // maps lookup id => receiver of the request
     pub outstanding_lookup_requests: HashMap<u32, NodeId<CertificateSignaturePubKey<ST>>>,
     pub metrics: PeerDiscMetrics,
+    pub rng: ChaCha8Rng,
 }
 
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
@@ -46,20 +49,17 @@ where
         let mut cmds = Vec::new();
 
         // must have a MonadNameRecord to send a ping
-        let peer_entry = match self.peer_info.get_mut(&to) {
-            Some(entry) => entry,
-            None => {
-                warn!(
-                    ?to,
-                    "name record not present locally but trying to send ping"
-                );
-                return cmds;
-            }
+        let Some(peer_entry) = self.peer_info.get_mut(&to) else {
+            warn!(
+                ?to,
+                "name record not present locally but trying to send ping"
+            );
+            return cmds;
         };
 
         let ping_msg = Ping {
-            id: random(),
-            local_record_seq: self.local_record_seq,
+            id: self.rng.next_u32(),
+            local_record_seq: self.self_record.name_record.seq,
         };
 
         // record ping in peer_info
@@ -87,16 +87,19 @@ where
         if self
             .peer_info
             .get(&from)
-            .map(|info| info.name_record.seq < ping_msg.local_record_seq)
-            .unwrap_or(true)
+            .is_none_or(|info| info.name_record.seq() < ping_msg.local_record_seq)
         {
-            // TODO: cmd that sends PeerLookupRequest
+            debug!(
+                target=?from, "Ping sender not found in local record, sending peer lookup request to target",
+            );
+            // sends PeerLookupRequest to ping sender
+            cmds.extend(self.send_peer_lookup_request(from, from));
         }
 
         // respond to ping
         let pong_msg = Pong {
             ping_id: ping_msg.id,
-            local_record_seq: self.local_record_seq,
+            local_record_seq: self.self_record.name_record.seq,
         };
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: from,
@@ -116,14 +119,22 @@ where
         let cmds = Vec::new();
 
         // if ping id matches, update last_seen time
-        self.peer_info.entry(from).and_modify(|info| {
-            if info.last_ping.as_ref().map(|last_ping| last_ping.id) == Some(pong_msg.ping_id) {
+        if let Some(info) = self.peer_info.get_mut(&from) {
+            if info
+                .last_ping
+                .is_some_and(|last_ping| last_ping.id == pong_msg.ping_id)
+            {
                 info.last_ping = None;
                 info.last_seen = Some(Instant::now());
             } else {
-                debug!(?from, "dropping pong because ping id does not match");
+                debug!(?from, "dropping pong, ping id not found or does not match");
             }
-        });
+        } else {
+            debug!(
+                ?from,
+                "dropping pong, ping sender does not exist in peer info"
+            );
+        }
 
         cmds
     }
@@ -137,7 +148,7 @@ where
 
         let mut cmds = Vec::new();
         let peer_lookup_request = PeerLookupRequest::<ST> {
-            lookup_id: random(),
+            lookup_id: self.rng.next_u32(),
             target,
         };
 
@@ -165,7 +176,7 @@ where
             Some(info) => PeerLookupResponse {
                 lookup_id: request.lookup_id,
                 target,
-                name_records: vec![(target, info.name_record.clone())],
+                name_records: vec![info.name_record.clone()],
             },
             None => {
                 // TODO: optional to return some random peers
@@ -198,21 +209,42 @@ where
         if self
             .outstanding_lookup_requests
             .get(&response.lookup_id)
-            .filter(|&peer| peer == &from)
-            .is_none()
+            .is_none_or(|peer| peer != &from)
         {
             warn!(
                 ?response,
-                "peer lookup response not in oustanding requests, dropping requests..."
+                "peer lookup response not in outstanding requests, dropping response..."
+            );
+            return cmds;
+        }
+
+        if response.name_records.len() > MAX_PEER_IN_RESPONSE {
+            warn!(
+                ?response,
+                "response includes number of peers larger than max, dropping response..."
             );
             return cmds;
         }
 
         // update peer info
-        for (node_id, name_record) in response.name_records {
+        for name_record in response.name_records {
+            // verify signature of name record
+            let node_id = match name_record.recover_pubkey() {
+                Ok(node_id) => node_id,
+                Err(e) => {
+                    warn!(?e, "invalid name record signature, dropping record...");
+                    continue;
+                }
+            };
+
+            // insert name record
             self.peer_info
                 .entry(node_id)
-                .and_modify(|info| info.name_record = name_record.clone())
+                .and_modify(|info| {
+                    if name_record.seq() > info.name_record.seq() {
+                        info.name_record = name_record.clone();
+                    }
+                })
                 .or_insert_with(|| PeerInfo {
                     last_ping: None,
                     last_seen: None,
@@ -230,6 +262,15 @@ where
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
+
+    fn get_sock_addr_by_id(
+        &self,
+        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<std::net::SocketAddr> {
+        self.peer_info
+            .get(&id)
+            .map(|info| info.name_record.name_record.address)
+    }
 }
 
 #[cfg(test)]
@@ -239,24 +280,31 @@ mod tests {
         str::FromStr,
     };
 
+    use alloy_rlp::Encodable;
     use monad_crypto::{
         NopKeyPair, NopSignature,
         certificate_signature::{CertificateKeyPair, CertificateSignature},
     };
     use monad_testutil::signing::create_keys;
     use monad_types::NodeId;
+    use rand::SeedableRng;
 
     use super::*;
+    use crate::NameRecord;
 
     type KeyPairType = NopKeyPair;
     type SignatureType = NopSignature;
 
     fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType> {
-        let msg = b"test";
-        let signature = SignatureType::sign(msg, keypair);
-        MonadNameRecord {
+        let name_record = NameRecord {
             address: SocketAddr::V4(SocketAddrV4::from_str("1.1.1.1:8000").unwrap()),
             seq: 0,
+        };
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+        let signature = SignatureType::sign(&encoded, keypair);
+        MonadNameRecord {
+            name_record,
             signature,
         }
     }
@@ -277,10 +325,11 @@ mod tests {
 
     #[test]
     fn test_check_peer_connection() {
-        let keys = create_keys::<SignatureType>(2);
-        let peer1 = &keys[0];
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let peer2 = &keys[1];
+        let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
         // peer1 name record is present but peer2 name record is not present
@@ -290,10 +339,11 @@ mod tests {
             name_record: generate_name_record(peer1),
         })]);
         let mut state = PeerDiscovery {
-            local_record_seq: 0,
+            self_record: generate_name_record(peer0),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
         // should be able to send ping to peer where its name record already exists locally
@@ -324,17 +374,19 @@ mod tests {
 
     #[test]
     fn test_peer_lookup() {
-        let keys = create_keys::<SignatureType>(2);
-        let peer1 = &keys[0];
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
-        let peer2 = &keys[1];
+        let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
         let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            local_record_seq: 0,
+            self_record: generate_name_record(peer0),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey);
@@ -347,7 +399,7 @@ mod tests {
         state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id: requests[0].lookup_id,
             target: peer2_pubkey,
-            name_records: vec![(peer2_pubkey, record)],
+            name_records: vec![record],
         });
 
         // peer2 should be added to peer info and outstanding requests should be cleared

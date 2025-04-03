@@ -10,6 +10,7 @@ monad-types = { workspace = true }
 
 alloy-rlp = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
