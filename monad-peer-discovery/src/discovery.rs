@@ -1,20 +1,22 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddrV4,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
+use alloy_rlp::Encodable;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::NodeId;
-use rand::RngCore;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, warn};
 
 use crate::{
-    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryCommand,
-    PeerDiscoveryMessage, PeerLookupRequest, PeerLookupResponse, Ping, Pong,
+    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
+    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
 
 const MAX_PEER_IN_RESPONSE: usize = 16;
@@ -32,7 +34,65 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     // maps lookup id => receiver of the request
     pub outstanding_lookup_requests: HashMap<u32, NodeId<CertificateSignaturePubKey<ST>>>,
     pub metrics: PeerDiscMetrics,
+    pub ping_period: Duration,
     pub rng: ChaCha8Rng,
+}
+
+pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
+    pub local_record_seq: u64,
+    pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
+    pub ping_period: Duration,
+    pub rng_seed: u64,
+}
+
+impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDiscoveryBuilder<ST> {
+    type PeerDiscoveryAlgoType = PeerDiscovery<ST>;
+
+    fn build(
+        self,
+    ) -> (
+        Self::PeerDiscoveryAlgoType,
+        Vec<
+            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
+        >,
+    ) {
+        let mut state = PeerDiscovery {
+            local_record_seq: self.local_record_seq,
+            peer_info: self.peer_info.clone(),
+            outstanding_lookup_requests: Default::default(),
+            metrics: Default::default(),
+            ping_period: self.ping_period,
+            rng: ChaCha8Rng::seed_from_u64(self.rng_seed),
+        };
+
+        let cmds = self
+            .peer_info
+            .into_iter()
+            .filter(|(node_id, _)| *node_id != self.self_id)
+            .flat_map(|(node_id, _)| state.send_ping(node_id))
+            .collect();
+
+        (state, cmds)
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
+    fn reset_timer(
+        &self,
+        peer: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        vec![
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: peer,
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                node_id: peer,
+                duration: self.ping_period,
+                on_timeout: PeerDiscoveryEvent::SendPing { to: peer },
+            }),
+        ]
+    }
 }
 
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
@@ -66,11 +126,15 @@ where
         // record ping in peer_info
         peer_entry.last_ping = Some(ping_msg);
 
+        // reset timer to schedule for the next ping
+        cmds.extend(self.reset_timer(to));
+
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
             message: PeerDiscoveryMessage::Ping(ping_msg),
         });
 
+        *self.metrics.entry("send_ping").or_default() += 1;
         cmds
     }
 
@@ -80,6 +144,7 @@ where
         ping_msg: Ping,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?ping_msg, "handling ping request");
+        *self.metrics.entry("recv_ping").or_default() += 1;
 
         let mut cmds = Vec::new();
 
@@ -107,6 +172,7 @@ where
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
 
+        *self.metrics.entry("send_pong").or_default() += 1;
         cmds
     }
 
@@ -116,6 +182,7 @@ where
         pong_msg: Pong,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?pong_msg, "handling pong response");
+        *self.metrics.entry("recv_pong").or_default() += 1;
 
         let cmds = Vec::new();
 
@@ -341,12 +408,14 @@ mod tests {
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
         // should be able to send ping to peer where its name record already exists locally
         let cmds = state.send_ping(peer1_pubkey);
-        assert_eq!(cmds.len(), 1);
+        // two reset timer cmds, one ping cmd
+        assert_eq!(cmds.len(), 3);
 
         // last_ping is recorded correctly
         let peer_info = state.peer_info.get(&peer1_pubkey);
@@ -415,6 +484,7 @@ mod tests {
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 

@@ -214,7 +214,7 @@ pub trait PeerDiscoveryAlgo {
     ) -> Option<SocketAddrV4>;
 }
 
-pub trait PeerDiscoveryBuilder {
+pub trait PeerDiscoveryAlgoBuilder {
     type PeerDiscoveryAlgoType: PeerDiscoveryAlgo;
 
     fn build(

@@ -11,7 +11,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::{
-    PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
+    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_transformer::{ID, LinkMessage};
@@ -66,7 +66,7 @@ where
 impl<S, B> NodeBuilder<S, B>
 where
     S: PeerDiscSwarmRelation,
-    B: PeerDiscoveryBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
+    B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
 {
     pub fn build(self) -> Node<S> {
         Node::new(self.id, self.algo_builder, self.router_scheduler, self.seed)
@@ -188,7 +188,7 @@ where
         seed: u64,
     ) -> Self
     where
-        B: PeerDiscoveryBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
+        B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
     {
         let (peer_disc_driver, init_cmds) = MockDiscoveryDriver::new(algo_builder);
 

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_peer_discovery::PeerDiscoveryBuilder;
+use monad_peer_discovery::PeerDiscoveryAlgoBuilder;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -17,7 +17,7 @@ where
 impl<S, B> PeerDiscSwarmBuilder<S, B>
 where
     S: PeerDiscSwarmRelation,
-    B: PeerDiscoveryBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
+    B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
 {
     pub fn build(self) -> Nodes<S> {
         let _init_span_entered =

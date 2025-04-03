@@ -5123,6 +5123,7 @@ dependencies = [
 name = "monad-peer-disc-swarm"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "itertools 0.10.5",
  "monad-crypto",
  "monad-executor",
@@ -5136,6 +5137,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
