@@ -5,7 +5,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::RouterCommand;
 use monad_peer_discovery::{
-    PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
+    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
     PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
 };
 use monad_types::{NodeId, RouterTarget};
@@ -108,7 +108,7 @@ where
         Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>>,
     )
     where
-        B: PeerDiscoveryBuilder<PeerDiscoveryAlgoType = PDT>,
+        B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PDT>,
     {
         let (algo, init_cmds) = algo_builder.build();
 

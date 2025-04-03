@@ -7,7 +7,7 @@ use monad_types::NodeId;
 use tracing::debug;
 
 use crate::{
-    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryCommand,
+    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
     PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
     PeerLookupResponse, Ping, Pong,
 };
@@ -34,7 +34,9 @@ pub struct PingPongDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub ping_period: Duration,
 }
 
-impl<ST: CertificateSignatureRecoverable> PeerDiscoveryBuilder for PingPongDiscoveryBuilder<ST> {
+impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder
+    for PingPongDiscoveryBuilder<ST>
+{
     type PeerDiscoveryAlgoType = PingPongDiscovery<ST>;
 
     fn build(

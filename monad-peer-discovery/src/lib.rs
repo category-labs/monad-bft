@@ -42,7 +42,7 @@ pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
     name_records: Vec<MonadNameRecord<ST>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NameRecord {
     pub address: SocketAddrV4,
     pub seq: u64,
@@ -72,7 +72,7 @@ impl Decodable for NameRecord {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,
@@ -214,7 +214,7 @@ pub trait PeerDiscoveryAlgo {
     ) -> Option<SocketAddrV4>;
 }
 
-pub trait PeerDiscoveryBuilder {
+pub trait PeerDiscoveryAlgoBuilder {
     type PeerDiscoveryAlgoType: PeerDiscoveryAlgo;
 
     fn build(
