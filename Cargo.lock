@@ -5073,7 +5073,6 @@ dependencies = [
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
- "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-keystore",
@@ -5108,8 +5107,11 @@ name = "monad-node-config"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "monad-bls",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-secp",
  "monad-types",
  "serde",
 ]
@@ -5237,7 +5239,6 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "monad-archive",
- "monad-crypto",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
  "monad-eth-types",

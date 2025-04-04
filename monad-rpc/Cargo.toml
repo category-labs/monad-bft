@@ -12,7 +12,6 @@ bench = false
 
 [dependencies]
 monad-archive = { workspace = true }
-monad-crypto = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }

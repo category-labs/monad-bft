@@ -22,8 +22,10 @@ use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
-use monad_node::config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
-use monad_node_config::{FullNodeIdentityConfig, NodeNetworkConfig};
+use monad_node_config::{
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, SignatureCollectionType,
+    SignatureType,
+};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;

@@ -10,10 +10,9 @@ use clap::Parser;
 use eth_json_types::serialize_result;
 use futures::{SinkExt, StreamExt};
 use monad_archive::archive_reader::ArchiveReader;
-use monad_crypto::NopPubKey;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
-use monad_node_config::NodeConfig;
+use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -621,9 +620,8 @@ impl RootSpanBuilder for MonadJsonRootSpanBuilder {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
-    let node_config: NodeConfig<_> =
-        toml::from_str::<NodeConfig<NopPubKey>>(&std::fs::read_to_string(&args.node_config)?)
-            .expect("node toml parse error");
+    let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
+        .expect("node toml parse error");
 
     let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
         args.otel_endpoint.as_ref().map(|endpoint| {

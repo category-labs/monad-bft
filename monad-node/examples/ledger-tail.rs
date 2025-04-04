@@ -10,10 +10,9 @@ use inotify::{Inotify, WatchMask};
 use lru::LruCache;
 use monad_block_persist::{BlockPersist, FileBlockPersist, BLOCKDB_HEADER_EXTENSION};
 use monad_consensus_types::block::{ConsensusBlockHeader, ConsensusFullBlock};
-use monad_node::config::{
-    ExecutionProtocolType, ForkpointConfig, SignatureCollectionType, SignatureType,
+use monad_node_config::{
+    ExecutionProtocolType, ForkpointConfig, MonadNodeConfig, SignatureCollectionType, SignatureType,
 };
-use monad_node_config::NodeConfig;
 use monad_types::{BlockId, Hash, Round, GENESIS_ROUND};
 use monad_validator::{leader_election::LeaderElection, weighted_round_robin::WeightedRoundRobin};
 use tracing::{error, info, warn};
@@ -41,7 +40,7 @@ async fn main() {
     > = LruCache::new(NonZero::new(100).unwrap());
 
     let ledger_path: PathBuf = PathBuf::from("/monad/ledger");
-    let node_config: NodeConfig<monad_secp::PubKey> = toml::from_str(
+    let node_config: MonadNodeConfig = toml::from_str(
         &std::fs::read_to_string("/monad/config/node.toml").expect("node.toml not found"),
     )
     .unwrap();

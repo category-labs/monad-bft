@@ -7,14 +7,14 @@ use clap::{error::ErrorKind, FromArgMatches};
 use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_keystore::keystore::Keystore;
-use monad_node::config::{ForkpointConfig, NodeConfig};
+use monad_node_config::{ForkpointConfig, MonadNodeConfig};
 use monad_secp::KeyPair;
 use tracing::info;
 
 use crate::{cli::Cli, error::NodeSetupError};
 
 pub struct NodeState {
-    pub node_config: NodeConfig,
+    pub node_config: MonadNodeConfig,
     pub node_config_path: PathBuf,
     pub forkpoint_config: ForkpointConfig,
     pub chain_config: MonadChainConfig,
@@ -80,7 +80,8 @@ impl NodeState {
             hex::encode(bls_key.pubkey().compress())
         );
 
-        let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+        let node_config: MonadNodeConfig =
+            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let forkpoint_config: ForkpointConfig =
             toml::from_str(&std::fs::read_to_string(&forkpoint_config_path)?)?;
         let devnet_chain_config_override =
