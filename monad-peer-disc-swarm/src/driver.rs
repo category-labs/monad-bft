@@ -1,6 +1,8 @@
 use std::{cmp::Reverse, collections::BTreeMap, time::Duration};
 
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor_glue::RouterCommand;
 use monad_peer_discovery::algo::{
     PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
@@ -15,14 +17,14 @@ struct TimerEvent<E> {
     on_timeout: E,
 }
 
-struct MockDiscTimer<E, P: PubKey> {
-    timers: BTreeMap<NodeId<P>, TimerEvent<E>>,
-    priority_queue: PriorityQueue<NodeId<P>, Reverse<Duration>>,
+struct MockDiscTimer<E, ST: CertificateSignatureRecoverable> {
+    timers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, TimerEvent<E>>,
+    priority_queue: PriorityQueue<NodeId<CertificateSignaturePubKey<ST>>, Reverse<Duration>>,
 
     tick: Duration,
 }
 
-impl<E, P: PubKey> Default for MockDiscTimer<E, P> {
+impl<E, ST: CertificateSignatureRecoverable> Default for MockDiscTimer<E, ST> {
     fn default() -> Self {
         Self {
             timers: Default::default(),
@@ -32,8 +34,8 @@ impl<E, P: PubKey> Default for MockDiscTimer<E, P> {
     }
 }
 
-impl<E, P: PubKey> MockDiscTimer<E, P> {
-    fn exec(&mut self, cmds: Vec<PeerDiscoveryTimerCommand<E, P>>) {
+impl<E, ST: CertificateSignatureRecoverable> MockDiscTimer<E, ST> {
+    fn exec(&mut self, cmds: Vec<PeerDiscoveryTimerCommand<E, ST>>) {
         for cmd in cmds {
             match cmd {
                 PeerDiscoveryTimerCommand::Schedule {
@@ -89,17 +91,22 @@ impl<E, P: PubKey> MockDiscTimer<E, P> {
     }
 }
 
-pub struct MockDiscoveryDriver<PDT, E, P: PubKey> {
+pub struct MockDiscoveryDriver<PDT, E, ST: CertificateSignatureRecoverable> {
     algo: PDT,
-    timer: MockDiscTimer<E, P>,
+    timer: MockDiscTimer<E, ST>,
 }
 
-impl<PDT, P> MockDiscoveryDriver<PDT, PeerDiscoveryEvent<P>, P>
+impl<PDT, ST> MockDiscoveryDriver<PDT, PeerDiscoveryEvent<ST>, ST>
 where
-    PDT: PeerDiscoveryAlgo<PubKeyType = P>,
-    P: PubKey,
+    PDT: PeerDiscoveryAlgo<SignatureType = ST>,
+    ST: CertificateSignatureRecoverable,
 {
-    pub fn new<B>(algo_builder: B) -> (Self, Vec<RouterCommand<P, PeerDiscoveryMessage<P>>>)
+    pub fn new<B>(
+        algo_builder: B,
+    ) -> (
+        Self,
+        Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>>,
+    )
     where
         B: PeerDiscoveryBuilder<PeerDiscoveryAlgoType = PDT>,
     {
@@ -117,8 +124,8 @@ where
 
     pub fn update(
         &mut self,
-        event: PeerDiscoveryEvent<P>,
-    ) -> Vec<RouterCommand<P, PeerDiscoveryMessage<P>>> {
+        event: PeerDiscoveryEvent<ST>,
+    ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
         let cmds = match event {
             PeerDiscoveryEvent::SendPing { target } => self.algo.handle_send_ping(target),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
@@ -132,8 +139,8 @@ where
     // original order
     fn filter_and_exec(
         &mut self,
-        cmds: Vec<PeerDiscoveryCommand<P>>,
-    ) -> Vec<RouterCommand<P, PeerDiscoveryMessage<P>>> {
+        cmds: Vec<PeerDiscoveryCommand<ST>>,
+    ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
         let mut router_cmds = Vec::new();
 
         for cmd in cmds {
@@ -156,7 +163,7 @@ where
         self.timer.peek_tick()
     }
 
-    pub fn step_until(&mut self, until: Duration) -> Option<PeerDiscoveryEvent<P>> {
+    pub fn step_until(&mut self, until: Duration) -> Option<PeerDiscoveryEvent<ST>> {
         self.timer.step_until(until)
     }
 

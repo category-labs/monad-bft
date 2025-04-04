@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::NodeId;
 use tracing::debug;
 
@@ -16,29 +18,31 @@ struct PeerState {
 
 // Periodically pings the peer. Peers responds with a pong. It's not an actual
 // peer discovery implementation
-pub struct PingPongDiscovery<P: PubKey> {
-    self_id: NodeId<P>,
-    peer_state: BTreeMap<NodeId<P>, PeerState>,
+pub struct PingPongDiscovery<ST: CertificateSignatureRecoverable> {
+    self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    peer_state: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerState>,
 
     ping_period: Duration,
 
     metrics: PeerDiscMetrics,
 }
 
-pub struct PingPongDiscoveryBuilder<P: PubKey> {
-    pub self_id: NodeId<P>,
-    pub peers: Vec<NodeId<P>>,
+pub struct PingPongDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
+    pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    pub peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub ping_period: Duration,
 }
 
-impl<P: PubKey> PeerDiscoveryBuilder for PingPongDiscoveryBuilder<P> {
-    type PeerDiscoveryAlgoType = PingPongDiscovery<P>;
+impl<ST: CertificateSignatureRecoverable> PeerDiscoveryBuilder for PingPongDiscoveryBuilder<ST> {
+    type PeerDiscoveryAlgoType = PingPongDiscovery<ST>;
 
     fn build(
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::PubKeyType>>,
+        Vec<
+            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
+        >,
     ) {
         let peers: Vec<_> = self
             .peers
@@ -71,8 +75,11 @@ impl<P: PubKey> PeerDiscoveryBuilder for PingPongDiscoveryBuilder<P> {
     }
 }
 
-impl<P: PubKey> PingPongDiscovery<P> {
-    fn reset_timer(&self, peer: NodeId<P>) -> Vec<PeerDiscoveryCommand<P>> {
+impl<ST: CertificateSignatureRecoverable> PingPongDiscovery<ST> {
+    fn reset_timer(
+        &self,
+        peer: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         vec![
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
                 node_id: peer,
@@ -86,13 +93,16 @@ impl<P: PubKey> PingPongDiscovery<P> {
     }
 }
 
-impl<P> PeerDiscoveryAlgo for PingPongDiscovery<P>
+impl<ST> PeerDiscoveryAlgo for PingPongDiscovery<ST>
 where
-    P: PubKey,
+    ST: CertificateSignatureRecoverable,
 {
-    type PubKeyType = P;
+    type SignatureType = ST;
 
-    fn handle_send_ping(&mut self, target: NodeId<P>) -> Vec<PeerDiscoveryCommand<P>> {
+    fn handle_send_ping(
+        &mut self,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?target, "handle send ping");
         let mut cmds = Vec::new();
 
@@ -117,7 +127,11 @@ where
         cmds
     }
 
-    fn handle_ping(&mut self, from: NodeId<P>, ping: Ping) -> Vec<PeerDiscoveryCommand<P>> {
+    fn handle_ping(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        ping: Ping,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?ping, "handle ping");
         *self.metrics.entry("recv_ping").or_default() += 1;
         let mut cmds = Vec::new();
@@ -132,7 +146,11 @@ where
         cmds
     }
 
-    fn handle_pong(&mut self, from: NodeId<P>, pong: Pong) -> Vec<PeerDiscoveryCommand<P>> {
+    fn handle_pong(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        pong: Pong,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?pong, "handle pong");
         *self.metrics.entry("recv_pong").or_default() += 1;
         let cmds = Vec::new();

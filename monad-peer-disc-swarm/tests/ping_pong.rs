@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use monad_crypto::{
-    NopSignature,
-    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
-};
+use monad_crypto::{NopSignature, certificate_signature::CertificateKeyPair};
 use monad_peer_disc_swarm::{
-    NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, builder::PeerDiscSwarmBuilder,
+    NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
+    builder::PeerDiscSwarmBuilder,
 };
 use monad_peer_discovery::{
     algo::{PeerDiscoveryAlgo, PeerDiscoveryMessage},
@@ -20,14 +18,14 @@ struct PingPongPeerDiscSwarm {}
 impl PeerDiscSwarmRelation for PingPongPeerDiscSwarm {
     type SignatureType = NopSignature;
 
-    type PeerDiscoveryAlgoType = PingPongDiscovery<SwarmPubKeyType<Self>>;
+    type PeerDiscoveryAlgoType = PingPongDiscovery<SwarmSignatureType<Self>>;
 
-    type TransportMessage = PeerDiscoveryMessage<SwarmPubKeyType<Self>>;
+    type TransportMessage = PeerDiscoveryMessage<SwarmSignatureType<Self>>;
 
     type RouterSchedulerType = NoSerRouterScheduler<
         SwarmPubKeyType<Self>,
-        PeerDiscoveryMessage<SwarmPubKeyType<Self>>,
-        PeerDiscoveryMessage<SwarmPubKeyType<Self>>,
+        PeerDiscoveryMessage<SwarmSignatureType<Self>>,
+        PeerDiscoveryMessage<SwarmSignatureType<Self>>,
     >;
 }
 
@@ -42,7 +40,7 @@ fn test_ping_pong() {
         .collect::<Vec<_>>();
     let swarm_builder = PeerDiscSwarmBuilder::<
         PingPongPeerDiscSwarm,
-        PingPongDiscoveryBuilder<CertificateSignaturePubKey<SignatureType>>,
+        PingPongDiscoveryBuilder<SignatureType>,
     > {
         builders: keys
             .iter()

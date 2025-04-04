@@ -24,6 +24,7 @@ pub mod driver;
 
 pub type SwarmPubKeyType<S> =
     CertificateSignaturePubKey<<S as PeerDiscSwarmRelation>::SignatureType>;
+pub type SwarmSignatureType<S> = <S as PeerDiscSwarmRelation>::SignatureType;
 
 pub struct Swarm<S>
 where
@@ -34,13 +35,13 @@ where
 
 pub trait PeerDiscSwarmRelation {
     type SignatureType: CertificateSignatureRecoverable;
-    type PeerDiscoveryAlgoType: PeerDiscoveryAlgo<PubKeyType = SwarmPubKeyType<Self>>;
+    type PeerDiscoveryAlgoType: PeerDiscoveryAlgo<SignatureType = SwarmSignatureType<Self>>;
 
     type TransportMessage;
     type RouterSchedulerType: RouterScheduler<
             NodeIdPublicKey = SwarmPubKeyType<Self>,
-            OutboundMessage = PeerDiscoveryMessage<SwarmPubKeyType<Self>>,
-            InboundMessage = PeerDiscoveryMessage<SwarmPubKeyType<Self>>,
+            OutboundMessage = PeerDiscoveryMessage<SwarmSignatureType<Self>>,
+            InboundMessage = PeerDiscoveryMessage<SwarmSignatureType<Self>>,
             TransportMessage = Self::TransportMessage,
         >;
 }
@@ -79,8 +80,8 @@ where
     pub id: NodeId<SwarmPubKeyType<S>>,
     pub peer_disc_driver: MockDiscoveryDriver<
         S::PeerDiscoveryAlgoType,
-        PeerDiscoveryEvent<SwarmPubKeyType<S>>,
-        SwarmPubKeyType<S>,
+        PeerDiscoveryEvent<SwarmSignatureType<S>>,
+        SwarmSignatureType<S>,
     >,
     pub executor: MockPeerDiscExecutor<S>,
     pub pending_inbound_messages:
@@ -137,7 +138,7 @@ impl<S: PeerDiscSwarmRelation> MockPeerDiscExecutor<S> {
         until: Duration,
     ) -> Option<
         MockPeerDiscExecutorEvent<
-            PeerDiscoveryEvent<SwarmPubKeyType<S>>,
+            PeerDiscoveryEvent<SwarmSignatureType<S>>,
             SwarmPubKeyType<S>,
             S::TransportMessage,
         >,

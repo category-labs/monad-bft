@@ -1,34 +1,44 @@
 use std::{collections::HashMap, time::Duration};
 
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor_glue::Message;
 use monad_types::NodeId;
 
 pub type PeerDiscMetrics = HashMap<&'static str, u64>;
 
-pub enum PeerDiscoveryEvent<P: PubKey> {
-    SendPing { target: NodeId<P> },
-    PingRequest { from: NodeId<P>, ping: Ping },
-    PongResponse { from: NodeId<P>, pong: Pong },
+pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
+    SendPing {
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+    },
+    PingRequest {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        ping: Ping,
+    },
+    PongResponse {
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        pong: Pong,
+    },
 }
 
-pub enum PeerDiscoveryTimerCommand<E, P: PubKey> {
+pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     Schedule {
-        node_id: NodeId<P>, // unique identify request to node
+        node_id: NodeId<CertificateSignaturePubKey<ST>>, // unique identify request to node
         duration: Duration,
         on_timeout: E,
     },
     ScheduleReset {
-        node_id: NodeId<P>,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
     },
 }
 
-pub enum PeerDiscoveryCommand<P: PubKey> {
+pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
-        target: NodeId<P>,
-        message: PeerDiscoveryMessage<P>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        message: PeerDiscoveryMessage<ST>,
     },
-    TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<P>, P>),
+    TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,15 +54,15 @@ pub struct Pong {
 }
 
 #[derive(Debug, Clone)]
-pub enum PeerDiscoveryMessage<P: PubKey> {
+pub enum PeerDiscoveryMessage<ST: CertificateSignatureRecoverable> {
     Ping(Ping),
     Pong(Pong),
-    Unused(P),
+    Unused(ST),
 }
 
-impl<P: PubKey> Message for PeerDiscoveryMessage<P> {
-    type NodeIdPubKey = P;
-    type Event = PeerDiscoveryEvent<P>;
+impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
+    type Event = PeerDiscoveryEvent<ST>;
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
         match self {
@@ -72,29 +82,31 @@ pub trait PeerDiscoveryBuilder {
         self,
     ) -> (
         Self::PeerDiscoveryAlgoType,
-        Vec<PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::PubKeyType>>,
+        Vec<
+            PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
+        >,
     );
 }
 
 pub trait PeerDiscoveryAlgo {
-    type PubKeyType: PubKey;
+    type SignatureType: CertificateSignatureRecoverable;
 
     fn handle_send_ping(
         &mut self,
-        target: NodeId<Self::PubKeyType>,
-    ) -> Vec<PeerDiscoveryCommand<Self::PubKeyType>>;
+        target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_ping(
         &mut self,
-        from: NodeId<Self::PubKeyType>,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         ping: Ping,
-    ) -> Vec<PeerDiscoveryCommand<Self::PubKeyType>>;
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_pong(
         &mut self,
-        from: NodeId<Self::PubKeyType>,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         pong: Pong,
-    ) -> Vec<PeerDiscoveryCommand<Self::PubKeyType>>;
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;
 }
