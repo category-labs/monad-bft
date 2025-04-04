@@ -294,7 +294,7 @@ where
     fn reset(&mut self, _: Vec<&Self::ValidatedBlock>) {}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
 pub struct ConsensusFullBlock<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -386,7 +386,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct ProposedExecutionInputs<EPT>
 where
     EPT: ExecutionProtocol,

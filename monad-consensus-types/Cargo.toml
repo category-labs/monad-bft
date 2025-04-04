@@ -10,7 +10,6 @@ bench = false
 
 [dependencies]
 monad-crypto = { workspace = true }
-monad-proto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 
@@ -18,6 +17,5 @@ alloy-rlp = { workspace = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
-prost = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 toml = { workspace = true }

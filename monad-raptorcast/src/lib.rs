@@ -363,7 +363,10 @@ where
                         ));
                 }
                 RouterCommand::UpdatePeers(new_peers) => {
-                    self.known_addresses = new_peers.into_iter().collect();
+                    self.known_addresses = new_peers
+                        .into_iter()
+                        .map(|known_peer| (known_peer.node_id, known_peer.addr))
+                        .collect();
                 }
                 RouterCommand::GetFullNodes => {
                     let full_nodes = self.full_nodes.list.clone();

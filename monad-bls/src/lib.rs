@@ -7,7 +7,6 @@ mod aggregation_tree;
 pub use aggregation_tree::BlsSignatureCollection;
 mod bls;
 pub use bls::{BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature};
-mod convert;
 
 impl std::fmt::Display for BlsPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

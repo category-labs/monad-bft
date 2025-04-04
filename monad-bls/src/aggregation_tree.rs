@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
 };
 
-use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use bitvec::prelude::*;
 use monad_consensus_types::{
     signature_collection::{
@@ -12,9 +12,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::PubKey;
-use monad_proto::proto::signing::ProtoBlsSignatureCollection;
 use monad_types::NodeId;
-use prost::Message;
 
 use crate::{bls::BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature};
 
@@ -292,14 +290,13 @@ impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let proto: ProtoBlsSignatureCollection = self.into();
-        proto.encode_to_vec()
+        let mut buf = BytesMut::new();
+        self.encode(&mut buf);
+        buf.to_vec()
     }
 
     fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<PT, Self::SignatureType>> {
-        let bls = ProtoBlsSignatureCollection::decode(data)
-            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
-        bls.try_into()
+        Self::decode(&mut data.as_ref())
             .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))
     }
 }

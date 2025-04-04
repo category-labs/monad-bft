@@ -705,7 +705,7 @@ where
             } else {
                 // generate chunks if epoch validators is not empty
                 // FIXME should self be included in total_stake?
-                let total_stake: i64 = epoch_validators
+                let total_stake: u64 = epoch_validators
                     .view()
                     .values()
                     .map(|validator| validator.stake.0)
@@ -716,10 +716,10 @@ where
                 nodes.shuffle(&mut rand::thread_rng());
                 for (node_id, validator) in &nodes {
                     let start_idx: usize =
-                        (num_packets as i64 * running_stake / total_stake) as usize;
+                        (num_packets as u64 * running_stake / total_stake) as usize;
                     running_stake += validator.stake.0;
                     let end_idx: usize =
-                        (num_packets as i64 * running_stake / total_stake) as usize;
+                        (num_packets as u64 * running_stake / total_stake) as usize;
 
                     if start_idx == end_idx {
                         continue;

@@ -15,8 +15,6 @@ pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;
 
-pub mod convert;
-
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
 pub const GENESIS_ROUND: Round = Round(0);
 
@@ -445,8 +443,20 @@ impl Debug for BlockId {
 /// Stake is the amount of tokens the validator deposited for validating
 /// privileges and earning transaction fees
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct Stake(pub i64);
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
+pub struct Stake(pub u64);
 
 impl Add for Stake {
     type Output = Self;

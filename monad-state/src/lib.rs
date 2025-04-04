@@ -56,7 +56,6 @@ use self::{
 
 mod blocksync;
 mod consensus;
-pub mod convert;
 mod epoch;
 mod statesync;
 

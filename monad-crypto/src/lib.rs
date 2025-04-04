@@ -2,7 +2,6 @@ use std::fmt::{Debug, Display};
 
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 
-pub mod convert;
 pub mod hasher;
 
 pub mod certificate_signature;

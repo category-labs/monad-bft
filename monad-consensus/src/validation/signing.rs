@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
-    convert::signing::certificate_signature_to_proto,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{TimeoutCertificate, TimeoutDigest},
@@ -15,9 +14,6 @@ use monad_crypto::{
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
-use monad_proto::proto::message::{
-    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
-};
 use monad_types::{ExecutionProtocol, NodeId, Stake, GENESIS_ROUND};
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -26,7 +22,6 @@ use monad_validator::{
 };
 
 use crate::{
-    convert::message::UnverifiedConsensusMessage,
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -576,40 +571,6 @@ fn get_pubkey<ST: CertificateSignatureRecoverable>(
     sig: &ST,
 ) -> Result<CertificateSignaturePubKey<ST>, Error> {
     sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
-}
-
-/// Protobuf conversion
-///
-/// The conversion is targeted to convert events with unverified messages
-/// received over the wire to its protobuf counterpart for persistence.
-///
-/// Network serialization should use the interface functions in
-/// [crate::convert::interface] to avoid serializing unverified messages
-impl<ST, SCT, EPT> From<&UnverifiedConsensusMessage<ST, SCT, EPT>>
-    for ProtoUnverifiedConsensusMessage
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn from(value: &UnverifiedConsensusMessage<ST, SCT, EPT>) -> Self {
-        let oneof_message = match &value.obj.obj.message {
-            ProtocolMessage::Proposal(msg) => {
-                proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
-            }
-            ProtocolMessage::Vote(msg) => {
-                proto_unverified_consensus_message::OneofMessage::Vote(msg.into())
-            }
-            ProtocolMessage::Timeout(msg) => {
-                proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
-            }
-        };
-        Self {
-            author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
-            oneof_message: Some(oneof_message),
-            version: value.obj.obj.version,
-        }
-    }
 }
 
 trait ValidatorPubKey {

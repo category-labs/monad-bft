@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{BytesMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -9,12 +9,8 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::NodeId;
-use prost::Message;
 use tracing::{error, warn};
-
-mod convert;
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct MultiSig<S> {
@@ -154,17 +150,15 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let proto: ProtoMultiSig = self.into();
-        proto.encode_to_vec()
+        let mut buf = BytesMut::new();
+        self.encode(&mut buf);
+        buf.to_vec()
     }
 
     fn deserialize(
         data: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
-        let multisig = ProtoMultiSig::decode(data)
-            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
-        multisig
-            .try_into()
+        Self::decode(&mut data.as_ref())
             .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))
     }
 }

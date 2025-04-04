@@ -10,7 +10,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{
-    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent,
+    ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeer, KnownPeersUpdate, MonadEvent,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{DropTimer, ExecutionProtocol, NodeId};
@@ -325,7 +325,9 @@ impl<SCT: SignatureCollection> PeersTable<SCT> {
             let response = self
                 .peers
                 .iter()
-                .filter_map(|(&node_id, (_, maybe_addr))| maybe_addr.map(|addr| (node_id, addr)))
+                .filter_map(|(&node_id, (_, maybe_addr))| {
+                    maybe_addr.map(|addr| KnownPeer { node_id, addr })
+                })
                 .collect::<Vec<_>>();
 
             return Some(ConfigEvent::KnownPeersUpdate(KnownPeersUpdate {

@@ -45,7 +45,7 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
             .iter()
             .filter_map(|(node_id, stake)| {
                 if stake.0 > 0 {
-                    total_stakes += stake.0 as u64;
+                    total_stakes += stake.0;
                     Some((node_id, total_stakes))
                 } else {
                     None
@@ -84,21 +84,20 @@ mod tests {
     #[test_case(vec![('A', 2), ('B', 2), ('C', 2)]; "test equal schedule with more stake")]
     #[test_case(vec![('A', 1), ('B', 2), ('C', 3)]; "test unequal schedule")]
     #[test_case(vec![('A', 10), ('B', 2), ('C', 3)]; "test big stake")]
-    #[test_case(vec![('A', -10), ('B', 2), ('C', 3)]; "test negative stake")]
-    fn test_weighted_round_robin(validator_set: Vec<(char, i64)>) {
+    fn test_weighted_round_robin(validator_set: Vec<(char, u64)>) {
         let num_iterations = 10000_u64;
         let l = WeightedRoundRobin::default();
         let total_stakes = validator_set
             .iter()
             .filter_map(|(_, stake)| if *stake > 0 { Some(*stake) } else { None })
-            .sum::<i64>() as u64;
+            .sum::<u64>();
         let expected_num_picked = validator_set
             .iter()
             .map(|(validator, stake)| {
                 (
                     NodeId::new(NopPubKey::from_bytes(&[*validator as u8; 32]).unwrap()),
                     if *stake > 0 {
-                        num_iterations * *stake as u64 / total_stakes
+                        num_iterations * *stake / total_stakes
                     } else {
                         0
                     },

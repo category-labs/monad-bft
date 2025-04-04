@@ -1,5 +1,7 @@
 use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
 
+use alloy_rlp::{encode_list, Decodable, Encodable, Header};
+use bytes::BufMut;
 use itertools::Itertools;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus_types::{
@@ -37,6 +39,34 @@ pub enum BlockSyncSelfRequester {
     Consensus,
     /// Statesync requested this blocksync request
     StateSync,
+}
+
+impl Encodable for BlockSyncSelfRequester {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Consensus => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::StateSync => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for BlockSyncSelfRequester {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Consensus),
+            2 => Ok(Self::StateSync),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncSelfRequester",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

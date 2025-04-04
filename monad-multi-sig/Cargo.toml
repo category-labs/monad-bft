@@ -11,11 +11,9 @@ bench = false
 [dependencies]
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-proto = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-rlp = { workspace = true }
-prost = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

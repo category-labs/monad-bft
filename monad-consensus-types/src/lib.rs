@@ -1,7 +1,6 @@
 pub mod block;
 pub mod block_validator;
 pub mod checkpoint;
-pub mod convert;
 pub mod metrics;
 pub mod payload;
 pub mod quorum_certificate;

@@ -17,7 +17,6 @@ monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-executor-glue = { workspace = true }
-monad-proto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
@@ -25,7 +24,6 @@ monad-validator = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 itertools = { workspace = true }
-prost = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -20,7 +20,6 @@ monad-consensus = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-executor-glue = { workspace = true }
-monad-proto = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
 

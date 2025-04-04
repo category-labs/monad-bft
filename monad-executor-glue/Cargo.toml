@@ -13,7 +13,6 @@ monad-blocksync = { workspace = true }
 monad-consensus = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
-monad-proto = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 
@@ -22,7 +21,6 @@ bincode = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
-prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

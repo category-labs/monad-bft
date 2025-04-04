@@ -1,8 +1,6 @@
-pub mod convert;
-
 use std::{fmt::Debug, net::SocketAddr};
 
-use alloy_rlp::{encode_list, Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -53,7 +51,7 @@ pub enum RouterCommand<PT: PubKey, OM> {
     },
     UpdateCurrentRound(Epoch, Round),
     GetPeers,
-    UpdatePeers(Vec<(NodeId<PT>, SocketAddr)>),
+    UpdatePeers(Vec<KnownPeer<PT>>),
     GetFullNodes,
     UpdateFullNodes(Vec<NodeId<PT>>),
 }
@@ -147,11 +145,69 @@ pub enum GetPeers<PT: PubKey> {
     Response(Vec<(NodeId<PT>, SocketAddr)>),
 }
 
+impl<PT: PubKey> Encodable for GetPeers<PT> {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Request => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            // encoding for control panel events only for debugging
+            Self::Response(_) => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<PT: PubKey> Decodable for GetPeers<PT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response(vec![])),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown GetPeers",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GetFullNodes<PT: PubKey> {
     Request,
     #[serde(bound = "PT: PubKey")]
     Response(Vec<NodeId<PT>>),
+}
+
+impl<PT: PubKey> Encodable for GetFullNodes<PT> {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Request => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            // encoding for control panel events only for debugging
+            Self::Response(_) => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<PT: PubKey> Decodable for GetFullNodes<PT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response(vec![])),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown GetFullNodes",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,6 +229,34 @@ pub enum ClearMetrics {
 pub enum ReloadConfig {
     Request,
     Response(String),
+}
+
+impl Encodable for ReloadConfig {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Request => {
+                let enc: [&dyn Encodable; 1] = [&1u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Response(r) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, r];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl Decodable for ReloadConfig {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response(String::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncSelfRequester",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -379,6 +463,76 @@ where
     SendVote(Round),
 }
 
+impl<ST, SCT, EPT> Encodable for ConsensusEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Message {
+                sender: snd,
+                unverified_message: msg,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&1u8, &snd, &msg];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Timeout => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSync {
+                block_range: range,
+                full_blocks: blocks,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&3u8, &range, &blocks];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SendVote(round) => {
+                let enc: [&dyn Encodable; 2] = [&4u8, &round];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for ConsensusEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let msg = Unverified::<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>::decode(
+                    &mut payload,
+                )?;
+                Ok(Self::Message {
+                    sender,
+                    unverified_message: msg,
+                })
+            }
+            2 => Ok(Self::Timeout),
+            3 => {
+                let block_range = BlockRange::decode(&mut payload)?;
+                let full_blocks = Vec::<ConsensusFullBlock<ST, SCT, EPT>>::decode(&mut payload)?;
+                Ok(Self::BlockSync {
+                    block_range,
+                    full_blocks,
+                })
+            }
+            4 => Ok(Self::SendVote(Round::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown ConsensusEvent",
+            )),
+        }
+    }
+}
+
 impl<ST, SCT, EPT> Debug for ConsensusEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
@@ -491,9 +645,126 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Encodable for BlockSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Request { sender, request } => {
+                let enc: [&dyn Encodable; 3] = [&1u8, &sender, &request];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Timeout(m) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SelfRequest {
+                requester,
+                block_range,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&3u8, &requester, &block_range];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SelfCancelRequest {
+                requester,
+                block_range,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&4u8, &requester, &block_range];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Response { sender, response } => {
+                let enc: [&dyn Encodable; 3] = [&5u8, &sender, &response];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::SelfResponse { response } => {
+                let enc: [&dyn Encodable; 2] = [&6u8, &response];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for BlockSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let request = BlockSyncRequestMessage::decode(&mut payload)?;
+                Ok(Self::Request { sender, request })
+            }
+            2 => Ok(Self::Timeout(BlockSyncRequestMessage::decode(
+                &mut payload,
+            )?)),
+            3 => {
+                let requester = BlockSyncSelfRequester::decode(&mut payload)?;
+                let block_range = BlockRange::decode(&mut payload)?;
+                Ok(Self::SelfRequest {
+                    requester,
+                    block_range,
+                })
+            }
+            4 => {
+                let requester = BlockSyncSelfRequester::decode(&mut payload)?;
+                let block_range = BlockRange::decode(&mut payload)?;
+                Ok(Self::SelfCancelRequest {
+                    requester,
+                    block_range,
+                })
+            }
+            5 => {
+                let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let response = BlockSyncResponseMessage::<ST, SCT, EPT>::decode(&mut payload)?;
+                Ok(Self::Response { sender, response })
+            }
+            6 => {
+                let response = BlockSyncResponseMessage::<ST, SCT, EPT>::decode(&mut payload)?;
+                Ok(Self::SelfResponse { response })
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown BlockSyncEvent",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
     UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
+}
+
+impl<SCT: SignatureCollection> Encodable for ValidatorEvent<SCT> {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::UpdateValidators(vset) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, vset];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Decodable for ValidatorEvent<SCT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let vset = ValidatorSetDataWithEpoch::<SCT>::decode(&mut payload)?;
+                Ok(Self::UpdateValidators(vset))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown ValidatorEvent",
+            )),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -518,6 +789,108 @@ pub enum MempoolEvent<SCT: SignatureCollection, EPT: ExecutionProtocol> {
 
     /// Txs that should be forwarded to upcoming leaders
     ForwardTxs(Vec<Bytes>),
+}
+
+impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Encodable for MempoolEvent<SCT, EPT> {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Proposal {
+                epoch,
+                round,
+                seq_num,
+                high_qc,
+                timestamp_ns,
+                round_signature,
+                delayed_execution_results,
+                proposed_execution_inputs,
+                last_round_tc,
+            } => {
+                let mut tc_buf = BytesMut::new();
+                match last_round_tc {
+                    None => {
+                        let enc: [&dyn Encodable; 1] = [&1u8];
+                        encode_list::<_, dyn Encodable>(&enc, &mut tc_buf);
+                    }
+                    Some(tc) => {
+                        let enc: [&dyn Encodable; 2] = [&2u8, &tc];
+                        encode_list::<_, dyn Encodable>(&enc, &mut tc_buf);
+                    }
+                }
+
+                let enc: [&dyn Encodable; 10] = [
+                    &1u8,
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    &tc_buf,
+                ];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ForwardedTxs { sender, txs } => {
+                let enc: [&dyn Encodable; 3] = [&2u8, sender, txs];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ForwardTxs(txs) => {
+                let enc: [&dyn Encodable; 2] = [&3u8, txs];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Decodable for MempoolEvent<SCT, EPT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let epoch = Epoch::decode(&mut payload)?;
+                let round = Round::decode(&mut payload)?;
+                let seq_num = SeqNum::decode(&mut payload)?;
+                let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
+                let timestamp_ns = u128::decode(&mut payload)?;
+                let round_signature = RoundSignature::<SCT::SignatureType>::decode(&mut payload)?;
+                let delayed_execution_results = Vec::<EPT::FinalizedHeader>::decode(&mut payload)?;
+                let proposed_execution_inputs =
+                    ProposedExecutionInputs::<EPT>::decode(&mut payload)?;
+                let mut tc_payload = Header::decode_bytes(&mut payload, true)?;
+                let tc = match u8::decode(&mut tc_payload)? {
+                    1 => Ok(None),
+                    2 => Ok(Some(TimeoutCertificate::<SCT>::decode(&mut payload)?)),
+                    _ => Err(alloy_rlp::Error::Custom(
+                        "failed to decode unknown tc in mempool event",
+                    )),
+                }?;
+                Ok(Self::Proposal {
+                    epoch,
+                    round,
+                    seq_num,
+                    high_qc,
+                    timestamp_ns,
+                    round_signature,
+                    delayed_execution_results,
+                    proposed_execution_inputs,
+                    last_round_tc: tc,
+                })
+            }
+            2 => {
+                let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                Ok(Self::ForwardedTxs { sender, txs })
+            }
+            3 => {
+                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                Ok(Self::ForwardTxs(txs))
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown mempool event",
+            )),
+        }
+    }
 }
 
 impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SCT, EPT> {
@@ -962,6 +1335,83 @@ where
     },
 }
 
+impl<ST, SCT, EPT> Encodable for StateSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::Inbound(nodeid, msg) => {
+                let enc: [&dyn Encodable; 3] = [&1u8, &nodeid, &msg];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Outbound(nodeid, msg, _) => {
+                // The serialization of this event is only used for local logging
+                // so fine to ignore the channel
+                let enc: [&dyn Encodable; 3] = [&2u8, &nodeid, &msg];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::DoneSync(seqnum) => {
+                let enc: [&dyn Encodable; 2] = [&3u8, &seqnum];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSync {
+                block_range,
+                full_blocks,
+            } => {
+                let enc: [&dyn Encodable; 3] = [&4u8, &block_range, &full_blocks];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::RequestSync { root, high_qc } => {
+                let enc: [&dyn Encodable; 3] = [&5u8, &root, &high_qc];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for StateSyncEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                let nodeid = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let msg = StateSyncNetworkMessage::decode(&mut payload)?;
+                Ok(Self::Inbound(nodeid, msg))
+            }
+            2 => {
+                let nodeid = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
+                let msg = StateSyncNetworkMessage::decode(&mut payload)?;
+                Ok(Self::Outbound(nodeid, msg, None))
+            }
+            3 => Ok(Self::DoneSync(SeqNum::decode(&mut payload)?)),
+            4 => {
+                let block_range = BlockRange::decode(&mut payload)?;
+                let full_blocks = Vec::<ConsensusFullBlock<ST, SCT, EPT>>::decode(&mut payload)?;
+                Ok(Self::BlockSync {
+                    block_range,
+                    full_blocks,
+                })
+            }
+            5 => {
+                let root = ConsensusBlockHeader::<ST, SCT, EPT>::decode(&mut payload)?;
+                let high_qc = QuorumCertificate::<SCT>::decode(&mut payload)?;
+                Ok(Self::RequestSync { root, high_qc })
+            }
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown StateSyncEvent",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlPanelEvent<SCT>
 where
@@ -975,7 +1425,65 @@ where
     ReloadConfig(ReloadConfig),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl<SCT> Encodable for ControlPanelEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::GetMetricsEvent => {
+                let enc: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ClearMetricsEvent => {
+                let enc: [&dyn Encodable; 1] = [&3u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::UpdateLogFilter(filter) => {
+                let enc: [&dyn Encodable; 2] = [&5u8, &filter];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::GetPeers(peers) => {
+                let enc: [&dyn Encodable; 2] = [&6u8, &peers];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::GetFullNodes(nodes) => {
+                let enc: [&dyn Encodable; 2] = [&7u8, &nodes];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ReloadConfig(cfg) => {
+                let enc: [&dyn Encodable; 2] = [&8u8, &cfg];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<SCT> Decodable for ControlPanelEvent<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            2 => Ok(Self::GetMetricsEvent),
+            3 => Ok(Self::ClearMetricsEvent),
+            5 => Ok(Self::UpdateLogFilter(String::decode(&mut payload)?)),
+            6 => Ok(Self::GetPeers(GetPeers::<SCT::NodeIdPubKey>::decode(
+                &mut payload,
+            )?)),
+            7 => Ok(Self::GetFullNodes(
+                GetFullNodes::<SCT::NodeIdPubKey>::decode(&mut payload)?,
+            )),
+            8 => Ok(Self::ReloadConfig(ReloadConfig::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown ControlPanelEvent",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct ConfigUpdate<SCT>
 where
     SCT: SignatureCollection,
@@ -985,11 +1493,41 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownPeer<PT>
+where
+    PT: PubKey,
+{
+    pub node_id: NodeId<PT>,
+    pub addr: SocketAddr,
+}
+
+impl<PT: PubKey> Encodable for KnownPeer<PT> {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let enc: [&dyn Encodable; 2] = [&self.node_id, &self.addr.to_string()];
+        encode_list::<_, dyn Encodable>(&enc, out);
+    }
+}
+
+impl<PT: PubKey> Decodable for KnownPeer<PT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let node_id = NodeId::decode(&mut payload)?;
+        let s = <String as Decodable>::decode(buf)?;
+        let addr = s
+            .parse::<SocketAddr>()
+            .map_err(|_| alloy_rlp::Error::Custom("invalid SocketAddr"))?;
+
+        Ok(Self { node_id, addr })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct KnownPeersUpdate<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub known_peers: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
+    pub known_peers: Vec<KnownPeer<SCT::NodeIdPubKey>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1000,6 +1538,43 @@ where
     ConfigUpdate(ConfigUpdate<SCT>),
     KnownPeersUpdate(KnownPeersUpdate<SCT>),
     LoadError(String),
+}
+
+impl<SCT: SignatureCollection> Encodable for ConfigEvent<SCT> {
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::ConfigUpdate(m) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::KnownPeersUpdate(m) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::LoadError(m) => {
+                let enc: [&dyn Encodable; 2] = [&3u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Decodable for ConfigEvent<SCT> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::ConfigUpdate(ConfigUpdate::<SCT>::decode(
+                &mut payload,
+            )?)),
+            2 => Ok(Self::KnownPeersUpdate(KnownPeersUpdate::<SCT>::decode(
+                &mut payload,
+            )?)),
+            3 => Ok(Self::LoadError(String::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown ConfigEvent",
+            )),
+        }
+    }
 }
 
 /// MonadEvent are inputs to MonadState
@@ -1082,16 +1657,96 @@ where
     }
 }
 
+impl<ST, SCT, EPT> Encodable for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn encode(&self, out: &mut dyn BufMut) {
+        match self {
+            Self::ConsensusEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&1u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::BlockSyncEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&2u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ValidatorEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&3u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::MempoolEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&4u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ControlPanelEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&5u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::TimestampUpdateEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&6u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::StateSyncEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&7u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::ConfigEvent(event) => {
+                let enc: [&dyn Encodable; 2] = [&8u8, &event];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+        }
+    }
+}
+
+impl<ST, SCT, EPT> Decodable for MonadEvent<ST, SCT, EPT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    EPT: ExecutionProtocol,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        match u8::decode(&mut payload)? {
+            1 => Ok(Self::ConsensusEvent(
+                ConsensusEvent::<ST, SCT, EPT>::decode(&mut payload)?,
+            )),
+            2 => Ok(Self::BlockSyncEvent(
+                BlockSyncEvent::<ST, SCT, EPT>::decode(&mut payload)?,
+            )),
+            3 => Ok(Self::ValidatorEvent(ValidatorEvent::<SCT>::decode(
+                &mut payload,
+            )?)),
+            4 => Ok(Self::MempoolEvent(MempoolEvent::<SCT, EPT>::decode(
+                &mut payload,
+            )?)),
+            5 => Ok(Self::ControlPanelEvent(ControlPanelEvent::<SCT>::decode(
+                &mut payload,
+            )?)),
+            6 => Ok(Self::TimestampUpdateEvent(u128::decode(&mut payload)?)),
+            7 => Ok(Self::StateSyncEvent(
+                StateSyncEvent::<ST, SCT, EPT>::decode(&mut payload)?,
+            )),
+            8 => Ok(Self::ConfigEvent(ConfigEvent::<SCT>::decode(&mut payload)?)),
+            _ => Err(alloy_rlp::Error::Custom(
+                "failed to decode unknown MonadEvent",
+            )),
+        }
+    }
+}
+
 impl<ST, SCT, EPT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type ReadError = monad_proto::error::ProtoError;
+    type ReadError = alloy_rlp::Error;
 
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
+        MonadEvent::<ST, SCT, EPT>::decode(&mut data.as_ref())
     }
 }
 
@@ -1102,7 +1757,9 @@ where
     EPT: ExecutionProtocol,
 {
     fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_event(self)
+        let mut buf = BytesMut::new();
+        self.encode(&mut buf);
+        buf.into()
     }
 }
 
@@ -1171,7 +1828,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    type ReadError = monad_proto::error::ProtoError;
+    type ReadError = alloy_rlp::Error;
     fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
         let mut offset = 0;
         let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
@@ -1181,7 +1838,7 @@ where
         let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
         offset += ts_size;
 
-        let event = crate::convert::interface::deserialize_event(&data[offset..])?;
+        let event = MonadEvent::<ST, SCT, EPT>::decode(&mut &data[offset..])?;
 
         Ok(LogFriendlyMonadEvent {
             timestamp: ts,
@@ -1205,8 +1862,7 @@ where
         b.put(&len[..]);
         b.put(&ts[..]);
 
-        let ev = crate::convert::interface::serialize_event(&self.event);
-        b.put(&ev[..]);
+        self.event.encode(&mut b);
 
         b.into()
     }

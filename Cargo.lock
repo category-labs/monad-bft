@@ -1209,15 +1209,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
-name = "autotools"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aef8da1805e028a172334c3b680f93e71126f2327622faef2ec3d893c0a4ad77"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "awc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,12 +2851,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fixedbitset"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
-
-[[package]]
 name = "flate2"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4403,7 +4388,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
- "monad-proto",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
@@ -4437,13 +4421,10 @@ dependencies = [
  "hex",
  "monad-consensus-types",
  "monad-crypto",
- "monad-proto",
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "prost 0.12.6",
  "rand 0.8.5",
- "serde_cbor",
  "test-case",
  "zeroize",
 ]
@@ -4481,7 +4462,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-multi-sig",
- "monad-proto",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
@@ -4523,10 +4503,8 @@ dependencies = [
  "bytes",
  "hex",
  "monad-crypto",
- "monad-proto",
  "monad-state-backend",
  "monad-types",
- "prost 0.12.6",
  "serde",
  "toml 0.7.8",
 ]
@@ -4556,7 +4534,6 @@ dependencies = [
  "blake3",
  "criterion",
  "hex",
- "monad-proto",
  "serde",
  "sha2",
  "zerocopy 0.6.5",
@@ -4865,10 +4842,8 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-proto",
  "monad-state-backend",
  "monad-types",
- "prost 0.12.6",
  "serde",
 ]
 
@@ -4969,11 +4944,9 @@ dependencies = [
  "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
- "monad-proto",
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "prost 0.12.6",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "test-case",
@@ -5104,18 +5077,6 @@ dependencies = [
  "actix-server",
  "actix-web",
  "jemalloc_pprof",
- "serde",
-]
-
-[[package]]
-name = "monad-proto"
-version = "0.1.0"
-dependencies = [
- "pbjson",
- "pbjson-build",
- "prost 0.12.6",
- "prost-build",
- "protobuf-src",
  "serde",
 ]
 
@@ -5316,13 +5277,11 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor-glue",
- "monad-proto",
  "monad-secp",
  "monad-state-backend",
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "prost 0.12.6",
  "toml 0.7.8",
  "tracing",
 ]
@@ -5529,7 +5488,6 @@ dependencies = [
  "futures",
  "hex",
  "monad-crypto",
- "monad-proto",
  "serde",
  "test-case",
  "zerocopy 0.6.5",
@@ -5592,7 +5550,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor-glue",
- "monad-proto",
  "monad-secp",
  "monad-types",
  "ratatui",
@@ -5713,12 +5670,6 @@ dependencies = [
  "spin 0.9.8",
  "version_check",
 ]
-
-[[package]]
-name = "multimap"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
 name = "mutually_exclusive_features"
@@ -6053,7 +6004,7 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost 0.13.1",
+ "prost",
  "reqwest 0.12.5",
  "thiserror 2.0.9",
  "tokio",
@@ -6069,7 +6020,7 @@ checksum = "8c40da242381435e18570d5b9d50aca2a4f4f4d8e146231adb4e7768023309b3"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost 0.13.1",
+ "prost",
  "tonic",
 ]
 
@@ -6195,28 +6146,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de3145af08024dea9fa9914f381a17b8fc6034dfb00f3a84013f7ff43f29ed4c"
 
 [[package]]
-name = "pbjson"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e6349fa080353f4a597daffd05cb81572a9c031a6d4fff7e504947496fcc68"
-dependencies = [
- "base64 0.21.5",
- "serde",
-]
-
-[[package]]
-name = "pbjson-build"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eea3058763d6e656105d1403cb04e0a41b7bbac6362d413e7c33be0c32279c9"
-dependencies = [
- "heck 0.5.0",
- "itertools 0.13.0",
- "prost 0.13.1",
- "prost-types 0.13.1",
-]
-
-[[package]]
 name = "pbkdf2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6302,16 +6231,6 @@ dependencies = [
  "once_cell",
  "pest",
  "sha2",
-]
-
-[[package]]
-name = "petgraph"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d3afd2628e69da2be385eb6f2fd57c8ac7977ceeff6dc166ff1657b0e386a9"
-dependencies = [
- "fixedbitset",
- "indexmap 2.7.0",
 ]
 
 [[package]]
@@ -6416,7 +6335,7 @@ dependencies = [
  "flate2",
  "num",
  "paste",
- "prost 0.13.1",
+ "prost",
 ]
 
 [[package]]
@@ -6528,56 +6447,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "deb1435c188b76130da55f17a466d252ff7b1418b2ad3e037d127b94e3411f29"
-dependencies = [
- "bytes",
- "prost-derive 0.12.6",
-]
-
-[[package]]
-name = "prost"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13db3d3fde688c61e2446b4d843bc27a7e8af269a69440c0308021dc92333cc"
 dependencies = [
  "bytes",
- "prost-derive 0.13.1",
-]
-
-[[package]]
-name = "prost-build"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
-dependencies = [
- "bytes",
- "heck 0.5.0",
- "itertools 0.12.0",
- "log",
- "multimap",
- "once_cell",
- "petgraph",
- "prettyplease",
- "prost 0.12.6",
- "prost-types 0.12.6",
- "regex",
- "syn 2.0.87",
- "tempfile",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
-dependencies = [
- "anyhow",
- "itertools 0.12.0",
- "proc-macro2",
- "quote",
- "syn 2.0.87",
+ "prost-derive",
 ]
 
 [[package]]
@@ -6591,33 +6466,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.87",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9091c90b0a32608e984ff2fa4091273cbdd755d54935c51d520887f4a1dbd5b0"
-dependencies = [
- "prost 0.12.6",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cee5168b05f49d4b0ca581206eb14a7b22fafd963efe729ac48eb03266e25cc2"
-dependencies = [
- "prost 0.13.1",
-]
-
-[[package]]
-name = "protobuf-src"
-version = "1.1.0+21.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7ac8852baeb3cc6fb83b93646fb93c0ffe5d14bf138c945ceb4b9948ee0e3c1"
-dependencies = [
- "autotools",
 ]
 
 [[package]]
@@ -7490,16 +7338,6 @@ version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "387cc504cb06bb40a96c8e04e951fe01854cf6bc921053c954e4a606d9675c6a"
 dependencies = [
- "serde",
-]
-
-[[package]]
-name = "serde_cbor"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bef2ebfde456fb76bbcf9f59315333decc4fda0b2b44b420243c11e0f5ec1f5"
-dependencies = [
- "half",
  "serde",
 ]
 
@@ -8443,7 +8281,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "prost 0.13.1",
+ "prost",
  "tokio",
  "tokio-stream",
  "tower 0.4.13",
