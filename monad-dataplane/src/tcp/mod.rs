@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use bytes::Bytes;
+use monad_metrics::MetricsPolicy;
 use monoio::spawn;
 use tokio::sync::mpsc;
 use zerocopy::{
@@ -9,6 +10,7 @@ use zerocopy::{
 };
 
 use super::TcpMsg;
+use crate::metrics::TcpDataplaneExecutorMetrics;
 
 pub mod rx;
 pub mod tx;
@@ -36,13 +38,21 @@ impl TcpMsgHdr {
     }
 }
 
-pub fn spawn_tasks(
+pub fn spawn_tasks<MP>(
     local_addr: SocketAddr,
     tcp_ingress_tx: mpsc::Sender<(SocketAddr, Bytes)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
-) {
-    spawn(rx::task(local_addr, tcp_ingress_tx));
-    spawn(tx::task(tcp_egress_rx));
+    metrics: TcpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
+    let TcpDataplaneExecutorMetrics {
+        rx: metrics_rx,
+        tx: metrics_tx,
+    } = metrics;
+
+    spawn(rx::task(local_addr, tcp_ingress_tx, metrics_rx));
+    spawn(tx::task(tcp_egress_rx, metrics_tx));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

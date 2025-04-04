@@ -27,7 +27,7 @@ use monad_types::{
 };
 
 use self::{
-    metrics::RaptorCastExecutorMetrics,
+    metrics::RaptorCastDataplaneMetrics,
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
 };
 
@@ -77,11 +77,11 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane: Dataplane,
+    dataplane: Dataplane<MP>,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
     waker: Option<Waker>,
-    metrics: RaptorCastExecutorMetrics<MP>,
+    metrics: RaptorCastDataplaneMetrics<MP>,
     _phantom: PhantomData<(OM, SE)>,
 }
 
@@ -102,9 +102,15 @@ where
     OM: Serializable<Bytes> + Into<M> + Clone,
     MP: MetricsPolicy,
 {
-    pub fn new(config: RaptorCastConfig<ST>, metrics: RaptorCastExecutorMetrics<MP>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST>, metrics: RaptorCastDataplaneMetrics<MP>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
-        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
+
+        let dataplane = Dataplane::new(
+            &config.local_addr,
+            config.up_bandwidth_mbps,
+            metrics.dataplane.clone(),
+        );
+
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
@@ -122,7 +128,10 @@ where
             pending_events: Default::default(),
 
             waker: None,
-            metrics,
+            metrics: RaptorCastDataplaneMetrics {
+                raptorcast: metrics.raptorcast,
+                dataplane: metrics.dataplane,
+            },
             _phantom: PhantomData,
         }
     }
@@ -166,7 +175,7 @@ where
     MP: MetricsPolicy,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
-    type Metrics = RaptorCastExecutorMetrics<MP>;
+    type Metrics = RaptorCastDataplaneMetrics<MP>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());

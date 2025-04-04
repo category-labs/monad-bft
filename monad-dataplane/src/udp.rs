@@ -7,11 +7,15 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use monad_metrics::{Counter, MetricsPolicy};
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::RecvMsg;
+use crate::metrics::{
+    RxUdpDataplaneExecutorMetrics, TxUdpDataplaneExecutorMetrics, UdpDataplaneExecutorMetrics,
+};
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
 // https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
@@ -28,12 +32,15 @@ pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 const ETHERNET_MTU: u16 = 1500;
 const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(ETHERNET_MTU);
 
-pub fn spawn_tasks(
+pub fn spawn_tasks<MP>(
     local_addr: SocketAddr,
     udp_ingress_tx: mpsc::Sender<RecvMsg>,
     udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
-) {
+    metrics: UdpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
     // Bind the UDP socket and clone it for use in different tasks.
     let udp_socket_rx = UdpSocket::bind(local_addr).unwrap();
     let raw_fd = udp_socket_rx.as_raw_fd();
@@ -60,16 +67,34 @@ pub fn spawn_tasks(
         }
     }
 
-    spawn(rx(udp_socket_rx, udp_ingress_tx));
-    spawn(tx(udp_socket_tx, udp_egress_rx, up_bandwidth_mbps));
+    let UdpDataplaneExecutorMetrics {
+        rx: metrics_rx,
+        tx: metrics_tx,
+    } = metrics;
+
+    spawn(rx(udp_socket_rx, udp_ingress_tx, metrics_rx));
+    spawn(tx(
+        udp_socket_tx,
+        udp_egress_rx,
+        up_bandwidth_mbps,
+        metrics_tx,
+    ));
 }
 
-async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
+async fn rx<MP>(
+    udp_socket_rx: UdpSocket,
+    udp_ingress_tx: mpsc::Sender<RecvMsg>,
+    metrics: RxUdpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
         match udp_socket_rx.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
+                metrics.bytes.add(len as u64);
+
                 let payload = buf.freeze();
 
                 let msg = RecvMsg {
@@ -92,11 +117,14 @@ async fn rx(udp_socket_rx: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvMsg>) {
 
 const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
 
-async fn tx(
+async fn tx<MP>(
     socket_tx: UdpSocket,
     mut udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
-) {
+    metrics: TxUdpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
     let mut udp_segment_size: u16 = DEFAULT_SEGMENT_SIZE;
     set_udp_segment_size(&socket_tx, udp_segment_size);
     let mut max_chunk: u16 = max_write_size_for_segment_size(udp_segment_size);
@@ -126,6 +154,8 @@ async fn tx(
         let chunk = payload.split_to(payload.len().min(max_chunk.into()));
         let chunk_len = chunk.len();
 
+        metrics.bytes_total.add(chunk_len as u64);
+
         let now = Instant::now();
 
         if next_transmit > now {
@@ -140,8 +170,11 @@ async fn tx(
 
         let (ret, chunk) = socket_tx.send_to(chunk, addr).await;
 
-        if let Err(err) = ret {
-            match err.kind() {
+        match ret {
+            Ok(bytes_len) => {
+                metrics.bytes_success.add(bytes_len as u64);
+            }
+            Err(err) => match err.kind() {
                 // ENETUNREACH is returned when trying to send to an IPv4 address from a
                 // socket bound to a local IPv6 address.
                 ErrorKind::NetworkUnreachable => debug!(
@@ -186,7 +219,7 @@ async fn tx(
                         );
                     }
                 }
-            }
+            },
         }
 
         next_transmit += Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);

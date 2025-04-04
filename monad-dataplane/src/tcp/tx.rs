@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use monad_metrics::{Counter, Gauge, MetricsPolicy};
 use monoio::{
     io::AsyncWriteRentExt,
     net::TcpStream,
@@ -22,6 +23,7 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr};
+use crate::metrics::TxTcpDataplaneExecutorMetrics;
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
@@ -118,7 +120,12 @@ struct TxStateInner {
     peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
+pub async fn task<MP>(
+    mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    metrics: TxTcpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
     let tx_state = TxState::new();
 
     let mut conn_id: u64 = 0;
@@ -138,6 +145,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
                 addr,
                 msg_receiver,
                 tx_state_peer_handle,
+                metrics.clone(),
             ));
 
             conn_id += 1;
@@ -145,19 +153,25 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
     }
 }
 
-async fn task_connection(
+async fn task_connection<MP>(
     conn_id: u64,
     addr: SocketAddr,
     mut msg_receiver: mpsc::Receiver<TcpMsg>,
     _tx_state_peer_handle: TxStatePeerHandle,
-) {
+    metrics: TxTcpDataplaneExecutorMetrics<MP>,
+) where
+    MP: MetricsPolicy,
+{
+    metrics.new_connection.inc();
+    metrics.connections.inc();
+
     trace!(
         conn_id,
         ?addr,
         "starting TCP transmit connection task for peer"
     );
 
-    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
+    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver, &metrics).await {
         let mut additional_messages_dropped = 0;
 
         // Throw away (and fail) all remaining queued messages immediately.
@@ -182,13 +196,18 @@ async fn task_connection(
         ?addr,
         "exiting TCP transmit connection task for peer"
     );
+    metrics.connections.dec_saturating();
 }
 
-async fn connect_and_send_messages(
+async fn connect_and_send_messages<MP>(
     conn_id: u64,
     addr: &SocketAddr,
     msg_receiver: &mut mpsc::Receiver<TcpMsg>,
-) -> Result<(), Error> {
+    metrics: &TxTcpDataplaneExecutorMetrics<MP>,
+) -> Result<(), Error>
+where
+    MP: MetricsPolicy,
+{
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
@@ -234,6 +253,8 @@ async fn connect_and_send_messages(
 
         let len = msg.msg.len();
 
+        metrics.bytes_total.add(len as u64);
+
         timeout(
             message_timeout(len),
             send_message(conn_id, addr, &mut stream, message_id, msg),
@@ -249,6 +270,8 @@ async fn connect_and_send_messages(
                 ),
             )
         })?;
+
+        metrics.bytes_success.add(len as u64);
 
         message_id += 1;
     }

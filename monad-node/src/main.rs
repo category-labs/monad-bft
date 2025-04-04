@@ -16,6 +16,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_dataplane::metrics::DataplaneExecutorMetrics;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
@@ -27,7 +28,10 @@ use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, SignatureCollectionType,
     SignatureType,
 };
-use monad_raptorcast::{metrics::RaptorCastExecutorMetrics, RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{
+    metrics::{RaptorCastDataplaneMetrics, RaptorCastExecutorMetrics},
+    RaptorCast, RaptorCastConfig,
+};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::{StateSync, StateSyncExecutorMetrics};
 use monad_triedb_cache::StateBackendCache;
@@ -532,7 +536,10 @@ where
             up_bandwidth_mbps: network_config.max_mbps.into(),
             mtu: network_config.mtu,
         },
-        RaptorCastExecutorMetrics::build(),
+        RaptorCastDataplaneMetrics {
+            raptorcast: RaptorCastExecutorMetrics::build(),
+            dataplane: DataplaneExecutorMetrics::build(),
+        },
     )
 }
 
@@ -563,7 +570,7 @@ fn send_metrics<MP>(
     state_metrics: &StateMetrics<MP>,
     executor_metrics: ParentExecutorMetrics<
         '_,
-        RaptorCastExecutorMetrics<MP>,
+        RaptorCastDataplaneMetrics<MP>,
         (),
         LedgerExecutorMetrics<MP>,
         (),
@@ -597,7 +604,11 @@ fn send_metrics<MP>(
     state_metrics.traverse(&mut on_counter, &mut on_gauge);
 
     let ParentExecutorMetrics {
-        router,
+        router:
+            RaptorCastDataplaneMetrics {
+                raptorcast,
+                dataplane,
+            },
         timer: &(),
         ledger,
         checkpoint: &(),
@@ -610,7 +621,8 @@ fn send_metrics<MP>(
         config_loader: &(),
     } = executor_metrics;
 
-    router.traverse(&mut on_counter, &mut on_gauge);
+    raptorcast.traverse(&mut on_counter, &mut on_gauge);
+    dataplane.traverse(&mut on_counter, &mut on_gauge);
     ledger.traverse(&mut on_counter, &mut on_gauge);
     txpool.traverse(&mut on_counter, &mut on_gauge);
     state_sync.traverse(&mut on_counter, &mut on_gauge);

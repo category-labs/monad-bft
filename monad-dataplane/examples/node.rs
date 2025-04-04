@@ -9,7 +9,11 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{executor, Stream};
 use futures_util::FutureExt;
-use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg, TcpMsg};
+use monad_dataplane::{
+    metrics::DataplaneExecutorMetrics, udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, RecvMsg,
+    TcpMsg,
+};
+use monad_metrics::NoopMetricsPolicy;
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -90,14 +94,14 @@ fn main() {
 }
 
 struct Node {
-    network: Dataplane,
+    network: Dataplane<NoopMetricsPolicy>,
     target: SocketAddr,
 }
 
 impl Node {
     pub fn new(addr: &SocketAddr, target_addr: &str) -> Self {
         Self {
-            network: Dataplane::new(addr, 1_000),
+            network: Dataplane::new(addr, 1_000, DataplaneExecutorMetrics::default()),
             target: target_addr.parse().unwrap(),
         }
     }
