@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, env, time::Duration};
+use std::{
+    collections::BTreeSet,
+    env,
+    time::{Duration, Instant},
+};
 
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
@@ -39,25 +43,30 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 #[test]
 #[ignore = "cron_test"]
 fn nodes_with_random_latency_cron() {
-    let round = match env::var("NODES_WITH_RANDOM_LATENCY_ROUND") {
+    let time_seconds = match env::var("NODES_WITH_RANDOM_LATENCY_TIME_SECONDS") {
         Ok(v) => v.parse().unwrap(),
-        Err(_e) => panic!("NODES_WITH_RANDOM_LATENCY_ROUND is not set"), // default to 1 if not found
+        Err(_e) => {
+            println!("NODES_WITH_RANDOM_LATENCY_TIME_SECONDS is not set, using default of 60");
+            60
+        }
     };
 
-    match env::var("RANDOM_TEST_SEED") {
-        Ok(v) => {
-            let mut seed = v.parse().unwrap();
-            let mut generator = StdRng::seed_from_u64(seed);
-            for _ in 0..round {
-                seed = generator.gen();
-                println!("seed is set to be {}", seed);
-                nodes_with_random_latency(seed);
-            }
-        }
+    let mut seed = match env::var("RANDOM_TEST_SEED") {
+        Ok(v) => v.parse().unwrap(),
         Err(_e) => {
-            panic!("RANDOM_TEST_SEED is not set");
+            println!("RANDOM_TEST_SEED is not set, using default seed 0");
+            0
         }
     };
+
+    let start_time = Instant::now();
+
+    let mut generator = StdRng::seed_from_u64(seed);
+    while start_time.elapsed() < Duration::from_secs(time_seconds) {
+        seed = generator.gen();
+        println!("seed is set to be {}", seed);
+        nodes_with_random_latency(seed);
+    }
 }
 
 #[test_case(1; "seed1")]

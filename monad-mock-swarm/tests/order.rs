@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashSet},
     env,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use itertools::Itertools;
@@ -43,23 +43,30 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 #[test]
 #[ignore = "cron_test"]
 fn all_messages_delayed_cron() {
-    let round = match env::var("ALL_MESSAGES_DELAYED_ROUND") {
+    let time_seconds = match env::var("ALL_MESSAGES_DELAYED_TIME_SECONDS") {
         Ok(v) => v.parse().unwrap(),
-        Err(_e) => panic!("ALL_MESSAGES_DELAYED_ROUND is not set"),
+        Err(_e) => {
+            println!("ALL_MESSAGES_DELAYED_TIME_SECONDS is not set, using default of 60");
+            60
+        }
     };
 
-    match env::var("RANDOM_TEST_SEED") {
-        Ok(v) => {
-            let mut seed = v.parse().unwrap();
-            let mut generator = StdRng::seed_from_u64(seed);
-            for _ in 0..round {
-                seed = generator.gen();
-                println!("seed for all_messages_delayed_cron is set to be {}", seed);
-                all_messages_delayed(TransformerReplayOrder::Random(seed));
-            }
+    let mut seed = match env::var("RANDOM_TEST_SEED") {
+        Ok(v) => v.parse().unwrap(),
+        Err(_e) => {
+            println!("RANDOM_TEST_SEED is not set, using default seed 0");
+            0
         }
-        Err(_e) => panic!("RANDOM_TEST_SEED is not set"),
     };
+
+    let start_time = Instant::now();
+
+    let mut generator = StdRng::seed_from_u64(seed);
+    while start_time.elapsed() < Duration::from_secs(time_seconds) {
+        seed = generator.gen();
+        println!("seed for all_messages_delayed_cron is set to be {}", seed);
+        all_messages_delayed(TransformerReplayOrder::Random(seed));
+    }
 }
 
 #[test_case(TransformerReplayOrder::Forward; "in order")]
