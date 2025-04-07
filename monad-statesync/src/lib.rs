@@ -153,8 +153,33 @@ where
                         }
                         StateSyncMode::Live(live) => live,
                     };
-                    if execution_ipc.request_tx.try_send((from, request)).is_err() {
+                    if execution_ipc
+                        .request_tx
+                        .try_send((from, StateSyncNetworkMessage::Request(request)))
+                        .is_err()
+                    {
                         tracing::warn!("dropping inbound statesync request, execution backlogged?")
+                    }
+                }
+                StateSyncCommand::Message((
+                    from,
+                    StateSyncNetworkMessage::Completion(completion),
+                )) => {
+                    let execution_ipc = match &mut self.mode {
+                        StateSyncMode::Sync(_) => {
+                            tracing::trace!(?from, "dropping statesync completion, still syncing");
+                            continue;
+                        }
+                        StateSyncMode::Live(live) => live,
+                    };
+                    if execution_ipc
+                        .request_tx
+                        .try_send((from, StateSyncNetworkMessage::Completion(completion)))
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "dropping inbound statesync completion, execution backlogged?"
+                        )
                     }
                 }
                 StateSyncCommand::StartExecution => {
@@ -215,6 +240,14 @@ where
                         }
                         SyncRequest::DoneSync(target) => {
                             StateSyncEvent::DoneSync(SeqNum(target.number))
+                        }
+                        SyncRequest::Completion((servicer, session_id)) => {
+                            tracing::debug!(?servicer, "sending completion");
+                            StateSyncEvent::Outbound(
+                                servicer,
+                                StateSyncNetworkMessage::Completion(session_id),
+                                None, // we don't care about completions for completions
+                            )
                         }
                     };
                     return Poll::Ready(Some(MonadEvent::StateSyncEvent(event)));

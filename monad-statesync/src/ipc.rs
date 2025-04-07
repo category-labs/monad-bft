@@ -4,13 +4,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{channel::oneshot, FutureExt};
+use futures::{
+    channel::oneshot::{self, Canceled},
+    FutureExt,
+};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    SessionId, StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
     StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
+    STATESYNC_VERSION_V2,
 };
-use monad_types::{DropTimer, NodeId};
+use monad_types::NodeId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
@@ -22,7 +26,7 @@ use crate::bindings;
 /// requests
 pub(crate) struct StateSyncIpc<PT: PubKey> {
     /// request_tx accepts (from, request) pairs
-    pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncRequest)>,
+    pub request_tx: tokio::sync::mpsc::Sender<(NodeId<PT>, StateSyncNetworkMessage)>,
     /// response_rx yields (to, response, completion) tuples
     /// `completion` gets resolved when the message is serialized + written to the socket
     pub response_rx:
@@ -76,7 +80,7 @@ impl<PT: PubKey> StateSyncIpc<PT> {
                         // this future exists to make sure that the request channel is drained
                         // while waiting for execution to connect
                         loop {
-                            let _request: (NodeId<PT>, StateSyncRequest) =
+                            let _request: (NodeId<PT>, StateSyncNetworkMessage) =
                                 request_tx_reader.recv().await.expect("request_tx dropped");
                         }
                     };
@@ -111,7 +115,7 @@ struct StreamState<'a, PT: PubKey> {
     /// drop pending requests older than this
     request_timeout: Duration,
     stream: BufReader<UnixStream>,
-    request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
+    request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncNetworkMessage)>,
     response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(
         NodeId<PT>,
         StateSyncNetworkMessage,
@@ -129,14 +133,25 @@ struct PendingRequest<PT: PubKey> {
     request: StateSyncRequest,
 }
 
+// maximum number of responses we can send before client needs to acknowledge
+const MAX_UNACKOWLEDGED_RESPONSES: usize = 100;
+
 #[derive(Debug)]
 struct WipResponse<PT: PubKey> {
     from: NodeId<PT>,
     rx_time: Instant,
     service_start_time: Instant,
+
     /// send next message after this time even if we don't have a full batch
     next_message_schedule: Instant,
+
+    /// last completion message received from the client
+    completion_time: Instant,
+
     response: StateSyncResponse,
+
+    /// outstanding unacknowledged responses
+    unacknowledged_responses: usize,
 
     // list of pending completions, max size of MAX_PENDING_RESPONSES
     // set to none if any of the completions have failed
@@ -147,35 +162,42 @@ struct WipResponse<PT: PubKey> {
 // This prevents the client from timing out as long as the server stays up
 const MESSAGE_SCHEDULE_DURATION: Duration = Duration::from_millis(500);
 
+// Timeout for the client to acknowledge a message
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
+
 impl<PT: PubKey> WipResponse<PT> {
-    fn clear_ready_completions(&mut self) {
-        while let Some(oldest_completion) = self
-            .pending_response_completions
-            .as_mut()
-            .and_then(VecDeque::front_mut)
-        {
-            match oldest_completion.try_recv() {
-                Ok(Some(())) => {
-                    // chunk sent successfully, pop and check next completion
-                    let _ = self
-                        .pending_response_completions
-                        .as_mut()
-                        .expect("at least 1 completion exists")
-                        .pop_front();
-                }
-                // chunk completion not ready, stop checking completions
-                Ok(None) => break,
-                // chunk completion failed, abort entire response message
-                Err(futures::channel::oneshot::Canceled) => {
-                    self.pending_response_completions = None;
-                    tracing::warn!(
-                        from =? self.from,
-                        "outbound statesync response TCP socket completion failed"
-                    );
-                    break;
-                }
-            }
+    pub fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
+        Self {
+            from,
+            rx_time,
+            service_start_time: Instant::now(),
+            next_message_schedule: Instant::now() + MESSAGE_SCHEDULE_DURATION,
+            completion_time: Instant::now(),
+            response: StateSyncResponse {
+                version: request.version,
+                nonce: rand::random(),
+                response_index: 0,
+                request,
+                response: Vec::new(),
+                response_n: 0, // This gets set in handle_execution_message
+            },
+            pending_response_completions: Some(VecDeque::with_capacity(MAX_PENDING_RESPONSES)),
+            unacknowledged_responses: 0,
         }
+    }
+
+    // Wait for both tcp completions and acknowledgements from client
+    pub fn can_send(&self) -> bool {
+        self.pending_response_completions
+            .as_ref()
+            .is_none_or(|r| r.len() < MAX_PENDING_RESPONSES)
+            && (self.response.version < STATESYNC_VERSION_V2
+                || self.unacknowledged_responses < MAX_UNACKOWLEDGED_RESPONSES)
+    }
+
+    // Check if we have more space in the buffer
+    pub fn has_space(&self) -> bool {
+        self.response.response.len() < MAX_UPSERTS_PER_RESPONSE
     }
 }
 
@@ -183,7 +205,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     fn new(
         request_timeout: Duration,
         stream: UnixStream,
-        request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(NodeId<PT>, StateSyncRequest)>,
+        request_tx_reader: &'a mut tokio::sync::mpsc::Receiver<(
+            NodeId<PT>,
+            StateSyncNetworkMessage,
+        )>,
         response_rx_writer: &'a mut tokio::sync::mpsc::Sender<(
             NodeId<PT>,
             StateSyncNetworkMessage,
@@ -208,24 +233,58 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
     async fn poll(&mut self) -> Result<(), tokio::io::Error> {
         enum Event<PT: PubKey> {
             Execution(Result<u8, tokio::io::Error>),
-            Request((NodeId<PT>, StateSyncRequest)),
+            Message((NodeId<PT>, StateSyncNetworkMessage)),
+            TcpCompletion(Result<(), Canceled>),
             Timeout,
+            ClientTimeout,
         }
-        let fut1 = async {
-            let event = self.stream.read_u8().await;
-            Event::Execution(event)
-        };
-        let fut2 = async {
+        let fut = async {
             let maybe_request = self.request_tx_reader.recv().await;
-            Event::Request(maybe_request.expect("request_tx_writer dropped"))
+            Event::Message(maybe_request.expect("request_tx_writer dropped"))
         };
-        let mut futures = vec![fut1.boxed(), fut2.boxed()];
-        if let Some(wip_response) = self.wip_response.as_ref() {
-            let fut = async {
-                tokio::time::sleep_until(wip_response.next_message_schedule.into()).await;
-                Event::Timeout
-            };
-            futures.push(fut.boxed());
+        let mut futures = vec![fut.boxed()];
+
+        if let Some(wip_response) = self.wip_response.as_mut() {
+            // Read from the execution socket only if have space in the buffer. Execution will
+            // eventually block on the socket send if we don't read from it.
+            if wip_response.has_space() {
+                let fut = async {
+                    let event = self.stream.read_u8().await;
+                    Event::Execution(event)
+                };
+                futures.push(fut.boxed());
+            }
+
+            // If not waiting on a client, schedule next send after a timeout
+            if wip_response.can_send() {
+                let fut = async {
+                    tokio::time::sleep_until(wip_response.next_message_schedule.into()).await;
+                    Event::Timeout
+                };
+                futures.push(fut.boxed());
+            }
+
+            // If we have a pending response, schedule a timeout for the client
+            if wip_response.unacknowledged_responses > 0 {
+                let fut = async {
+                    tokio::time::sleep_until(
+                        (wip_response.completion_time + CLIENT_TIMEOUT).into(),
+                    )
+                    .await;
+                    Event::ClientTimeout
+                };
+                futures.push(fut.boxed());
+            }
+
+            // Receive the first pending completion
+            if let Some(completion) = wip_response
+                .pending_response_completions
+                .as_mut()
+                .and_then(VecDeque::front_mut)
+            {
+                let fut = async { Event::TcpCompletion(completion.await) };
+                futures.push(fut.boxed());
+            }
         }
         let (event, _, _) = futures::future::select_all(futures).await;
 
@@ -235,8 +294,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 let execution_message = self.read_execution_message(msg_type).await?;
                 self.handle_execution_message(execution_message).await
             }
-            Event::Request((from, request)) => self.handle_request(from, request).await,
-            Event::Timeout => self.handle_timeout().await,
+            Event::Message((from, request)) => self.handle_message(from, request).await,
+            Event::Timeout => self.handle_timeout(),
+            Event::TcpCompletion(res) => self.handle_tcp_completion(res),
+            Event::ClientTimeout => self.handle_client_timeout(),
         }
     }
 
@@ -259,7 +320,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         completion_receiver
     }
 
-    async fn send_batch(&mut self) {
+    fn send_batch(&mut self) {
         let Some(wip_response) = &mut self.wip_response else {
             tracing::warn!("send_batch called with no wip_response");
             return;
@@ -281,35 +342,14 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         // Reset timeout when sending message
         wip_response.next_message_schedule = Instant::now() + MESSAGE_SCHEDULE_DURATION;
 
-        wip_response.clear_ready_completions();
-
         if let Some(pending_response_completions) = &mut wip_response.pending_response_completions {
+            wip_response.unacknowledged_responses += 1;
             let completion = Self::write_response(
                 self.response_rx_writer,
                 wip_response.from,
                 StateSyncNetworkMessage::Response(response),
             );
             pending_response_completions.push_back(completion);
-            if pending_response_completions.len() == MAX_PENDING_RESPONSES {
-                let oldest_completion = pending_response_completions.pop_front().expect("nonempty");
-
-                let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
-                    tracing::debug!(
-                        ?elapsed,
-                        ?wip_response.from,
-                        "waiting for statesync response chunk completion"
-                    )
-                });
-
-                // will block until oldest_response is fully written to the TCP socket
-                if oldest_completion.await.is_err() {
-                    wip_response.pending_response_completions = None;
-                    tracing::warn!(
-                        ?wip_response.from,
-                        "outbound statesync response TCP socket completion failed"
-                    )
-                }
-            }
         } else {
             tracing::warn!(
                 ?wip_response.from,
@@ -318,6 +358,16 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 response_index = response.response_index,
                 "not sending statesync response, previous send failed"
             )
+        }
+    }
+
+    fn maybe_send_batch(&mut self) {
+        if let Some(wip_response) = &mut self.wip_response {
+            if wip_response.response.response.len() >= MAX_UPSERTS_PER_RESPONSE
+                && wip_response.can_send()
+            {
+                self.send_batch()
+            }
         }
     }
 
@@ -339,7 +389,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .response
                     .push(StateSyncUpsertV1::new(upsert_type, data.into()));
                 if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
-                    self.send_batch().await;
+                    self.maybe_send_batch();
                 }
             }
             ExecutionMessage::SyncDone(done) => {
@@ -386,14 +436,86 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         Ok(())
     }
 
-    async fn handle_timeout(&mut self) -> Result<(), tokio::io::Error> {
+    fn handle_timeout(&mut self) -> Result<(), tokio::io::Error> {
         tracing::warn!(
             "pushing incomplete batch due to timeout for prefix {:?}",
             self.wip_response
                 .as_ref()
                 .map(|wip_response| wip_response.response.request.prefix)
         );
-        self.send_batch().await;
+        self.send_batch();
+        Ok(())
+    }
+
+    fn handle_tcp_completion(&mut self, res: Result<(), Canceled>) -> Result<(), tokio::io::Error> {
+        if let Some(wip_response) = self.wip_response.as_mut() {
+            if let Some(pending_response_completions) =
+                &mut wip_response.pending_response_completions
+            {
+                pending_response_completions.pop_front();
+            }
+            if res.is_err() {
+                wip_response.pending_response_completions = None;
+            }
+            self.maybe_send_batch();
+        }
+        Ok(())
+    }
+
+    fn handle_client_timeout(&mut self) -> Result<(), tokio::io::Error> {
+        if let Some(wip_response) = self.wip_response.as_mut() {
+            tracing::warn!(
+                "client {} timed out, dropping pending response",
+                wip_response.from
+            );
+
+            // drop any further messages to this client
+            wip_response.pending_response_completions = None;
+        }
+        Ok(())
+    }
+
+    async fn handle_message(
+        &mut self,
+        from: NodeId<PT>,
+        message: StateSyncNetworkMessage,
+    ) -> Result<(), tokio::io::Error> {
+        match message {
+            StateSyncNetworkMessage::Request(request) => self.handle_request(from, request).await,
+            StateSyncNetworkMessage::Completion(session_id) => {
+                self.handle_completion(from, session_id)
+            }
+            _ => {
+                tracing::warn!(?from, ?message, "unexpected message from execution client");
+                Ok(())
+            }
+        }
+    }
+
+    fn handle_completion(
+        &mut self,
+        from: NodeId<PT>,
+        session_id: SessionId,
+    ) -> Result<(), tokio::io::Error> {
+        if let Some(wip_response) = self.wip_response.as_mut() {
+            if wip_response.from == from && wip_response.response.nonce == session_id.0 {
+                wip_response.unacknowledged_responses =
+                    wip_response.unacknowledged_responses.saturating_sub(1);
+            } else {
+                tracing::warn!(
+                    ?from,
+                    ?session_id,
+                    "unexpected completion from execution client"
+                );
+            }
+            self.maybe_send_batch();
+        } else {
+            tracing::warn!(
+                ?from,
+                ?session_id,
+                "unexpected completion from execution client, no pending response"
+            );
+        }
         Ok(())
     }
 
@@ -476,24 +598,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             break request;
         };
 
-        self.wip_response = Some(WipResponse {
-            from: request.from,
-            rx_time: request.rx_time,
-            service_start_time: Instant::now(),
-            next_message_schedule: Instant::now() + MESSAGE_SCHEDULE_DURATION,
-            response: StateSyncResponse {
-                version: SELF_STATESYNC_VERSION,
-                nonce: rand::random(),
-                response_index: 0,
-
-                request: request.request,
-                response: Vec::new(),
-
-                // this gets set in handle_execution_message(ExecutionMessage::SyncDone(_))
-                response_n: 0,
-            },
-            pending_response_completions: Some(VecDeque::with_capacity(MAX_PENDING_RESPONSES)),
-        });
+        self.wip_response = Some(WipResponse::new(
+            request.from,
+            request.rx_time,
+            request.request,
+        ));
 
         self.write_execution_request(bindings::monad_sync_request {
             prefix: request.request.prefix,

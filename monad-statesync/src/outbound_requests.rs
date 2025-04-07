@@ -5,10 +5,16 @@ use std::{
 };
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_executor_glue::{StateSyncBadVersion, StateSyncRequest, StateSyncResponse};
+use monad_executor_glue::{
+    StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncVersion,
+    SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
+};
 use monad_types::NodeId;
+use rand::seq::IteratorRandom;
 
 pub(crate) struct OutboundRequests<PT: PubKey> {
+    // List of peers with their negotiated state sync version
+    peers: HashMap<NodeId<PT>, StateSyncVersion>,
     max_parallel_requests: usize,
     request_timeout: Duration,
 
@@ -20,9 +26,14 @@ pub(crate) struct OutboundRequests<PT: PubKey> {
 }
 
 struct InFlightRequest<PT: PubKey> {
+    peer: NodeId<PT>,
+
     last_active: Instant,
     // response indexed by response_idx
     responses: BTreeMap<u32, StateSyncResponse>,
+
+    // next expected response index
+    response_index: u32,
 
     // map from nonce -> num responses received
     // TODO bound size of this
@@ -31,13 +42,14 @@ struct InFlightRequest<PT: PubKey> {
     _pd: PhantomData<PT>,
 }
 
-impl<PT: PubKey> Default for InFlightRequest<PT> {
-    fn default() -> Self {
+impl<PT: PubKey> InFlightRequest<PT> {
+    fn new(peer: NodeId<PT>) -> Self {
         Self {
+            peer,
             last_active: std::time::Instant::now(),
             responses: BTreeMap::default(),
-
             seen_nonces: Default::default(),
+            response_index: 0,
 
             _pd: PhantomData,
         }
@@ -54,7 +66,7 @@ impl<PT: PubKey> InFlightRequest<PT> {
         &mut self,
         from: &NodeId<PT>,
         response: StateSyncResponse,
-    ) -> Option<StateSyncResponse> {
+    ) -> Vec<StateSyncResponse> {
         let num_nonce_seen = self.seen_nonces.entry(response.nonce).or_default();
         *num_nonce_seen += 1;
         if self
@@ -81,58 +93,63 @@ impl<PT: PubKey> InFlightRequest<PT> {
                     ?existing_response_nonce,
                     "dropping statesync response, already fixed to different response nonce"
                 );
-                return None;
+                return Vec::new();
             }
         }
         tracing::debug!(?from, ?response, "applying statesync response");
         self.last_active = std::time::Instant::now();
+
+        if response.response_index < self.response_index {
+            tracing::debug!(
+                ?from,
+                ?response,
+                ?self.response_index,
+                "dropping statesync response, out-of-order"
+            );
+            return Vec::new();
+        }
+
+        if response.response_index == self.response_index {
+            let curr_index = self.response_index;
+            self.response_index += 1;
+            let mut responses = vec![response];
+
+            // Remove consecutive responses from out-of-order queue
+            for index in self.responses.keys() {
+                if *index == self.response_index {
+                    self.response_index += 1;
+                } else {
+                    break;
+                }
+            }
+            for index in curr_index + 1..self.response_index {
+                let response = self.responses.remove(&index).expect("missing response");
+                responses.push(response);
+            }
+            return responses;
+        }
+
         let replaced = self.responses.insert(response.response_index, response);
         assert!(replaced.is_none(), "server sent duplicate response_index");
 
-        let (first_response_idx, _) = self
-            .responses
-            .first_key_value()
-            .expect("responses nonempty");
-
-        let (_, last_response) = self.responses.last_key_value().expect("responses nonempty");
-
-        if first_response_idx == &0
-            && last_response.response_n != 0
-            && self
-                .responses
-                .keys()
-                .zip(self.responses.keys().skip(1))
-                // consecutive check
-                .all(|(&a, &b)| a + 1 == b)
-        {
-            // response is done
-            let full_response = StateSyncResponse {
-                version: last_response.version,
-                nonce: last_response.nonce,
-                response_index: 0,
-
-                request: last_response.request,
-                // TODO these could be coalesced progressively instead of in batch at the end
-                response: self
-                    .responses
-                    .values()
-                    .flat_map(|response| response.response.iter())
-                    .cloned()
-                    .collect(),
-                response_n: last_response.response_n,
-            };
-
-            tracing::debug!(?from, ?full_response, "coalescing statesync response");
-            return Some(full_response);
-        }
-        None
+        Vec::new()
     }
 }
 
 impl<PT: PubKey> OutboundRequests<PT> {
-    pub fn new(max_parallel_requests: usize, request_timeout: Duration) -> Self {
+    pub fn new(
+        max_parallel_requests: usize,
+        request_timeout: Duration,
+        peers: Vec<NodeId<PT>>,
+    ) -> Self {
         assert!(max_parallel_requests > 0);
+        // Initialize peers with the maximum state sync version, it will be negotiated
+        // down if not supported by peer.
         Self {
+            peers: peers
+                .into_iter()
+                .map(|peer| (peer, SELF_STATESYNC_VERSION))
+                .collect(),
             max_parallel_requests,
             request_timeout,
 
@@ -176,7 +193,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
         &mut self,
         from: NodeId<PT>,
         response: StateSyncResponse,
-    ) -> Option<StateSyncResponse> {
+    ) -> Vec<StateSyncResponse> {
         let maybe_prefix_peer = self.prefix_peers.get(&response.request.prefix);
         if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
             tracing::debug!(
@@ -184,7 +201,7 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 ?response,
                 "dropping statesync response, already fixed to different prefix_peer"
             );
-            return None;
+            return Vec::new();
         }
         // valid request
         self.prefix_peers.insert(response.request.prefix, from);
@@ -197,37 +214,84 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 ?response,
                 "dropping response, request is no longer queued"
             );
-            return None;
+            return Vec::new();
         };
-        if let Some(full_response) = in_flight_request.get_mut().apply_response(&from, response) {
-            in_flight_request.remove();
-            return Some(full_response);
+        let responses = in_flight_request.get_mut().apply_response(&from, response);
+        if let Some(response) = responses.last() {
+            if response.response_n != 0 {
+                in_flight_request.remove();
+            }
         }
-        None
+        responses
     }
 
     pub fn handle_bad_version(&mut self, from: NodeId<PT>, bad_version: StateSyncBadVersion) {
-        // Ignore bad version, this version is always supported
-        // Future version will perform downgrade if client does not understand the current version
-        tracing::debug!("dropping bad version from {}", from);
+        // Cancel all requests to this peer that have version greater than maximum supported version reported in bad_version
+        tracing::debug!(
+            ?from,
+            ?bad_version,
+            "peer sent bad version, cancelling requests"
+        );
+        // Update the peer's version to the maximum supported version
+        if bad_version.max_version < STATESYNC_VERSION_MIN
+            || bad_version.min_version > SELF_STATESYNC_VERSION
+        {
+            tracing::debug!(
+                "removing peer {} from peer list, incompatible version: {:?}",
+                from,
+                bad_version
+            );
+            self.peers.remove(&from);
+        } else {
+            self.peers.insert(from, bad_version.max_version);
+        }
+        let requests_to_remove: Vec<_> = self
+            .in_flight_requests
+            .iter()
+            .filter(|(request, in_flight_request)| {
+                in_flight_request.peer == from && request.version > bad_version.max_version
+            })
+            .map(|(request, _)| *request)
+            .collect();
+
+        for request in requests_to_remove {
+            tracing::debug!("retrying request {:?} because of version mismatch", request);
+            self.in_flight_requests.remove(&request);
+            self.pending_requests.insert(request);
+        }
+    }
+
+    fn choose_peer(&self, prefix: u64) -> NodeId<PT> {
+        *self
+            .prefix_peers
+            .get(&prefix)
+            .or_else(|| self.peers.keys().choose(&mut rand::thread_rng()))
+            .expect("unable to send statesync request, no peers")
+    }
+
+    // Select new peer, update version to the peer's version and insert to inflight requests
+    fn insert_request(&mut self, mut to_send: StateSyncRequest) -> (NodeId<PT>, StateSyncRequest) {
+        let peer = self.choose_peer(to_send.prefix);
+        to_send.version = self.peers.get(&peer).copied().expect("peer not found");
+        self.in_flight_requests
+            .insert(to_send, InFlightRequest::new(peer));
+        (peer, to_send)
     }
 
     #[must_use]
-    pub async fn poll(&mut self) -> (Option<&NodeId<PT>>, StateSyncRequest) {
+    pub async fn poll(&mut self) -> (NodeId<PT>, StateSyncRequest) {
         // check if we can immediately queue another request
         if self.in_flight_requests.len() < self.max_parallel_requests
             && !self.pending_requests.is_empty()
         {
             let to_send = self.pending_requests.pop_first().expect("!is_empty()");
-            self.in_flight_requests
-                .insert(to_send, InFlightRequest::default());
-            return (self.prefix_peers.get(&to_send.prefix), to_send);
+            return self.insert_request(to_send);
         }
 
         // find request that will timeout first
         let Some((request, in_flight_request)) = self
             .in_flight_requests
-            .iter_mut()
+            .iter()
             .min_by_key(|(_, in_flight_request)| in_flight_request.last_active)
         else {
             // no outstanding requests, so yield forever
@@ -240,7 +304,10 @@ impl<PT: PubKey> OutboundRequests<PT> {
                 .await;
         }
 
-        in_flight_request.last_active = std::time::Instant::now();
-        (self.prefix_peers.get(&request.prefix), *request)
+        // Reinitialize request since selecting new peer may change the version
+        let to_send = *request;
+        self.in_flight_requests.remove(&to_send);
+
+        self.insert_request(to_send)
     }
 }

@@ -95,11 +95,16 @@ message ProtoStateSyncBadVersion {
   uint32 max_version = 2;
 }
 
+message ProtoStateSyncCompletion {
+  uint64 session_id = 1;
+}
+
 message ProtoStateSyncNetworkMessage {
   oneof OneofMessage {
     ProtoStateSyncRequest request = 1;
     ProtoStateSyncResponse response = 2;
     ProtoStateSyncBadVersion bad_version = 3;
+    ProtoStateSyncCompletion completion = 4;
   }
 }
 

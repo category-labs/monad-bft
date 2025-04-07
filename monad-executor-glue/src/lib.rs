@@ -557,7 +557,9 @@ impl<SCT: SignatureCollection, EPT: ExecutionProtocol> Debug for MempoolEvent<SC
 
 const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
 const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
-pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V1;
+// Client is required to send completions since this version
+pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion { major: 1, minor: 2 };
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V2;
 pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable)]
@@ -848,11 +850,15 @@ impl Debug for StateSyncResponse {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct SessionId(pub u64);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateSyncNetworkMessage {
     Request(StateSyncRequest),
     Response(StateSyncResponse),
     BadVersion(StateSyncBadVersion),
+    Completion(SessionId),
 }
 
 impl Encodable for StateSyncNetworkMessage {
@@ -869,6 +875,10 @@ impl Encodable for StateSyncNetworkMessage {
             }
             Self::BadVersion(bad_version) => {
                 let enc: [&dyn Encodable; 3] = [&name, &3u8, &bad_version];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::Completion(session_id) => {
+                let enc: [&dyn Encodable; 3] = [&name, &4u8, &session_id];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
         }
@@ -889,6 +899,10 @@ impl Encodable for StateSyncNetworkMessage {
                 let enc: Vec<&dyn Encodable> = vec![&name, &3u8, &bad_version];
                 Encodable::length(&enc)
             }
+            Self::Completion(session_id) => {
+                let enc: Vec<&dyn Encodable> = vec![&name, &4u8, &session_id];
+                Encodable::length(&enc)
+            }
         }
     }
 }
@@ -907,6 +921,7 @@ impl Decodable for StateSyncNetworkMessage {
             1 => Ok(Self::Request(StateSyncRequest::decode(&mut payload)?)),
             2 => Ok(Self::Response(StateSyncResponse::decode(&mut payload)?)),
             3 => Ok(Self::BadVersion(StateSyncBadVersion::decode(&mut payload)?)),
+            4 => Ok(Self::Completion(SessionId::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown StateSyncNetworkMessage",
             )),

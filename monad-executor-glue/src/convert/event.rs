@@ -19,9 +19,9 @@ use monad_types::ExecutionProtocol;
 
 use crate::{
     BlockSyncEvent, ConfigEvent, ConfigUpdate, ControlPanelEvent, GetFullNodes, GetPeers,
-    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, StateSyncBadVersion, StateSyncEvent,
-    StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-    StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
+    KnownPeersUpdate, MempoolEvent, MonadEvent, ReloadConfig, SessionId, StateSyncBadVersion,
+    StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
+    StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion, ValidatorEvent,
 };
 
 impl<ST, SCT, EPT> From<&MonadEvent<ST, SCT, EPT>> for ProtoMonadEvent
@@ -700,6 +700,14 @@ impl From<&StateSyncBadVersion> for monad_proto::proto::message::ProtoStateSyncB
     }
 }
 
+impl From<&SessionId> for monad_proto::proto::message::ProtoStateSyncCompletion {
+    fn from(value: &SessionId) -> Self {
+        Self {
+            session_id: value.0,
+        }
+    }
+}
+
 impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateSyncNetworkMessage {
     fn from(value: &StateSyncNetworkMessage) -> Self {
         use monad_proto::proto::message::proto_state_sync_network_message::OneofMessage;
@@ -712,6 +720,9 @@ impl From<&StateSyncNetworkMessage> for monad_proto::proto::message::ProtoStateS
             },
             StateSyncNetworkMessage::BadVersion(bad_version) => Self {
                 oneof_message: Some(OneofMessage::BadVersion(bad_version.into())),
+            },
+            StateSyncNetworkMessage::Completion(completion) => Self {
+                oneof_message: Some(OneofMessage::Completion(completion.into())),
             },
         }
     }
@@ -829,6 +840,12 @@ impl From<monad_proto::proto::message::ProtoStateSyncBadVersion> for StateSyncBa
     }
 }
 
+impl From<monad_proto::proto::message::ProtoStateSyncCompletion> for SessionId {
+    fn from(value: monad_proto::proto::message::ProtoStateSyncCompletion) -> Self {
+        Self(value.session_id)
+    }
+}
+
 impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
     for StateSyncNetworkMessage
 {
@@ -878,6 +895,9 @@ impl TryFrom<monad_proto::proto::message::ProtoStateSyncNetworkMessage>
             }
             OneofMessage::BadVersion(bad_version) => {
                 Ok(StateSyncNetworkMessage::BadVersion(bad_version.into()))
+            }
+            OneofMessage::Completion(completion) => {
+                Ok(StateSyncNetworkMessage::Completion(completion.into()))
             }
         }
     }

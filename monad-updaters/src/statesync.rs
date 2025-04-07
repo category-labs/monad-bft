@@ -167,6 +167,7 @@ where
                         }
                     }
                     StateSyncNetworkMessage::BadVersion(_) => {}
+                    StateSyncNetworkMessage::Completion(_) => {}
                 },
             }
         }

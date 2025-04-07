@@ -12,11 +12,10 @@ use alloy_rlp::Encodable;
 use futures::{FutureExt, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
-    StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
+    SessionId, StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
     SELF_STATESYNC_VERSION,
 };
 use monad_types::{DropTimer, NodeId, SeqNum};
-use rand::seq::SliceRandom;
 
 use crate::{bindings, outbound_requests::OutboundRequests};
 
@@ -37,8 +36,8 @@ pub(crate) struct StateSync<PT: PubKey> {
     outbound_requests: OutboundRequests<PT>,
     current_target: Option<Header>,
 
-    request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest>>,
-    response_tx: std::sync::mpsc::Sender<SyncResponse>,
+    request_rx: tokio::sync::mpsc::UnboundedReceiver<SyncRequest<StateSyncRequest, PT>>,
+    response_tx: std::sync::mpsc::Sender<SyncResponse<PT>>,
 
     progress: Arc<Mutex<Progress>>,
 }
@@ -47,16 +46,17 @@ pub(crate) struct StateSync<PT: PubKey> {
 /// This name is confusing, but I can't think of a better name. This is basically an output event
 /// from the perspective of this module. OutputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an input event.
-pub(crate) enum SyncRequest<R> {
+pub(crate) enum SyncRequest<R, PT: PubKey> {
     Request(R),
     DoneSync(Header),
+    Completion((NodeId<PT>, SessionId)),
 }
 
 /// This name is confusing, but I can't think of a better name. This is basically an input event
 /// from the perspective of this module. InputEvent would also be a confusing name, because from
 /// the perspetive of the caller, this is an output event.
-pub(crate) enum SyncResponse {
-    Response(StateSyncResponse),
+pub(crate) enum SyncResponse<PT: PubKey> {
+    Response((NodeId<PT>, StateSyncResponse)),
     UpdateTarget(Header),
 }
 
@@ -150,8 +150,8 @@ impl<PT: PubKey> StateSync<PT> {
             CString::new(genesis_path).expect("invalid genesis_path - does it contain null byte?");
 
         let (request_tx, request_rx) =
-            tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest>>();
-        let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse>();
+            tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest, PT>>();
+        let (response_tx, response_rx) = std::sync::mpsc::channel::<SyncResponse<PT>>();
 
         let progress = Arc::new(Mutex::new(Progress::default()));
         let progress_clone = Arc::clone(&progress);
@@ -214,12 +214,13 @@ impl<PT: PubKey> StateSync<PT> {
                         progress.lock().unwrap().update_target(&target);
                         current_target = Some(target);
                     }
-                    SyncResponse::Response(response) => {
+                    SyncResponse::Response((from, response)) => {
                         assert!(current_target.is_some());
 
                         let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
                             tracing::debug!(
                                 ?elapsed,
+                                ?from,
                                 ?response,
                                 "statesync client thread applied response"
                             );
@@ -261,19 +262,24 @@ impl<PT: PubKey> StateSync<PT> {
                                     &response
                                 );
                             }
-                            bindings::monad_statesync_client_handle_done(
-                                ctx,
-                                bindings::monad_sync_done {
-                                    success: true,
-                                    prefix: response.request.prefix,
-                                    n: response.response_n,
-                                },
-                            )
+                            request_tx
+                                .send(SyncRequest::Completion((from, SessionId(response.nonce))))
+                                .expect("request_rx dropped");
+                            if response.response_n != 0 {
+                                bindings::monad_statesync_client_handle_done(
+                                    sync_ctx.get_or_create_ctx(),
+                                    bindings::monad_sync_done {
+                                        success: true,
+                                        prefix: response.request.prefix,
+                                        n: response.response_n,
+                                    },
+                                );
+                                progress
+                                    .lock()
+                                    .unwrap()
+                                    .update_handled_request(&response.request)
+                            }
                         }
-                        progress
-                            .lock()
-                            .unwrap()
-                            .update_handled_request(&response.request)
                     }
                 }
                 if sync_ctx.try_finalize() {
@@ -293,7 +299,11 @@ impl<PT: PubKey> StateSync<PT> {
 
         Self {
             state_sync_peers: state_sync_peers.to_vec(),
-            outbound_requests: OutboundRequests::new(max_parallel_requests, request_timeout),
+            outbound_requests: OutboundRequests::new(
+                max_parallel_requests,
+                request_timeout,
+                state_sync_peers.to_vec(),
+            ),
             current_target: None,
 
             request_rx,
@@ -334,9 +344,9 @@ impl<PT: PubKey> StateSync<PT> {
             return;
         }
 
-        if let Some(full_response) = self.outbound_requests.handle_response(from, response) {
+        for response in self.outbound_requests.handle_response(from, response) {
             self.response_tx
-                .send(SyncResponse::Response(full_response))
+                .send(SyncResponse::Response((from, response)))
                 .expect("response_rx dropped");
         }
     }
@@ -361,7 +371,7 @@ impl<PT: PubKey> StateSync<PT> {
 }
 
 impl<PT: PubKey> Stream for StateSync<PT> {
-    type Item = SyncRequest<(NodeId<PT>, StateSyncRequest)>;
+    type Item = SyncRequest<(NodeId<PT>, StateSyncRequest), PT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
@@ -394,17 +404,15 @@ impl<PT: PubKey> Stream for StateSync<PT> {
 
                     return Poll::Ready(Some(SyncRequest::DoneSync(target)));
                 }
+                SyncRequest::Completion(from) => {
+                    return Poll::Ready(Some(SyncRequest::Completion(from)));
+                }
             }
         }
 
         let fut = this.outbound_requests.poll();
-        if let Poll::Ready((maybe_locked_peer, request)) = pin!(fut).poll_unpin(cx) {
-            let servicer = maybe_locked_peer.unwrap_or_else(|| {
-                this.state_sync_peers
-                    .choose(&mut rand::thread_rng())
-                    .expect("unable to send statesync request, no peers")
-            });
-            return Poll::Ready(Some(SyncRequest::Request((*servicer, request))));
+        if let Poll::Ready((peer, request)) = pin!(fut).poll_unpin(cx) {
+            return Poll::Ready(Some(SyncRequest::Request((peer, request))));
         }
 
         Poll::Pending
