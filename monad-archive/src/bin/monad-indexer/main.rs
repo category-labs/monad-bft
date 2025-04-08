@@ -1,5 +1,7 @@
 use clap::Parser;
-use monad_archive::{prelude::*, workers::index_worker::index_worker};
+use monad_archive::{
+    model::logs_index::LogsIndexArchiver, prelude::*, workers::index_worker::index_worker,
+};
 use tracing::{info, Level};
 
 mod cli;
@@ -25,6 +27,19 @@ async fn main() -> Result<()> {
         .build_index_archive(&metrics, args.max_inline_encoded_len)
         .await?;
 
+    let log_index_archiver = match &tx_index_archiver.index_store {
+        KVStoreErased::MongoDbStorage(_storage) => {
+            info!("Building log index archiver...");
+            Some(
+                LogsIndexArchiver::from_tx_index_archiver(&tx_index_archiver, 50)
+                    .await
+                    .wrap_err("Failed to create log index reader")?,
+            )
+        }
+        _ => None,
+    };
+    info!("Log index archiver: {:?}", log_index_archiver.is_some());
+
     // Confirm connectivity
     if !args.skip_connectivity_check {
         block_data_reader
@@ -46,6 +61,7 @@ async fn main() -> Result<()> {
     tokio::spawn(index_worker(
         block_data_reader,
         tx_index_archiver,
+        log_index_archiver,
         args.max_blocks_per_iteration,
         args.max_concurrent_blocks,
         metrics,

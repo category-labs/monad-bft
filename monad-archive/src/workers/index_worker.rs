@@ -1,6 +1,6 @@
 use alloy_primitives::hex::ToHexExt;
 
-use crate::prelude::*;
+use crate::{model::logs_index::LogsIndexArchiver, prelude::*};
 
 /// Main worker that indexes transaction data from blocks into a searchable format.
 /// Continuously polls for new blocks and indexes their transactions.
@@ -8,6 +8,7 @@ use crate::prelude::*;
 /// # Arguments
 /// * `block_data_reader` - Source to read block data from
 /// * `indexer` - Transaction indexer to write indexed data to
+/// * `log_index` - Optional logs indexer to write log indexed data
 /// * `max_blocks_per_iteration` - Maximum number of blocks to process in one iteration
 /// * `max_concurrent_blocks` - Maximum number of blocks to process concurrently
 /// * `metrics` - Metrics collection interface
@@ -15,8 +16,9 @@ use crate::prelude::*;
 /// * `stop_block_override` - Optional block number to stop indexing at
 /// * `poll_frequency` - How often to check for new blocks
 pub async fn index_worker(
-    block_data_reader: (impl BlockDataReader + Sync),
+    block_data_reader: impl BlockDataReader + Sync + Send,
     indexer: TxIndexArchiver,
+    log_index: Option<LogsIndexArchiver>,
     max_blocks_per_iteration: u64,
     max_concurrent_blocks: usize,
     metrics: Metrics,
@@ -32,7 +34,7 @@ pub async fn index_worker(
                 .get_latest_indexed()
                 .await
                 .unwrap_or(Some(0))
-                .unwrap();
+                .unwrap_or(0);
             if latest != 0 {
                 latest += 1
             }
@@ -75,6 +77,7 @@ pub async fn index_worker(
         let latest_indexed = index_blocks(
             &block_data_reader,
             &indexer,
+            log_index.as_ref(),
             start_block..=end_block,
             max_concurrent_blocks,
             &metrics,
@@ -90,8 +93,9 @@ pub async fn index_worker(
 }
 
 async fn index_blocks(
-    block_data_reader: &impl BlockDataReader,
+    block_data_reader: &(impl BlockDataReader + Send),
     indexer: &TxIndexArchiver,
+    log_index: Option<&LogsIndexArchiver>,
     block_range: RangeInclusive<u64>,
     concurrency: usize,
     metrics: &Metrics,
@@ -100,7 +104,7 @@ async fn index_blocks(
 
     let res: Result<usize, u64> = futures::stream::iter(block_range.clone())
         .map(|block_num: u64| async move {
-            match handle_block(block_data_reader, indexer, block_num).await {
+            match handle_block(block_data_reader, indexer, log_index, block_num).await {
                 Ok(num_txs) => Ok(num_txs),
                 Err(e) => {
                     error!("Failed to handle block: {e:?}");
@@ -136,8 +140,9 @@ async fn index_blocks(
 }
 
 async fn handle_block(
-    block_data_reader: &impl BlockDataReader,
+    block_data_reader: &(impl BlockDataReader + Send),
     tx_index_archiver: &TxIndexArchiver,
+    log_index: Option<&LogsIndexArchiver>,
     block_num: u64,
 ) -> Result<usize> {
     let BlockDataWithOffsets {
@@ -155,11 +160,24 @@ async fn handle_block(
     let first = block.body.transactions.first().cloned();
     let first_rx = receipts.first().cloned();
     let first_trace = traces.first().cloned();
-    tx_index_archiver
-        .index_block(block, traces, receipts, offsets)
-        .await?;
 
-    // check 1 key
+    // Note: Include tx_index_archiver in branch here to avoid clones when unecessary
+    if let Some(log_index) = log_index {
+        // Index Txs
+        tx_index_archiver
+            .index_block(block.clone(), traces, receipts.clone(), offsets)
+            .await?;
+
+        // Index Logs only when this writer is available
+        log_index.index_block(&block, &receipts).await?;
+    } else {
+        // Index Txs
+        tx_index_archiver
+            .index_block(block, traces, receipts, offsets)
+            .await?;
+    }
+
+    // Check 1 key
     if let Some(tx) = first {
         let tx = tx.tx;
         let key = tx.tx_hash();
@@ -298,6 +316,7 @@ mod tests {
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
             index_archiver.clone(),
+            None,
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
@@ -365,6 +384,7 @@ mod tests {
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
             index_archiver.clone(),
+            None,
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
@@ -436,6 +456,7 @@ mod tests {
         let worker_handle = tokio::spawn(index_worker(
             reader.clone(),
             index_archiver.clone(),
+            None,
             3, // max_blocks_per_iteration
             2, // max_concurrent_blocks
             Metrics::none(),
@@ -484,6 +505,7 @@ mod tests {
         let result = index_blocks(
             &reader,
             &index_archiver,
+            None,
             block_range,
             2, // concurrency
             &Metrics::none(),
@@ -528,8 +550,15 @@ mod tests {
             reader.archive_traces(traces, block_num).await.unwrap();
         }
 
-        let result = index_blocks(&reader, &index_archiver, block_range, 2, &Metrics::none()).await;
-
+        let result = index_blocks(
+            &reader,
+            &index_archiver,
+            None,
+            block_range,
+            2, // concurrency
+            &Metrics::none(),
+        )
+        .await;
         // Should return the last successful block before error
         assert_eq!(result, 1);
 
@@ -569,7 +598,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, block_num)
+        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
             .await
             .unwrap();
         assert_eq!(num_txs, 1);
@@ -606,7 +635,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, block_num)
+        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
             .await
             .unwrap();
         assert_eq!(num_txs, 1);
@@ -636,7 +665,7 @@ mod tests {
         reader.archive_traces(traces, block_num).await.unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, block_num)
+        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
             .await
             .unwrap();
 
@@ -666,7 +695,7 @@ mod tests {
             .unwrap();
 
         // Test handle_block
-        let num_txs = handle_block(&reader, &index_archiver, block_num)
+        let num_txs = handle_block(&reader, &index_archiver, None, block_num)
             .await
             .unwrap();
 
@@ -696,7 +725,7 @@ mod tests {
         reader.archive_traces(traces, block_num).await.unwrap();
 
         // Should fail since block is missing
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -712,7 +741,7 @@ mod tests {
         reader.archive_block(block).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -728,7 +757,7 @@ mod tests {
         reader.archive_block(block).await.unwrap();
         reader.archive_receipts(receipts, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -747,7 +776,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -766,7 +795,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 
@@ -785,7 +814,7 @@ mod tests {
         reader.archive_receipts(receipts, block_num).await.unwrap();
         reader.archive_traces(traces, block_num).await.unwrap();
 
-        let result = handle_block(&reader, &index_archiver, block_num).await;
+        let result = handle_block(&reader, &index_archiver, None, block_num).await;
         assert!(result.is_err());
     }
 }

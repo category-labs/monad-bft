@@ -40,7 +40,7 @@ pub async fn archive_worker(
                 .get_latest(LatestKind::Uploaded)
                 .await
                 .unwrap_or(Some(0))
-                .unwrap();
+                .unwrap_or(0);
             if latest_uploaded == 0 {
                 0
             } else {

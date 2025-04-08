@@ -15,20 +15,61 @@ const CHUNK_SIZE: usize = 1024 * 1024 * 15; // 15MB
 
 #[derive(Clone)]
 pub struct MongoDbStorage {
-    collection: Collection<KeyValueDocument>,
+    pub client: Client,
+    pub(crate) collection: Collection<KeyValueDocument>,
+    pub db_name: String,
     name: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct KeyValueDocument {
-    _id: String,
-    value: Option<Binary>,
+pub struct KeyValueDocument {
+    pub _id: String,
+    pub value: Option<Binary>,
     /// If the size of value is above CHUNK_SIZE, data is stored in `chunks` documents with _id's {id}_chunk_{chunk_idx}
-    chunks: Option<u32>,
+    pub chunks: Option<u32>,
+}
+
+impl KeyValueDocument {
+    pub async fn resolve(
+        self,
+        collection: &Collection<KeyValueDocument>,
+    ) -> Result<(String, Bytes)> {
+        match (self.value, self.chunks) {
+            (Some(value), None) => Ok((self._id, Bytes::from(value.bytes))),
+            (None, Some(chunks)) => {
+                let keys = (0..chunks)
+                    .map(|chunk_num| chunk_id(&self._id, chunk_num))
+                    .collect::<Vec<_>>();
+                let chunks = collection
+                    .find(doc! { "_id": {"$in": keys} })
+                    .await?
+                    .map(|x| x.wrap_err("Failed to get chunk"))
+                    .try_fold(Vec::new(), |mut acc, chunk| async move {
+                        acc.extend_from_slice(&chunk.value.wrap_err("Chunk has no value")?.bytes);
+                        Ok::<_, eyre::Error>(acc)
+                    })
+                    .await
+                    .wrap_err("Failed to resolve chunks")?;
+
+                Ok((self._id, Bytes::from(chunks)))
+            }
+            _ => unreachable!("KeyValueDocument should either have value or chunks"),
+        }
+    }
 }
 
 fn chunk_id(id: &str, chunk_idx: u32) -> String {
     format!("{}_chunk_{}", id, chunk_idx)
+}
+
+pub async fn new_client(connection_string: &str) -> Result<Client> {
+    let mut client_options = ClientOptions::parse(connection_string).await?;
+    client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
+    client_options.connect_timeout = Some(Duration::from_secs(1));
+
+    let client = Client::with_options(client_options)?;
+    trace!("MongoDB client created successfully");
+    Ok(client)
 }
 
 impl MongoDbStorage {
@@ -81,15 +122,7 @@ impl MongoDbStorage {
             connection_string, database
         );
 
-        let mut client_options = ClientOptions::parse(connection_string).await?;
-        client_options.max_pool_size = Some(MAX_CONNECTION_POOL_SIZE);
-        debug!(
-            "Setting MongoDB max pool size to {}",
-            MAX_CONNECTION_POOL_SIZE
-        );
-
-        let client = Client::with_options(client_options)?;
-        trace!("MongoDB client created successfully");
+        let client = new_client(connection_string).await?;
 
         let db = client.database(database);
         debug!("Using database: {}", database);
@@ -141,7 +174,9 @@ impl MongoDbStorage {
         );
 
         let storage = Self {
+            client,
             collection,
+            db_name: database.to_string(),
             name: format!("mongodb://{database}/{collection_name}"),
         };
 
@@ -158,31 +193,21 @@ impl KVReader for MongoDbStorage {
             .await
             .wrap_err("MongoDB get operation failed")?
         {
-            Some(doc) => {
-                if let Some(chunks) = doc.chunks {
-                    let mut data = Vec::with_capacity(chunks as usize * CHUNK_SIZE);
-                    // TODO: parallelize
-                    for chunk_num in 0..chunks {
-                        let resp = self
-                            .collection
-                            .find_one(doc! { "_id": chunk_id(key, chunk_num) })
-                            .await?
-                            .wrap_err_with(|| {
-                                format!("MongoDB get operation failed for chunk {}", chunk_num)
-                            })?;
-                        data.extend_from_slice(&resp.value.wrap_err("Chunk has no value")?.bytes);
-                    }
-                    Ok(Some(Bytes::from(data)))
-                } else {
-                    Ok(Some(Bytes::from(
-                        doc.value
-                            .wrap_err("Non chunked document has no value")?
-                            .bytes,
-                    )))
-                }
-            }
+            Some(doc) => doc.resolve(&self.collection).await.map(|x| Some(x.1)),
             None => Ok(None),
         }
+    }
+
+    async fn bulk_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        self.collection
+            .find(doc! { "_id": {"$in": keys} })
+            .await
+            .wrap_err("MongoDB get operation failed")?
+            .map(|x| x.wrap_err("MongoDB get operation failed"))
+            .and_then(|x| async { x.resolve(&self.collection).await })
+            .try_collect::<HashMap<String, Bytes>>()
+            .await
+            .wrap_err("MongoDB bulk_get operation failed")
     }
 }
 
@@ -267,9 +292,9 @@ impl KVStore for MongoDbStorage {
     }
 }
 
-#[cfg(all(test, feature = "mongodb-integration-tests"))]
-mod tests {
-    use std::process::Command;
+#[cfg(test)]
+pub mod mongo_tests {
+    use std::{process::Command, sync::atomic::AtomicU16};
 
     use mongodb::bson::uuid::Uuid;
     use serial_test::serial;
@@ -277,13 +302,16 @@ mod tests {
     use super::*;
 
     pub struct TestMongoContainer {
-        container_id: String,
+        pub container_id: String,
+        pub port: u16,
     }
+
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(27017);
 
     impl TestMongoContainer {
         pub async fn new() -> Result<Self> {
             let container_name = format!("mongo_test_{}", Uuid::new());
-            let port = 27017;
+            let port = NEXT_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             // Start container
             let output = Command::new("docker")
@@ -304,6 +332,18 @@ mod tests {
                 .trim()
                 .to_string();
 
+            println!(
+                "Starting MongoDB container: {}, {}",
+                container_name, container_id
+            );
+
+            let output = Command::new("docker")
+                .args(["ps"])
+                .output()
+                .expect("Failed to list containers");
+
+            println!("Containers: {}", String::from_utf8(output.stdout).unwrap());
+
             // Poll until MongoDB is ready
             let client_options = ClientOptions::parse(format!("mongodb://localhost:{port}"))
                 .await
@@ -316,7 +356,7 @@ mod tests {
                     Ok(client) => {
                         // Try to actually connect and run a command
                         match client.list_database_names().await {
-                            Ok(_) => return Ok(Self { container_id }),
+                            Ok(_) => return Ok(Self { container_id, port }),
                             Err(_) => {
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                                 attempt += 1;
@@ -338,6 +378,7 @@ mod tests {
 
     impl Drop for TestMongoContainer {
         fn drop(&mut self) {
+            println!("Stopping MongoDB container: {}", self.container_id);
             Command::new("docker")
                 .args(["stop", &self.container_id])
                 .output()
@@ -353,7 +394,7 @@ mod tests {
         let container = TestMongoContainer::new().await?;
 
         let storage = MongoDbStorage::new(
-            "mongodb://localhost:27017",
+            &format!("mongodb://localhost:{}", container.port),
             "test_db",
             "test_collection",
             Some(5), // 5gb cap
@@ -363,6 +404,7 @@ mod tests {
         Ok((container, storage))
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_basic_operations() {
@@ -382,6 +424,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_large_value() {
@@ -419,8 +462,23 @@ mod tests {
             let result = storage.get(&key).await.unwrap().unwrap();
             assert_eq!(result.as_ref(), value.as_slice());
         }
+
+        // Test bulk_get
+        let keys = vec![
+            "key1".to_string(),
+            "key2".to_string(),
+            "nonexistent".to_string(),
+        ];
+
+        let results = storage.bulk_get(&keys).await.unwrap();
+
+        assert_eq!(results.len(), 2); // Should only have the two existing keys
+        assert_eq!(results.get("key1").unwrap().as_ref(), b"value1");
+        assert_eq!(results.get("key2").unwrap().as_ref(), b"value2");
+        assert!(!results.contains_key("nonexistent"));
     }
 
+    #[ignore]
     #[tokio::test]
     #[serial]
     async fn test_prefix_scan() {

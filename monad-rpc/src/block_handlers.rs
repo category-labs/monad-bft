@@ -8,7 +8,7 @@ use monad_triedb_utils::triedb_env::{
 };
 use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::{
     eth_json_types::{
@@ -161,6 +161,9 @@ pub async fn monad_eth_getBlockByHash<T: Triedb>(
         if let Ok(block) = archive_reader
             .get_block_by_hash(&params.block_hash.0.into())
             .await
+            .inspect_err(|e| {
+                error!("Error getting block by hash from archive: {e:?}");
+            })
         {
             return parse_block_content(
                 block.header.hash_slow(),
@@ -214,7 +217,13 @@ pub async fn monad_eth_getBlockByNumber<T: Triedb>(
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+        if let Ok(block) = archive_reader
+            .get_block_by_number(block_num.0)
+            .await
+            .inspect_err(|e| {
+                error!("Error getting block by number from archive: {e:?}");
+            })
+        {
             return parse_block_content(
                 block.header.hash_slow(),
                 block.header,
@@ -261,6 +270,9 @@ pub async fn monad_eth_getBlockTransactionCountByHash<T: Triedb>(
         if let Ok(block) = archive_reader
             .get_block_by_hash(&params.block_hash.0.into())
             .await
+            .inspect_err(|e| {
+                error!("Error getting block by hash from archive: {e:?}");
+            })
         {
             return Ok(Some(format!("0x{:x}", block.body.transactions.len())));
         }
@@ -302,7 +314,13 @@ pub async fn monad_eth_getBlockTransactionCountByNumber<T: Triedb>(
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
+        if let Ok(block) = archive_reader
+            .get_block_by_number(block_num.0)
+            .await
+            .inspect_err(|e| {
+                error!("Error getting block by number from archive: {e:?}");
+            })
+        {
             return Ok(Some(format!("0x{:x}", block.body.transactions.len())));
         }
     }
@@ -327,11 +345,11 @@ pub fn map_block_receipts<R>(
 
     let mut prev_receipt = None;
 
-    transactions
+    Ok(transactions
         .iter()
         .zip(receipts)
         .enumerate()
-        .map(|(tx_index, (tx, receipt))| -> Result<R, JsonRpcError> {
+        .map(|(tx_index, (tx, receipt))| {
             let prev_receipt = prev_receipt.replace(receipt.to_owned());
             let gas_used = if let Some(prev_receipt) = &prev_receipt {
                 receipt.receipt.cumulative_gas_used() - prev_receipt.receipt.cumulative_gas_used()
@@ -348,11 +366,11 @@ pub fn map_block_receipts<R>(
                 receipt,
                 block_num,
                 tx_index as u64,
-            )?;
+            );
 
-            Ok(f(parsed_receipt))
+            f(parsed_receipt)
         })
-        .collect()
+        .collect())
 }
 
 pub fn block_receipts(
@@ -415,18 +433,30 @@ pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     if let Some(archive_reader) = archive_reader {
         let block = match params.block {
             BlockTagOrHash::BlockTags(tag) => match get_block_key_from_tag(triedb_env, tag) {
-                BlockKey::Finalized(FinalizedBlockKey(block_num)) => {
-                    archive_reader.get_block_by_number(block_num.0).await.ok()
-                }
+                BlockKey::Finalized(FinalizedBlockKey(block_num)) => archive_reader
+                    .get_block_by_number(block_num.0)
+                    .await
+                    .inspect_err(|e| {
+                        error!("Error getting block by number from archive: {e:?}");
+                    })
+                    .ok(),
                 BlockKey::Proposed(_) => None,
             },
-            BlockTagOrHash::Hash(hash) => {
-                archive_reader.get_block_by_hash(&hash.0.into()).await.ok()
-            }
+            BlockTagOrHash::Hash(hash) => archive_reader
+                .get_block_by_hash(&hash.0.into())
+                .await
+                .inspect_err(|e| {
+                    error!("Error getting block by hash from archive: {e:?}");
+                })
+                .ok(),
         };
         if let Some(block) = block {
-            if let Ok(receipts_with_log_index) =
-                archive_reader.get_block_receipts(block.header.number).await
+            if let Ok(receipts_with_log_index) = archive_reader
+                .get_block_receipts(block.header.number)
+                .await
+                .inspect_err(|e| {
+                    error!("Error getting block receipts from archive: {e:?}");
+                })
             {
                 let block_receipts = map_block_receipts(
                     block.body.transactions,

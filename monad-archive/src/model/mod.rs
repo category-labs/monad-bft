@@ -1,5 +1,7 @@
 pub mod block_data_archive;
 pub mod index_repr;
+// pub mod logs_index;
+pub mod logs_index;
 pub mod tx_index_archive;
 
 use alloy_primitives::BlockHash;

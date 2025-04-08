@@ -205,8 +205,12 @@ impl ArchiveArgs {
             ),
         };
         let bdr = BlockDataReaderErased::from(BlockDataArchive::new(blob));
-        // TODO: Fixme
-        Ok(ArchiveReader::new(bdr, index, None))
+        Ok(ArchiveReader::new(
+            bdr.clone(),
+            IndexReaderImpl::new(index, bdr),
+            None,
+            None,
+        ))
     }
 
     pub fn replica_name(&self) -> String {

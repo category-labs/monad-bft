@@ -292,6 +292,9 @@ async fn rpc_select(
                 &app_state.archive_reader,
                 app_state.logs_max_block_range,
                 params,
+                app_state.use_eth_get_logs_index,
+                app_state.dry_run_get_logs_index,
+                app_state.max_finalized_block_cache_len,
             )
             .await
             .map(serialize_result)?
@@ -563,6 +566,9 @@ struct MonadRpcResources {
     logs_max_block_range: u64,
     eth_call_gas_limit: u64,
     eth_estimate_gas_gas_limit: u64,
+    dry_run_get_logs_index: bool,
+    use_eth_get_logs_index: bool,
+    max_finalized_block_cache_len: u64,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -588,6 +594,9 @@ impl MonadRpcResources {
         logs_max_block_range: u64,
         eth_call_gas_limit: u64,
         eth_estimate_gas_gas_limit: u64,
+        dry_run_get_logs_index: bool,
+        use_eth_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -603,6 +612,9 @@ impl MonadRpcResources {
             logs_max_block_range,
             eth_call_gas_limit,
             eth_estimate_gas_gas_limit,
+            dry_run_get_logs_index,
+            use_eth_get_logs_index,
+            max_finalized_block_cache_len,
         }
     }
 }
@@ -836,6 +848,9 @@ async fn main() -> std::io::Result<()> {
         args.eth_get_logs_max_block_range,
         args.eth_call_gas_limit,
         args.eth_estimate_gas_gas_limit,
+        args.dry_run_get_logs_index,
+        args.use_eth_get_logs_index,
+        args.max_finalized_block_cache_len,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -927,6 +942,9 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
+            max_finalized_block_cache_len: 200,
         };
 
         test::init_service(

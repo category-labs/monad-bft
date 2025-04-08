@@ -6,6 +6,7 @@ use tracing::trace;
 use crate::{
     cli::AwsCliArgs,
     kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
+    model::logs_index::LogsIndexArchiver,
     prelude::*,
 };
 
@@ -18,15 +19,17 @@ pub enum LatestKind {
 #[derive(Clone)]
 pub struct ArchiveReader {
     block_data_reader: BlockDataReaderErased,
-    index_reader: IndexReaderImpl,
+    tx_index_reader: IndexReaderImpl,
+    pub log_index: Option<LogsIndexArchiver>,
     fallback: Option<Box<ArchiveReader>>,
 }
 
 impl ArchiveReader {
     pub fn new(
         block_data_reader: impl Into<BlockDataReaderErased>,
-        index_store: impl Into<KVReaderErased>,
+        tx_index_reader: IndexReaderImpl,
         fallback: Option<Box<ArchiveReader>>,
+        log_index: Option<LogsIndexArchiver>,
     ) -> ArchiveReader {
         trace!(
             has_fallback = fallback.is_some(),
@@ -34,9 +37,10 @@ impl ArchiveReader {
         );
         let block_data_reader = block_data_reader.into();
         let reader = ArchiveReader {
-            index_reader: IndexReaderImpl::new(index_store.into(), block_data_reader.clone()),
+            tx_index_reader,
             block_data_reader,
             fallback,
+            log_index,
         };
         debug!("ArchiveReader instance created successfully");
         reader
@@ -46,13 +50,24 @@ impl ArchiveReader {
         info!(url, db, "Initializing MongoDB ArchiveReader");
         trace!("Creating MongoDB block store");
         let block_store = MongoDbStorage::new_block_store(&url, &db, None).await?;
-        let bdr = BlockDataArchive::new(block_store);
+        let block_data_reader = BlockDataArchive::new(block_store);
 
         trace!("Creating MongoDB index store");
         let index_store = MongoDbStorage::new_index_store(&url, &db, None).await?;
+        let index_reader = IndexReaderImpl::new(index_store, block_data_reader.clone());
+
+        trace!("Creating MongoDB log index store");
+        let log_index = LogsIndexArchiver::from_tx_index_archiver(&index_reader, 50)
+            .await
+            .wrap_err("Failed to create log index reader")?;
 
         debug!("MongoDB ArchiveReader initialization complete");
-        Ok(ArchiveReader::new(bdr, index_store, None))
+        Ok(ArchiveReader::new(
+            block_data_reader,
+            index_reader,
+            None,
+            Some(log_index),
+        ))
     }
 
     pub async fn init_aws_reader(
@@ -84,11 +99,13 @@ impl ArchiveReader {
 
         trace!("Creating cloud proxy reader");
         let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket)?;
+        let tx_index_reader = IndexReaderImpl::new(cloud_proxy_reader, block_data_reader.clone());
 
         debug!("AWS ArchiveReader initialization complete");
         Ok(ArchiveReader::new(
             block_data_reader,
-            cloud_proxy_reader,
+            tx_index_reader,
+            None,
             None,
         ))
     }
@@ -125,16 +142,16 @@ impl ArchiveReader {
         Fut: std::future::Future<Output = Result<Ret>>,
     {
         let Some(fallback) = self.fallback.as_ref() else {
-            return f(&self.index_reader).await;
+            return f(&self.tx_index_reader).await;
         };
 
-        match f(&self.index_reader).await {
+        match f(&self.tx_index_reader).await {
             Err(e) => {
                 debug!(
                     ?e,
                     "ArchiveReader primary source returned an error, trying fallback..."
                 );
-                f(&fallback.index_reader).await
+                f(&fallback.tx_index_reader).await
             }
             ok => ok,
         }
@@ -183,6 +200,11 @@ impl IndexReader for ArchiveReader {
         tx_hash: &alloy_primitives::TxHash,
     ) -> Result<(ReceiptWithLogIndex, HeaderSubset)> {
         self.index_fallback_logic(|idx| idx.get_receipt(tx_hash))
+            .await
+    }
+
+    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
+        self.index_fallback_logic(|idx| idx.resolve_from_bytes(bytes))
             .await
     }
 }
@@ -276,14 +298,16 @@ mod tests {
             .unwrap();
 
         let fallback = ArchiveReader::new(
-            fallback.reader.block_data_reader,
-            fallback.index_store,
+            fallback.reader.block_data_reader.clone(),
+            fallback.reader.clone(),
+            None,
             None,
         );
         let reader = ArchiveReader::new(
-            primary.reader.block_data_reader,
-            primary.index_store,
+            primary.reader.block_data_reader.clone(),
+            primary.reader,
             Some(Box::new(fallback)),
+            None,
         );
 
         let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap();
@@ -293,8 +317,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_tx_missing_no_fallback() {
         let (primary, _) = setup_index();
-        let reader =
-            ArchiveReader::new(primary.reader.block_data_reader, primary.index_store, None);
+        let reader = ArchiveReader::new(
+            primary.reader.block_data_reader.clone(),
+            primary.reader,
+            None,
+            None,
+        );
 
         let tx = mock_tx(123);
         let ret = reader.get_tx(tx.tx.tx_hash()).await;
@@ -306,14 +334,16 @@ mod tests {
     async fn test_get_tx_missing_both() {
         let (primary, fallback) = setup_index();
         let fallback = ArchiveReader::new(
-            fallback.reader.block_data_reader,
-            fallback.index_store,
+            fallback.reader.block_data_reader.clone(),
+            fallback.reader.clone(),
+            None,
             None,
         );
         let reader = ArchiveReader::new(
-            primary.reader.block_data_reader,
-            primary.index_store,
+            primary.reader.block_data_reader.clone(),
+            primary.reader,
             Some(Box::new(fallback)),
+            None,
         );
 
         let tx = mock_tx(123);
@@ -337,14 +367,16 @@ mod tests {
             .unwrap();
 
         let fallback = ArchiveReader::new(
-            fallback.reader.block_data_reader,
-            fallback.index_store,
+            fallback.reader.block_data_reader.clone(),
+            fallback.reader.clone(),
+            None,
             None,
         );
         let reader = ArchiveReader::new(
-            primary.reader.block_data_reader,
-            primary.index_store,
+            primary.reader.block_data_reader.clone(),
+            primary.reader,
             Some(Box::new(fallback)),
+            None,
         );
 
         let (tx_ret, _) = reader.get_tx(tx.tx.tx_hash()).await.unwrap();
@@ -362,11 +394,17 @@ mod tests {
     #[tokio::test]
     async fn test_get_block_missing_in_both() {
         let (primary, fallback) = setup_bdr();
-        let fallback = ArchiveReader::new(fallback, MemoryStorage::new("usused_index"), None);
+        let fallback = ArchiveReader::new(
+            fallback,
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary.clone()),
+            None,
+            None,
+        );
         let reader = ArchiveReader::new(
-            primary,
-            MemoryStorage::new("usused_index"),
+            primary.clone(),
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary),
             Some(Box::new(fallback)),
+            None,
         );
 
         let result = reader.get_block_by_number(10).await;
@@ -377,7 +415,12 @@ mod tests {
     async fn test_get_block_missing_no_fallback() {
         let (primary, _) = setup_bdr();
 
-        let reader = ArchiveReader::new(primary, MemoryStorage::new("usused_index"), None);
+        let reader = ArchiveReader::new(
+            primary.clone(),
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary),
+            None,
+            None,
+        );
 
         let result = reader.get_block_by_number(12).await;
         assert!(result.is_err());
@@ -390,11 +433,17 @@ mod tests {
         let block = mock_block(12, vec![]);
         fallback.archive_block(block.clone()).await.unwrap();
 
-        let fallback = ArchiveReader::new(fallback, MemoryStorage::new("usused_index"), None);
+        let fallback = ArchiveReader::new(
+            fallback,
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary.clone()),
+            None,
+            None,
+        );
         let reader = ArchiveReader::new(
-            primary,
-            MemoryStorage::new("usused_index"),
+            primary.clone(),
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary),
             Some(Box::new(fallback)),
+            None,
         );
 
         let result = reader.get_block_by_number(12).await.unwrap();
@@ -408,7 +457,12 @@ mod tests {
         let block = mock_block(12, vec![]);
         primary.archive_block(block.clone()).await.unwrap();
 
-        let reader = ArchiveReader::new(primary, MemoryStorage::new("usused_index"), None);
+        let reader = ArchiveReader::new(
+            primary.clone(),
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary.clone()),
+            None,
+            None,
+        );
 
         let result = reader.get_block_by_number(12).await.unwrap();
         assert_eq!(result, block);
@@ -421,11 +475,17 @@ mod tests {
         let block = mock_block(12, vec![]);
         primary.archive_block(block.clone()).await.unwrap();
 
-        let fallback = ArchiveReader::new(fallback, MemoryStorage::new("usused_index"), None);
+        let fallback = ArchiveReader::new(
+            fallback,
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary.clone()),
+            None,
+            None,
+        );
         let reader = ArchiveReader::new(
-            primary,
-            MemoryStorage::new("usused_index"),
+            primary.clone(),
+            IndexReaderImpl::new(MemoryStorage::new("usused_index"), primary),
             Some(Box::new(fallback)),
+            None,
         );
 
         let result = reader.get_block_by_number(12).await.unwrap();

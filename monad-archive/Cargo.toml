@@ -39,6 +39,7 @@ alloy-rlp = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 alloy-eips = { workspace = true }
+alloy-rpc-types = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
@@ -72,3 +73,4 @@ url = { workspace = true }
 [dev-dependencies]
 serial_test = { workspace = true } 
 monad-eth-testutil = { workspace = true }
+rand = { workspace = true }

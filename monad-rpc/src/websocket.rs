@@ -123,6 +123,9 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
+            dry_run_get_logs_index: false,
+            use_eth_get_logs_index: false,
+            max_finalized_block_cache_len: 200,
         };
 
         actix_test::start(move || {

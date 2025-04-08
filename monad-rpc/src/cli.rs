@@ -127,4 +127,12 @@ pub struct Cli {
     /// Set the mongo db name to read archive data from
     #[arg(long)]
     pub mongo_db_name: Option<String>,
+
+    /// Use mongo index to serve eth_getLogs
+    #[arg(long)]
+    pub use_eth_get_logs_index: bool,
+
+    /// Dry run using mongo index for eth_getLogs
+    #[arg(long)]
+    pub dry_run_get_logs_index: bool,
 }

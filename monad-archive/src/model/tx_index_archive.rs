@@ -28,6 +28,7 @@ impl Deref for TxIndexArchiver {
 }
 
 pub trait IndexReader {
+    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData>;
     async fn get_latest_indexed(&self) -> Result<Option<u64>>;
     async fn get_tx_indexed_data(&self, tx_hash: &TxHash) -> Result<TxIndexedData>;
     async fn get_tx_indexed_data_bulk(
@@ -68,6 +69,11 @@ impl IndexReaderImpl {
 }
 
 impl IndexReader for IndexReaderImpl {
+    async fn resolve_from_bytes(&self, bytes: &[u8]) -> Result<TxIndexedData> {
+        let repr = IndexDataStorageRepr::decode(bytes)?;
+        repr.convert(&self.block_data_reader).await
+    }
+
     async fn get_latest_indexed(&self) -> Result<Option<u64>> {
         self.block_data_reader.get_latest(LatestKind::Indexed).await
     }

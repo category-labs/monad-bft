@@ -16,13 +16,13 @@ pub type BlockTraces = Vec<Vec<u8>>;
 
 const BLOCK_PADDING_WIDTH: usize = 12;
 
-enum BlockStorageRepr {
+pub(crate) enum BlockStorageRepr {
     V0(AlloyBlock<TxEnvelope, Header>),
     V1(Block),
     V2(Block),
 }
 
-enum ReceiptStorageRepr {
+pub(crate) enum ReceiptStorageRepr {
     V0(Vec<ReceiptEnvelope>),
     V1(BlockReceipts),
 }
@@ -287,7 +287,7 @@ impl BlockStorageRepr {
     const V1_MARKER: u8 = 1;
     const V2_MARKER: u8 = 2;
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(1024);
         {
             let buf = &mut buf as &mut dyn alloy_rlp::bytes::BufMut;
@@ -310,7 +310,7 @@ impl BlockStorageRepr {
         Ok(buf)
     }
 
-    async fn decode_and_convert(buf: &[u8]) -> Result<Block> {
+    pub(crate) async fn decode_and_convert(buf: &[u8]) -> Result<Block> {
         if buf.len() < 2 {
             bail!(
                 "Cannot decode block, len must be > 2: actual: {}",
@@ -407,7 +407,7 @@ impl ReceiptStorageRepr {
     const V0_MARKER: u8 = 0;
     const V1_MARKER: u8 = 1;
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(1024);
         {
             let buf = &mut buf as &mut dyn alloy_rlp::bytes::BufMut;
@@ -426,7 +426,7 @@ impl ReceiptStorageRepr {
         Ok(buf)
     }
 
-    fn decode_and_convert(buf: &[u8]) -> Result<BlockReceipts> {
+    pub(crate) fn decode_and_convert(buf: &[u8]) -> Result<BlockReceipts> {
         // empty receipt list
         if buf == [EMPTY_LIST_CODE] {
             return Ok(vec![]);

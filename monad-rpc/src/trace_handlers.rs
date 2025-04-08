@@ -226,7 +226,13 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
             .get_block_by_hash(&params.block_hash.0.into())
             .await
         {
-            if let Ok(call_frames) = archive_reader.get_block_traces(block.header.number).await {
+            if let Ok(call_frames) = archive_reader
+                .get_block_traces(block.header.number)
+                .await
+                .inspect_err(|e| {
+                    error!("Error getting block traces from archive: {e:?}");
+                })
+            {
                 let tx_ids = block
                     .body
                     .transactions
@@ -294,8 +300,20 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
     if let (Some(archive_reader), BlockKey::Finalized(FinalizedBlockKey(block_num))) =
         (archive_reader, block_key)
     {
-        if let Ok(block) = archive_reader.get_block_by_number(block_num.0).await {
-            if let Ok(call_frames) = archive_reader.get_block_traces(block_num.0).await {
+        if let Ok(block) = archive_reader
+            .get_block_by_number(block_num.0)
+            .await
+            .inspect_err(|e| {
+                error!("Error getting block by number from archive: {e:?}");
+            })
+        {
+            if let Ok(call_frames) = archive_reader
+                .get_block_traces(block_num.0)
+                .await
+                .inspect_err(|e| {
+                    error!("Error getting block traces from archive: {e:?}");
+                })
+            {
                 let tx_ids = block
                     .body
                     .transactions
@@ -354,7 +372,12 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     // try archive if transaction hash not found and archive reader specified
     if let Some(archive_reader) = archive_reader {
-        if let Ok((trace, header_subset)) = archive_reader.get_trace(&params.tx_hash.0.into()).await
+        if let Ok((trace, header_subset)) = archive_reader
+            .get_trace(&params.tx_hash.0.into())
+            .await
+            .inspect_err(|e| {
+                error!("Error getting trace from archive: {e:?}");
+            })
         {
             let rlp_call_frame = &mut trace.as_slice();
             return decode_call_frame(
