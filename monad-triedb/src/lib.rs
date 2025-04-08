@@ -84,6 +84,10 @@ impl TriedbVec {
     pub fn len(&self) -> usize {
         self.value_len
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.value_len == 0
+    }
 }
 
 impl Drop for TriedbVec {
@@ -94,7 +98,7 @@ impl Drop for TriedbVec {
 
 impl AsRef<[u8]> for TriedbVec {
     fn as_ref(&self) -> &[u8] {
-        if self.value_len == 0 {
+        if self.is_empty() {
             &[]
         } else {
             unsafe { std::slice::from_raw_parts(self.value_ptr, self.value_len) }

@@ -1472,7 +1472,6 @@ fn process_call_frame_chunks(chunks: BTreeMap<u8, TriedbVec>) -> Result<Vec<u8>,
     // concatenate chunks in order
     Ok(chunks
         .iter()
-        .map(|(_, chunk)| chunk.into_iter())
-        .flatten()
+        .flat_map(|(_, chunk)| chunk.into_iter())
         .collect())
 }
