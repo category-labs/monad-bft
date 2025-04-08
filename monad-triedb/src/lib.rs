@@ -1,8 +1,13 @@
 use std::{
-    ffi::CString, fmt::{Debug, Formatter}, iter::Copied, path::Path, ptr::{null, null_mut}, sync::{
+    ffi::CString,
+    fmt::{Debug, Formatter},
+    iter::Copied,
+    path::Path,
+    ptr::{null, null_mut},
+    sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         Arc,
-    }
+    },
 };
 
 use futures::channel::oneshot::Sender;
@@ -107,7 +112,7 @@ impl<'a> IntoIterator for &'a TriedbVec {
     type Item = u8;
     // it is likely never useful to iterate over refs to bytes
     type IntoIter = Copied<std::slice::Iter<'a, u8>>;
-    
+
     fn into_iter(self) -> Self::IntoIter {
         self.as_slice().iter().copied()
     }

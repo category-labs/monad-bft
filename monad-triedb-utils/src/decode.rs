@@ -84,7 +84,9 @@ pub fn rlp_decode_storage_slot(storage_rlp: impl AsRef<[u8]>) -> Option<[u8; 32]
     }
 }
 
-pub fn rlp_decode_transaction_location(transaction_location_rlp: impl AsRef<[u8]>) -> Option<(u64, u64)> {
+pub fn rlp_decode_transaction_location(
+    transaction_location_rlp: impl AsRef<[u8]>,
+) -> Option<(u64, u64)> {
     let mut buf = transaction_location_rlp.as_ref();
 
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
