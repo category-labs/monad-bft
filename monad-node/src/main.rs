@@ -11,7 +11,9 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    metrics::Metrics, signature_collection::SignatureCollection, validator_data::ValidatorsConfig,
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -111,18 +113,19 @@ fn setup_tracing() -> Result<ReloadHandle, NodeSetupError> {
 }
 
 async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), ()> {
-    let checkpoint_validators_first = node_state
-        .forkpoint_config
-        .validator_sets
+    let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to read/parse validators_path={:?}, err={:?}",
+                &node_state.validators_path, err
+            )
+        })
+        .get_locked_validator_sets(&node_state.forkpoint_config);
+
+    let checkpoint_validators_first = locked_epoch_validators
         .first()
         .expect("no validator sets")
-        .clone();
-
-    let checkpoint_validators_last = node_state
-        .forkpoint_config
-        .validator_sets
-        .last()
-        .expect("no validator sets")
+        .validators
         .clone();
 
     {
@@ -195,8 +198,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
     let mut bootstrap_validators = Vec::new();
     let validator_set = checkpoint_validators_first
-        .clone()
-        .validators
         .0
         .into_iter()
         .map(|data| data.node_id)
@@ -240,11 +241,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
-            // Use the more recent of the 2 checkpoint validator sets for seeding the default e+2
-            // validator set. This allows us to manually change validator set e+1 without it
-            // getting rolled back in e+2.
-            // FIXME this should be deleted post staking module
-            checkpoint_validators_last.validators,
+            &node_state.validators_path,
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
@@ -343,6 +340,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         val_set_update_interval,
         epoch_start_delay: Round(5000),
         beneficiary: node_state.node_config.beneficiary.into(),
+        locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
         consensus_config: ConsensusConfig {

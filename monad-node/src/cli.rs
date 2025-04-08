@@ -21,6 +21,10 @@ pub struct Cli {
     #[arg(long)]
     pub forkpoint_config: PathBuf,
 
+    /// Set the validators config path
+    #[arg(long)]
+    pub validators_path: PathBuf,
+
     /// Set devnet chain config override path
     #[arg(long)]
     pub devnet_chain_config_override: Option<PathBuf>,

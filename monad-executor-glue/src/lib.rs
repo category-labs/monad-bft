@@ -25,7 +25,7 @@ use monad_consensus_types::{
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
-    validator_data::ValidatorSetData,
+    validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -126,14 +126,10 @@ pub struct CheckpointCommand<SCT: SignatureCollection> {
     pub checkpoint: Checkpoint<SCT>,
 }
 
-pub enum StateRootHashCommand<SCT>
-where
-    SCT: SignatureCollection,
-{
+pub enum StateRootHashCommand {
     RequestProposed(BlockId, SeqNum, Round),
     RequestFinalized(SeqNum),
     CancelBelow(SeqNum),
-    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -282,7 +278,7 @@ where
     TimerCommand(TimerCommand<E>),
     LedgerCommand(LedgerCommand<ST, SCT, EPT>),
     CheckpointCommand(CheckpointCommand<SCT>),
-    StateRootHashCommand(StateRootHashCommand<SCT>),
+    StateRootHashCommand(StateRootHashCommand),
     TimestampCommand(TimestampCommand),
 
     TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT>),
@@ -307,7 +303,7 @@ where
         Vec<TimerCommand<E>>,
         Vec<LedgerCommand<ST, SCT, EPT>>,
         Vec<CheckpointCommand<SCT>>,
-        Vec<StateRootHashCommand<SCT>>,
+        Vec<StateRootHashCommand>,
         Vec<TimestampCommand>,
         Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,
         Vec<ControlPanelCommand<SCT>>,
@@ -494,7 +490,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatorEvent<SCT: SignatureCollection> {
-    UpdateValidators((ValidatorSetData<SCT>, Epoch)),
+    UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
 }
 
 #[derive(Clone, PartialEq, Eq)]

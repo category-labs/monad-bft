@@ -18,7 +18,7 @@ use monad_consensus_types::{
     block::BlockPolicy,
     block_validator::BlockValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    validator_data::ValidatorSetData,
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::{
     certificate_signature::{
@@ -123,6 +123,7 @@ where
                 state_backend: self.state_config.state_backend.clone(),
 
                 forkpoint: self.state_config.forkpoint.clone(),
+                locked_epoch_validators: self.state_config.locked_epoch_validators.clone(),
                 key: CertificateKeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
                 certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(
                     &mut self.certkey_secret.clone(),
@@ -329,6 +330,16 @@ where
             .collect(),
     );
 
+    let forkpoint = Forkpoint::genesis();
+    let locked_epoch_validators: Vec<_> = forkpoint
+        .validator_sets
+        .iter()
+        .map(|locked_epoch| ValidatorSetDataWithEpoch {
+            epoch: locked_epoch.epoch,
+            validators: validator_data.clone(),
+        })
+        .collect();
+
     let state_configs: Vec<_> = keys
         .into_iter()
         .zip(certkeys)
@@ -352,7 +363,8 @@ where
                 U256::MAX,
                 monad_types::SeqNum(TWINS_STATE_ROOT_DELAY),
             ),
-            forkpoint: Forkpoint::genesis(validator_data.clone()),
+            forkpoint: forkpoint.clone(),
+            locked_epoch_validators: locked_epoch_validators.clone(),
 
             key,
             certkey,

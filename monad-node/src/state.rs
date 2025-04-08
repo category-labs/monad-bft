@@ -17,6 +17,7 @@ pub struct NodeState {
     pub node_config: MonadNodeConfig,
     pub node_config_path: PathBuf,
     pub forkpoint_config: ForkpointConfig,
+    pub validators_path: PathBuf,
     pub chain_config: MonadChainConfig,
 
     pub secp256k1_identity: KeyPair,
@@ -43,6 +44,7 @@ impl NodeState {
             secp_identity,
             node_config: node_config_path,
             forkpoint_config: forkpoint_config_path,
+            validators_path,
             devnet_chain_config_override: maybe_devnet_chain_config_override_path,
             genesis_path,
             wal_path,
@@ -122,6 +124,7 @@ impl NodeState {
             node_config,
             node_config_path,
             forkpoint_config,
+            validators_path,
             chain_config,
 
             secp256k1_identity: secp_key,

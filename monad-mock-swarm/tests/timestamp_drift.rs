@@ -63,7 +63,7 @@ fn drift_one_node() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let state_backend = state_builder.state_backend.clone();
-                let validators = state_builder.forkpoint.validator_sets[0].clone();
+                let validators = state_builder.locked_epoch_validators[0].clone();
                 let seed: u64 = seed.try_into().unwrap();
                 let drift = if seed == 1 {
                     Duration::from_millis(1)

@@ -85,7 +85,7 @@ where
             )),
         ];
         let state_backend = state_builder.state_backend.clone();
-        let validators = state_builder.forkpoint.validator_sets[0].clone();
+        let validators = state_builder.locked_epoch_validators[0].clone();
         swarm.add_state(NodeBuilder::<S>::new(
             id,
             state_builder,

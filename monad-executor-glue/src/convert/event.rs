@@ -6,6 +6,7 @@ use monad_consensus_types::{
     convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     payload::RoundSignature,
     signature_collection::SignatureCollection,
+    validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -235,10 +236,10 @@ where
 impl<SCT: SignatureCollection> From<&ValidatorEvent<SCT>> for ProtoValidatorEvent {
     fn from(value: &ValidatorEvent<SCT>) -> Self {
         let event = match value {
-            ValidatorEvent::UpdateValidators((validator_set_data, epoch)) => {
+            ValidatorEvent::UpdateValidators(vset) => {
                 proto_validator_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
-                    validator_set_data: Some(validator_set_data.into()),
-                    epoch: Some(epoch.into()),
+                    validator_set_data: Some((&vset.validators).into()),
+                    epoch: Some((&vset.epoch).into()),
                 })
             }
         };
@@ -252,19 +253,19 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
     fn try_from(value: ProtoValidatorEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_validator_event::Event::UpdateValidators(event)) => {
-                let vs = event
+                let validators = event
                     .validator_set_data
                     .ok_or(ProtoError::MissingRequiredField(
                         "ValidatorEvent::update_validators::validator_set_data".to_owned(),
                     ))?
                     .try_into()?;
-                let e = event
+                let epoch = event
                     .epoch
                     .ok_or(ProtoError::MissingRequiredField(
                         "ValidatorEvent::update_validators::epoch".to_owned(),
                     ))?
                     .try_into()?;
-                ValidatorEvent::UpdateValidators((vs, e))
+                ValidatorEvent::UpdateValidators(ValidatorSetDataWithEpoch { epoch, validators })
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ValidatorEvent.event".to_owned(),

@@ -72,6 +72,7 @@ services:
       --bls-identity /monad/config/id-bls
       --node-config /monad/config/node.toml
       --forkpoint-config /monad/config/forkpoint.genesis.toml
+      --validators-path /monad/config/validators.toml
       --genesis-path /monad/config/genesis.json
       --statesync-ipc-path /monad/statesync.sock
       --wal-path /monad/wal
