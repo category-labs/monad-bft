@@ -6,7 +6,6 @@ use monad_consensus_types::{
     convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     payload::RoundSignature,
     signature_collection::SignatureCollection,
-    validator_data::ValidatorSetDataWithEpoch,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -433,11 +432,6 @@ where
 {
     fn from(value: &ControlPanelEvent<SCT>) -> Self {
         match value {
-            ControlPanelEvent::GetValidatorSet => ProtoControlPanelEvent {
-                event: Some(proto_control_panel_event::Event::GetValidatorSetEvent(
-                    ProtoGetValidatorSetEvent {},
-                )),
-            },
             ControlPanelEvent::GetMetricsEvent => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::GetMetricsEvent(
                     ProtoGetMetricsEvent {},
@@ -446,18 +440,6 @@ where
             ControlPanelEvent::ClearMetricsEvent => ProtoControlPanelEvent {
                 event: Some(proto_control_panel_event::Event::ClearMetricsEvent(
                     ProtoClearMetricsEvent {},
-                )),
-            },
-            ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
-                epoch,
-                validators,
-                ..
-            }) => ProtoControlPanelEvent {
-                event: Some(proto_control_panel_event::Event::UpdateValidatorsEvent(
-                    ProtoUpdateValidatorsEvent {
-                        validator_set_data: Some(validators.into()),
-                        epoch: Some(epoch.into()),
-                    },
                 )),
             },
             ControlPanelEvent::UpdateLogFilter(filter) => ProtoControlPanelEvent {
@@ -555,31 +537,11 @@ where
             match event.ok_or(ProtoError::MissingRequiredField(
                 "ControlPanelEvent::event".to_owned(),
             ))? {
-                proto_control_panel_event::Event::GetValidatorSetEvent(_) => {
-                    ControlPanelEvent::GetValidatorSet
-                }
                 proto_control_panel_event::Event::GetMetricsEvent(_) => {
                     ControlPanelEvent::GetMetricsEvent
                 }
                 proto_control_panel_event::Event::ClearMetricsEvent(_) => {
                     ControlPanelEvent::ClearMetricsEvent
-                }
-                proto_control_panel_event::Event::UpdateValidatorsEvent(v) => {
-                    ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
-                        epoch: v
-                            .epoch
-                            .ok_or(ProtoError::MissingRequiredField(
-                                "ProtoUpdateValidatorsEvent.epoch".to_owned(),
-                            ))?
-                            .try_into()?,
-                        round: None,
-                        validators: v
-                            .validator_set_data
-                            .ok_or(ProtoError::MissingRequiredField(
-                                "ProtoUpdateValidatorsEvent.epoch".to_owned(),
-                            ))?
-                            .try_into()?,
-                    })
                 }
                 proto_control_panel_event::Event::UpdateLogFilter(update_log_filter) => {
                     ControlPanelEvent::UpdateLogFilter(update_log_filter.filter)

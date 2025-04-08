@@ -12,7 +12,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ClearMetrics, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
-    GetValidatorSet, MonadEvent, ReadCommand, ReloadConfig, UpdateValidatorSet, WriteCommand,
+    MonadEvent, ReadCommand, ReloadConfig, WriteCommand,
 };
 use monad_types::ExecutionProtocol;
 use tokio::{
@@ -144,19 +144,6 @@ where
 
             match request {
                 ControlPanelCommand::Read(r) => match r {
-                    ReadCommand::GetValidatorSet(v) => match v {
-                        GetValidatorSet::Request => {
-                            let event = ControlPanelEvent::GetValidatorSet;
-                            let Ok(_) = event_channel
-                                .send(MonadEvent::ControlPanelEvent(event.clone()))
-                                .await
-                            else {
-                                error!("failed to forward request {:?} to executor, closing connection", &event);
-                                break;
-                            };
-                        }
-                        m => error!("unhandled message {:?}", m),
-                    },
                     ReadCommand::GetMetrics(m) => match m {
                         GetMetrics::Request => {
                             let event = ControlPanelEvent::GetMetricsEvent;
@@ -211,22 +198,6 @@ where
                         }
                         m => error!("unhandled message {:?}", m),
                     },
-                    WriteCommand::UpdateValidatorSet(update_validator_set) => {
-                        match update_validator_set {
-                            UpdateValidatorSet::Request(parsed_validator_set) => {
-                                let event =
-                                    ControlPanelEvent::UpdateValidators(parsed_validator_set);
-                                let Ok(_) = event_channel
-                                    .send(MonadEvent::ControlPanelEvent(event.clone()))
-                                    .await
-                                else {
-                                    error!("failed to forward request {:?} to executor, closing connection", &event);
-                                    break;
-                                };
-                            }
-                            m => error!("unhandled message {:?}", m),
-                        }
-                    }
                     WriteCommand::UpdateLogFilter(filter) => {
                         let event = ControlPanelEvent::UpdateLogFilter(filter);
                         let Ok(_) = event_channel

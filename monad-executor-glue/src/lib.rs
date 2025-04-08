@@ -25,7 +25,7 @@ use monad_consensus_types::{
     quorum_certificate::{QuorumCertificate, TimestampAdjustment},
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
-    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -137,13 +137,6 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum GetValidatorSet<SCT: SignatureCollection> {
-    Request,
-    #[serde(bound = "SCT: SignatureCollection")]
-    Response(ValidatorSetDataWithEpoch<SCT>),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GetMetrics {
     Request,
     Response(Metrics),
@@ -165,23 +158,11 @@ pub enum GetFullNodes<PT: PubKey> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ReadCommand<SCT: SignatureCollection + Clone> {
-    #[serde(bound = "SCT: SignatureCollection")]
-    GetValidatorSet(GetValidatorSet<SCT>),
     GetMetrics(GetMetrics),
     #[serde(bound = "SCT: SignatureCollection")]
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
     #[serde(bound = "SCT: SignatureCollection")]
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum UpdateValidatorSet<SCT: SignatureCollection> {
-    #[serde(bound(
-        deserialize = "SCT: SignatureCollection",
-        serialize = "SCT: SignatureCollection",
-    ))]
-    Request(ValidatorSetDataWithEpoch<SCT>),
-    Response,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,9 +178,7 @@ pub enum ReloadConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum WriteCommand<SCT: SignatureCollection> {
-    #[serde(bound = "SCT: SignatureCollection")]
-    UpdateValidatorSet(UpdateValidatorSet<SCT>),
+pub enum WriteCommand {
     ClearMetrics(ClearMetrics),
     UpdateLogFilter(String),
     ReloadConfig(ReloadConfig),
@@ -210,7 +189,7 @@ pub enum ControlPanelCommand<SCT: SignatureCollection> {
     #[serde(bound = "SCT: SignatureCollection")]
     Read(ReadCommand<SCT>),
     #[serde(bound = "SCT: SignatureCollection")]
-    Write(WriteCommand<SCT>),
+    Write(WriteCommand),
 }
 
 #[derive(Debug)]
@@ -974,10 +953,8 @@ pub enum ControlPanelEvent<SCT>
 where
     SCT: SignatureCollection,
 {
-    GetValidatorSet,
     GetMetricsEvent,
     ClearMetricsEvent,
-    UpdateValidators(ValidatorSetDataWithEpoch<SCT>),
     UpdateLogFilter(String),
     GetPeers(GetPeers<SCT::NodeIdPubKey>),
     GetFullNodes(GetFullNodes<SCT::NodeIdPubKey>),

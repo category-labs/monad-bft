@@ -26,7 +26,7 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation,
-    validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
@@ -34,8 +34,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::{
     BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
+    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
+    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
     StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
     ValidatorEvent, WriteCommand,
 };
@@ -45,10 +45,8 @@ use monad_types::{
     GENESIS_ROUND,
 };
 use monad_validator::{
-    epoch_manager::EpochManager,
-    leader_election::LeaderElection,
-    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use self::{
@@ -971,44 +969,6 @@ where
                 }
             },
             MonadEvent::ControlPanelEvent(control_panel_event) => match control_panel_event {
-                ControlPanelEvent::GetValidatorSet => {
-                    let epoch = self.consensus.current_epoch();
-
-                    let validator_set = self
-                        .val_epoch_map
-                        .get_val_set(&epoch)
-                        .unwrap()
-                        .get_members();
-
-                    let cert_pubkeys = self
-                        .val_epoch_map
-                        .get_cert_pubkeys(&epoch)
-                        .unwrap()
-                        .map
-                        .iter();
-                    let validators = ValidatorSetData(
-                        cert_pubkeys
-                            .map(|(node_id, cert_pub_key)| {
-                                let stake = validator_set.get(node_id).unwrap();
-                                ValidatorData {
-                                    node_id: *node_id,
-                                    stake: *stake,
-                                    cert_pubkey: *cert_pub_key,
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-
-                    vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
-                        ReadCommand::GetValidatorSet(GetValidatorSet::Response(
-                            ValidatorSetDataWithEpoch {
-                                epoch,
-                                round: self.epoch_manager.epoch_starts.get(&epoch).copied(),
-                                validators,
-                            },
-                        )),
-                    ))]
-                }
                 ControlPanelEvent::GetMetricsEvent => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Read(
                         ReadCommand::GetMetrics(GetMetrics::Response(self.metrics)),
@@ -1019,15 +979,6 @@ where
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
                         WriteCommand::ClearMetrics(ClearMetrics::Response(self.metrics)),
                     ))]
-                }
-                ControlPanelEvent::UpdateValidators(ValidatorSetDataWithEpoch {
-                    epoch,
-                    validators,
-                    ..
-                }) => {
-                    vec![Command::StateRootHashCommand(
-                        StateRootHashCommand::UpdateValidators((validators, epoch)),
-                    )]
                 }
                 ControlPanelEvent::UpdateLogFilter(filter) => {
                     vec![Command::ControlPanelCommand(ControlPanelCommand::Write(
