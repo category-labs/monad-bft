@@ -182,10 +182,6 @@ where
 
                             self.metrics.create_proposal += 1;
                             self.metrics.create_proposal_elapsed_ns += elapsed.as_nanos() as u64;
-                            self.metrics.create_proposal_txs +=
-                                proposed_execution_inputs.body.transactions.len() as u64;
-                            self.metrics.create_proposal_available_txs +=
-                                self.pool.num_txs() as u64;
 
                             self.events_tx
                                 .send(MempoolEvent::Proposal {

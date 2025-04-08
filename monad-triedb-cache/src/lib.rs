@@ -158,4 +158,8 @@ where
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.state_backend.raw_read_latest_finalized_block()
     }
+
+    fn total_db_lookups(&self) -> u64 {
+        self.state_backend.total_db_lookups()
+    }
 }

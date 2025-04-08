@@ -176,17 +176,33 @@ where
         }
 
         let tx_heap = TrackedTxHeap::new(&self.txs, &extending_blocks);
+        let tx_heap_len = tx_heap.len();
 
-        let account_balances = block_policy.compute_account_base_balances(
-            proposed_seq_num,
-            state_backend,
-            Some(&extending_blocks),
-            tx_heap.addresses(),
-        )?;
+        let (account_balances, account_balance_lookups) = {
+            let _timer = DropTimer::start(Duration::ZERO, |elapsed| {
+                debug!(
+                    ?elapsed,
+                    "txpool create_proposal compute account base balances"
+                );
+            });
+
+            let total_db_lookups_before = state_backend.total_db_lookups();
+
+            (
+                block_policy.compute_account_base_balances(
+                    proposed_seq_num,
+                    state_backend,
+                    Some(&extending_blocks),
+                    tx_heap.addresses(),
+                )?,
+                state_backend.total_db_lookups() - total_db_lookups_before,
+            )
+        };
 
         info!(
             addresses = self.txs.len(),
             num_txs = self.num_txs(),
+            tx_heap_len,
             tx_heap_len = tx_heap.len(),
             account_balances = account_balances.len(),
             "txpool sequencing transactions"
@@ -200,11 +216,18 @@ where
             account_balances,
         );
 
-        let proposal_num_tx = proposal_tx_list.len();
+        let proposal_num_txs = proposal_tx_list.len();
+
+        event_tracker.record_create_proposal(
+            self.num_addresses(),
+            tx_heap_len,
+            account_balance_lookups,
+            proposal_num_txs,
+        );
 
         info!(
             ?proposed_seq_num,
-            ?proposal_num_tx,
+            ?proposal_num_txs,
             proposal_total_gas,
             "created proposal"
         );
