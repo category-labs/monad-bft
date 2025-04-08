@@ -14,7 +14,7 @@ use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
-use monad_triedb::{TraverseEntry, TriedbHandle};
+use monad_triedb::{TraverseEntry, TriedbHandle, TriedbVec};
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
@@ -67,7 +67,7 @@ struct TraverseRequest {
 struct AsyncRequest {
     // a sender for the polling thread to send the result back to the request handler
     // after polling is completed
-    request_sender: oneshot::Sender<Option<Vec<u8>>>,
+    request_sender: oneshot::Sender<Option<TriedbVec>>,
     // counter which is updated when TrieDB processes a single async read to completion
     completed_counter: Arc<AtomicUsize>,
     // triedb_key and key_len_nibbles are used to read items from triedb
@@ -1436,8 +1436,8 @@ where
 
 fn parse_call_frames(
     entries: Vec<TraverseEntry>,
-) -> Result<BTreeMap<u32, BTreeMap<u8, Vec<u8>>>, String> {
-    let mut grouped_frames: BTreeMap<u32, BTreeMap<u8, Vec<u8>>> = BTreeMap::new();
+) -> Result<BTreeMap<u32, BTreeMap<u8, TriedbVec>>, String> {
+    let mut grouped_frames: BTreeMap<u32, BTreeMap<u8, TriedbVec>> = BTreeMap::new();
 
     for TraverseEntry { key, value } in entries {
         // decode the key as a tuple of (txn_index, chunk_index)
@@ -1447,9 +1447,9 @@ fn parse_call_frames(
         }
 
         // first 4 bytes is txn_index
-        let txn_index = u32::from_be_bytes(key[0..4].try_into().unwrap_or_default());
+        let txn_index = u32::from_be_bytes(key.as_slice()[0..4].try_into().unwrap_or_default());
         // 5th byte is chunk_index
-        let chunk_index = key[4];
+        let chunk_index = key.as_slice()[4];
 
         grouped_frames
             .entry(txn_index)
@@ -1460,7 +1460,7 @@ fn parse_call_frames(
     Ok(grouped_frames)
 }
 
-fn process_call_frame_chunks(chunks: BTreeMap<u8, Vec<u8>>) -> Result<Vec<u8>, String> {
+fn process_call_frame_chunks(chunks: BTreeMap<u8, TriedbVec>) -> Result<Vec<u8>, String> {
     // check that chunk indices are consecutive and start with 0
     if !chunks.keys().copied().zip(0..).all(|(i, j)| i == j) {
         return Err(format!(
@@ -1470,5 +1470,9 @@ fn process_call_frame_chunks(chunks: BTreeMap<u8, Vec<u8>>) -> Result<Vec<u8>, S
     }
 
     // concatenate chunks in order
-    Ok(chunks.into_values().flatten().collect())
+    Ok(chunks
+        .iter()
+        .map(|(_, chunk)| chunk.into_iter())
+        .flatten()
+        .collect())
 }

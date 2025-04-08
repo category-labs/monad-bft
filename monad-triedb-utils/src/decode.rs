@@ -3,8 +3,8 @@ use alloy_rlp::Decodable;
 use monad_eth_types::EthAccount;
 use tracing::warn;
 
-pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
-    let mut buf = account_rlp.as_slice();
+pub fn rlp_decode_account(account_rlp: impl AsRef<[u8]>) -> Option<EthAccount> {
+    let mut buf = account_rlp.as_ref();
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
         warn!("rlp decode failed: {:?}", buf);
         return None;
@@ -51,8 +51,8 @@ pub fn rlp_decode_account(account_rlp: Vec<u8>) -> Option<EthAccount> {
     })
 }
 
-pub fn rlp_decode_storage_slot(storage_rlp: Vec<u8>) -> Option<[u8; 32]> {
-    let mut buf = storage_rlp.as_slice();
+pub fn rlp_decode_storage_slot(storage_rlp: impl AsRef<[u8]>) -> Option<[u8; 32]> {
+    let mut buf = storage_rlp.as_ref();
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
         warn!("rlp decode failed: {:?}", buf);
         return None;
@@ -84,8 +84,8 @@ pub fn rlp_decode_storage_slot(storage_rlp: Vec<u8>) -> Option<[u8; 32]> {
     }
 }
 
-pub fn rlp_decode_transaction_location(transaction_location_rlp: Vec<u8>) -> Option<(u64, u64)> {
-    let mut buf = transaction_location_rlp.as_slice();
+pub fn rlp_decode_transaction_location(transaction_location_rlp: impl AsRef<[u8]>) -> Option<(u64, u64)> {
+    let mut buf = transaction_location_rlp.as_ref();
 
     let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
         warn!("rlp decode failed: {:?}", buf);
@@ -105,8 +105,8 @@ pub fn rlp_decode_transaction_location(transaction_location_rlp: Vec<u8>) -> Opt
     Some((block_num, tx_index))
 }
 
-pub fn rlp_decode_block_num(block_num_rlp: Vec<u8>) -> Option<u64> {
-    let mut buf = block_num_rlp.as_slice();
+pub fn rlp_decode_block_num(block_num_rlp: impl AsRef<[u8]>) -> Option<u64> {
+    let mut buf = block_num_rlp.as_ref();
 
     let Ok(block_num) = u64::decode(&mut buf) else {
         warn!("rlp block number decode failed: {:?}", buf);

@@ -1,12 +1,8 @@
 use std::{
-    cmp::Ordering,
-    ffi::CString,
-    path::Path,
-    ptr::{null, null_mut},
-    sync::{
+    ffi::CString, fmt::{Debug, Formatter}, iter::Copied, path::Path, ptr::{null, null_mut}, sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
         Arc,
-    },
+    }
 };
 
 use futures::channel::oneshot::Sender;
@@ -23,7 +19,7 @@ pub struct TriedbHandle {
 }
 
 pub struct SenderContext {
-    sender: Sender<Option<Vec<u8>>>,
+    sender: Sender<Option<TriedbVec>>,
     completed_counter: Arc<AtomicUsize>,
 
     // The strong count of this dummy Arc<> reflects the total number of currently executing
@@ -50,8 +46,71 @@ pub struct TraverseContext {
 
 #[derive(Debug)]
 pub struct TraverseEntry {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub key: TriedbVec,
+    pub value: TriedbVec,
+}
+
+/// TriedbVec is a wrapper around a buffer returned by triedb.
+pub struct TriedbVec {
+    value_ptr: *const u8,
+    value_len: usize,
+}
+
+unsafe impl Send for TriedbVec {}
+
+impl TriedbVec {
+    /// # Safety
+    /// Internal buffer must be properly initialized and have a valid length.
+    unsafe fn from_response(value_ptr: *const u8, value_len: usize) -> Self {
+        Self {
+            value_ptr,
+            value_len,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.as_ref()
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.as_ref().to_vec()
+    }
+
+    pub fn len(&self) -> usize {
+        self.value_len
+    }
+}
+
+impl Drop for TriedbVec {
+    fn drop(&mut self) {
+        unsafe { bindings::triedb_finalize(self.value_ptr) };
+    }
+}
+
+impl AsRef<[u8]> for TriedbVec {
+    fn as_ref(&self) -> &[u8] {
+        if self.value_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.value_ptr, self.value_len) }
+        }
+    }
+}
+
+impl Debug for TriedbVec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_ref())
+    }
+}
+
+impl<'a> IntoIterator for &'a TriedbVec {
+    type Item = u8;
+    // it is likely never useful to iterate over refs to bytes
+    type IntoIter = Copied<std::slice::Iter<'a, u8>>;
+    
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter().copied()
+    }
 }
 
 /// # Safety
@@ -67,23 +126,12 @@ pub unsafe extern "C" fn read_async_callback(
     let sender_context = unsafe { Box::from_raw(sender_context as *mut SenderContext) };
     // Increment the completed counter
     sender_context.completed_counter.fetch_add(1, SeqCst);
-
-    let result = match value_len.cmp(&0) {
-        Ordering::Less => None,
-        Ordering::Equal => {
-            unsafe { bindings::triedb_finalize(value_ptr) };
-            Some(Vec::new())
-        }
-        Ordering::Greater => {
-            let value =
-                unsafe { std::slice::from_raw_parts(value_ptr, value_len as usize).to_vec() };
-            unsafe { bindings::triedb_finalize(value_ptr) };
-            Some(value)
-        }
+    let tvec = if value_len < 0 {
+        None
+    } else {
+        Some(unsafe { TriedbVec::from_response(value_ptr, value_len as usize) })
     };
-
-    // Send the retrieved result through the channel
-    let _ = sender_context.sender.send(result);
+    let _ = sender_context.sender.send(tvec);
 }
 
 /// # Safety
@@ -121,15 +169,8 @@ pub unsafe extern "C" fn traverse_callback(
         bindings::triedb_async_traverse_callback_triedb_async_traverse_callback_value
     );
 
-    let key = unsafe {
-        let key = std::slice::from_raw_parts(key_ptr, key_len).to_vec();
-        key
-    };
-
-    let value = unsafe {
-        let value = std::slice::from_raw_parts(value_ptr, value_len).to_vec();
-        value
-    };
+    let key = unsafe { TriedbVec::from_response(key_ptr, key_len) };
+    let value = unsafe { TriedbVec::from_response(value_ptr, value_len) };
 
     {
         let mut lock = traverse_context.data.lock().expect("mutex poisoned");
@@ -217,7 +258,7 @@ impl TriedbHandle {
         key_len_nibbles: u8,
         block_id: u64,
         completed_counter: Arc<AtomicUsize>,
-        sender: Sender<Option<Vec<u8>>>,
+        sender: Sender<Option<TriedbVec>>,
         concurrency_tracker: Arc<()>,
     ) {
         // make sure doesn't overflow
