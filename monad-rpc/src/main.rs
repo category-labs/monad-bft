@@ -51,7 +51,7 @@ use crate::{
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
-    timing::TimingMiddleware,
+    timing::{RequestId, TimingMiddleware},
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -91,6 +91,7 @@ pub(crate) async fn rpc_handler(
     root_span: RootSpan,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
+    request_id: RequestId,
 ) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
         Ok(req) => req,
@@ -170,9 +171,14 @@ pub(crate) async fn rpc_handler(
     match &response {
         ResponseWrapper::Single(resp) => match resp.error {
             Some(_) => info!(?body, ?response, "rpc_request/response error"),
-            None => debug!(?body, ?response, "rpc_request/response successful"),
+            None => debug!(
+                ?body,
+                ?response,
+                ?request_id,
+                "rpc_request/response successful"
+            ),
         },
-        _ => debug!(?body, ?response, "rpc_batch_request/response"),
+        _ => debug!(?body, ?response, ?request_id, "rpc_batch_request/response"),
     }
 
     HttpResponse::Ok().json(&response)

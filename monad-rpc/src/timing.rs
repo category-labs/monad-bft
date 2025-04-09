@@ -3,10 +3,11 @@ use std::{
     time::Instant,
 };
 
+use actix_http::Payload;
 use actix_web::{
     body::{BoxBody, MessageBody},
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    Error,
+    Error, FromRequest, HttpMessage, HttpRequest,
 };
 use futures::future::LocalBoxFuture;
 use tracing::debug;
@@ -30,6 +31,30 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RequestId {
+    id: u64,
+}
+
+impl RequestId {
+    pub fn new() -> Self {
+        Self {
+            id: rand::random::<u64>(),
+        }
+    }
+}
+
+impl FromRequest for RequestId {
+    type Error = actix_web::Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        match req.extensions().get::<RequestId>() {
+            Some(request_id) => ready(Ok(request_id.clone())),
+            None => ready(Ok(RequestId::new())),
+        }
+    }
+}
 pub struct TimingMiddlewareService<S> {
     service: S,
 }
@@ -49,18 +74,23 @@ where
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
         let start_time = Instant::now();
 
-        let request_size = req
-            .request()
+        let request_id = RequestId::new();
+        let (request, payload) = req.into_parts();
+        let id_int = request_id.id;
+        request.extensions_mut().insert(request_id);
+
+        let request_size = request
             .headers()
             .get("content-length")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
-        let client_ip = req
+        let client_ip = request
             .connection_info()
             .realip_remote_addr()
             .unwrap_or("unknown")
             .to_string();
+        let req = ServiceRequest::from_parts(request, payload);
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -77,6 +107,7 @@ where
             };
 
             debug!(
+                request_id = id_int,
                 request_size_bytes = request_size,
                 response_size_bytes = response_size,
                 processing_time = format!("{:?}", processing_end.duration_since(start_time)),
