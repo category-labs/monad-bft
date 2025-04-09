@@ -8,9 +8,7 @@ use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
 use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{
-    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
-};
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{Round, SeqNum};
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -95,11 +93,6 @@ async fn estimate_gas<T: EthCallProvider>(
     protocol_gas_limit: u64,
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
-
-    // simple transfer
-    if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() {
-        return Ok(Quantity(21_000));
-    }
 
     let (gas_used, gas_refund) = match provider
         .eth_call(txn.clone(), eth_call_executor.clone())
@@ -187,7 +180,7 @@ pub struct MonadEthEstimateGasParams {
 )]
 #[allow(non_snake_case)]
 /// Generates and returns an estimate of how much gas is necessary to allow the transaction to complete.
-pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
+pub async fn monad_eth_estimateGas<T: Triedb>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
@@ -266,6 +259,31 @@ pub async fn monad_eth_estimateGas<T: Triedb + TriedbPath>(
         block_key,
         params.state_override_set,
     );
+
+    // If the transaction is a regular value transfer, execute the transaction with a 21000 gas limit and return that gas limit if executes successfully.
+    // Returning 21000 without execution is risky since some transaction field combinations can increase the price even for regular transfers.
+    let txn: TxEnvelope = params.tx.clone().try_into()?;
+    if matches!(txn.kind(), TxKind::Call(_)) && txn.input().is_empty() && txn.to().is_some() {
+        let mut request = params.tx.clone();
+        request.gas = Some(U256::from(21_000));
+        let txn: TxEnvelope = request.try_into()?;
+
+        let to = txn.to().unwrap();
+        if let Ok(acct) = triedb_env.get_account(block_key, to.into()).await {
+            // If the account has no code, then execute the call with gas limit 21000
+            if acct.code_hash == [0; 32]
+                && matches!(
+                    eth_call_provider
+                        .eth_call(txn.clone(), Some(eth_call_executor.clone()))
+                        .await,
+                    monad_ethcall::CallResult::Success(_)
+                )
+            {
+                return Ok(Quantity(21_000));
+            }
+        }
+    };
+
     estimate_gas(
         &eth_call_provider,
         Some(eth_call_executor),
