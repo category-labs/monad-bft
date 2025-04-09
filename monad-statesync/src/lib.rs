@@ -27,6 +27,7 @@ mod ffi;
 mod ipc;
 mod outbound_requests;
 
+const GAUGE_STATESYNC_SYNCING: &str = "monad.statesync.syncing";
 const GAUGE_STATESYNC_PROGRESS_ESTIMATE: &str = "monad.statesync.progress_estimate";
 const GAUGE_STATESYNC_LAST_TARGET: &str = "monad.statesync.last_target";
 
@@ -75,6 +76,13 @@ where
             metrics: Default::default(),
             _phantom: Default::default(),
         }
+    }
+
+    fn update_syncing_metrics(&mut self) {
+        self.metrics[GAUGE_STATESYNC_SYNCING] = match &self.mode {
+            StateSyncMode::Sync(_) => 1,
+            StateSyncMode::Live(_) => 0,
+        };
     }
 }
 
@@ -165,6 +173,8 @@ where
                 }
             }
         }
+
+        self.update_syncing_metrics();
     }
 
     fn metrics(&self) -> ExecutorMetricsChain {

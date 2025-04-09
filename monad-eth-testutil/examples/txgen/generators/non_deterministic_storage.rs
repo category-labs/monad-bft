@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub struct NonDeterministicStorageTxGenerator {
-    pub(crate) recipient_keys: SeededKeyPool,
+    pub(crate) recipient_keys: KeyPool,
     pub(crate) erc20: ERC20,
     pub(crate) tx_per_sender: usize,
 }

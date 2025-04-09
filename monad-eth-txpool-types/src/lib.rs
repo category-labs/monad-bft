@@ -44,7 +44,7 @@ pub enum EthTxPoolEvent {
 }
 
 // allow for more fine grain debugging if needed
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransactionError {
     InvalidChainId,
     MaxPriorityFeeTooHigh,
@@ -54,7 +54,7 @@ pub enum TransactionError {
     UnsupportedTransactionType,
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolDropReason {
     NotWellFormed(TransactionError),
     InvalidSignature,
@@ -67,7 +67,7 @@ pub enum EthTxPoolDropReason {
     Internal(EthTxPoolInternalDropReason),
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolInternalDropReason {
     StateBackendError,
 }
@@ -100,7 +100,7 @@ impl EthTxPoolDropReason {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EthTxPoolEvictReason {
     Expired,
 }

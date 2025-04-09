@@ -1,0 +1,11 @@
+[package]
+name = "monad-peer-discovery"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monad-crypto = { workspace = true }
+monad-executor-glue = { workspace = true }
+monad-types = { workspace = true }
+
+tracing = { workspace = true }

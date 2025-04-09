@@ -27,7 +27,7 @@ use crate::{
     },
     fee::BaseFeePerGas,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    txpool::{EthTxPoolBridgeState, TxStatus},
+    txpool::{EthTxPoolBridgeClient, TxStatus},
 };
 
 pub fn parse_tx_content(
@@ -404,23 +404,22 @@ const MAX_CONCURRENT_SEND_RAW_TX: usize = 1_000;
 // TODO: need to support EIP-4844 transactions
 #[rpc(method = "eth_sendRawTransaction", ignore = "tx_pool", ignore = "ipc")]
 #[allow(non_snake_case)]
-#[tracing::instrument(level = "debug", skip(txpool_state))]
+#[tracing::instrument(level = "debug", skip(txpool_bridge_client))]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction<T: Triedb>(
     triedb_env: &T,
-    ipc: flume::Sender<TxEnvelope>,
-    txpool_state: &EthTxPoolBridgeState,
+    txpool_bridge_client: &EthTxPoolBridgeClient,
     base_fee_per_gas: impl BaseFeePerGas,
     params: MonadEthSendRawTransactionParams,
     chain_id: u64,
     allow_unprotected_txs: bool,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_sendRawTransaction: {params:?}");
-    let pending_send_raw_tx = Arc::clone(&txpool_state.pending_send_raw_tx);
+    let tx_inflight_guard = txpool_bridge_client.acquire_inflight_tx_guard();
     // (strong_count-1) is the total number of pending requests
     // This is because the Arc is held until the scope is exited.
-    if Arc::strong_count(&pending_send_raw_tx) > MAX_CONCURRENT_SEND_RAW_TX {
+    if Arc::strong_count(&tx_inflight_guard) > MAX_CONCURRENT_SEND_RAW_TX {
         warn!(MAX_CONCURRENT_SEND_RAW_TX, "txpool overloaded");
         return Err(JsonRpcError::custom(
             "overloaded, try again later".to_owned(),
@@ -445,7 +444,7 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             let hash = *tx.tx_hash();
             debug!(name = "sendRawTransaction", txn_hash = ?hash);
 
-            if let Err(err) = ipc.try_send(tx) {
+            if let Err(err) = txpool_bridge_client.try_send(tx) {
                 warn!(?err, "mempool ipc send error");
                 return Err(JsonRpcError::internal_error(
                     "unable to send to validator".into(),
@@ -455,7 +454,7 @@ pub async fn monad_eth_sendRawTransaction<T: Triedb>(
             for _ in 0..20 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                let response = match txpool_state.get_status_by_hash(&hash) {
+                let response = match txpool_bridge_client.get_status_by_hash(&hash) {
                     None | Some(TxStatus::Unknown) => continue,
                     Some(TxStatus::Evicted { reason: _ } | TxStatus::Replaced) => {
                         Err(JsonRpcError::custom("rejected".to_string()))
@@ -798,7 +797,7 @@ mod tests {
     use monad_triedb_utils::{mock_triedb::MockTriedb, triedb_env::Account};
 
     use super::{monad_eth_sendRawTransaction, MonadEthSendRawTransactionParams};
-    use crate::{eth_json_types::UnformattedData, fee::FixedFee, txpool::EthTxPoolBridgeState};
+    use crate::{eth_json_types::UnformattedData, fee::FixedFee, txpool::EthTxPoolBridgeClient};
 
     fn serialize_tx(tx: (impl Encodable + Encodable2718)) -> UnformattedData {
         let mut rlp_encoded_tx = Vec::new();
@@ -865,14 +864,11 @@ mod tests {
             },
         ];
 
-        let (tx, _rx) = flume::bounded(1);
-
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
                 monad_eth_sendRawTransaction(
                     &triedb,
-                    tx.clone(),
-                    &EthTxPoolBridgeState::new(),
+                    &EthTxPoolBridgeClient::for_testing(),
                     FixedFee::new(2000),
                     case,
                     1,

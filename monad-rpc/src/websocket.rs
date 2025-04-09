@@ -105,15 +105,12 @@ mod tests {
     use tracing_actix_web::TracingLogger;
 
     use crate::{
-        tests::MonadRpcResourcesState, EthTxPoolBridgeState, FixedFee, MonadJsonRootSpanBuilder,
-        MonadRpcResources,
+        txpool::EthTxPoolBridgeClient, FixedFee, MonadJsonRootSpanBuilder, MonadRpcResources,
     };
 
-    fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
-        let (ipc_sender, ipc_receiver) = flume::unbounded();
+    fn create_test_server() -> actix_test::TestServer {
         let resources = MonadRpcResources {
-            mempool_sender: ipc_sender,
-            mempool_state: EthTxPoolBridgeState::new(),
+            txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
             triedb_reader: None,
             eth_call_executor: None,
             archive_reader: None,
@@ -125,24 +122,22 @@ mod tests {
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
         };
-        (
-            MonadRpcResourcesState { ipc_receiver },
-            actix_test::start(move || {
-                App::new()
-                    .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                    .app_data(web::PayloadConfig::default().limit(8192))
-                    .app_data(web::Data::new(resources.clone()))
-                    .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
-                    .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
-            }),
-        )
+
+        actix_test::start(move || {
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::PayloadConfig::default().limit(8192))
+                .app_data(web::Data::new(resources.clone()))
+                .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
+                .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
+        })
     }
 
     #[actix::test]
     async fn websocket_wait_for_ping() {
         env_logger::try_init().expect("failed to initialize logger");
 
-        let (_, mut server) = create_test_server();
+        let mut server = create_test_server();
 
         let mut framed = server.ws_at("/ws/").await.unwrap();
         let frame = framed.next().await.unwrap().unwrap();

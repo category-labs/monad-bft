@@ -1,26 +1,31 @@
 use std::{
-    ffi::OsStr,
-    io::{self, ErrorKind},
+    io,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
     task::Poll,
+    time::Duration,
 };
 
 use alloy_consensus::TxEnvelope;
-use futures::{executor::block_on, ready, Future, Sink, SinkExt, Stream, StreamExt};
+use flume::Receiver;
+use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolSnapshot};
-use notify::{Event, RecursiveMode, Watcher};
 use pin_project::pin_project;
-use tokio::{pin, sync::mpsc};
-use tracing::{debug, error};
+use tokio::pin;
+use tracing::warn;
 
-pub use self::state::{EthTxPoolBridgeState, TxStatus};
+pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};
+use self::{
+    socket::SocketWatcher,
+    state::{EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState},
+};
 
+mod client;
+mod handle;
+mod socket;
 mod state;
-
-const MEMPOOL_TX_IPC_FILE: &str = "mempool.sock";
+mod types;
 
 #[pin_project(project = EthTxPoolBridgeIpcStateProjection)]
 enum EthTxPoolBridgeIpcState {
@@ -34,100 +39,79 @@ enum EthTxPoolBridgeIpcState {
 #[pin_project]
 pub struct EthTxPoolBridge {
     socket_path: PathBuf,
-    client: EthTxPoolIpcClient,
+    ipc_client: EthTxPoolIpcClient,
     #[pin]
     ipc_state: EthTxPoolBridgeIpcState,
 
-    state: Arc<EthTxPoolBridgeState>,
+    state: EthTxPoolBridgeState,
+    eviction_queue: EthTxPoolBridgeEvictionQueue,
 }
 
 impl EthTxPoolBridge {
-    pub async fn new<P>(bind_path: P, state: Arc<EthTxPoolBridgeState>) -> io::Result<Self>
+    pub async fn start<P>(
+        bind_path: P,
+    ) -> io::Result<(EthTxPoolBridgeClient, EthTxPoolBridgeHandle)>
     where
         P: AsRef<Path>,
     {
         let socket_path = bind_path.as_ref().to_path_buf();
 
-        let (client, snapshot) = EthTxPoolIpcClient::new(bind_path).await?;
-        state.apply_snapshot(snapshot);
+        let (ipc_client, snapshot) = EthTxPoolIpcClient::new(bind_path).await?;
 
-        Ok(Self {
+        let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
+        let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
+
+        let (tx_sender, tx_receiver) = flume::bounded(1024);
+
+        let client = EthTxPoolBridgeClient::new(tx_sender, state.create_view());
+
+        let bridge = Self {
             socket_path,
-            client,
+            ipc_client,
             ipc_state: EthTxPoolBridgeIpcState::Ready,
 
             state,
-        })
-    }
-}
-
-#[pin_project]
-pub struct SocketWatcher {
-    socket_path: PathBuf,
-    #[pin]
-    watcher: notify::INotifyWatcher,
-    #[pin]
-    rx: mpsc::Receiver<notify::Result<notify::Event>>,
-}
-
-impl SocketWatcher {
-    pub fn try_new(socket_path: PathBuf) -> io::Result<Self> {
-        let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>(100);
-        let mut watcher = notify::INotifyWatcher::new(
-            move |res| {
-                block_on(async {
-                    if let Err(send) = tx.send(res).await {
-                        error!("cannot send on socket watcher channel: {:?}", send);
-                    };
-                })
-            },
-            notify::Config::default(),
-        )
-        .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
-
-        let dir_path = if let Some(parent_path) = socket_path.parent() {
-            parent_path
-        } else {
-            return Err(io::Error::new(ErrorKind::NotFound, "invalid socket path"));
+            eviction_queue,
         };
 
-        watcher
-            .watch(dir_path.as_ref(), RecursiveMode::NonRecursive)
-            .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+        let handle = EthTxPoolBridgeHandle::new(tokio::task::spawn(bridge.run(tx_receiver)));
 
-        Ok(Self {
-            socket_path,
-            watcher,
-            rx,
-        })
+        Ok((client, handle))
     }
-}
 
-impl Future for SocketWatcher {
-    type Output = io::Result<()>;
+    async fn run(mut self, tx_receiver: Receiver<TxEnvelope>) {
+        let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
-        let event = this.rx.poll_recv(cx);
-        match event {
-            Poll::Ready(Some(Ok(Event { kind, paths, .. })))
-                if paths.first().is_some()
-                    && paths.first().unwrap().as_path().file_name()
-                        == Some(OsStr::new(MEMPOOL_TX_IPC_FILE)) =>
-            {
-                if let notify::EventKind::Create(_) = kind {
-                    debug!("new mempool socket created");
-                    Poll::Ready(Ok(()))
-                } else {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
+        loop {
+            tokio::select! {
+                result = tx_receiver.recv_async() => {
+                    let tx = result.unwrap();
+
+                    for tx in std::iter::once(tx).chain(tx_receiver.drain()) {
+                        self.state.add_tx(&mut self.eviction_queue, &tx);
+
+                        if let Err(e) = self.feed(&tx).await {
+                            warn!("IPC feed failed, monad-bft likely crashed: {}", e);
+                        }
+                    }
+
+                    if let Err(e) = self.flush().await {
+                        warn!("IPC flush failed, monad-bft likely crashed: {}", e);
+                    }
+                }
+
+                result = self.next() => {
+                    let Some(events) = result else {
+                        continue;
+                    };
+
+                    self.state.handle_events(&mut self.eviction_queue, events);
+                }
+
+                now = cleanup_timer.tick() => {
+                    self.state.cleanup(&mut self.eviction_queue, now);
                 }
             }
-            Poll::Ready(_) => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -139,14 +123,14 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        self.client.poll_ready_unpin(cx)
+        self.ipc_client.poll_ready_unpin(cx)
     }
 
     fn start_send(
         mut self: std::pin::Pin<&mut Self>,
         tx: &'a TxEnvelope,
     ) -> Result<(), Self::Error> {
-        self.client.start_send_unpin(tx)
+        self.ipc_client.start_send_unpin(tx)
     }
 
     fn poll_flush(
@@ -158,9 +142,9 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
 
         match ipc_state.as_mut().project() {
             EthTxPoolBridgeIpcStateProjection::Ready => {
-                let writer: Poll<Result<(), std::io::Error>> = this.client.poll_flush_unpin(cx);
+                let writer: Poll<Result<(), std::io::Error>> = this.ipc_client.poll_flush_unpin(cx);
                 match writer {
-                    Poll::Ready(Err(ref e)) if e.kind() == ErrorKind::BrokenPipe => {
+                    Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::BrokenPipe => {
                         let sw = SocketWatcher::try_new(this.socket_path.clone())?;
                         ipc_state.set(EthTxPoolBridgeIpcState::BrokenPipe(sw));
                         cx.waker().wake_by_ref();
@@ -181,10 +165,10 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
             EthTxPoolBridgeIpcStateProjection::Reconnect(task) => {
                 match task.as_mut().poll(cx) {
                     Poll::Ready(result) => {
-                        let (client, snapshot) = result?;
-                        this.state.apply_snapshot(snapshot);
+                        let (ipc_client, snapshot) = result?;
+                        this.state.apply_snapshot(this.eviction_queue, snapshot);
 
-                        *this.client = client;
+                        *this.ipc_client = ipc_client;
                         ipc_state.set(EthTxPoolBridgeIpcState::Ready);
                         cx.waker().wake_by_ref();
                     }
@@ -199,7 +183,7 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        self.client.poll_close_unpin(cx)
+        self.ipc_client.poll_close_unpin(cx)
     }
 }
 
@@ -210,6 +194,6 @@ impl Stream for EthTxPoolBridge {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.client.poll_next_unpin(cx)
+        self.ipc_client.poll_next_unpin(cx)
     }
 }

@@ -74,10 +74,9 @@ pub async fn run(client: ReqwestClient, config: Config) -> Result<()> {
         refresh_sender,
         recipient_sender,
         client.clone(),
-        config.tps,
         Arc::clone(&metrics),
         sent_txs,
-        !config.use_static_tps_interval,
+        &config,
     );
 
     let metrics_reporter = MetricsReporter::new(

@@ -2,7 +2,7 @@ use super::native_transfer_priority_fee;
 use crate::prelude::*;
 
 pub struct DuplicateTxGenerator {
-    pub(crate) recipient_keys: SeededKeyPool,
+    pub(crate) recipient_keys: KeyPool,
     pub(crate) tx_per_sender: usize,
     pub random_priority_fee: bool,
 }

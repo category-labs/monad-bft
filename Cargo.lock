@@ -5117,6 +5117,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-peer-disc-swarm"
+version = "0.1.0"
+dependencies = [
+ "itertools 0.10.5",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-peer-discovery",
+ "monad-router-scheduler",
+ "monad-testutil",
+ "monad-transformer",
+ "monad-types",
+ "priority-queue",
+ "rand",
+ "rand_chacha",
+ "tracing",
+]
+
+[[package]]
+name = "monad-peer-discovery"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "monad-executor-glue",
+ "monad-types",
+ "tracing",
+]
+
+[[package]]
 name = "monad-perf-util"
 version = "0.1.0"
 
@@ -5239,6 +5268,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "monad-archive",
+ "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
  "monad-eth-types",

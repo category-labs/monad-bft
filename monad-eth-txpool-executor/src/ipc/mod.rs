@@ -101,9 +101,7 @@ impl EthTxPoolIpcServer {
             }
         }
 
-        if batch.is_empty() {
-            batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
-        }
+        let batch_was_empty = batch.is_empty();
 
         connections.retain_mut(|stream| {
             loop {
@@ -125,8 +123,15 @@ impl EthTxPoolIpcServer {
             true
         });
 
-        if batch.len() >= MAX_BATCH_LEN || batch_timer.as_mut().poll(cx).is_ready() {
+        if batch.is_empty() {
+            return Poll::Pending;
+        }
+
+        if batch_was_empty {
             batch_timer.set(time::sleep(Duration::from_millis(BATCH_TIMER_INTERVAL_MS)));
+        }
+
+        if batch.len() >= MAX_BATCH_LEN || batch_timer.as_mut().poll(cx).is_ready() {
             return Poll::Ready(std::mem::take(batch));
         }
 
