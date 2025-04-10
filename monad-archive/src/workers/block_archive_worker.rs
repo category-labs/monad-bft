@@ -29,6 +29,7 @@ pub async fn archive_worker(
     max_concurrent_blocks: usize,
     mut start_block_override: Option<u64>,
     stop_block_override: Option<u64>,
+    unsafe_skip_bad_blocks: bool,
     metrics: Metrics,
 ) {
     // initialize starting block using either override or stored latest
@@ -89,6 +90,7 @@ pub async fn archive_worker(
             start_block..=end_block,
             &archive_writer,
             max_concurrent_blocks,
+            unsafe_skip_bad_blocks,
         )
         .await;
 
@@ -106,6 +108,7 @@ async fn archive_blocks(
     range: RangeInclusive<u64>,
     archiver: &BlockDataArchive,
     concurrency: usize,
+    unsafe_skip_bad_blocks: bool,
 ) -> u64 {
     let start = Instant::now();
 
@@ -114,8 +117,13 @@ async fn archive_blocks(
             match archive_block(reader, fallback_reader, block_num, archiver).await {
                 Ok(_) => Ok(()),
                 Err(e) => {
-                    error!("Failed to handle block: {e:?}");
-                    Err(block_num)
+                    if unsafe_skip_bad_blocks {
+                        error!("Failed to handle block {block_num}, skipping... Cause: {e:?}",);
+                        Ok(())
+                    } else {
+                        error!("Failed to handle block {block_num}: {e:?}");
+                        Err(block_num)
+                    }
                 }
             }
         })
@@ -399,6 +407,7 @@ mod tests {
             0..=10,
             &archiver,
             3,
+            false,
         )
         .await;
 
@@ -441,6 +450,7 @@ mod tests {
             0..=latest_source,
             &archiver,
             3,
+            false,
         )
         .await;
 
