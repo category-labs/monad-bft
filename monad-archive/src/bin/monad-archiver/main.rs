@@ -99,6 +99,7 @@ async fn main() -> Result<()> {
         args.max_concurrent_blocks,
         args.start_block,
         args.stop_block,
+        args.unsafe_skip_bad_blocks,
         metrics,
     ))
     .await

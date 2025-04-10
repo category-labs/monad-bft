@@ -35,6 +35,13 @@ pub struct Cli {
     #[arg(long)]
     pub stop_block: Option<u64>,
 
+    /// Skip bad blocks
+    /// If set, archiver will skip blocks that fail to archive
+    /// and log an error
+    /// DO NOT ENABLE UNDER NORMAL OPERATION
+    #[arg(long)]
+    pub unsafe_skip_bad_blocks: bool,
+
     /// Path to folder containing bft blocks
     /// If set, archiver will upload these files to blob store provided in archive_sink
     #[arg(long)]
