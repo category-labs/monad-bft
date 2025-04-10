@@ -11,6 +11,7 @@ use tracing::trace;
 use crate::prelude::*;
 
 const MAX_CONNECTION_POOL_SIZE: u32 = 50;
+const CHUNK_SIZE: usize = 1024 * 1024 * 15; // 15MB
 
 #[derive(Clone)]
 pub struct MongoDbStorage {
@@ -21,7 +22,13 @@ pub struct MongoDbStorage {
 #[derive(Serialize, Deserialize)]
 struct KeyValueDocument {
     _id: String,
-    value: Binary,
+    value: Option<Binary>,
+    /// If the size of value is above CHUNK_SIZE, data is stored in `chunks` documents with _id's {id}_chunk_{chunk_idx}
+    chunks: Option<u32>,
+}
+
+fn chunk_id(id: &str, chunk_idx: u32) -> String {
+    format!("{}_chunk_{}", id, chunk_idx)
 }
 
 impl MongoDbStorage {
@@ -151,7 +158,29 @@ impl KVReader for MongoDbStorage {
             .await
             .wrap_err("MongoDB get operation failed")?
         {
-            Some(doc) => Ok(Some(Bytes::from(doc.value.bytes))),
+            Some(doc) => {
+                if let Some(chunks) = doc.chunks {
+                    let mut data = Vec::with_capacity(chunks as usize * CHUNK_SIZE);
+                    // TODO: parallelize
+                    for chunk_num in 0..chunks {
+                        let resp = self
+                            .collection
+                            .find_one(doc! { "_id": chunk_id(key, chunk_num) })
+                            .await?
+                            .wrap_err_with(|| {
+                                format!("MongoDB get operation failed for chunk {}", chunk_num)
+                            })?;
+                        data.extend_from_slice(&resp.value.wrap_err("Chunk has no value")?.bytes);
+                    }
+                    Ok(Some(Bytes::from(data)))
+                } else {
+                    Ok(Some(Bytes::from(
+                        doc.value
+                            .wrap_err("Non chunked document has no value")?
+                            .bytes,
+                    )))
+                }
+            }
             None => Ok(None),
         }
     }
@@ -163,12 +192,40 @@ impl KVStore for MongoDbStorage {
     }
 
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
-        let doc = KeyValueDocument {
-            _id: key.as_ref().to_string(),
-            value: Binary {
-                subtype: mongodb::bson::spec::BinarySubtype::Generic,
-                bytes: data,
-            },
+        let doc = if data.len() > CHUNK_SIZE {
+            for (chunk_num, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
+                let doc = KeyValueDocument {
+                    _id: chunk_id(key.as_ref(), chunk_num as u32),
+                    value: Some(Binary {
+                        subtype: mongodb::bson::spec::BinarySubtype::Generic,
+                        bytes: chunk.to_vec(),
+                    }),
+                    chunks: None,
+                };
+                // TODO: parallelize
+                self.collection
+                    .replace_one(doc! { "_id": doc._id.clone() }, doc)
+                    .upsert(true)
+                    .await
+                    .wrap_err_with(|| {
+                        format!("MongoDB put operation failed for chunk {}", chunk_num)
+                    })?;
+            }
+
+            KeyValueDocument {
+                _id: key.as_ref().to_string(),
+                value: None,
+                chunks: Some(data.len().div_ceil(CHUNK_SIZE) as u32),
+            }
+        } else {
+            KeyValueDocument {
+                _id: key.as_ref().to_string(),
+                value: Some(Binary {
+                    subtype: mongodb::bson::spec::BinarySubtype::Generic,
+                    bytes: data,
+                }),
+                chunks: None,
+            }
         };
 
         self.collection
@@ -318,6 +375,26 @@ mod tests {
 
         // Test get
         let result = storage.get(key).await.unwrap().unwrap();
+        assert_eq!(result.as_ref(), value.as_slice());
+
+        // Test get nonexistent
+        let result = storage.get("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_large_value() {
+        let (_container, storage) = setup().await.unwrap();
+
+        // Test put
+        let key = "test_key";
+        let value = b"a".repeat(CHUNK_SIZE * 10);
+        storage.put(key, value.clone()).await.unwrap();
+
+        // Test get
+        let result = storage.get(key).await.unwrap().unwrap();
+        println!("result size: {:?}", result.len());
         assert_eq!(result.as_ref(), value.as_slice());
 
         // Test get nonexistent
