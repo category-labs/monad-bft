@@ -121,6 +121,8 @@ mod tests {
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
+            eth_call_gas_limit: u64::MAX,
+            eth_estimate_gas_gas_limit: u64::MAX,
         };
 
         actix_test::start(move || {

@@ -65,6 +65,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 102400)]
     pub eth_call_executor_node_lru_size: u32,
 
+    /// Set the gas limit for eth_call
+    #[arg(long, default_value_t = 30_000_000)]
+    pub eth_call_gas_limit: u64,
+
+    /// Set the gas limit for eth_estimateGas
+    #[arg(long, default_value_t = 30_000_000)]
+    pub eth_estimate_gas_gas_limit: u64,
+
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_buffered_read_requests: u32,

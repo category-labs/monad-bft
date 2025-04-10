@@ -263,6 +263,7 @@ async fn rpc_select(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
+                app_state.eth_call_gas_limit,
                 params,
             )
             .await
@@ -450,6 +451,7 @@ async fn rpc_select(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
+                app_state.eth_estimate_gas_gas_limit,
                 params,
             )
             .await
@@ -559,6 +561,8 @@ struct MonadRpcResources {
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
     logs_max_block_range: u64,
+    eth_call_gas_limit: u64,
+    eth_estimate_gas_gas_limit: u64,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -582,6 +586,8 @@ impl MonadRpcResources {
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
         logs_max_block_range: u64,
+        eth_call_gas_limit: u64,
+        eth_estimate_gas_gas_limit: u64,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -595,6 +601,8 @@ impl MonadRpcResources {
             allow_unprotected_txs,
             rate_limiter,
             logs_max_block_range,
+            eth_call_gas_limit,
+            eth_estimate_gas_gas_limit,
         }
     }
 }
@@ -826,6 +834,8 @@ async fn main() -> std::io::Result<()> {
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
         args.eth_get_logs_max_block_range,
+        args.eth_call_gas_limit,
+        args.eth_estimate_gas_gas_limit,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -915,6 +925,8 @@ mod tests {
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
+            eth_call_gas_limit: u64::MAX,
+            eth_estimate_gas_gas_limit: u64::MAX,
         };
 
         test::init_service(
