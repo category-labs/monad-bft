@@ -587,7 +587,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     };
 
     let state_overrides = params.state_overrides().clone();
-
+    let gas_specified = params.tx().gas.is_some();
     let original_tx_gas = params
         .tx()
         .gas
@@ -632,6 +632,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         eth_call_executor,
         &state_overrides,
         trace,
+        gas_specified,
     )
     .await
     {

@@ -81,6 +81,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub enable_admin_eth_call_statistics: bool,
 
+    /// Set the maximum timeout (in seconds) for queuing when executing eth_call and eth_estimateGas
+    #[arg(long, default_value_t = 30)]
+    pub eth_call_executor_queuing_timeout: u32,
+
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_buffered_read_requests: u32,
