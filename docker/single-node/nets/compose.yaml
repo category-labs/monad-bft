@@ -102,7 +102,7 @@ services:
       monad-rpc
       --ipc-path /monad/mempool.sock
       --triedb-path /monad/triedb
-      --chain-id 20143
+      --node-config /monad/config/node.toml
     ulimits:
       memlock:
         soft: "16770785280"
