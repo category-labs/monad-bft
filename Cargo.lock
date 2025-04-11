@@ -5282,6 +5282,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project",
+ "rand",
  "rayon",
  "reqwest 0.11.27",
  "schemars",
