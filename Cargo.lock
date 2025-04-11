@@ -5074,7 +5074,9 @@ name = "monad-peer-discovery"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "futures",
  "monad-crypto",
+ "monad-executor",
  "monad-executor-glue",
  "monad-secp",
  "monad-testutil",
@@ -5082,6 +5084,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "test-case",
+ "tokio-util",
  "tracing",
 ]
 
@@ -5149,6 +5152,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",
+ "monad-peer-discovery",
  "monad-raptor",
  "monad-secp",
  "monad-types",
@@ -8213,6 +8217,7 @@ dependencies = [
  "futures-io",
  "futures-sink",
  "pin-project-lite",
+ "slab",
  "tokio",
  "tracing",
 ]

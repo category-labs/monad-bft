@@ -10,7 +10,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream};
+use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -23,6 +23,10 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
 };
+use monad_peer_discovery::{
+    driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
+    PeerDiscoveryAlgo,
+};
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
@@ -33,12 +37,14 @@ use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
-pub struct RaptorCastConfig<ST>
+pub struct RaptorCastConfig<ST, PD>
 where
     ST: CertificateSignatureRecoverable,
+    PD: PeerDiscoveryAlgo,
 {
-    // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    // FIXME: replace with peer discovery config/builder after rebase
+    pub peer_discovery: PD,
     pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
 
     pub key: ST::KeyPairType,
@@ -54,11 +60,12 @@ where
     pub buffer_size: Option<usize>,
 }
 
-pub struct RaptorCast<ST, M, OM, SE>
+pub struct RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -66,7 +73,9 @@ where
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
     // TODO support dynamic updating
     full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
+    // FIXME: to be fully replaced by peer_discovery_driver
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    peer_discovery_driver: PeerDiscoveryDriver<PD>,
 
     current_epoch: Epoch,
 
@@ -91,13 +100,14 @@ pub enum RaptorCastEvent<E, P: PubKey> {
     PeerManagerResponse(PeerManagerResponse<P>),
 }
 
-impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST, PD>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
         if let Some(buffer_size) = config.buffer_size {
@@ -108,6 +118,7 @@ where
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),
             known_addresses: config.known_addresses,
+            peer_discovery_driver: PeerDiscoveryDriver::new(config.peer_discovery),
 
             key: config.key,
             redundancy: config.redundancy,
@@ -157,11 +168,12 @@ where
     }
 }
 
-impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -215,6 +227,7 @@ where
                         );
                         assert!(removed.is_none());
                     }
+                    // TODO: ask peer discovery to discover new peers
                 }
                 RouterCommand::Publish { target, message } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
@@ -383,12 +396,14 @@ fn handle_message<
     Ok(inbound)
 }
 
-impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
+impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    PD: PeerDiscoveryAlgo,
+    PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -512,6 +527,16 @@ where
                 InboundRouterMessage::Discovery(discovery_message) => {
                     // pass message to self.discovery
                     tracing::warn!(?from_addr, discovery_message = ?discovery_message, "unhandled discovery message");
+                }
+            }
+        }
+
+        while let Poll::Ready(Some(peer_disc_emit)) = this.peer_discovery_driver.poll_next_unpin(cx)
+        {
+            match peer_disc_emit {
+                PeerDiscoveryEmit::RouterCommand { target, message } => {
+                    // FIXME: need to wrap this message in top level router message type
+                    // this.exec(RouterCommand::Publish { target, message });
                 }
             }
         }
