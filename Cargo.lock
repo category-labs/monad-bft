@@ -5064,6 +5064,7 @@ name = "monad-peer-discovery"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "futures",
  "monad-crypto",
  "monad-executor-glue",
  "monad-secp",
@@ -5072,6 +5073,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "test-case",
+ "tokio-util",
  "tracing",
 ]
 
@@ -8205,6 +8207,7 @@ dependencies = [
  "futures-io",
  "futures-sink",
  "pin-project-lite",
+ "slab",
  "tokio",
  "tracing",
 ]

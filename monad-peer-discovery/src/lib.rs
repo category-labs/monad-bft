@@ -13,6 +13,7 @@ use monad_types::NodeId;
 use tracing::warn;
 
 pub mod discovery;
+pub mod driver;
 pub mod message;
 pub mod mock;
 
