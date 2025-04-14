@@ -669,6 +669,190 @@ impl TriedbEnv {
                 .cloned(),
         }
     }
+
+    fn send_async_request(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput,
+    ) -> Result<(oneshot::Receiver<Option<Vec<u8>>>, Arc<AtomicUsize>), String> {
+        let (request_sender, request_receiver) = oneshot::channel();
+        let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+
+        if let Err(e) = self
+            .mpsc_sender
+            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
+                request_sender,
+                completed_counter: completed_counter.clone(),
+                triedb_key,
+                key_len_nibbles,
+                block_key,
+            }))
+        {
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
+        }
+
+        Ok((request_receiver, completed_counter))
+    }
+
+    async fn handle_async_result<T, F>(
+        receiver: oneshot::Receiver<Option<Vec<u8>>>,
+        counter: Arc<AtomicUsize>,
+        decoder: F,
+    ) -> Result<Option<T>, String>
+    where
+        F: FnOnce(Vec<u8>) -> Result<T, String>,
+    {
+        match receiver.await {
+            Ok(result) => {
+                if counter.load(SeqCst) != 1 {
+                    error!("Unexpected completed_counter value");
+                    return Err(String::from("error reading from db"));
+                }
+
+                match result {
+                    Some(data) => decoder(data).map(Some),
+                    None => Ok(None),
+                }
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
+        }
+    }
+
+    async fn handle_async_request<T, F>(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput<'_>,
+        decoder: F,
+    ) -> Result<Option<T>, String>
+    where
+        F: FnOnce(Vec<u8>) -> Result<T, String>,
+    {
+        let (receiver, counter) = self.send_async_request(block_key, key_input)?;
+        TriedbEnv::handle_async_result(receiver, counter, decoder).await
+    }
+
+    fn send_traverse_request(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput,
+    ) -> Result<oneshot::Receiver<Option<Vec<TraverseEntry>>>, String> {
+        let (request_sender, request_receiver) = oneshot::channel();
+        let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
+
+        if let Err(e) = self
+            .mpsc_sender_traverse
+            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
+                request_sender,
+                triedb_key,
+                key_len_nibbles,
+                block_key,
+            }))
+        {
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
+        }
+
+        Ok(request_receiver)
+    }
+
+    async fn handle_traverse_result<T>(
+        receiver: oneshot::Receiver<Option<Vec<TraverseEntry>>>,
+        parser: impl FnOnce(Vec<TraverseEntry>) -> Result<Vec<T>, String>,
+    ) -> Result<Vec<T>, String> {
+        match receiver.await {
+            Ok(Some(entries)) => parser(entries),
+            Ok(None) => {
+                error!("Error traversing db");
+                Err(String::from("error traversing db"))
+            }
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
+        }
+    }
+
+    fn send_async_range_request(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput,
+        txn_index: u64,
+        txn_count: u64,
+    ) -> Result<oneshot::Receiver<Option<Vec<TraverseEntry>>>, String> {
+        let (request_sender, request_receiver) = oneshot::channel();
+        let (prefix_key, prefix_key_len_nibbles) = create_triedb_key(block_key.into(), key_input);
+        let (min_triedb_key, min_key_len_nibbles) = create_range_key(txn_index);
+        let (max_triedb_key, max_key_len_nibbles) = create_range_key(txn_index + txn_count);
+
+        if let Err(e) = self
+            .mpsc_sender
+            .clone()
+            .try_send(TriedbRequest::AsyncRangeGetRequest(RangeGetRequest {
+                request_sender,
+                prefix_key,
+                prefix_key_len_nibbles,
+                min_triedb_key,
+                min_key_len_nibbles,
+                max_triedb_key,
+                max_key_len_nibbles,
+                block_key,
+            }))
+        {
+            warn!("Polling thread channel full: {e}");
+            return Err(String::from("error reading from db due to rate limit"));
+        }
+
+        Ok(request_receiver)
+    }
+
+    async fn handle_async_range_result<T, F>(
+        receiver: oneshot::Receiver<Option<Vec<TraverseEntry>>>,
+        decoder: F,
+    ) -> Result<Option<T>, String>
+    where
+        F: FnOnce(Vec<TraverseEntry>) -> Result<T, String>,
+    {
+        match receiver.await {
+            Ok(result) => match result {
+                Some(data) => decoder(data).map(Some),
+                None => Ok(None),
+            },
+            Err(e) => {
+                error!("Error awaiting result: {e}");
+                Err(String::from("error reading from db"))
+            }
+        }
+    }
+
+    async fn handle_async_range_request<T, F>(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput<'_>,
+        txn_index: u64,
+        txn_count: u64,
+        decoder: F,
+    ) -> Result<Option<T>, String>
+    where
+        F: FnOnce(Vec<TraverseEntry>) -> Result<T, String>,
+    {
+        let receiver = self.send_async_range_request(block_key, key_input, txn_index, txn_count)?;
+        TriedbEnv::handle_async_range_result(receiver, decoder).await
+    }
+
+    async fn handle_traverse_request<T>(
+        &self,
+        block_key: BlockKey,
+        key_input: KeyInput<'_>,
+        parser: impl FnOnce(Vec<TraverseEntry>) -> Result<Vec<T>, String>,
+    ) -> Result<Vec<T>, String> {
+        let receiver = self.send_traverse_request(block_key, key_input)?;
+        TriedbEnv::handle_traverse_result(receiver, parser).await
+    }
 }
 
 impl TriedbPath for TriedbEnv {
@@ -705,103 +889,29 @@ impl Triedb for TriedbEnv {
     }
 
     async fn get_state_availability(&self, block_key: BlockKey) -> Result<bool, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) = create_triedb_key(block_key.into(), KeyInput::State);
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
+        match self
+            .handle_async_request(block_key, KeyInput::State, Ok)
+            .await?
         {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(_) => Ok(true),
-                    None => Ok(false),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
+            Some(_) => Ok(true),
+            None => Ok(false),
         }
     }
 
     #[tracing::instrument(level = "debug")]
     async fn get_account(&self, block_key: BlockKey, addr: EthAddress) -> Result<Account, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::Address(&addr));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
+        match self
+            .handle_async_request(block_key, KeyInput::Address(&addr), |data| {
+                rlp_decode_account(data).ok_or_else(|| String::from("Decoding account error"))
+            })
+            .await?
         {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(triedb_result) => rlp_decode_account(triedb_result)
-                        .map(|account| {
-                            Ok(Account {
-                                nonce: account.nonce,
-                                balance: account.balance,
-                                code_hash: account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            error!("Decoding account error");
-                            Err(String::from("error reading from db"))
-                        }),
-                    None => Ok(Account {
-                        nonce: 0,
-                        balance: U256::ZERO,
-                        code_hash: [0u8; 32],
-                    }),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
+            Some(account) => Ok(Account {
+                nonce: account.nonce,
+                balance: account.balance,
+                code_hash: account.code_hash.map_or([0u8; 32], |bytes| bytes.0),
+            }),
+            None => Ok(Account::default()),
         }
     }
 
@@ -812,54 +922,17 @@ impl Triedb for TriedbEnv {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<String, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::Storage(&addr, &at));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
+        match self
+            .handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
+                rlp_decode_storage_slot(data)
+                    .ok_or_else(|| String::from("Decoding storage slot error"))
+            })
+            .await?
         {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(triedb_result) => rlp_decode_storage_slot(triedb_result)
-                        .map(|storage_slot| Ok(format!("0x{}", hex::encode(storage_slot))))
-                        .unwrap_or_else(|| {
-                            error!("Decoding storage slot error");
-                            Err(String::from("error reading from db"))
-                        }),
-                    None => Ok(
-                        "0x0000000000000000000000000000000000000000000000000000000000000000"
-                            .to_string(),
-                    ),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
+            Some(storage_slot) => Ok(format!("0x{}", hex::encode(storage_slot))),
+            None => Ok(
+                "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
         }
     }
 
@@ -869,45 +942,14 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         code_hash: EthCodeHash,
     ) -> Result<String, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::CodeHash(&code_hash));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
+        match self
+            .handle_async_request(block_key, KeyInput::CodeHash(&code_hash), |data| {
+                Ok(format!("0x{}", hex::encode(data)))
+            })
+            .await?
         {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(code) => Ok(format!("0x{}", hex::encode(code))),
-                    None => Ok("0x".to_string()),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
+            Some(code) => Ok(code),
+            None => Ok("0x".to_string()),
         }
     }
 
@@ -921,53 +963,17 @@ impl Triedb for TriedbEnv {
             return Ok(cache.receipts.get(receipt_index as usize).cloned());
         }
 
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) = create_triedb_key(
-            block_key.into(),
+        self.handle_async_request(
+            block_key,
             KeyInput::ReceiptIndex(Some(receipt_index)),
-        );
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(rlp_receipt) => {
-                        let mut rlp_buf = rlp_receipt.as_slice();
-                        let receipt = ReceiptWithLogIndex::decode(&mut rlp_buf)
-                            .map_err(|e| format!("decode receipt failed: {}", e))?;
-                        Ok(Some(receipt))
-                    }
-                    None => Ok(None),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+            |data| {
+                let mut rlp_buf = data.as_slice();
+                let receipt = ReceiptWithLogIndex::decode(&mut rlp_buf)
+                    .map_err(|e| format!("decode receipt failed: {}", e))?;
+                Ok(receipt)
+            },
+        )
+        .await
     }
 
     async fn get_receipts(&self, block_key: BlockKey) -> Result<Vec<ReceiptWithLogIndex>, String> {
@@ -976,38 +982,8 @@ impl Triedb for TriedbEnv {
             return Ok((*receipts.receipts).clone());
         }
 
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        // receipt_index set to None to indiciate return all receipts
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::ReceiptIndex(None));
-
-        if let Err(e) = self
-            .mpsc_sender_traverse
-            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(Some(rlp_receipts)) => parse_rlp_entries(rlp_receipts),
-            Ok(None) => {
-                error!("Error traversing db");
-                Err(String::from("error traversing db"))
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+        self.handle_traverse_request(block_key, KeyInput::ReceiptIndex(None), parse_rlp_entries)
+            .await
     }
 
     #[tracing::instrument(level = "debug")]
@@ -1020,55 +996,13 @@ impl Triedb for TriedbEnv {
             return Ok(cache.transactions.get(txn_index as usize).cloned());
         }
 
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::TxIndex(Some(txn_index)));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(rlp_transaction) => {
-                        match TxEnvelopeWithSender::decode(&mut rlp_transaction.as_slice()) {
-                            Ok(transaction) => Ok(Some(transaction)),
-                            Err(e) => {
-                                warn!("Failed to decode RLP transaction: {e}");
-                                Err(String::from("error decoding transaction"))
-                            }
-                        }
-                    }
-                    None => Ok(None),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+        self.handle_async_request(block_key, KeyInput::TxIndex(Some(txn_index)), |data| {
+            let mut rlp_buf = data.as_slice();
+            let transaction = TxEnvelopeWithSender::decode(&mut rlp_buf)
+                .map_err(|e| format!("decode transaction failed: {}", e))?;
+            Ok(transaction)
+        })
+        .await
     }
 
     #[tracing::instrument(level = "debug")]
@@ -1081,92 +1015,22 @@ impl Triedb for TriedbEnv {
             return Ok((*txs.transactions).clone());
         }
 
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        // txn_index set to None to indiciate return all transactions
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::TxIndex(None));
-
-        if let Err(e) = self
-            .mpsc_sender_traverse
-            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(Some(rlp_transactions)) => parse_rlp_entries(rlp_transactions),
-            Ok(None) => {
-                error!("Error traversing db");
-                Err(String::from("error traversing db"))
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+        self.handle_traverse_request(block_key, KeyInput::TxIndex(None), parse_rlp_entries)
+            .await
     }
 
     #[tracing::instrument(level = "debug")]
     async fn get_block_header(&self, block_key: BlockKey) -> Result<Option<BlockHeader>, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::BlockHeader);
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(rlp_block_header) => {
-                        let block_hash = keccak256(&rlp_block_header);
-                        let mut rlp_buf = rlp_block_header.as_slice();
-                        let block_header = Header::decode(&mut rlp_buf)
-                            .map_err(|e| format!("decode block header failed: {}", e))?;
-                        Ok(Some(BlockHeader {
-                            hash: block_hash,
-                            header: block_header,
-                        }))
-                    }
-                    None => Ok(None),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+        self.handle_async_request(block_key, KeyInput::BlockHeader, |data| {
+            let mut rlp_buf = data.as_slice();
+            let block_header = Header::decode(&mut rlp_buf)
+                .map_err(|e| format!("decode block header failed: {}", e))?;
+            Ok(BlockHeader {
+                hash: keccak256(&data),
+                header: block_header,
+            })
+        })
+        .await
     }
 
     #[tracing::instrument(level = "debug")]
@@ -1175,56 +1039,18 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         tx_hash: EthTxHash,
     ) -> Result<Option<TransactionLocation>, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::TxHash(&tx_hash));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
+        match self
+            .handle_async_request(block_key, KeyInput::TxHash(&tx_hash), |data| {
+                rlp_decode_transaction_location(data)
+                    .ok_or_else(|| String::from("decode transaction location error"))
+            })
+            .await?
         {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(rlp_output) => rlp_decode_transaction_location(rlp_output)
-                        .map(|(block_num, tx_index)| {
-                            Ok(Some(TransactionLocation {
-                                tx_index,
-                                block_num,
-                            }))
-                        })
-                        .unwrap_or_else(|| {
-                            error!("Decoding transaction location error");
-                            Err(String::from("error reading from db"))
-                        }),
-                    None => Ok(None),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
+            Some((block_num, tx_index)) => Ok(Some(TransactionLocation {
+                block_num,
+                tx_index,
+            })),
+            None => Ok(None),
         }
     }
 
@@ -1234,52 +1060,10 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         block_hash: EthBlockHash,
     ) -> Result<Option<u64>, String> {
-        // create a one shot channel to retrieve the triedb result from the polling thread
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::BlockHash(&block_hash));
-        let completed_counter = Arc::new(AtomicUsize::new(0));
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRequest(AsyncRequest {
-                request_sender,
-                completed_counter: completed_counter.clone(),
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        // await the result using request_receiver
-        match request_receiver.await {
-            Ok(result) => {
-                // sanity check to ensure completed_counter is equal to 1
-                if completed_counter.load(SeqCst) != 1 {
-                    error!("Unexpected completed_counter value");
-                    return Err(String::from("error reading from db"));
-                }
-
-                match result {
-                    Some(rlp_output) => rlp_decode_block_num(rlp_output)
-                        .map(|block_num| Ok(Some(block_num)))
-                        .unwrap_or_else(|| {
-                            error!("Decoding block number error");
-                            Err(String::from("error reading from db"))
-                        }),
-                    None => Ok(None),
-                }
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+        self.handle_async_request(block_key, KeyInput::BlockHash(&block_hash), |data| {
+            rlp_decode_block_num(data).ok_or_else(|| String::from("decode block number error"))
+        })
+        .await
     }
 
     #[tracing::instrument(level = "debug")]
@@ -1288,35 +1072,14 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         txn_index: u64,
     ) -> Result<Option<Vec<u8>>, String> {
-        let (request_sender, request_receiver) = oneshot::channel();
-
-        let (prefix_key, prefix_key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::CallFrame);
-        let (min_triedb_key, min_key_len_nibbles) = create_range_key(txn_index);
-        let (max_triedb_key, max_key_len_nibbles) = create_range_key(txn_index + 1);
-
-        if let Err(e) = self
-            .mpsc_sender
-            .clone()
-            .try_send(TriedbRequest::AsyncRangeGetRequest(RangeGetRequest {
-                request_sender,
-                prefix_key,
-                prefix_key_len_nibbles,
-                min_triedb_key,
-                min_key_len_nibbles,
-                max_triedb_key,
-                max_key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        match request_receiver.await {
-            Ok(Some(rlp_call_frames)) => {
+        self.handle_async_range_request(
+            block_key,
+            KeyInput::CallFrame,
+            txn_index,
+            1,
+            |rlp_call_frames| {
                 if rlp_call_frames.is_empty() {
-                    return Ok(None);
+                    return Ok(Vec::new());
                 }
 
                 let grouped_frames = parse_call_frames(rlp_call_frames)?;
@@ -1326,6 +1089,7 @@ impl Triedb for TriedbEnv {
                     warn!("Incorrect key length");
                     return Err(String::from("error decoding from db"));
                 }
+
                 match grouped_frames.into_iter().next() {
                     Some((idx, chunks)) => {
                         if idx as u64 != txn_index {
@@ -1333,71 +1097,44 @@ impl Triedb for TriedbEnv {
                             return Err(String::from("error decoding from db"));
                         }
                         let complete_call_frame = process_call_frame_chunks(chunks)?;
-                        Ok(Some(complete_call_frame))
+                        Ok(complete_call_frame)
                     }
                     None => Err(String::from("error decoding from db")),
                 }
-            }
-            Ok(None) => Ok(None),
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+            },
+        )
+        .await
+        .map(|v| match v {
+            Some(v) if v.is_empty() => None,
+            Some(v) => Some(v),
+            None => None,
+        })
     }
 
     #[tracing::instrument(level = "debug")]
     async fn get_call_frames(&self, block_key: BlockKey) -> Result<Vec<Vec<u8>>, String> {
-        let (request_sender, request_receiver) = oneshot::channel();
+        self.handle_traverse_request(block_key, KeyInput::CallFrame, |rlp_call_frames| {
+            // txn_index => (chunk_index, rlp_call_frame)
+            let grouped_frames = parse_call_frames(rlp_call_frames)?;
 
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(block_key.into(), KeyInput::CallFrame);
-
-        if let Err(e) = self
-            .mpsc_sender_traverse
-            .try_send(TriedbRequest::AsyncTraverseRequest(TraverseRequest {
-                request_sender,
-                triedb_key,
-                key_len_nibbles,
-                block_key,
-            }))
-        {
-            warn!("Polling thread channel full: {e}");
-            return Err(String::from("error reading from db due to rate limit"));
-        }
-
-        match request_receiver.await {
-            Ok(Some(rlp_call_frames)) => {
-                // txn_index => (chunk_index, rlp_call_frame)
-                let grouped_frames = parse_call_frames(rlp_call_frames)?;
-
-                // check that transaction indices are consecutive and start with 0
-                if !grouped_frames.keys().copied().zip(0..).all(|(i, j)| i == j) {
-                    return Err(format!(
-                        "call frames missing from db, transaction indices={:?}",
-                        grouped_frames.keys().collect::<Vec<_>>()
-                    ));
-                }
-                let call_frames = grouped_frames
-                    .into_iter()
-                    .map(|(txn_idx, chunks)| {
-                        process_call_frame_chunks(chunks).map_err(|e| {
-                            format!("chunks missing for transaction {}: {}", txn_idx, e)
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-
-                Ok(call_frames)
+            // check that transaction indices are consecutive and start with 0
+            if !grouped_frames.keys().copied().zip(0..).all(|(i, j)| i == j) {
+                return Err(format!(
+                    "call frames missing from db, transaction indices={:?}",
+                    grouped_frames.keys().collect::<Vec<_>>()
+                ));
             }
-            Ok(None) => {
-                error!("Error traversing db");
-                Err(String::from("error traversing db"))
-            }
-            Err(e) => {
-                error!("Error awaiting result: {e}");
-                Err(String::from("error reading from db"))
-            }
-        }
+            let call_frames = grouped_frames
+                .into_iter()
+                .map(|(txn_idx, chunks)| {
+                    process_call_frame_chunks(chunks)
+                        .map_err(|e| format!("chunks missing for transaction {}: {}", txn_idx, e))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            Ok(call_frames)
+        })
+        .await
     }
 }
 
