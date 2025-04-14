@@ -243,8 +243,6 @@ fn polling_thread(
                         &triedb_handle,
                         meta.clone(),
                         BlockKey::Finalized(latest_finalized),
-                        max_finalized_block_cache_len,
-                        max_voted_block_cache_len,
                     );
                 }
                 if voted_is_updated {
@@ -255,8 +253,6 @@ fn polling_thread(
                             &triedb_handle,
                             meta.clone(),
                             BlockKey::Proposed(latest_voted),
-                            max_finalized_block_cache_len,
-                            max_voted_block_cache_len,
                         );
                     }
                 }
@@ -354,8 +350,6 @@ fn populate_cache(
     handle: &TriedbHandle,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     block_key: BlockKey,
-    max_finalized_block_cache_len: usize,
-    max_voted_block_cache_len: usize,
 ) {
     let tx_receiver = {
         let (tx_sender, tx_receiver) = oneshot::channel();
@@ -423,32 +417,8 @@ fn populate_cache(
             let transactions = Arc::new(txs);
             let receipts = Arc::new(rcpts);
             let mut meta = meta.lock().expect("mutex poisoned");
-            match block_key {
-                BlockKey::Finalized(finalized) => {
-                    meta.finalized_cache.insert(
-                        finalized,
-                        BlockCache {
-                            transactions,
-                            receipts,
-                        },
-                    );
-                    while meta.finalized_cache.len() > max_finalized_block_cache_len {
-                        meta.finalized_cache.pop_first();
-                    }
-                }
-                BlockKey::Proposed(proposed) => {
-                    meta.voted_cache.insert(
-                        proposed,
-                        BlockCache {
-                            transactions,
-                            receipts,
-                        },
-                    );
-                    while meta.voted_cache.len() > max_voted_block_cache_len {
-                        meta.voted_cache.pop_first();
-                    }
-                }
-            }
+            meta.cache_manager
+                .update_cache(block_key, transactions, receipts);
         }
     });
 }
@@ -572,8 +542,7 @@ struct TriedbEnvMeta {
     latest_voted: BlockKey,
     voted_proposals: BTreeMap<SeqNum, Round>,
 
-    finalized_cache: BTreeMap<FinalizedBlockKey, BlockCache>,
-    voted_cache: BTreeMap<ProposedBlockKey, BlockCache>,
+    cache_manager: CacheManager,
 }
 
 impl TriedbEnvMeta {
@@ -586,6 +555,65 @@ impl TriedbEnvMeta {
 struct BlockCache {
     transactions: Arc<Vec<TxEnvelopeWithSender>>,
     receipts: Arc<Vec<ReceiptWithLogIndex>>,
+}
+
+struct CacheManager {
+    finalized_cache: BTreeMap<FinalizedBlockKey, BlockCache>,
+    voted_cache: BTreeMap<ProposedBlockKey, BlockCache>,
+    max_finalized_block_cache_len: usize,
+    max_voted_block_cache_len: usize,
+}
+
+impl CacheManager {
+    fn new(max_finalized_block_cache_len: usize, max_voted_block_cache_len: usize) -> Self {
+        Self {
+            finalized_cache: Default::default(),
+            voted_cache: Default::default(),
+            max_finalized_block_cache_len,
+            max_voted_block_cache_len,
+        }
+    }
+
+    fn get_cache(&self, key: &BlockKey) -> Option<BlockCache> {
+        match key {
+            BlockKey::Finalized(finalized) => self.finalized_cache.get(finalized).cloned(),
+            BlockKey::Proposed(voted) => self.voted_cache.get(voted).cloned(),
+        }
+    }
+
+    fn update_cache(
+        &mut self,
+        block_key: BlockKey,
+        transactions: Arc<Vec<TxEnvelopeWithSender>>,
+        receipts: Arc<Vec<ReceiptWithLogIndex>>,
+    ) {
+        match block_key {
+            BlockKey::Finalized(finalized) => {
+                self.finalized_cache.insert(
+                    finalized,
+                    BlockCache {
+                        transactions,
+                        receipts,
+                    },
+                );
+                while self.finalized_cache.len() > self.max_finalized_block_cache_len {
+                    self.finalized_cache.pop_first();
+                }
+            }
+            BlockKey::Proposed(proposed) => {
+                self.voted_cache.insert(
+                    proposed,
+                    BlockCache {
+                        transactions,
+                        receipts,
+                    },
+                );
+                while self.voted_cache.len() > self.max_voted_block_cache_len {
+                    self.voted_cache.pop_first();
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for TriedbEnv {
@@ -615,8 +643,10 @@ impl TriedbEnv {
             latest_finalized: FinalizedBlockKey(latest_finalized),
             latest_voted: BlockKey::Finalized(FinalizedBlockKey(latest_finalized)),
             voted_proposals: Default::default(),
-            finalized_cache: Default::default(),
-            voted_cache: Default::default(),
+            cache_manager: CacheManager::new(
+                max_finalized_block_cache_len,
+                max_voted_block_cache_len,
+            ),
         }));
 
         // create mpsc channels where sender are incoming requests, and the receiver is the triedb poller
@@ -652,22 +682,11 @@ impl TriedbEnv {
     }
 
     fn get_block_cache(&self, key: &BlockKey) -> Option<BlockCache> {
-        match key {
-            BlockKey::Finalized(finalized) => self
-                .meta
-                .lock()
-                .expect("mutex poisoned")
-                .finalized_cache
-                .get(finalized)
-                .cloned(),
-            BlockKey::Proposed(voted) => self
-                .meta
-                .lock()
-                .expect("mutex poisoned")
-                .voted_cache
-                .get(voted)
-                .cloned(),
-        }
+        self.meta
+            .lock()
+            .expect("mutex poisoned")
+            .cache_manager
+            .get_cache(key)
     }
 
     fn send_async_request(
