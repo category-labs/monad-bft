@@ -1,15 +1,11 @@
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, SocketAddrV4},
-    str::FromStr,
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::SocketAddrV4, str::FromStr, time::Duration};
 
 use alloy_rlp::Encodable;
 use monad_crypto::{
     NopKeyPair, NopPubKey, NopSignature,
     certificate_signature::{CertificateKeyPair, CertificateSignature},
 };
+use monad_executor::Executor;
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
     builder::PeerDiscSwarmBuilder,
@@ -44,7 +40,7 @@ type SignatureType = NopSignature;
 
 fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType> {
     let name_record = NameRecord {
-        address: SocketAddr::V4(SocketAddrV4::from_str("1.1.1.1:8000").unwrap()),
+        address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
         seq: 0,
     };
     let mut encoded = Vec::new();
@@ -77,8 +73,8 @@ fn test_ping_pong() {
             .map(|(i, key)| NodeBuilder {
                 id: NodeId::new(key.pubkey()),
                 algo_builder: PeerDiscoveryBuilder {
-                    local_record_seq: 0,
                     self_id: NodeId::new(key.pubkey()),
+                    self_record: generate_name_record(key),
                     peer_info: all_peers.clone(),
                     ping_period: Duration::from_secs(1),
                     rng_seed: 123456,
@@ -146,8 +142,8 @@ fn test_new_node_joining() {
             .map(|(i, key)| NodeBuilder {
                 id: NodeId::new(key.pubkey()),
                 algo_builder: PeerDiscoveryBuilder {
-                    local_record_seq: 0,
                     self_id: NodeId::new(key.pubkey()),
+                    self_record: generate_name_record(key),
                     peer_info: if key.pubkey() == third_key.pubkey() {
                         all_peers.clone()
                     } else {
@@ -164,7 +160,7 @@ fn test_new_node_joining() {
         seed: 7,
     };
     let mut nodes = swarm_builder.build();
-    while nodes.step_until(Duration::from_secs(1)) {}
+    while nodes.step_until(Duration::from_secs(0)) {}
 
     // NodeA, NodeB and NodeC should now have peer_info of each other
     for state in nodes.states().values() {
@@ -173,4 +169,104 @@ fn test_new_node_joining() {
             assert!(state.peer_info.contains_key(node_id));
         }
     }
+}
+
+#[traced_test]
+#[test]
+fn test_update_name_record() {
+    let keys = create_keys::<SignatureType>(2);
+    let node_a_key = &keys[0];
+    let node_a = NodeId::new(node_a_key.pubkey());
+    let node_b_key = &keys[1];
+    let node_b = NodeId::new(node_b_key.pubkey());
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                last_seen: None,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| NodeBuilder {
+                id: NodeId::new(key.pubkey()),
+                algo_builder: PeerDiscoveryBuilder {
+                    self_id: NodeId::new(key.pubkey()),
+                    self_record: generate_name_record(key),
+                    peer_info: all_peers.clone(),
+                    ping_period: Duration::from_secs(1),
+                    rng_seed: 123456,
+                },
+                router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                    .build(),
+                seed: i.try_into().unwrap(),
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // NodeA, NodeB should have peer info of each other
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        for node_id in all_peers.keys() {
+            assert!(state.peer_info.contains_key(node_id));
+        }
+    }
+
+    // NodeA update its own name record
+    // which will then initiate connections with other nodes to remain connected
+    let node_a_state = nodes
+        .states
+        .get_mut(&node_a)
+        .expect("Node A state should exist");
+
+    // create new name record for NodeA with new IP and incremented seq number
+    let new_name_record = NameRecord {
+        address: SocketAddrV4::from_str("2.2.2.2:8000").unwrap(),
+        seq: 1,
+    };
+    let mut encoded = Vec::new();
+    new_name_record.encode(&mut encoded);
+    let signature = SignatureType::sign(&encoded, node_a_key);
+    let new_name_record = MonadNameRecord {
+        name_record: new_name_record,
+        signature,
+    };
+    let cmds = node_a_state
+        .peer_disc_driver
+        .update_name_record(new_name_record);
+    let router_cmds = node_a_state.peer_disc_driver.filter_and_exec(cmds);
+    node_a_state.executor.exec(router_cmds);
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // Node B should have the peer info of NodeA updated
+    let node_b_state = nodes
+        .states
+        .get(&node_b)
+        .expect("Node B state should exist");
+    let peer_info = &node_b_state
+        .peer_disc_driver
+        .get_peer_disc_state()
+        .peer_info;
+    let node_a_record = peer_info
+        .get(&node_a)
+        .expect("Node B should have node A name record")
+        .name_record;
+
+    assert_eq!(node_a_record, new_name_record);
+}
+
+#[traced_test]
+#[test]
+fn test_peer_lookup_retry() {
+    // TODO: handle case when the peer lookup request is not being handled
 }

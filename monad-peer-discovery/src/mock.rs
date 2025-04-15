@@ -7,9 +7,9 @@ use monad_types::NodeId;
 use tracing::debug;
 
 use crate::{
-    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
-    PeerLookupResponse, Ping, Pong,
+    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
+    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
 };
 
 struct PeerState {
@@ -197,6 +197,15 @@ where
         response: PeerLookupResponse<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?response, "handling peer lookup response");
+
+        Vec::new()
+    }
+
+    fn update_name_record(
+        &mut self,
+        new_name_record: MonadNameRecord<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?new_name_record, "updating name record");
 
         Vec::new()
     }

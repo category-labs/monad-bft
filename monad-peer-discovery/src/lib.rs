@@ -42,7 +42,7 @@ pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
     name_records: Vec<MonadNameRecord<ST>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NameRecord {
     pub address: SocketAddrV4,
     pub seq: u64,
@@ -72,7 +72,7 @@ impl Decodable for NameRecord {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,
@@ -204,6 +204,11 @@ pub trait PeerDiscoveryAlgo {
         &mut self,
         from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         response: PeerLookupResponse<Self::SignatureType>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn update_name_record(
+        &mut self,
+        new_name_record: MonadNameRecord<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;

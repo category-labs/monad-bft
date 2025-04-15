@@ -5,8 +5,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor_glue::RouterCommand;
 use monad_peer_discovery::{
-    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
-    PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
+    MonadNameRecord, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
 };
 use monad_types::{NodeId, RouterTarget};
 use priority_queue::PriorityQueue;
@@ -146,7 +146,7 @@ where
 
     // selectively execute the timer commands. Returns router commands in the
     // original order
-    fn filter_and_exec(
+    pub fn filter_and_exec(
         &mut self,
         cmds: Vec<PeerDiscoveryCommand<ST>>,
     ) -> Vec<RouterCommand<CertificateSignaturePubKey<ST>, PeerDiscoveryMessage<ST>>> {
@@ -178,5 +178,12 @@ where
 
     pub fn get_peer_disc_state(&self) -> &PDT {
         &self.algo
+    }
+
+    pub fn update_name_record(
+        &mut self,
+        new_name_record: MonadNameRecord<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        self.algo.update_name_record(new_name_record)
     }
 }

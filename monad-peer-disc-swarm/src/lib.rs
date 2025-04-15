@@ -337,7 +337,7 @@ where
 }
 
 pub struct Nodes<S: PeerDiscSwarmRelation> {
-    states: BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>>,
+    pub states: BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>>,
     tick: Duration,
 
     rng: ChaCha8Rng,
