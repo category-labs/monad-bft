@@ -228,8 +228,7 @@ async fn checkpoint_latest(archiver: &BlockDataArchive, block_num: u64) {
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{
-        BlockBody, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction,
-        TxEip1559,
+        Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction, TxEip1559,
     };
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
@@ -237,7 +236,7 @@ mod tests {
     use monad_triedb_utils::triedb_env::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
     use super::*;
-    use crate::kvstore::memory::MemoryStorage;
+    use crate::{kvstore::memory::MemoryStorage, test_utils::mock_block};
 
     fn mock_tx() -> TxEnvelopeWithSender {
         let tx = TxEip1559 {
@@ -268,20 +267,6 @@ mod tests {
         ReceiptWithLogIndex {
             receipt,
             starting_log_index: 0,
-        }
-    }
-
-    fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block {
-        Block {
-            header: Header {
-                number,
-                ..Default::default()
-            },
-            body: BlockBody {
-                transactions,
-                ommers: vec![],
-                withdrawals: None,
-            },
         }
     }
 

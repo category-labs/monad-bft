@@ -53,7 +53,7 @@ impl BlockDataReader for TriedbReader {
             body: BlockBody {
                 transactions,
                 ommers: Vec::new(),
-                withdrawals: None,
+                withdrawals: Some(alloy_eips::eip4895::Withdrawals::default()),
             },
         })
     }
