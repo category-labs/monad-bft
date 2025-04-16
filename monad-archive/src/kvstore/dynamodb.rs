@@ -138,18 +138,16 @@ impl DynamoDBArchive {
                     .build()?,
             );
 
-            let response = retry(|| async {
-                self.client
-                    .batch_get_item()
-                    .set_request_items(Some(request_items.clone()))
-                    .send()
-                    .await
-                    .wrap_err_with(|| {
-                        inc_err(&self.metrics);
-                        format!("Request keys (0x stripped in req): {:?}", &batch)
-                    })
-            })
-            .await?;
+            let response = self
+                .client
+                .batch_get_item()
+                .set_request_items(Some(request_items.clone()))
+                .send()
+                .await
+                .wrap_err_with(|| {
+                    inc_err(&self.metrics);
+                    format!("Request keys (0x stripped in req): {:?}", &batch)
+                })?;
 
             // Collect retrieved items
             if let Some(mut responses) = response.responses {
@@ -196,45 +194,31 @@ impl DynamoDBArchive {
         }
         let num_writes = values.len();
 
-        // TODO: Only deal with unprocessed items, but it's pretty complicated
-        retry(|| {
-            let values = values.clone();
-            let client = &self.client;
-            let table = self.table.clone();
-            let semeaphore = Arc::clone(&self.semaphore);
-            let metrics = &self.metrics;
+        let _permit = self.semaphore.acquire().await.expect("semaphore dropped");
+        let mut batch_write: HashMap<String, Vec<WriteRequest>> = HashMap::new();
+        batch_write.insert(self.table.clone(), values.clone());
 
-            async move {
-                let _permit = semeaphore.acquire().await.expect("semaphore dropped");
-                let mut batch_write: HashMap<String, Vec<WriteRequest>> = HashMap::new();
-                batch_write.insert(table.clone(), values.clone());
+        let response = self
+            .client
+            .batch_write_item()
+            .set_request_items(Some(batch_write.clone()))
+            .send()
+            .await
+            .wrap_err_with(|| {
+                inc_err(&self.metrics);
+                format!("Failed to upload to table {}. Retrying...", self.table)
+            })?;
 
-                let response = client
-                    .batch_write_item()
-                    .set_request_items(Some(batch_write.clone()))
-                    .send()
-                    .await
-                    .wrap_err_with(|| {
-                        inc_err(metrics);
-                        format!("Failed to upload to table {}. Retrying...", table)
-                    })?;
-
-                // Check for unprocessed items
-                if let Some(unprocessed) = response.unprocessed_items() {
-                    if !unprocessed.is_empty() {
-                        bail!(
-                            "Unprocessed items detected for table {}: {:?}. Retrying...",
-                            table,
-                            unprocessed.get(&table).map(|v| v.len()).unwrap_or(0)
-                        );
-                    }
-                }
-
-                Ok(())
+        // Check for unprocessed items
+        if let Some(unprocessed) = response.unprocessed_items() {
+            if !unprocessed.is_empty() {
+                bail!(
+                    "Unprocessed items detected for table {}: {:?}. Retrying...",
+                    self.table,
+                    unprocessed.get(&self.table).map(|v| v.len()).unwrap_or(0)
+                );
             }
-        })
-        .await
-        .wrap_err_with(|| format!("Failed to upload to table {} after retries", self.table))?;
+        }
 
         self.metrics.counter(AWS_DYNAMODB_WRITES, num_writes as u64);
         Ok(())

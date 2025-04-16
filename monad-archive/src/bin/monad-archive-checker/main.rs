@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
 
     // Get AWS configuration
     info!("Configuring AWS with region: {:?}", args.region);
-    let aws_config = get_aws_config(args.region.clone()).await;
+    let aws_config = get_aws_config(args.region.clone(), 30).await;
 
     // Initialize S3 bucket
     info!("Initializing S3 bucket: {}", args.bucket);
