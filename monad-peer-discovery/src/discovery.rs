@@ -327,34 +327,6 @@ where
         cmds
     }
 
-    /// Used to update the node's own name record for testing purposes
-    fn update_name_record(
-        &mut self,
-        new_name_record: MonadNameRecord<ST>,
-    ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?new_name_record, "updating name record");
-
-        // update own's name record
-        self.self_record = new_name_record;
-        if let Some(peer_info) = self.peer_info.get_mut(&self.self_id) {
-            peer_info.name_record = new_name_record;
-        }
-
-        // send ping to all the known peers to announce name record change
-        let peer_ids: Vec<_> = self
-            .peer_info
-            .keys()
-            .filter(|node_id| *node_id != &self.self_id)
-            .cloned()
-            .collect();
-        let cmds: Vec<_> = peer_ids
-            .into_iter()
-            .flat_map(|node_id| self.send_ping(node_id))
-            .collect();
-
-        cmds
-    }
-
     // TODO: record metrics when handling event
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics

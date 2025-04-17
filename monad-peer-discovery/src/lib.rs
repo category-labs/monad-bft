@@ -206,11 +206,6 @@ pub trait PeerDiscoveryAlgo {
         response: PeerLookupResponse<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn update_name_record(
-        &mut self,
-        new_name_record: MonadNameRecord<Self::SignatureType>,
-    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
-
     fn metrics(&self) -> &PeerDiscMetrics;
 
     fn get_sock_addr_by_id(

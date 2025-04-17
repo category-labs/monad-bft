@@ -337,7 +337,7 @@ where
 }
 
 pub struct Nodes<S: PeerDiscSwarmRelation> {
-    pub states: BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>>,
+    states: BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>>,
     tick: Duration,
 
     rng: ChaCha8Rng,
@@ -409,5 +409,22 @@ where
 
     pub fn states(&self) -> &BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>> {
         &self.states
+    }
+
+    pub fn add_state<B>(&mut self, node_builder: NodeBuilder<S, B>)
+    where
+        B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
+    {
+        let id = node_builder.id;
+        let _node_span_entered = tracing::trace_span!("node", id = format!("{}", id)).entered();
+        let node = node_builder.build();
+        self.states.insert(id, node);
+    }
+
+    pub fn remove_state(
+        &mut self,
+        node_id: &NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+    ) -> Option<Node<S>> {
+        self.states.remove(node_id)
     }
 }

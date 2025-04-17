@@ -179,11 +179,4 @@ where
     pub fn get_peer_disc_state(&self) -> &PDT {
         &self.algo
     }
-
-    pub fn update_name_record(
-        &mut self,
-        new_name_record: MonadNameRecord<ST>,
-    ) -> Vec<PeerDiscoveryCommand<ST>> {
-        self.algo.update_name_record(new_name_record)
-    }
 }

@@ -17,6 +17,7 @@ use monad_peer_discovery::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_testutil::signing::create_keys;
 use monad_types::NodeId;
+use tracing::debug;
 use tracing_test::traced_test;
 struct PeerDiscSwarm {}
 
@@ -222,11 +223,10 @@ fn test_update_name_record() {
         }
     }
 
-    // NodeA update its own name record
+    // NodeA restarts with new name record
     // which will then initiate connections with other nodes to remain connected
-    let node_a_state = nodes
-        .states
-        .get_mut(&node_a)
+    let _old_node_a_state = nodes
+        .remove_state(&node_a)
         .expect("Node A state should exist");
 
     // create new name record for NodeA with new IP and incremented seq number
@@ -241,16 +241,29 @@ fn test_update_name_record() {
         name_record: new_name_record,
         signature,
     };
-    let cmds = node_a_state
-        .peer_disc_driver
-        .update_name_record(new_name_record);
-    let router_cmds = node_a_state.peer_disc_driver.filter_and_exec(cmds);
-    node_a_state.executor.exec(router_cmds);
+    let mut new_peer_info = all_peers.clone();
+    new_peer_info.get_mut(&node_a).unwrap().name_record = new_name_record;
+
+    let new_node_a_builder = NodeBuilder {
+        id: node_a,
+        algo_builder: PeerDiscoveryBuilder {
+            self_id: node_a,
+            self_record: new_name_record,
+            peer_info: new_peer_info.clone(),
+            ping_period: Duration::from_secs(1),
+            rng_seed: 123456,
+        },
+        router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
+        seed: 1,
+    };
+
+    nodes.add_state(new_node_a_builder);
+
     while nodes.step_until(Duration::from_secs(0)) {}
 
     // Node B should have the peer info of NodeA updated
     let node_b_state = nodes
-        .states
+        .states()
         .get(&node_b)
         .expect("Node B state should exist");
     let peer_info = &node_b_state

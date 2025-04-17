@@ -201,15 +201,6 @@ where
         Vec::new()
     }
 
-    fn update_name_record(
-        &mut self,
-        new_name_record: MonadNameRecord<ST>,
-    ) -> Vec<PeerDiscoveryCommand<ST>> {
-        debug!(?new_name_record, "updating name record");
-
-        Vec::new()
-    }
-
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
