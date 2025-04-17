@@ -46,7 +46,7 @@ use monad_validator::{
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{event, info, warn, Instrument, Level};
 use tracing_subscriber::{
@@ -556,7 +556,7 @@ fn send_metrics(
     {
         let gauge = gauge_cache
             .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
+            .or_insert_with(|| meter.u64_gauge(k).build());
         gauge.record(v, &[]);
     }
 }
@@ -566,36 +566,32 @@ fn build_otel_meter_provider(
     service_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
-    let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_metrics_exporter(
-        Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
-        Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
-    )?;
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_timeout(interval * 2)
+        .with_endpoint(otel_endpoint)
+        .build()?;
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-        exporter,
-        opentelemetry_sdk::runtime::Tokio,
-    )
-    .with_interval(interval / 2)
-    .with_timeout(interval * 2)
-    .build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
 
     let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            ),
-            opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-                CLIENT_VERSION,
-            ),
-        ]));
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(vec![
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                        service_name,
+                    ),
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                        CLIENT_VERSION,
+                    ),
+                ])
+                .build(),
+        );
 
     Ok(provider_builder.build())
 }

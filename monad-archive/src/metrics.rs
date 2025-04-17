@@ -7,7 +7,7 @@ use opentelemetry::{
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
 use tracing::trace;
 
 #[derive(Clone)]
@@ -83,7 +83,7 @@ impl Metrics {
             let counter = inner
                 .counters
                 .entry(metric)
-                .or_insert_with(|| inner.meter.u64_counter(metric).init());
+                .or_insert_with(|| inner.meter.u64_counter(metric).build());
 
             counter.add(val, attributes)
         }
@@ -110,7 +110,7 @@ impl Metrics {
             let gauge = inner
                 .gauges
                 .entry(metric)
-                .or_insert_with(|| inner.meter.u64_gauge(metric).init());
+                .or_insert_with(|| inner.meter.u64_gauge(metric).build());
             gauge.record(value, attributes);
         }
     }
@@ -127,31 +127,26 @@ fn build_otel_meter_provider(
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
     let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                format!("{replica_name}-{service_name}"),
-            ),
-        ]));
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(vec![opentelemetry::KeyValue::new(
+                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                    format!("{replica_name}-{service_name}"),
+                )])
+                .build(),
+        );
 
     if let Some(otel_endpoint) = otel_endpoint {
-        let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(otel_endpoint.as_ref()),
-        )
-        .build_metrics_exporter(
-            Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
-            Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
-        )?;
+        let exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_tonic()
+            .with_temporality(Temporality::default())
+            .with_timeout(interval * 2)
+            .with_endpoint(otel_endpoint.as_ref())
+            .build()?;
 
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-            exporter,
-            opentelemetry_sdk::runtime::Tokio,
-        )
-        .with_interval(interval / 2)
-        .with_timeout(interval * 2)
-        .build();
+        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+            .with_interval(interval / 2)
+            .build();
 
         provider_builder = provider_builder.with_reader(reader)
     }
