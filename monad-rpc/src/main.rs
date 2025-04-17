@@ -643,7 +643,7 @@ async fn main() -> std::io::Result<()> {
 
     let otel_span_telemetry = match otlp_exporter {
         Some(exporter) => {
-            let resource = opentelemetry_sdk::Resource::builder()
+            let resource = opentelemetry_sdk::Resource::builder_empty()
                 .with_attribute(KeyValue::new(
                     "service.name".to_string(),
                     node_config.node_name.clone(),

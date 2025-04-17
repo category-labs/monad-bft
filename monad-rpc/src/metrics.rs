@@ -138,7 +138,7 @@ pub fn build_otel_meter_provider(
     let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(
-            opentelemetry_sdk::Resource::builder()
+            opentelemetry_sdk::Resource::builder_empty()
                 .with_attributes(vec![opentelemetry::KeyValue::new(
                     "service.name".to_string(),
                     service_name,

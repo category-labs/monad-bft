@@ -285,7 +285,7 @@ fn build_otel_meter_provider(
     interval: Duration,
 ) -> Result<SdkMeterProvider> {
     let mut provider_builder = SdkMeterProvider::builder().with_resource(
-        opentelemetry_sdk::Resource::builder()
+        opentelemetry_sdk::Resource::builder_empty()
             .with_attributes(vec![opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
                 format!("{replica_name}-{service_name}"),
