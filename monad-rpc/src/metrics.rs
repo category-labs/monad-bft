@@ -9,7 +9,7 @@ use opentelemetry::{
     metrics::{Histogram, Meter, UpDownCounter},
     KeyValue,
 };
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 
 pub struct MetricsMiddleware<S> {
     service: S,
@@ -105,12 +105,12 @@ impl Metrics {
             .f64_histogram("monad.rpc.request_duration")
             .with_description("Duration of inbound http requests")
             .with_unit("s")
-            .init();
+            .build();
 
         let active_requests = meter
             .i64_up_down_counter("monad.rpc.active_requests")
             .with_description("Number of concurrent http requests that are in-flight")
-            .init();
+            .build();
 
         Self {
             request_duration,
@@ -124,30 +124,27 @@ pub fn build_otel_meter_provider(
     service_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, std::io::Error> {
-    let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_metrics_exporter(
-        Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
-        Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
-    )
-    .unwrap();
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(otel_endpoint)
+        .with_timeout(interval * 2)
+        .build()
+        .unwrap();
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-        exporter,
-        opentelemetry_sdk::runtime::Tokio,
-    )
-    .with_interval(interval / 2)
-    .with_timeout(interval * 2)
-    .build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
 
     let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            opentelemetry::KeyValue::new("service.name".to_string(), service_name),
-        ]));
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_attributes(vec![opentelemetry::KeyValue::new(
+                    "service.name".to_string(),
+                    service_name,
+                )])
+                .build(),
+        );
 
     Ok(provider_builder.build())
 }

@@ -1,5 +1,6 @@
 use clap::error::ErrorKind;
 use monad_consensus_types::signature_collection::SignatureCollection;
+use opentelemetry_sdk::{metrics::MetricError, trace::TraceError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,7 +24,7 @@ pub enum NodeSetupError {
     IoError(#[from] std::io::Error),
 
     #[error(transparent)]
-    MetricsError(#[from] opentelemetry::metrics::MetricsError),
+    MetricsError(#[from] MetricError),
 
     #[error(transparent)]
     RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
@@ -47,7 +48,7 @@ pub enum NodeSetupError {
     TomlDeError(#[from] toml::de::Error),
 
     #[error(transparent)]
-    TraceError(#[from] opentelemetry::trace::TraceError),
+    TraceError(#[from] TraceError),
 }
 
 impl NodeSetupError {

@@ -14,6 +14,7 @@ use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -633,29 +634,24 @@ async fn main() -> std::io::Result<()> {
 
     let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
         args.otel_endpoint.as_ref().map(|endpoint| {
-            opentelemetry_otlp::SpanExporterBuilder::Tonic(
-                opentelemetry_otlp::new_exporter()
-                    .tonic()
-                    .with_endpoint(endpoint),
-            )
-            .build_span_exporter()
-            .expect("cannot build span exporter for otel_endpoint")
+            opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()
+                .expect("cannot build span exporter for otel_endpoint")
         });
-
-    let rt = opentelemetry_sdk::runtime::Tokio;
 
     let otel_span_telemetry = match otlp_exporter {
         Some(exporter) => {
-            let otel_config = opentelemetry_sdk::trace::Config::default().with_resource(
-                opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+            let resource = opentelemetry_sdk::Resource::builder()
+                .with_attributes(vec![KeyValue::new(
                     "service.name".to_string(),
                     node_config.node_name.clone(),
-                )]),
-            );
-
-            let trace_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-                .with_config(otel_config)
-                .with_batch_exporter(exporter, rt)
+                )])
+                .build();
+            let trace_provider = SdkTracerProvider::builder()
+                .with_resource(resource)
+                .with_batch_exporter(exporter)
                 .build();
             let tracer = trace_provider.tracer("monad-rpc");
             Some(tracing_opentelemetry::layer().with_tracer(tracer))
