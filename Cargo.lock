@@ -4377,10 +4377,10 @@ dependencies = [
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "rayon",
  "regex",
  "reqwest 0.11.27",
@@ -4748,10 +4748,10 @@ dependencies = [
  "monad-secp",
  "monad-testutil",
  "monad-types",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -5050,10 +5050,10 @@ dependencies = [
  "monad-updaters",
  "monad-validator",
  "monad-wal",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "rayon",
  "thiserror 1.0.50",
  "tokio",
@@ -5239,9 +5239,9 @@ dependencies = [
  "monad-triedb-utils",
  "monad-types",
  "notify",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-otlp",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "pin-project",
  "rand 0.8.5",
  "rayon",
@@ -5378,10 +5378,10 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "rand 0.8.5",
  "tokio",
  "tracing",
@@ -5953,20 +5953,6 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c365a63eec4f55b7efeceb724f1336f26a9cf3427b70e59e2cd2a5b947fba96"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "once_cell",
- "pin-project-lite",
- "thiserror 1.0.50",
-]
-
-[[package]]
-name = "opentelemetry"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e87237e2775f74896f9ad219d26a2081751187eb7c9f5c58dde20a23b95d16c"
@@ -5988,7 +5974,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http 1.1.0",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "reqwest 0.12.5",
  "tracing",
 ]
@@ -6001,10 +5987,10 @@ checksum = "d899720fe06916ccba71c01d04ecd77312734e2de3467fd30d9d580c8ce85656"
 dependencies = [
  "futures-core",
  "http 1.1.0",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry_sdk",
  "prost 0.13.1",
  "reqwest 0.12.5",
  "thiserror 2.0.9",
@@ -6019,8 +6005,8 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c40da242381435e18570d5b9d50aca2a4f4f4d8e146231adb4e7768023309b3"
 dependencies = [
- "opentelemetry 0.29.1",
- "opentelemetry_sdk 0.29.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "prost 0.13.1",
  "tonic",
 ]
@@ -6033,24 +6019,6 @@ checksum = "84b29a9f89f1a954936d5aa92f19b2feec3c8f3971d3e96206640db7f9706ae3"
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "692eac490ec80f24a17828d49b40b60f5aeaccdfe6a503f939713afd22bc28df"
-dependencies = [
- "async-trait",
- "futures-channel",
- "futures-executor",
- "futures-util",
- "glob",
- "once_cell",
- "opentelemetry 0.24.0",
- "percent-encoding",
- "rand 0.8.5",
- "thiserror 1.0.50",
-]
-
-[[package]]
-name = "opentelemetry_sdk"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afdefb21d1d47394abc1ba6c57363ab141be19e27cc70d0e422b7f303e4d290b"
@@ -6059,7 +6027,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "glob",
- "opentelemetry 0.29.1",
+ "opentelemetry",
  "percent-encoding",
  "rand 0.9.0",
  "serde_json",
@@ -8460,14 +8428,14 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.25.0"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9784ed4da7d921bc8df6963f8c80a0e4ce34ba6ba76668acadd3edbd985ff3b"
+checksum = "fd8e764bd6f5813fd8bebc3117875190c5b0415be8f7f8059bffb6ecd979c444"
 dependencies = [
  "js-sys",
  "once_cell",
- "opentelemetry 0.24.0",
- "opentelemetry_sdk 0.24.1",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "smallvec",
  "tracing",
  "tracing-core",

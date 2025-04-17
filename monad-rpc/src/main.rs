@@ -12,7 +12,7 @@ use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
+use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::Value;
@@ -644,10 +644,10 @@ async fn main() -> std::io::Result<()> {
     let otel_span_telemetry = match otlp_exporter {
         Some(exporter) => {
             let resource = opentelemetry_sdk::Resource::builder()
-                .with_attributes(vec![KeyValue::new(
+                .with_attribute(KeyValue::new(
                     "service.name".to_string(),
                     node_config.node_name.clone(),
-                )])
+                ))
                 .build();
             let trace_provider = SdkTracerProvider::builder()
                 .with_resource(resource)
