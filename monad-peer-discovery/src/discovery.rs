@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    net::SocketAddrV4,
     time::Instant,
 };
 
@@ -266,7 +267,7 @@ where
     fn get_sock_addr_by_id(
         &self,
         id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<std::net::SocketAddr> {
+    ) -> Option<SocketAddrV4> {
         self.peer_info
             .get(&id)
             .map(|info| info.name_record.name_record.address)
@@ -275,10 +276,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::{SocketAddr, SocketAddrV4},
-        str::FromStr,
-    };
+    use std::{net::SocketAddrV4, str::FromStr};
 
     use alloy_rlp::Encodable;
     use monad_crypto::{
@@ -295,10 +293,10 @@ mod tests {
     type KeyPairType = NopKeyPair;
     type SignatureType = NopSignature;
 
-    fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType> {
+    fn generate_name_record(keypair: &KeyPairType, seq_num: u64) -> MonadNameRecord<SignatureType> {
         let name_record = NameRecord {
-            address: SocketAddr::V4(SocketAddrV4::from_str("1.1.1.1:8000").unwrap()),
-            seq: 0,
+            address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
+            seq: seq_num,
         };
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -336,10 +334,10 @@ mod tests {
         let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
             last_ping: None,
             last_seen: None,
-            name_record: generate_name_record(peer1),
+            name_record: generate_name_record(peer1, 0),
         })]);
         let mut state = PeerDiscovery {
-            self_record: generate_name_record(peer0),
+            self_record: generate_name_record(peer0, 0),
             peer_info,
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
@@ -373,6 +371,37 @@ mod tests {
     }
 
     #[test]
+    fn test_drop_pong_with_incorrect_ping_id() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
+            last_ping: None,
+            last_seen: None,
+            name_record: generate_name_record(peer1, 0),
+        })]);
+        let mut state = PeerDiscovery {
+            self_record: generate_name_record(peer0, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // should not record pong when ping_id doesn't match
+        state.handle_pong(peer1_pubkey, Pong {
+            ping_id: 1,
+            local_record_seq: 0,
+        });
+        let peer_info = state.peer_info.get(&peer1_pubkey);
+        assert!(peer_info.is_some());
+        assert!(peer_info.unwrap().last_ping.is_none());
+        assert!(peer_info.unwrap().last_seen.is_none());
+    }
+
+    #[test]
     fn test_peer_lookup() {
         let keys = create_keys::<SignatureType>(3);
         let peer0 = &keys[0];
@@ -382,7 +411,7 @@ mod tests {
         let peer2_pubkey = NodeId::new(peer2.pubkey());
 
         let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
-            self_record: generate_name_record(peer0),
+            self_record: generate_name_record(peer0, 0),
             peer_info: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
@@ -395,7 +424,7 @@ mod tests {
         assert!(!state.peer_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
 
-        let record = generate_name_record(peer2);
+        let record = generate_name_record(peer2, 0);
         state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
             lookup_id: requests[0].lookup_id,
             target: peer2_pubkey,
@@ -405,5 +434,111 @@ mod tests {
         // peer2 should be added to peer info and outstanding requests should be cleared
         assert!(state.peer_info.contains_key(&peer2_pubkey));
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 0);
+    }
+
+    #[test]
+    fn test_update_name_record_sequence_number() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
+            last_ping: None,
+            last_seen: None,
+            name_record: generate_name_record(peer1, 1),
+        })]);
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_record: generate_name_record(peer0, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::from([(1, peer1_pubkey), (2, peer1_pubkey)]),
+            metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // should not update name record if record has lower sequence number
+        let record = generate_name_record(peer1, 0);
+        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+            lookup_id: 1,
+            target: peer1_pubkey,
+            name_records: vec![record],
+        });
+        assert_eq!(
+            state
+                .peer_info
+                .get(&peer1_pubkey)
+                .unwrap()
+                .name_record
+                .seq(),
+            1
+        );
+
+        // should update name record if record has higher sequence number
+        let record = generate_name_record(peer1, 2);
+        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+            lookup_id: 2,
+            target: peer1_pubkey,
+            name_records: vec![record],
+        });
+        assert_eq!(
+            state
+                .peer_info
+                .get(&peer1_pubkey)
+                .unwrap()
+                .name_record
+                .seq(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_drop_invalid_lookup_response() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_record: generate_name_record(peer0, 0),
+            peer_info: BTreeMap::new(),
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // should not record peer lookup response if not in outstanding requests
+        let record = generate_name_record(peer1, 0);
+        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+            lookup_id: 1,
+            target: peer1_pubkey,
+            name_records: vec![record],
+        });
+        assert!(!state.peer_info.contains_key(&peer1_pubkey));
+    }
+
+    #[test]
+    fn test_drop_lookup_response_that_exceeds_max_peers() {
+        let keys = create_keys::<SignatureType>(3);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let lookup_id = 1;
+
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_record: generate_name_record(peer0, 0),
+            peer_info: BTreeMap::new(),
+            outstanding_lookup_requests: HashMap::from([(lookup_id, peer1_pubkey)]),
+            metrics: HashMap::new(),
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // should not record peer lookup response if number of records exceed max
+        let record = generate_name_record(peer1, 0);
+        state.handle_peer_lookup_response(peer1_pubkey, PeerLookupResponse {
+            lookup_id,
+            target: peer1_pubkey,
+            name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
+        });
+        assert!(!state.peer_info.contains_key(&peer1_pubkey));
     }
 }

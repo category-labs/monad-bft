@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{Ipv4Addr, SocketAddrV4},
     time::Duration,
 };
 
@@ -44,22 +44,15 @@ pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NameRecord {
-    pub address: SocketAddr,
+    pub address: SocketAddrV4,
     pub seq: u64,
 }
 
 impl Encodable for NameRecord {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        match self.address {
-            SocketAddr::V4(addr) => {
-                let enc: [&dyn Encodable; 4] = [&1u8, &addr.ip().octets(), &addr.port(), &self.seq];
-                encode_list::<_, dyn Encodable>(&enc, out);
-            }
-            SocketAddr::V6(addr) => {
-                let enc: [&dyn Encodable; 4] = [&2u8, &addr.ip().octets(), &addr.port(), &self.seq];
-                encode_list::<_, dyn Encodable>(&enc, out);
-            }
-        }
+        let enc: [&dyn Encodable; 3] =
+            [&self.address.ip().octets(), &self.address.port(), &self.seq];
+        encode_list::<_, dyn Encodable>(&enc, out);
     }
 }
 
@@ -67,29 +60,12 @@ impl Decodable for NameRecord {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let buf = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
 
-        let addr_type = u8::decode(buf)?;
-        let addr = match addr_type {
-            1 => {
-                let Ok(ip) = <[u8; 4]>::decode(buf) else {
-                    warn!("ip address decode failed: {:?}", buf);
-                    return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
-                };
-                let port = u16::decode(buf)?;
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port))
-            }
-            2 => {
-                let Ok(ip) = <[u8; 16]>::decode(buf) else {
-                    warn!("ip address decode failed: {:?}", buf);
-                    return Err(alloy_rlp::Error::Custom("Invalid IPv6 address"));
-                };
-                let port = u16::decode(buf)?;
-                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(ip), port, 0, 0))
-            }
-            _ => {
-                warn!("ip address decode failed: {:?}", buf);
-                return Err(alloy_rlp::Error::Custom("Invalid IP enum"));
-            }
+        let Ok(ip) = <[u8; 4]>::decode(buf) else {
+            warn!("ip address decode failed: {:?}", buf);
+            return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
         };
+        let port = u16::decode(buf)?;
+        let addr = SocketAddrV4::new(Ipv4Addr::from(ip), port);
         let seq = u64::decode(buf)?;
 
         Ok(Self { address: addr, seq })
@@ -110,13 +86,9 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
         self.name_record.encode(&mut encoded);
         let pubkey = self.signature.recover_pubkey(&encoded)?;
         Ok(NodeId::new(pubkey))
-        // let mut encoded = Vec::new();
-        // self.name_record.encode(&mut encoded);
-        // self.signature.recover_pubkey(&encoded)
-        // self.signature.verify(&encoded, &node_id.pubkey())
     }
 
-    pub fn address(&self) -> SocketAddr {
+    pub fn address(&self) -> SocketAddrV4 {
         self.name_record.address
     }
 
@@ -239,7 +211,7 @@ pub trait PeerDiscoveryAlgo {
     fn get_sock_addr_by_id(
         &self,
         id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<SocketAddr>;
+    ) -> Option<SocketAddrV4>;
 }
 
 pub trait PeerDiscoveryBuilder {
@@ -264,22 +236,7 @@ mod tests {
     #[test]
     fn test_name_record_v4_rlp() {
         let name_record = NameRecord {
-            address: SocketAddr::V4(SocketAddrV4::from_str("1.1.1.1:8000").unwrap()),
-            seq: 2,
-        };
-
-        let mut encoded = Vec::new();
-        name_record.encode(&mut encoded);
-
-        let result = NameRecord::decode(&mut encoded.as_slice());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), name_record);
-    }
-
-    #[test]
-    fn test_name_record_v6_rlp() {
-        let name_record = NameRecord {
-            address: SocketAddr::V6(SocketAddrV6::from_str("[1:1::1:1:1]:8000").unwrap()),
+            address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
             seq: 2,
         };
 

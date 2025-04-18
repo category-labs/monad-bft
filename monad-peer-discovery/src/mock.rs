@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddrV4, time::Duration};
 
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -206,7 +206,7 @@ where
     fn get_sock_addr_by_id(
         &self,
         id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<std::net::SocketAddr> {
+    ) -> Option<SocketAddrV4> {
         None
     }
 }
