@@ -4534,6 +4534,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "peak_alloc",
+ "zstd",
 ]
 
 [[package]]
