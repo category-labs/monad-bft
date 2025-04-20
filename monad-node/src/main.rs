@@ -10,6 +10,7 @@ use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_compress::{nop::NopCompression, CompressionAlgo};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
@@ -149,12 +150,14 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         })
         .collect();
 
+    let nop_compression = NopCompression::new(0, 0, Vec::new());
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
             SignatureCollectionType,
             MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+            NopCompression,
         >(
             node_state.node_config.network.clone(),
             node_state.router_identity,
@@ -164,6 +167,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
                 .collect(),
             &node_state.node_config.fullnode.identities,
+            nop_compression,
         )
         .await;
 
@@ -490,12 +494,13 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
     Ok(())
 }
 
-async fn build_raptorcast_router<ST, SCT, M, OM>(
+async fn build_raptorcast_router<ST, SCT, M, OM, CA>(
     network_config: NodeNetworkConfig,
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
+    compression_algo: CA,
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -507,6 +512,7 @@ where
         + 'static,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
+    CA: CompressionAlgo,
 {
     RaptorCast::new(RaptorCastConfig {
         key: identity,
@@ -522,6 +528,7 @@ where
         )),
         up_bandwidth_mbps: network_config.max_mbps.into(),
         mtu: network_config.mtu,
+        compression_algo,
     })
 }
 

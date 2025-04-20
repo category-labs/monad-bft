@@ -25,6 +25,7 @@ monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }
+monad-compress = { path = "./monad-compress" }
 monad-consensus = { path = "./monad-consensus" }
 monad-consensus-state = { path = "./monad-consensus-state" }
 monad-consensus-types = { path = "./monad-consensus-types" }

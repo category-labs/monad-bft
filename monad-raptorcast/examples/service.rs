@@ -8,6 +8,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
+use monad_compress::nop::NopCompression;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
@@ -118,6 +119,7 @@ fn service(
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
                     mtu: DEFAULT_MTU,
+                    compression_algo: NopCompression,
                 };
 
                 let mut service = RaptorCast::<
@@ -125,6 +127,7 @@ fn service(
                     MockMessage,
                     MockMessage,
                     <MockMessage as Message>::Event,
+                    NopCompression,
                 >::new(service_config);
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
