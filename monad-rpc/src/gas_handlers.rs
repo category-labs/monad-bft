@@ -80,6 +80,7 @@ impl EthCallProvider for GasEstimator {
             block_round,
             eth_call_executor.unwrap(),
             &state_override,
+            false,
         )
         .await
     }
@@ -112,6 +113,11 @@ async fn estimate_gas<T: EthCallProvider>(
             }
             _ => return Err(JsonRpcError::eth_call_error(error.message, error.data)),
         },
+        _ => {
+            return Err(JsonRpcError::internal_error(
+                "Unexpected CallResult type".into(),
+            ))
+        }
     };
 
     let upper_bound_gas_limit = txn.gas_limit();
@@ -130,6 +136,11 @@ async fn estimate_gas<T: EthCallProvider>(
                 }) => (gas_used.sub(1), txn.gas_limit()),
                 monad_ethcall::CallResult::Failure(_error_message) => {
                     (txn.gas_limit(), upper_bound_gas_limit)
+                }
+                _ => {
+                    return Err(JsonRpcError::internal_error(
+                        "Unexpected CallResult type".into(),
+                    ))
                 }
             }
         } else {
@@ -156,6 +167,11 @@ async fn estimate_gas<T: EthCallProvider>(
             }
             monad_ethcall::CallResult::Failure(_error_message) => {
                 lower_bound_gas_limit = mid;
+            }
+            _ => {
+                return Err(JsonRpcError::internal_error(
+                    "Unexpected CallResult type".into(),
+                ))
             }
         };
     }

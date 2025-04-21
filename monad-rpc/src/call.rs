@@ -18,6 +18,7 @@ use crate::{
     eth_json_types::BlockTagOrHash,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    trace_handlers::{decode_call_frame, MonadCallFrame, TracerObject},
 };
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -371,22 +372,70 @@ pub struct MonadEthCallParams {
     state_overrides: StateOverrideSet, // empty = no state overrides
 }
 
-/// Executes a new message call immediately without creating a transaction on the block chain.
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrichedTracerObject {
+    #[serde(default)]
+    tracer_params: TracerObject,
+    #[schemars(skip)]
+    #[serde(default)]
+    state_overrides: StateOverrideSet,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Clone)]
+pub struct MonadDebugTraceCallParams {
+    transaction: CallRequest,
+    #[serde(default)]
+    block: BlockTagOrHash,
+    tracer: EnrichedTracerObject,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub enum CallParams {
+    Call(MonadEthCallParams),
+    Trace(MonadDebugTraceCallParams),
+}
+
+impl CallParams {
+    /// Mutable handle to the embedded `CallRequest`.
+    fn tx(&mut self) -> &mut CallRequest {
+        match self {
+            CallParams::Call(p) => &mut p.transaction,
+            CallParams::Trace(p) => &mut p.transaction,
+        }
+    }
+
+    fn block(&self) -> BlockTagOrHash {
+        match self {
+            CallParams::Call(p) => p.block.clone(),
+            CallParams::Trace(p) => p.block.clone(),
+        }
+    }
+
+    fn state_overrides(&self) -> &StateOverrideSet {
+        match self {
+            CallParams::Call(p) => &p.state_overrides,
+            CallParams::Trace(p) => &p.tracer.state_overrides,
+        }
+    }
+
+    /// `true` only for the trace variant.
+    fn trace(&self) -> bool {
+        matches!(self, CallParams::Trace(_))
+    }
+}
+
 #[tracing::instrument(level = "debug")]
-#[rpc(method = "eth_call", ignore = "chain_id", ignore = "eth_call_executor")]
-pub async fn monad_eth_call<T: Triedb + TriedbPath>(
+async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
     eth_call_gas_limit: u64,
-    params: MonadEthCallParams,
-) -> JsonRpcResult<String> {
-    trace!("monad_eth_call: {params:?}");
-
-    let mut params = params;
-    params.transaction.input.input = match (
-        params.transaction.input.input.take(),
-        params.transaction.input.data.take(),
+    mut params: CallParams,
+) -> Result<CallResult, JsonRpcError> {
+    params.tx().input.input = match (
+        params.tx().input.input.take(),
+        params.tx().input.data.take(),
     ) {
         (Some(input), Some(data)) => {
             if input != data {
@@ -397,7 +446,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    if params.transaction.gas > Some(U256::from(eth_call_gas_limit)) {
+    if params.tx().gas > Some(U256::from(eth_call_gas_limit)) {
         return Err(JsonRpcError::eth_call_error(
             "provider-specified max eth_call gas limit exceeded".to_string(),
             None,
@@ -406,7 +455,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 
     // TODO: check duplicate address, duplicate storage key, etc.
 
-    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block).await?;
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block()).await?;
     let version_exist = triedb_env
         .get_state_availability(block_key)
         .await
@@ -428,34 +477,37 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         }
     };
 
+    let state_overrides = params.state_overrides().clone();
+
     fill_gas_params(
         triedb_env,
         block_key,
-        &mut params.transaction,
+        params.tx(),
         &mut header.header,
-        &params.state_overrides,
+        &state_overrides,
         U256::from(eth_call_gas_limit),
     )
     .await?;
 
-    if params.transaction.chain_id.is_none() {
-        params.transaction.chain_id = Some(U64::from(chain_id));
+    if params.tx().chain_id.is_none() {
+        params.tx().chain_id = Some(U64::from(chain_id));
     }
 
-    let sender = params.transaction.from.unwrap_or_default();
+    let sender = params.tx().from.unwrap_or_default();
     let tx_chain_id = params
-        .transaction
+        .tx()
         .chain_id
         .expect("chain id must be populated")
         .to::<u64>();
-    let txn: TxEnvelope = params.transaction.try_into()?;
+    let txn: TxEnvelope = params.tx().clone().try_into()?;
     let (block_number, block_round) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
         BlockKey::Proposed(ProposedBlockKey(SeqNum(n), Round(r))) => (n, Some(r)),
     };
 
-    let state_overrides = params.state_overrides.clone();
-    match eth_call(
+    let state_overrides = params.state_overrides().clone();
+    let trace = params.trace();
+    Ok(eth_call(
         tx_chain_id,
         txn,
         header.header,
@@ -464,13 +516,89 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         block_round,
         eth_call_executor,
         &state_overrides,
+        trace,
     )
-    .await
+    .await)
+}
+
+/// Executes a new message call immediately without creating a transaction on the block chain.
+#[tracing::instrument(level = "debug")]
+#[rpc(method = "eth_call", ignore = "chain_id", ignore = "eth_call_executor")]
+pub async fn monad_eth_call<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    chain_id: u64,
+    eth_call_gas_limit: u64,
+    params: MonadEthCallParams,
+) -> JsonRpcResult<String> {
+    trace!("monad_eth_call: {params:?}");
+
+    match prepare_eth_call(
+        triedb_env,
+        eth_call_executor,
+        chain_id,
+        eth_call_gas_limit,
+        CallParams::Call(params),
+    )
+    .await?
     {
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
             Ok(hex::encode(&output_data))
         }
         CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        _ => Err(JsonRpcError::internal_error(
+            "Unexpected CallResult type".into(),
+        )),
+    }
+}
+
+#[rpc(
+    method = "debug_traceCall",
+    ignore = "chain_id",
+    ignore = "eth_call_executor"
+)]
+#[allow(non_snake_case)]
+pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_executor: Arc<Mutex<EthCallExecutor>>,
+    chain_id: u64,
+    eth_call_gas_limit: u64,
+    params: MonadDebugTraceCallParams,
+) -> JsonRpcResult<Option<MonadCallFrame>> {
+    trace!("monad_debug_traceCall: {params:?}");
+
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, params.block.clone()).await?;
+
+    match prepare_eth_call(
+        triedb_env,
+        eth_call_executor,
+        chain_id,
+        eth_call_gas_limit,
+        CallParams::Trace(params.clone()),
+    )
+    .await?
+    {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+            let rlp_call_frame = &mut output_data.as_slice();
+            return decode_call_frame(
+                triedb_env,
+                rlp_call_frame,
+                block_key,
+                &params.tracer.tracer_params,
+            )
+            .await;
+        }
+        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Revert(result) => {
+            let rlp_call_frame = &mut result.call_frame.as_slice();
+            return decode_call_frame(
+                triedb_env,
+                rlp_call_frame,
+                block_key,
+                &params.tracer.tracer_params,
+            )
+            .await;
+        }
     }
 }
 

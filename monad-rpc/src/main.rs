@@ -34,11 +34,11 @@ use crate::{
         monad_eth_getBlockByNumber, monad_eth_getBlockReceipts,
         monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
     },
-    call::monad_eth_call,
+    call::{monad_debug_traceCall, monad_eth_call},
     cli::Cli,
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
-        monad_debug_getRawTransaction, monad_debug_traceCall,
+        monad_debug_getRawTransaction,
     },
     eth_txn_handlers::{
         monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
@@ -235,10 +235,24 @@ async fn rpc_select(
         }
         "debug_traceCall" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+            // acquire the concurrent requests permit
+            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
+                JsonRpcError::internal_error("eth_call concurrent requests limit".into())
+            })?;
+
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceCall(triedb_env, params)
-                .await
-                .map(serialize_result)?
+            monad_debug_traceCall(
+                triedb_env,
+                eth_call_executor.clone(),
+                app_state.chain_id,
+                app_state.eth_call_gas_limit,
+                params,
+            )
+            .await
+            .map(serialize_result)?
         }
         "debug_traceTransaction" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;

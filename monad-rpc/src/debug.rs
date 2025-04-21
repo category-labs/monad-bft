@@ -12,7 +12,6 @@ use crate::{
     eth_json_types::{BlockTags, EthHash},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
-    trace::{TraceCallObject, TracerObject},
 };
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -162,21 +161,4 @@ pub async fn monad_debug_getRawTransaction<T: Triedb>(
     let mut res = Vec::new();
     tx.tx.encode_2718(&mut res);
     Ok(hex::encode(&res))
-}
-
-#[derive(Deserialize, Debug, schemars::JsonSchema)]
-pub struct DebugTraceCallParams {
-    pub call: Vec<TraceCallObject>,
-    pub block: BlockTags,
-    pub tracer: TracerObject,
-}
-
-#[rpc(method = "debug_traceCall")]
-#[allow(non_snake_case)]
-/// Returns the tracing result by executing an eth call within the context of the given block execution.
-pub async fn monad_debug_traceCall<T: Triedb>(
-    _triedb_env: &T,
-    _params: DebugTraceCallParams,
-) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
 }

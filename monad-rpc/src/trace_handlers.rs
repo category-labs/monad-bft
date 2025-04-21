@@ -90,7 +90,7 @@ impl Decodable for CallFrame {
     }
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TracerObject {
     #[serde(default)]
@@ -98,7 +98,7 @@ pub struct TracerObject {
     only_top_call: Option<bool>,
 }
 
-#[derive(Deserialize, Debug, Default, schemars::JsonSchema)]
+#[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]
 pub enum Tracer {
     #[default]
     #[serde(rename = "callTracer")]
@@ -428,7 +428,7 @@ async fn get_call_frames_from_triedb<T: Triedb>(
     Ok(resp)
 }
 
-async fn decode_call_frame<T: Triedb>(
+pub async fn decode_call_frame<T: Triedb>(
     triedb_env: &T,
     rlp_call_frame: &mut &[u8],
     block_key: BlockKey,

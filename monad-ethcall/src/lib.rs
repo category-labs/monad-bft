@@ -93,12 +93,14 @@ pub enum EthCallResult {
 pub enum CallResult {
     Success(SuccessCallResult),
     Failure(FailureCallResult),
+    Revert(RevertCallResult), // only used for trace
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SuccessCallResult {
     pub gas_used: u64,
     pub gas_refund: u64,
+    // We interpret this as rlp encoded CallFrames for debug_traceCall
     pub output_data: Vec<u8>,
 }
 
@@ -107,6 +109,11 @@ pub struct FailureCallResult {
     pub error_code: EthCallResult,
     pub message: String,
     pub data: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RevertCallResult {
+    pub call_frame: Vec<u8>,
 }
 
 pub struct SenderContext {
@@ -138,6 +145,7 @@ pub async fn eth_call(
     block_round: Option<u64>,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     state_override_set: &StateOverrideSet,
+    trace: bool,
 ) -> CallResult {
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
     if transaction.gas_limit() > block_header.gas_limit {
@@ -267,6 +275,7 @@ pub async fn eth_call(
             override_ctx,
             Some(eth_call_submit_callback),
             sender_ctx_ptr as *mut std::ffi::c_void,
+            trace,
         )
     };
 
@@ -296,21 +305,7 @@ pub async fn eth_call(
                 let gas_used = (*result).gas_used as u64;
                 let gas_refund = (*result).gas_refund as u64;
 
-                let output_data_len = (*result).output_data_len;
-                let output_data = if output_data_len != 0 {
-                    std::slice::from_raw_parts((*result).output_data, output_data_len).to_vec()
-                } else {
-                    vec![]
-                };
-
-                CallResult::Success(SuccessCallResult {
-                    gas_used,
-                    gas_refund,
-                    output_data,
-                })
-            }
-            _ => {
-                if (*result).message.is_null() {
+                if !trace {
                     let output_data_len = (*result).output_data_len;
                     let output_data = if output_data_len != 0 {
                         std::slice::from_raw_parts((*result).output_data, output_data_len).to_vec()
@@ -318,39 +313,76 @@ pub async fn eth_call(
                         vec![]
                     };
 
-                    let message = String::from("execution reverted");
-                    let formatted_message = match decode_revert_message(&output_data) {
-                        Some(error_message) => format!("{}: {}", message, error_message),
-                        None => message,
-                    };
-                    CallResult::Failure(FailureCallResult {
-                        error_code: if status_code == EVMC_OUT_OF_GAS {
-                            EthCallResult::OutOfGas
-                        } else {
-                            EthCallResult::OtherError
-                        },
-                        message: formatted_message,
-                        data: Some(format!("0x{}", hex::encode(&output_data))),
+                    CallResult::Success(SuccessCallResult {
+                        gas_used,
+                        gas_refund,
+                        output_data,
                     })
                 } else {
-                    let message = if (*result).message.is_null() {
-                        String::from("no message from eth_call")
+                    let output_data_len = (*result).rlp_call_frames_len;
+                    let output_data = if output_data_len != 0 {
+                        std::slice::from_raw_parts((*result).rlp_call_frames, output_data_len)
+                            .to_vec()
                     } else {
-                        let cstr_msg = CStr::from_ptr((*result).message.cast());
-                        match cstr_msg.to_str() {
-                            Ok(str) => String::from(str),
-                            Err(_) => {
-                                String::from("execution error eth_call message invalid utf-8")
-                            }
-                        }
+                        vec![]
+                    };
+
+                    CallResult::Success(SuccessCallResult {
+                        gas_used,
+                        gas_refund,
+                        output_data,
+                    })
+                }
+            }
+            _ => {
+                if (*result).message.is_null() {
+                    // This means execution reverted, not a validation error
+                    if !trace {
+                        let output_data_len = (*result).output_data_len;
+                        let output_data = if output_data_len != 0 {
+                            std::slice::from_raw_parts((*result).output_data, output_data_len)
+                                .to_vec()
+                        } else {
+                            vec![]
+                        };
+
+                        let message = String::from("execution reverted");
+                        let formatted_message = match decode_revert_message(&output_data) {
+                            Some(error_message) => format!("{}: {}", message, error_message),
+                            None => message,
+                        };
+
+                        CallResult::Failure(FailureCallResult {
+                            error_code: if status_code == EVMC_OUT_OF_GAS {
+                                EthCallResult::OutOfGas
+                            } else {
+                                EthCallResult::OtherError
+                            },
+                            message: formatted_message,
+                            data: Some(format!("0x{}", hex::encode(&output_data))),
+                        })
+                    } else {
+                        let output_data_len = (*result).rlp_call_frames_len;
+                        let output_data = if output_data_len != 0 {
+                            std::slice::from_raw_parts((*result).rlp_call_frames, output_data_len)
+                                .to_vec()
+                        } else {
+                            vec![]
+                        };
+                        CallResult::Revert(RevertCallResult {
+                            call_frame: output_data,
+                        })
+                    }
+                } else {
+                    // This means we hit a validation error (execution not started)
+                    let cstr_msg = CStr::from_ptr((*result).message.cast());
+                    let message = match cstr_msg.to_str() {
+                        Ok(str) => String::from(str),
+                        Err(_) => String::from("execution error eth_call message invalid utf-8"),
                     };
 
                     CallResult::Failure(FailureCallResult {
-                        error_code: if status_code == EVMC_OUT_OF_GAS {
-                            EthCallResult::OutOfGas
-                        } else {
-                            EthCallResult::OtherError
-                        },
+                        error_code: EthCallResult::OtherError,
                         message,
                         data: None,
                     })
