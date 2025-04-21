@@ -394,11 +394,9 @@ where
 
             for (sched_tick, message) in emitted_messages {
                 assert_ne!(message.from, message.to);
-                let node = self
-                    .states
-                    .get_mut(message.to.get_peer_id())
-                    .expect("message must be for known peer");
-                node.push_inbound_message(sched_tick, message);
+                if let Some(node) = self.states.get_mut(message.to.get_peer_id()) {
+                    node.push_inbound_message(sched_tick, message);
+                }
             }
             if state_updated {
                 return true;

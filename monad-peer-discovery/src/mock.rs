@@ -9,7 +9,7 @@ use tracing::debug;
 use crate::{
     PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
     PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
-    PeerLookupResponse, Ping, Pong,
+    PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
 struct PeerState {
@@ -86,9 +86,11 @@ impl<ST: CertificateSignatureRecoverable> PingPongDiscovery<ST> {
         vec![
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
                 node_id: peer,
+                timer_kind: TimerKind::SendPing,
             }),
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
                 node_id: peer,
+                timer_kind: TimerKind::SendPing,
                 duration: self.ping_period,
                 on_timeout: PeerDiscoveryEvent::SendPing { to: peer },
             }),
@@ -171,6 +173,16 @@ where
         cmds
     }
 
+    fn handle_ping_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        ping_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?to, ?ping_id, "handling ping timeout");
+
+        Vec::new()
+    }
+
     fn send_peer_lookup_request(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -197,6 +209,23 @@ where
         response: PeerLookupResponse<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?response, "handling peer lookup response");
+
+        Vec::new()
+    }
+
+    fn handle_peer_lookup_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        lookup_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?lookup_id, "peer lookup request timeout");
+
+        Vec::new()
+    }
+
+    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!("pruning unresponsive peer nodes");
 
         Vec::new()
     }

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddrV4,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use monad_crypto::certificate_signature::{
@@ -15,26 +15,36 @@ use tracing::{debug, warn};
 use crate::{
     MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
     PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
-    PeerLookupRequest, PeerLookupResponse, Ping, Pong,
+    PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
+/// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
     pub last_ping: Option<Ping>,
-    pub last_seen: Option<Instant>,
+    pub unresponsive_pings: u32,
     pub name_record: MonadNameRecord<ST>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
+    pub num_retries: u32,
+    pub receiver: NodeId<CertificateSignaturePubKey<ST>>,
 }
 
 pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
     pub self_record: MonadNameRecord<ST>,
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
-    // maps lookup id => receiver of the request
-    pub outstanding_lookup_requests: HashMap<u32, NodeId<CertificateSignaturePubKey<ST>>>,
+    pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
     pub metrics: PeerDiscMetrics,
     pub ping_period: Duration,
+    pub prune_period: Duration,
+    pub request_timeout: Duration,
+    // number of unresponsive pings allowed before being pruned
+    pub prune_threshold: u32,
     pub rng: ChaCha8Rng,
 }
 
@@ -43,6 +53,9 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub ping_period: Duration,
+    pub prune_period: Duration,
+    pub request_timeout: Duration,
+    pub prune_threshold: u32,
     pub rng_seed: u64,
 }
 
@@ -57,6 +70,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
         >,
     ) {
+        assert!(self.ping_period > self.request_timeout);
+
         let mut state = PeerDiscovery {
             self_id: self.self_id,
             self_record: self.self_record,
@@ -64,35 +79,87 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             outstanding_lookup_requests: Default::default(),
             metrics: Default::default(),
             ping_period: self.ping_period,
+            prune_period: self.prune_period,
+            request_timeout: self.request_timeout,
+            prune_threshold: self.prune_threshold,
             rng: ChaCha8Rng::seed_from_u64(self.rng_seed),
         };
 
-        let cmds = self
+        let mut cmds = self
             .peer_info
             .into_iter()
-            .filter(|(node_id, _)| *node_id != self.self_id)
             .flat_map(|(node_id, _)| state.send_ping(node_id))
-            .collect();
+            .collect::<Vec<_>>();
+
+        cmds.extend(state.reset_prune_timer());
 
         (state, cmds)
     }
 }
 
 impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
-    fn reset_timer(
+    fn reset_ping_timer(
         &self,
         peer: NodeId<CertificateSignaturePubKey<ST>>,
+        ping_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         vec![
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
                 node_id: peer,
+                timer_kind: TimerKind::PingTimeout,
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: peer,
+                timer_kind: TimerKind::SendPing,
             }),
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
                 node_id: peer,
+                timer_kind: TimerKind::PingTimeout,
+                duration: self.request_timeout,
+                on_timeout: PeerDiscoveryEvent::PingTimeout { to: peer, ping_id },
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                node_id: peer,
+                timer_kind: TimerKind::SendPing,
                 duration: self.ping_period,
                 on_timeout: PeerDiscoveryEvent::SendPing { to: peer },
             }),
         ]
+    }
+
+    fn reset_prune_timer(&self) -> Vec<PeerDiscoveryCommand<ST>> {
+        vec![
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                node_id: self.self_id,
+                timer_kind: TimerKind::Prune,
+            }),
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                node_id: self.self_id,
+                timer_kind: TimerKind::Prune,
+                duration: self.prune_period,
+                on_timeout: PeerDiscoveryEvent::Prune,
+            }),
+        ]
+    }
+
+    fn schedule_lookup_timer(
+        &self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        lookup_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        vec![PeerDiscoveryCommand::TimerCommand(
+            PeerDiscoveryTimerCommand::Schedule {
+                node_id: to,
+                timer_kind: TimerKind::RetryPeerLookup { lookup_id },
+                duration: self.request_timeout,
+                on_timeout: PeerDiscoveryEvent::PeerLookupTimeout {
+                    to,
+                    target,
+                    lookup_id,
+                },
+            },
+        )]
     }
 }
 
@@ -124,11 +191,10 @@ where
             local_record_seq: self.self_record.name_record.seq,
         };
 
-        // record ping in peer_info
         peer_entry.last_ping = Some(ping_msg);
 
         // reset timer to schedule for the next ping
-        cmds.extend(self.reset_timer(to));
+        cmds.extend(self.reset_ping_timer(to, ping_msg.id));
 
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
@@ -187,14 +253,14 @@ where
 
         let cmds = Vec::new();
 
-        // if ping id matches, update last_seen time
+        // if ping id matches, update peer info
         if let Some(info) = self.peer_info.get_mut(&from) {
             if info
                 .last_ping
                 .is_some_and(|last_ping| last_ping.id == pong_msg.ping_id)
             {
                 info.last_ping = None;
-                info.last_seen = Some(Instant::now());
+                info.unresponsive_pings = 0;
             } else {
                 debug!(?from, "dropping pong, ping id not found or does not match");
             }
@@ -208,6 +274,34 @@ where
         cmds
     }
 
+    fn handle_ping_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        ping_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?to, ?ping_id, "handling ping timeout");
+
+        let cmds = Vec::new();
+
+        let Some(peer_entry) = self.peer_info.get_mut(&to) else {
+            warn!(
+                ?to,
+                "name record not present locally, dropping ping timeout..."
+            );
+            return cmds;
+        };
+
+        // record timeout
+        if let Some(last_ping) = peer_entry.last_ping {
+            if last_ping.id == ping_id {
+                peer_entry.unresponsive_pings += 1;
+                peer_entry.last_ping = None;
+            }
+        }
+
+        cmds
+    }
+
     fn send_peer_lookup_request(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -216,14 +310,22 @@ where
         debug!(?to, ?target, "sending peer lookup request");
 
         let mut cmds = Vec::new();
-        let peer_lookup_request = PeerLookupRequest::<ST> {
-            lookup_id: self.rng.next_u32(),
-            target,
-        };
 
-        // record request
+        // new lookup request
+        let mut lookup_id = self.rng.next_u32();
+        // make sure lookup id is unique
+        while self.outstanding_lookup_requests.contains_key(&lookup_id) {
+            lookup_id = self.rng.next_u32();
+        }
         self.outstanding_lookup_requests
-            .insert(peer_lookup_request.lookup_id, to);
+            .insert(lookup_id, LookupInfo {
+                num_retries: 0,
+                receiver: to,
+            });
+        let peer_lookup_request = PeerLookupRequest::<ST> { lookup_id, target };
+
+        // schedule for peer lookup retry
+        cmds.extend(self.schedule_lookup_timer(to, target, lookup_id));
 
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
@@ -244,20 +346,19 @@ where
 
         let mut cmds = Vec::new();
         let target = request.target;
-        let peer_lookup_response = match self.peer_info.get(&target) {
-            Some(info) => PeerLookupResponse {
-                lookup_id: request.lookup_id,
-                target,
-                name_records: vec![info.name_record],
-            },
-            None => {
-                // TODO: optional to return some random peers
-                PeerLookupResponse {
-                    lookup_id: request.lookup_id,
-                    target,
-                    name_records: vec![],
-                }
+        let name_records = if target == self.self_id {
+            vec![self.self_record]
+        } else {
+            match self.peer_info.get(&target) {
+                Some(info) => vec![info.name_record],
+                None => vec![],
             }
+        };
+
+        let peer_lookup_response = PeerLookupResponse {
+            lookup_id: request.lookup_id,
+            target,
+            name_records,
         };
 
         cmds.push(PeerDiscoveryCommand::RouterCommand {
@@ -283,7 +384,7 @@ where
         if self
             .outstanding_lookup_requests
             .get(&response.lookup_id)
-            .is_none_or(|peer| peer != &from)
+            .is_none_or(|peer| peer.receiver != from)
         {
             warn!(
                 ?response,
@@ -321,7 +422,7 @@ where
                 })
                 .or_insert_with(|| PeerInfo {
                     last_ping: None,
-                    last_seen: None,
+                    unresponsive_pings: 0,
                     name_record,
                 });
         }
@@ -332,7 +433,82 @@ where
         cmds
     }
 
-    // TODO: record metrics when handling event
+    fn handle_peer_lookup_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        lookup_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?lookup_id, "peer lookup request timeout");
+
+        let mut cmds = Vec::new();
+
+        // retry lookup request
+        let Some(lookup_info) = self.outstanding_lookup_requests.get_mut(&lookup_id) else {
+            debug!("lookup id not found in outstanding lookup requests");
+            return cmds;
+        };
+        if lookup_info.num_retries >= self.prune_threshold {
+            debug!(
+                ?lookup_id,
+                ?to,
+                ?target,
+                "peer lookup request exceeded number of retries, dropping..."
+            );
+            self.outstanding_lookup_requests.remove(&lookup_id);
+            return cmds;
+        }
+        let num_retries = lookup_info.num_retries + 1;
+
+        // generate new unique lookup id
+        self.outstanding_lookup_requests.remove(&lookup_id);
+        let mut new_lookup_id = self.rng.next_u32();
+        while self
+            .outstanding_lookup_requests
+            .contains_key(&new_lookup_id)
+        {
+            new_lookup_id = self.rng.next_u32();
+        }
+        self.outstanding_lookup_requests
+            .insert(new_lookup_id, LookupInfo {
+                num_retries,
+                receiver: target,
+            });
+
+        let peer_lookup_request = PeerLookupRequest::<ST> {
+            lookup_id: new_lookup_id,
+            target,
+        };
+
+        // schedule for next peer lookup retry
+        cmds.extend(self.schedule_lookup_timer(to, target, new_lookup_id));
+
+        cmds.push(PeerDiscoveryCommand::RouterCommand {
+            target: to,
+            message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
+        });
+
+        *self.metrics.entry("retry_lookup_request").or_default() += 1;
+
+        cmds
+    }
+
+    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!("pruning unresponsive peer nodes");
+
+        *self.metrics.entry("prune").or_default() += 1;
+        let mut cmds = Vec::new();
+
+        // prune unresponsive nodes
+        self.peer_info
+            .retain(|_, info| info.unresponsive_pings < self.prune_threshold);
+
+        // reset timer to schedule for the next prune
+        cmds.extend(self.reset_prune_timer());
+
+        cmds
+    }
+
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
     }
@@ -407,7 +583,7 @@ mod tests {
         // peer1 name record is present but peer2 name record is not present
         let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
             last_ping: None,
-            last_seen: None,
+            unresponsive_pings: 0,
             name_record: generate_name_record(peer1, 0),
         })]);
         let mut state = PeerDiscovery {
@@ -417,19 +593,22 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
         // should be able to send ping to peer where its name record already exists locally
         let cmds = state.send_ping(peer1_pubkey);
-        // two reset timer cmds, one ping cmd
-        assert_eq!(cmds.len(), 3);
+        // four reset timer cmds, one ping cmd
+        assert_eq!(cmds.len(), 5);
 
         // last_ping is recorded correctly
         let peer_info = state.peer_info.get(&peer1_pubkey);
         assert!(peer_info.is_some());
         assert!(peer_info.unwrap().last_ping.is_some());
-        assert!(peer_info.unwrap().last_seen.is_none());
+        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
         let ping_msg = peer_info.unwrap().last_ping.unwrap();
 
         // should not be able to send ping to peer where its name record does not exist locally
@@ -444,7 +623,7 @@ mod tests {
         let peer_info = state.peer_info.get(&peer1_pubkey);
         assert!(peer_info.is_some());
         assert!(peer_info.unwrap().last_ping.is_none());
-        assert!(peer_info.unwrap().last_seen.is_some());
+        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
     }
 
     #[test]
@@ -457,7 +636,7 @@ mod tests {
 
         let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
             last_ping: None,
-            last_seen: None,
+            unresponsive_pings: 0,
             name_record: generate_name_record(peer1, 0),
         })]);
         let mut state = PeerDiscovery {
@@ -467,6 +646,9 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -478,7 +660,7 @@ mod tests {
         let peer_info = state.peer_info.get(&peer1_pubkey);
         assert!(peer_info.is_some());
         assert!(peer_info.unwrap().last_ping.is_none());
-        assert!(peer_info.unwrap().last_seen.is_none());
+        assert_eq!(peer_info.unwrap().unresponsive_pings, 0);
     }
 
     #[test]
@@ -498,11 +680,14 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
         let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey);
-        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds.len(), 2);
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
         assert!(!state.peer_info.contains_key(&peer2_pubkey));
         let requests = extract_lookup_requests(cmds);
@@ -529,16 +714,28 @@ mod tests {
 
         let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
             last_ping: None,
-            last_seen: None,
+            unresponsive_pings: 0,
             name_record: generate_name_record(peer1, 1),
         })]);
         let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
             self_id: peer0_pubkey,
             self_record: generate_name_record(peer0, 0),
             peer_info,
-            outstanding_lookup_requests: HashMap::from([(1, peer1_pubkey), (2, peer1_pubkey)]),
+            outstanding_lookup_requests: HashMap::from([
+                (1, LookupInfo {
+                    num_retries: 0,
+                    receiver: peer1_pubkey,
+                }),
+                (2, LookupInfo {
+                    num_retries: 0,
+                    receiver: peer1_pubkey,
+                }),
+            ]),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -592,6 +789,9 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -618,9 +818,15 @@ mod tests {
             self_id: peer0_pubkey,
             self_record: generate_name_record(peer0, 0),
             peer_info: BTreeMap::new(),
-            outstanding_lookup_requests: HashMap::from([(lookup_id, peer1_pubkey)]),
+            outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
+                num_retries: 0,
+                receiver: peer1_pubkey,
+            })]),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -632,5 +838,42 @@ mod tests {
             name_records: vec![record; MAX_PEER_IN_RESPONSE + 1],
         });
         assert!(!state.peer_info.contains_key(&peer1_pubkey));
+    }
+
+    #[test]
+    fn test_prune() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer0_pubkey = NodeId::new(peer0.pubkey());
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let lookup_id = 1;
+        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
+            last_ping: None,
+            unresponsive_pings: 5,
+            name_record: generate_name_record(peer1, 0),
+        })]);
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: peer0_pubkey,
+            self_record: generate_name_record(peer0, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
+                num_retries: 5,
+                receiver: peer1_pubkey,
+            })]),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 3,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        state.prune();
+        assert!(state.peer_info.is_empty());
+
+        state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
+        assert!(state.outstanding_lookup_requests.is_empty());
     }
 }

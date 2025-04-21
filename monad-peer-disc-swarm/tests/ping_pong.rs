@@ -60,7 +60,7 @@ fn test_ping_pong() {
         .map(|k| {
             (NodeId::new(k.pubkey()), PeerInfo {
                 last_ping: None,
-                last_seen: None,
+                unresponsive_pings: 0,
                 name_record: generate_name_record(k),
             })
         })
@@ -69,18 +69,29 @@ fn test_ping_pong() {
         builders: keys
             .iter()
             .enumerate()
-            .map(|(i, key)| NodeBuilder {
-                id: NodeId::new(key.pubkey()),
-                algo_builder: PeerDiscoveryBuilder {
-                    self_id: NodeId::new(key.pubkey()),
-                    self_record: generate_name_record(key),
-                    peer_info: all_peers.clone(),
-                    ping_period: Duration::from_secs(1),
-                    rng_seed: 123456,
-                },
-                router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
-                    .build(),
-                seed: i.try_into().unwrap(),
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peer_info = all_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        prune_period: Duration::from_secs(4),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                }
             })
             .collect(),
         seed: 7,
@@ -90,13 +101,13 @@ fn test_ping_pong() {
 
     while nodes.step_until(Duration::from_secs(10)) {}
 
-    // first ping is sent out at t=0. we expect >=10 at t=10
+    // first ping is sent out at t=0. we expect 6 at t=10 (inclusive of t=0 and t=10)
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics["send_ping"] >= 10);
-        assert!(metrics["send_pong"] >= 10);
-        assert!(metrics["recv_ping"] >= 10);
-        assert!(metrics["recv_pong"] >= 10);
+        assert!(metrics["send_ping"] == 6);
+        assert!(metrics["send_pong"] == 6);
+        assert!(metrics["recv_ping"] == 6);
+        assert!(metrics["recv_pong"] == 6);
     }
 }
 
@@ -110,16 +121,16 @@ fn test_new_node_joining() {
     let (bootstrap_keys, third_key) = (&keys[0..2], &keys[2]);
 
     // initialize peer info of the three nodes
-    // NodeA name record: NodeA, NodeB
-    // NodeB name record: NodeA, NodeB
-    // NodeC name record: NodeA, NodeB, NodeC
+    // NodeA name record: NodeB
+    // NodeB name record: NodeA,
+    // NodeC name record: NodeA, NodeB
     // (we can assume that NodeA and NodeB are the bootstrap nodes in a network)
     let bootstrap_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = bootstrap_keys
         .iter()
         .map(|k| {
             (NodeId::new(k.pubkey()), PeerInfo {
                 last_ping: None,
-                last_seen: None,
+                unresponsive_pings: 0,
                 name_record: generate_name_record(k),
             })
         })
@@ -129,7 +140,7 @@ fn test_new_node_joining() {
         .map(|k| {
             (NodeId::new(k.pubkey()), PeerInfo {
                 last_ping: None,
-                last_seen: None,
+                unresponsive_pings: 0,
                 name_record: generate_name_record(k),
             })
         })
@@ -138,22 +149,34 @@ fn test_new_node_joining() {
         builders: keys
             .iter()
             .enumerate()
-            .map(|(i, key)| NodeBuilder {
-                id: NodeId::new(key.pubkey()),
-                algo_builder: PeerDiscoveryBuilder {
-                    self_id: NodeId::new(key.pubkey()),
-                    self_record: generate_name_record(key),
-                    peer_info: if key.pubkey() == third_key.pubkey() {
-                        all_peers.clone()
-                    } else {
-                        bootstrap_peers.clone()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let base_peers = if key.pubkey() == third_key.pubkey() {
+                    &all_peers
+                } else {
+                    &bootstrap_peers
+                };
+                let peer_info = base_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        prune_period: Duration::from_secs(4),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
                     },
-                    ping_period: Duration::from_secs(1),
-                    rng_seed: 123456,
-                },
-                router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
-                    .build(),
-                seed: i.try_into().unwrap(),
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                }
             })
             .collect(),
         seed: 7,
@@ -165,6 +188,9 @@ fn test_new_node_joining() {
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in all_peers.keys() {
+            if node_id == &state.self_id {
+                continue;
+            }
             assert!(state.peer_info.contains_key(node_id));
         }
 
@@ -174,6 +200,8 @@ fn test_new_node_joining() {
             assert!(metrics["recv_lookup_request"] == 2);
             assert!(metrics["send_lookup_response"] == 2);
         }
+
+        assert!(state.outstanding_lookup_requests.is_empty());
     }
 }
 
@@ -190,7 +218,7 @@ fn test_update_name_record() {
         .map(|k| {
             (NodeId::new(k.pubkey()), PeerInfo {
                 last_ping: None,
-                last_seen: None,
+                unresponsive_pings: 0,
                 name_record: generate_name_record(k),
             })
         })
@@ -199,18 +227,29 @@ fn test_update_name_record() {
         builders: keys
             .iter()
             .enumerate()
-            .map(|(i, key)| NodeBuilder {
-                id: NodeId::new(key.pubkey()),
-                algo_builder: PeerDiscoveryBuilder {
-                    self_id: NodeId::new(key.pubkey()),
-                    self_record: generate_name_record(key),
-                    peer_info: all_peers.clone(),
-                    ping_period: Duration::from_secs(1),
-                    rng_seed: 123456,
-                },
-                router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
-                    .build(),
-                seed: i.try_into().unwrap(),
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peer_info = all_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        prune_period: Duration::from_secs(4),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                }
             })
             .collect(),
         seed: 7,
@@ -224,6 +263,9 @@ fn test_update_name_record() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in all_peers.keys() {
+            if node_id == &state.self_id {
+                continue;
+            }
             assert!(state.peer_info.contains_key(node_id));
         }
     }
@@ -255,7 +297,10 @@ fn test_update_name_record() {
             self_id: node_a,
             self_record: new_name_record,
             peer_info: new_peer_info.clone(),
-            ping_period: Duration::from_secs(1),
+            ping_period: Duration::from_secs(2),
+            prune_period: Duration::from_secs(4),
+            request_timeout: Duration::from_secs(1),
+            prune_threshold: 3,
             rng_seed: 123456,
         },
         router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
@@ -281,6 +326,77 @@ fn test_update_name_record() {
         .name_record;
 
     assert_eq!(node_a_record, new_name_record);
+}
+
+#[traced_test]
+#[test]
+fn test_prune_nodes() {
+    let keys = create_keys::<SignatureType>(2);
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peer_info = all_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        prune_period: Duration::from_secs(10),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    // prune period is set to 10 seconds (i.e. prune every 10 seconds)
+    while nodes.step_until(Duration::from_secs(10)) {}
+    for state in nodes.states().values() {
+        let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
+        assert!(metrics["prune"] == 1);
+    }
+
+    // a node goes offline
+    let offline_key = &keys[0];
+    let offline_node = NodeId::new(offline_key.pubkey());
+    nodes.remove_state(&offline_node);
+
+    // the offline node should be pruned
+    while nodes.step_until(Duration::from_secs(20)) {}
+    assert_eq!(nodes.states().len(), 1);
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        assert!(metrics["prune"] == 2);
+        assert!(state.peer_info.is_empty());
+    }
 }
 
 #[traced_test]

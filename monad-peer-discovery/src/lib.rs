@@ -109,6 +109,10 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         from: NodeId<CertificateSignaturePubKey<ST>>,
         pong: Pong,
     },
+    PingTimeout {
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        ping_id: u32,
+    },
     SendPeerLookup {
         to: NodeId<CertificateSignaturePubKey<ST>>,
         target: NodeId<CertificateSignaturePubKey<ST>>,
@@ -121,6 +125,12 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         from: NodeId<CertificateSignaturePubKey<ST>>,
         response: PeerLookupResponse<ST>,
     },
+    PeerLookupTimeout {
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+        lookup_id: u32,
+    },
+    Prune,
 }
 
 #[derive(Debug, Clone)]
@@ -149,14 +159,24 @@ impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TimerKind {
+    SendPing,
+    PingTimeout,
+    RetryPeerLookup { lookup_id: u32 },
+    Prune,
+}
+
 pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     Schedule {
-        node_id: NodeId<CertificateSignaturePubKey<ST>>, // unique identify request to node
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        timer_kind: TimerKind,
         duration: Duration,
         on_timeout: E,
     },
     ScheduleReset {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        timer_kind: TimerKind,
     },
 }
 
@@ -188,6 +208,12 @@ pub trait PeerDiscoveryAlgo {
         pong: Pong,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
+    fn handle_ping_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        ping_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
     fn send_peer_lookup_request(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
@@ -205,6 +231,15 @@ pub trait PeerDiscoveryAlgo {
         from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         response: PeerLookupResponse<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn handle_peer_lookup_timeout(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        lookup_id: u32,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;
 

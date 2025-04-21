@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::BTreeMap, time::Duration};
+use std::{cmp::Reverse, collections::HashMap, time::Duration};
 
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -6,7 +6,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::RouterCommand;
 use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
-    PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
+    PeerDiscoveryMessage, PeerDiscoveryTimerCommand, TimerKind,
 };
 use monad_types::{NodeId, RouterTarget};
 use priority_queue::PriorityQueue;
@@ -18,8 +18,9 @@ struct TimerEvent<E> {
 }
 
 struct MockDiscTimer<E, ST: CertificateSignatureRecoverable> {
-    timers: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, TimerEvent<E>>,
-    priority_queue: PriorityQueue<NodeId<CertificateSignaturePubKey<ST>>, Reverse<Duration>>,
+    timers: HashMap<(NodeId<CertificateSignaturePubKey<ST>>, TimerKind), TimerEvent<E>>,
+    priority_queue:
+        PriorityQueue<(NodeId<CertificateSignaturePubKey<ST>>, TimerKind), Reverse<Duration>>,
 
     tick: Duration,
 }
@@ -40,6 +41,7 @@ impl<E, ST: CertificateSignatureRecoverable> MockDiscTimer<E, ST> {
             match cmd {
                 PeerDiscoveryTimerCommand::Schedule {
                     node_id,
+                    timer_kind,
                     duration,
                     on_timeout,
                 } => {
@@ -48,11 +50,15 @@ impl<E, ST: CertificateSignatureRecoverable> MockDiscTimer<E, ST> {
                         on_timeout,
                     };
 
-                    self.priority_queue.push(node_id, Reverse(event.expire_at));
-                    self.timers.insert(node_id, event);
+                    self.priority_queue
+                        .push((node_id, timer_kind), Reverse(event.expire_at));
+                    self.timers.insert((node_id, timer_kind), event);
                 }
-                PeerDiscoveryTimerCommand::ScheduleReset { node_id } => {
-                    self.timers.remove(&node_id);
+                PeerDiscoveryTimerCommand::ScheduleReset {
+                    node_id,
+                    timer_kind,
+                } => {
+                    self.timers.remove(&(node_id, timer_kind));
                 }
             }
         }
@@ -71,19 +77,19 @@ impl<E, ST: CertificateSignatureRecoverable> MockDiscTimer<E, ST> {
             }
             self.tick = tick;
 
-            let (node_id, Reverse(tick)) =
+            let (identifier, Reverse(tick)) =
                 self.priority_queue.pop().expect("priority queue non-empty");
 
             // timer was reset before popped from priority queue
             if self
                 .timers
-                .get(&node_id)
+                .get(&identifier)
                 .is_none_or(|event| event.expire_at != tick)
             {
                 continue;
             }
 
-            let event = self.timers.remove(&node_id).expect("some").on_timeout;
+            let event = self.timers.remove(&identifier).expect("some").on_timeout;
 
             return Some(event);
         }
@@ -130,6 +136,9 @@ where
             PeerDiscoveryEvent::SendPing { to } => self.algo.send_ping(to),
             PeerDiscoveryEvent::PingRequest { from, ping } => self.algo.handle_ping(from, ping),
             PeerDiscoveryEvent::PongResponse { from, pong } => self.algo.handle_pong(from, pong),
+            PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
+                self.algo.handle_ping_timeout(to, ping_id)
+            }
             PeerDiscoveryEvent::SendPeerLookup { to, target } => {
                 self.algo.send_peer_lookup_request(to, target)
             }
@@ -139,6 +148,12 @@ where
             PeerDiscoveryEvent::PeerLookupResponse { from, response } => {
                 self.algo.handle_peer_lookup_response(from, response)
             }
+            PeerDiscoveryEvent::PeerLookupTimeout {
+                to,
+                target,
+                lookup_id,
+            } => self.algo.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::Prune => self.algo.prune(),
         };
 
         self.filter_and_exec(cmds)
