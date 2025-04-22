@@ -15,3 +15,5 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+futures = { workspace = true }
+tokio =  { workspace = true, features = ["sync"] }

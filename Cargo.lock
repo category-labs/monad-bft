@@ -5409,10 +5409,12 @@ dependencies = [
 name = "monad-tracing-timing"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "quanta",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

@@ -44,7 +44,7 @@ where
         Self {
             clock: quanta::Clock::new(),
             main_span_callback: MainSpanCallback(Self::update_main_span),
-            metered_span_callback: MeteredSpanCallback(Self::update_metered_span),
+            metered_span_callback: MeteredSpanCallback(Self::update_secondary_span),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -66,7 +66,7 @@ where
         });
     }
 
-    fn update_metered_span(d: &Dispatch, id: &Id) {
+    fn update_secondary_span(d: &Dispatch, id: &Id) {
         let subscriber = d.downcast_ref::<S>().unwrap();
         let main_span = MAIN_SPAN.with(|span| {
             let id = span.borrow();
@@ -84,6 +84,8 @@ where
                     .histogram
                     .clone(),
             });
+        } else {
+            eprintln!("main span not found");
         }
     }
 }
@@ -183,12 +185,14 @@ impl TimingSpanExtension for Span {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use opentelemetry::{metrics::MeterProvider, KeyValue};
+    use futures::{executor, future::join_all};
+    use opentelemetry::{metrics::MeterProvider, Key, KeyValue};
     use opentelemetry_sdk::metrics::{
         data::{Histogram as HistogramData, HistogramDataPoint},
         InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
     };
-    use tracing::info_span;
+    use tokio::sync::Barrier;
+    use tracing::{info_span, Instrument};
     use tracing_subscriber::{layer::SubscriberExt, Registry};
 
     use crate::{TimingSpanExtension, TimingsLayer};
@@ -347,5 +351,109 @@ mod tests {
 
         assert_eq!(data_points[1].bucket_counts, expected_buckets_first);
         assert_eq!(data_points[0].bucket_counts, expected_buckets_second);
+    }
+
+    #[test]
+    fn test_async_multiple_spans() {
+        let buckets = (0..10).step_by(1).map(|v| v as f64).collect::<Vec<_>>();
+        // (count, time till second, second span duration)
+        let samples = [(5, 2, 1), (7, 3, 4), (4, 2, 7)];
+        let expected_buckets_first = [0, 0, 0, 5, 0, 0, 0, 7, 0, 4, 0];
+        let expected_buckets_second = [0, 5, 0, 0, 7, 0, 0, 4, 0, 0, 0];
+
+        let tctx = TestContext::new();
+        let example = tctx
+            .provider
+            .meter("test")
+            .f64_histogram("example")
+            .with_boundaries(buckets)
+            .build();
+
+        tctx.run_test_function(|| {
+            for (count, first, second) in samples {
+                for _ in 0..count {
+                    let span1 = info_span!("first");
+                    span1.with_histogram(example.clone());
+                    let fut1 = async {
+                        let span2 = info_span!("second");
+                        span2.with_timings();
+                        let fut2 = async {
+                            tctx.mock.increment(Duration::from_secs(second));
+                        };
+                        fut2.instrument(span2).await;
+                        tctx.mock.increment(Duration::from_secs(first));
+                    }
+                    .instrument(span1);
+                    executor::block_on(fut1);
+                }
+            }
+        });
+
+        let mut data_points = tctx.extract_data_points();
+        assert_eq!(data_points.len(), 2);
+        // NOTE(dshulyak) order is only for assertions
+        data_points.sort_by_key(|k| k.sum as u64);
+
+        assert_eq!(data_points[1].bucket_counts, expected_buckets_first);
+        assert_eq!(data_points[0].bucket_counts, expected_buckets_second);
+    }
+
+    #[test]
+    fn test_async_overlapping_futs() {
+        let buckets = (0..10).step_by(1).map(|v| v as f64).collect::<Vec<_>>();
+        let tctx = TestContext::new();
+        let example = tctx
+            .provider
+            .meter("test")
+            .f64_histogram("example")
+            .with_boundaries(buckets)
+            .build();
+
+        tctx.run_test_function(|| {
+            let spans = [
+                (info_span!("1st"), info_span!("1st secondary")),
+                (info_span!("2nd"), info_span!("2nd secondary")),
+                (info_span!("3rd"), info_span!("3rd secondary")),
+            ];
+            let barrier = Barrier::new(spans.len());
+            let futs = spans.into_iter().map(|(main, secondary)| {
+                main.with_histogram(example.clone());
+                async {
+                    // with barrier we ensure that the earlier spans will yield and let other to enter
+                    // and on enter we overwrite main, and this is what we are testing here
+                    barrier.wait().await;
+                    secondary.with_timings();
+                    let fut2 = async {
+                        tctx.mock.increment(Duration::from_secs(1));
+                    };
+                    fut2.instrument(secondary).await;
+                }
+                .instrument(main)
+            });
+            executor::block_on(join_all(futs));
+        });
+
+        let mut data_points = tctx.extract_data_points();
+        assert_eq!(data_points.len(), 6);
+        data_points.sort_by_key(|k| k.sum as u64);
+        // test that attributes in secondary labels have main label as aa prefix
+        for data_point in data_points {
+            if data_point.attributes.len() == 1 {
+                assert_eq!(data_point.attributes[0].key, Key::from_static_str("main"));
+            } else {
+                assert_eq!(data_point.attributes[0].key, Key::from_static_str("main"));
+                assert_eq!(
+                    data_point.attributes[1].key,
+                    Key::from_static_str("secondary")
+                );
+                assert!(data_point.attributes[1].value.as_str().starts_with(
+                    data_point.attributes[0]
+                        .value
+                        .as_str()
+                        .into_owned()
+                        .as_str()
+                ));
+            }
+        }
     }
 }
