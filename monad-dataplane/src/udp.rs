@@ -9,7 +9,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use monoio::{net::udp::UdpSocket, spawn, time};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use super::RecvMsg;
 
@@ -140,14 +140,14 @@ async fn tx(
 
         let (ret, chunk) = socket_tx.send_to(chunk, addr).await;
 
-        if let Err(err) = ret {
+        if let Err(err) = &ret {
             match err.kind() {
                 // ENETUNREACH is returned when trying to send to an IPv4 address from a
                 // socket bound to a local IPv6 address.
                 ErrorKind::NetworkUnreachable => debug!(
                     local_addr =? socket_tx.local_addr().unwrap(),
                     ?addr,
-                    "send address family mismatch"
+                    "send address family mismatch. message is dropped"
                 ),
 
                 // TODO: An EINVAL return is likely due to MTU/GSO issues -- we should fall
@@ -159,7 +159,7 @@ async fn tx(
                     max_chunk,
                     ?addr,
                     len = chunk.len(),
-                    "got EINVAL on send"
+                    "got EINVAL on send. message is dropped"
                 ),
 
                 // EAFNOSUPPORT is returned when trying to send to an IPv6 address from a
@@ -168,32 +168,36 @@ async fn tx(
                 // EAFNOSUPPORT is returned as ErrorKind::Uncategorized, which can't be
                 // matched against, so it has to be tested for under the wildcard match.
                 _ => {
-                    if is_eafnosupport(&err) {
+                    if is_eafnosupport(err) {
                         debug!(
                             local_addr =? socket_tx.local_addr().unwrap(),
                             ?addr,
-                            "send address family mismatch"
+                            "send address family mismatch. message is dropped"
                         );
                     } else {
-                        panic!(
-                            "send error {}, local_addr={:?} segment_size={}/{} addr={:?} len={}",
-                            err,
-                            socket_tx.local_addr().unwrap(),
+                        error!(
+                            local_addr =? socket_tx.local_addr().unwrap(),
                             udp_segment_size,
                             max_chunk,
-                            addr,
-                            chunk.len()
+                            ?addr,
+                            len = chunk.len(),
+                            ?err,
+                            "unexpected send error. message is dropped"
                         );
                     }
                 }
             }
         }
 
-        next_transmit += Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
+        // the remainder of the message is re-queued only if the send is succesful
+        if ret.is_ok() {
+            next_transmit +=
+                Duration::from_nanos((chunk_len as u64) * 8 * 1000 / up_bandwidth_mbps);
 
-        // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
-        if !payload.is_empty() {
-            messages_to_send.push_back((addr, payload, stride));
+            // Re-queue (addr, payload) at the end of the list if there are bytes left to transmit.
+            if !payload.is_empty() {
+                messages_to_send.push_back((addr, payload, stride));
+            }
         }
     }
 }
