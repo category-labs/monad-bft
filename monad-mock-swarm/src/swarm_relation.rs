@@ -239,7 +239,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::ExecutionProtocolType,
                 >,
                 SignatureCollection = Self::SignatureCollectionType,
-                Command = StateRootHashCommand<Self::SignatureCollectionType>,
+                Command = StateRootHashCommand,
                 Item = MonadEvent<
                     Self::SignatureType,
                     Self::SignatureCollectionType,

@@ -38,6 +38,7 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp = { workspace = true }
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
+alloy-eips = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-s3 = { workspace = true }
@@ -53,7 +54,7 @@ hex = { workspace = true }
 mongodb = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["metrics"] }
+opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 rayon = { workspace = true }
 regex = { workspace = true }

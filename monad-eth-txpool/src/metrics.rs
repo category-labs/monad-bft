@@ -16,6 +16,12 @@ pub struct EthTxPoolMetrics {
     pub drop_pool_not_ready: u64,
     pub drop_internal_state_backend_error: u64,
 
+    pub create_proposal: u64,
+    pub create_proposal_txs: u64,
+    pub create_proposal_tracked_addresses: u64,
+    pub create_proposal_available_addresses: u64,
+    pub create_proposal_backend_lookups: u64,
+
     pub pending: EthTxpoolPendingMetrics,
     pub tracked: EthTxPoolTrackedMetrics,
 }
@@ -35,6 +41,15 @@ impl EthTxPoolMetrics {
         metrics["monad.bft.txpool.pool.drop_pool_not_ready"] = self.drop_pool_not_ready;
         metrics["monad.bft.txpool.pool.drop_internal_state_backend_error"] =
             self.drop_internal_state_backend_error;
+
+        metrics["monad.bft.txpool.pool.create_proposal"] = self.create_proposal;
+        metrics["monad.bft.txpool.pool.create_proposal_txs"] = self.create_proposal_txs;
+        metrics["monad.bft.txpool.pool.create_proposal_tracked_addresses"] =
+            self.create_proposal_tracked_addresses;
+        metrics["monad.bft.txpool.pool.create_proposal_available_addresses"] =
+            self.create_proposal_available_addresses;
+        metrics["monad.bft.txpool.pool.create_proposal_backend_lookups"] =
+            self.create_proposal_backend_lookups;
 
         self.pending.update(metrics);
         self.tracked.update(metrics);

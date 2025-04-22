@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     ops::DerefMut,
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -12,7 +12,7 @@ use futures::Stream;
 use monad_consensus_types::{
     block::{ExecutionResult, ProposedExecutionResult},
     signature_collection::SignatureCollection,
-    validator_data::ValidatorSetData,
+    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -23,8 +23,6 @@ use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_triedb_utils::TriedbReader;
 use monad_types::{BlockId, Epoch, Round, SeqNum};
 use tracing::{debug, error, trace, warn};
-
-use crate::state_root_hash::ValidatorSetUpdate;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum StateRootRequest {
@@ -53,22 +51,19 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    validators_path: PathBuf,
+
     triedb_recv: tokio::sync::mpsc::UnboundedReceiver<ExecutionResult<EthExecutionProtocol>>,
     state_root_requests_send: std::sync::mpsc::Sender<StateRootRequest>,
     cancel_below: Arc<Mutex<SeqNum>>,
 
-    // TODO: where will we get this validator set updates
-    // validator set updates
-    genesis_validator_data: ValidatorSetData<SCT>,
-    // validator set updates from control panel
-    last_val_data: Option<ValidatorSetUpdate<SCT>>,
-    next_val_data: Option<ValidatorSetUpdate<SCT>>,
+    next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
     last_emitted_val_data: Option<SeqNum>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
-    phantom: PhantomData<ST>,
+    phantom: PhantomData<(ST, SCT)>,
 }
 
 impl<ST, SCT> StateRootHashTriedbPoll<ST, SCT>
@@ -78,9 +73,13 @@ where
 {
     pub fn new(
         triedb_path: &Path,
-        genesis_validator_data: ValidatorSetData<SCT>,
+        validators_path: &Path,
         val_set_update_interval: SeqNum,
     ) -> Self {
+        // assert that validators_path is accessible
+        let _: ValidatorsConfig<SCT> = ValidatorsConfig::read_from_path(validators_path)
+            .expect("failed to read validators_path");
+
         let (triedb_send, triedb_recv) = tokio::sync::mpsc::unbounded_channel();
 
         let (state_root_requests_send, state_root_requests_recv) =
@@ -150,11 +149,11 @@ where
         });
 
         Self {
+            validators_path: validators_path.to_owned(),
+
             triedb_recv,
             cancel_below,
             state_root_requests_send,
-            genesis_validator_data,
-            last_val_data: None,
             next_val_data: None,
             last_emitted_val_data: None,
             val_set_update_interval,
@@ -165,7 +164,7 @@ where
         }
     }
 
-    fn jank_valset_update(&mut self, seq_num: SeqNum) {
+    fn valset_update(&mut self, seq_num: SeqNum) {
         if seq_num.is_epoch_end(self.val_set_update_interval)
             && self.last_emitted_val_data != Some(seq_num)
         {
@@ -177,35 +176,17 @@ where
                 locked_epoch,
                 seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
             );
-            let next_validator_data = self
-                .last_val_data
-                .as_ref()
-                .and_then(|v| {
-                    if locked_epoch >= v.epoch {
-                        debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch matched locked epoch");
-                        Some(ValidatorSetUpdate {
-                            epoch: locked_epoch,
-                            validator_data: v.validator_data.clone(),
-                        })
-                    } else {
-                        // FIXME review this... the unwrap_or_else below here will run
-                        // if this branch gets hit.
-                        //
-                        // This all should disappear post staking module so fine for
-                        // now
-                        debug!(locked_epoch = %locked_epoch.0, last_val_data_epoch = %v.epoch.0, num_validators = %v.validator_data.0.len(), "last validator update epoch did not match matched locked epoch");
-                        None
-                    }
-                })
-                .unwrap_or_else(|| {
-                    debug!(locked_epoch = %locked_epoch.0, num_validators = %self.genesis_validator_data.0.len(), "re-using genesis validator set");
-                    ValidatorSetUpdate {
-                        epoch: locked_epoch,
-                        validator_data: self.genesis_validator_data.clone(),
-                    }
-                });
-
-            self.next_val_data = Some(next_validator_data);
+            self.next_val_data = Some(ValidatorSetDataWithEpoch {
+                epoch: locked_epoch,
+                validators: ValidatorsConfig::read_from_path(&self.validators_path)
+                    // I'm hesitant to provide any fallback for this, because
+                    // having the wrong validator set can be catastrophic.
+                    //
+                    // This file should never be manually edited anyways.
+                    .expect("failed to read validators_path")
+                    .get_validator_set(&locked_epoch)
+                    .clone(),
+            });
             self.last_emitted_val_data = Some(seq_num);
         }
     }
@@ -228,10 +209,7 @@ where
 
         if let Some(next_val_data) = this.next_val_data.take() {
             return Poll::Ready(Some(MonadEvent::ValidatorEvent(
-                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
-                    next_val_data.validator_data,
-                    next_val_data.epoch,
-                )),
+                monad_executor_glue::ValidatorEvent::UpdateValidators(next_val_data),
             )));
         }
 
@@ -245,7 +223,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    type Command = StateRootHashCommand<SCT>;
+    type Command = StateRootHashCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -266,18 +244,10 @@ where
                     wake = true;
                 }
                 StateRootHashCommand::RequestFinalized(seq_num) => {
-                    self.jank_valset_update(seq_num);
+                    self.valset_update(seq_num);
                     self.state_root_requests_send
                         .send(StateRootRequest::Finalized { seq_num })
                         .expect("state_root_requests receiver should never be dropped");
-                    wake = true;
-                }
-                StateRootHashCommand::UpdateValidators((validator_data, epoch)) => {
-                    debug!(num_validators = ?validator_data.0.len(), epoch = %epoch.0, "UpdateValidators");
-                    self.last_val_data = Some(ValidatorSetUpdate {
-                        epoch,
-                        validator_data,
-                    });
                     wake = true;
                 }
             }

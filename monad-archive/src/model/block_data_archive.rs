@@ -19,6 +19,7 @@ const BLOCK_PADDING_WIDTH: usize = 12;
 enum BlockStorageRepr {
     V0(AlloyBlock<TxEnvelope, Header>),
     V1(Block),
+    V2(Block),
 }
 
 enum ReceiptStorageRepr {
@@ -284,6 +285,7 @@ impl BlockStorageRepr {
     const SENTINEL: u8 = 55;
     const V0_MARKER: u8 = 0;
     const V1_MARKER: u8 = 1;
+    const V2_MARKER: u8 = 2;
 
     fn encode(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(1024);
@@ -297,6 +299,10 @@ impl BlockStorageRepr {
                 }
                 BlockStorageRepr::V1(block) => {
                     buf.put_u8(Self::V1_MARKER);
+                    block.encode(buf);
+                }
+                BlockStorageRepr::V2(block) => {
+                    buf.put_u8(Self::V2_MARKER);
                     block.encode(buf);
                 }
             }
@@ -320,6 +326,9 @@ impl BlockStorageRepr {
             }
             [Self::SENTINEL, Self::V1_MARKER] => {
                 Block::decode(&mut &buf[2..]).map(BlockStorageRepr::V1)
+            }
+            [Self::SENTINEL, Self::V2_MARKER] => {
+                Block::decode(&mut &buf[2..]).map(BlockStorageRepr::V2)
             }
             _ => {
                 AlloyBlock::<TxEnvelope, Header>::decode(&mut &buf[..]) // fmt
@@ -370,7 +379,13 @@ impl BlockStorageRepr {
                     },
                 }
             }
-            BlockStorageRepr::V1(block) => block,
+            BlockStorageRepr::V1(mut block) => {
+                if block.body.withdrawals.is_none() {
+                    block.body.withdrawals = Some(alloy_eips::eip4895::Withdrawals::default());
+                }
+                block
+            }
+            BlockStorageRepr::V2(block) => block,
         })
     }
 
@@ -600,6 +615,30 @@ mod tests {
 
             let expected_sender = v0_block.body.transactions[0].recover_signer().unwrap();
             assert_eq!(decoded.body.transactions[0].sender, expected_sender);
+        }
+
+        #[tokio::test]
+        async fn test_block_storage_v1_encode_decode_convert() {
+            let mut block = create_test_block(1);
+            block.body.withdrawals = None;
+            let repr = BlockStorageRepr::V1(block.clone());
+
+            let encoded = repr.encode().unwrap();
+            assert_eq!(encoded[0], BlockStorageRepr::SENTINEL);
+            assert_eq!(encoded[1], BlockStorageRepr::V1_MARKER);
+
+            let decoded = BlockStorageRepr::decode_and_convert(&encoded)
+                .await
+                .unwrap();
+            assert_eq!(decoded.header.number, block.header.number);
+            assert_eq!(
+                decoded.body.transactions[0].sender,
+                block.body.transactions[0].sender
+            );
+            assert_eq!(
+                decoded.body.withdrawals,
+                Some(alloy_eips::eip4895::Withdrawals::default())
+            );
         }
 
         #[tokio::test]

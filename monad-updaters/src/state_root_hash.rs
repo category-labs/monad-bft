@@ -10,7 +10,7 @@ use futures::Stream;
 use monad_consensus_types::{
     block::{ExecutionResult, ProposedExecutionResult},
     signature_collection::SignatureCollection,
-    validator_data::ValidatorSetData,
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -21,9 +21,7 @@ use monad_types::{Epoch, ExecutionProtocol, MockableFinalizedHeader, SeqNum, Sta
 use tracing::error;
 
 pub trait MockableStateRootHash:
-    Executor<Command = StateRootHashCommand<Self::SignatureCollection>>
-    + Stream<Item = Self::Event>
-    + Unpin
+    Executor<Command = StateRootHashCommand> + Stream<Item = Self::Event> + Unpin
 {
     type Event;
     type SignatureCollection: SignatureCollection;
@@ -45,13 +43,6 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
     }
 }
 
-/// Validator set update prepared from staking contract/execution
-pub(crate) struct ValidatorSetUpdate<SCT: SignatureCollection> {
-    /// Epoch for which the validator set is prepared
-    pub epoch: Epoch,
-    pub validator_data: ValidatorSetData<SCT>,
-}
-
 /// An updater that immediately creates a StateRootHash update and
 /// the ValidatorSetData for the next epoch when it receives a
 /// ledger commit command.
@@ -69,7 +60,7 @@ where
 
     // validator set updates
     genesis_validator_data: ValidatorSetData<SCT>,
-    next_val_data: Option<ValidatorSetUpdate<SCT>>,
+    next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
     val_set_update_interval: SeqNum,
 
     enable_updates: bool,
@@ -119,9 +110,9 @@ where
                 locked_epoch,
                 seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
             );
-            self.next_val_data = Some(ValidatorSetUpdate {
+            self.next_val_data = Some(ValidatorSetDataWithEpoch {
                 epoch: locked_epoch,
-                validator_data: self.genesis_validator_data.clone(),
+                validators: self.genesis_validator_data.clone(),
             });
         }
     }
@@ -156,7 +147,7 @@ where
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Command = StateRootHashCommand<SCT>;
+    type Command = StateRootHashCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -189,9 +180,6 @@ where
                         EPT::FinalizedHeader::from_seq_num(seq_num),
                     ));
                     self.jank_update_valset(seq_num);
-                    wake = true;
-                }
-                StateRootHashCommand::UpdateValidators(_) => {
                     wake = true;
                 }
             }
@@ -229,10 +217,7 @@ where
             Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
-                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
-                    next_val_data.validator_data,
-                    next_val_data.epoch,
-                )),
+                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )))
         } else {
             Poll::Pending
@@ -267,7 +252,7 @@ where
     genesis_val_data: ValidatorSetData<SCT>,
     val_data_1: ValidatorSetData<SCT>,
     val_data_2: ValidatorSetData<SCT>,
-    next_val_data: Option<ValidatorSetUpdate<SCT>>,
+    next_val_data: Option<ValidatorSetDataWithEpoch<SCT>>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
@@ -327,14 +312,14 @@ where
                 seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
             );
             self.next_val_data = if locked_epoch.0 % 2 == 0 {
-                Some(ValidatorSetUpdate {
+                Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
-                    validator_data: self.val_data_1.clone(),
+                    validators: self.val_data_1.clone(),
                 })
             } else {
-                Some(ValidatorSetUpdate {
+                Some(ValidatorSetDataWithEpoch {
                     epoch: locked_epoch,
-                    validator_data: self.val_data_2.clone(),
+                    validators: self.val_data_2.clone(),
                 })
             };
         }
@@ -384,7 +369,7 @@ where
     EPT: ExecutionProtocol,
     EPT::FinalizedHeader: MockableFinalizedHeader,
 {
-    type Command = StateRootHashCommand<SCT>;
+    type Command = StateRootHashCommand;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -419,9 +404,6 @@ where
                     self.jank_update_valset(seq_num);
                     wake = true;
                 }
-                StateRootHashCommand::UpdateValidators(_) => {
-                    wake = true;
-                }
             }
         }
         if wake {
@@ -453,10 +435,7 @@ where
             Poll::Ready(Some(MonadEvent::ExecutionResultEvent(event)))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
-                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
-                    next_val_data.validator_data,
-                    next_val_data.epoch,
-                )),
+                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators(next_val_data),
             )))
         } else {
             Poll::Pending

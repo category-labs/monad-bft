@@ -40,10 +40,11 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
 notify = { workspace = true }
-opentelemetry = { workspace = true, features = ["metrics"] }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true }
+opentelemetry = { workspace = true, features = ["metrics", "trace"] }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 pin-project = { workspace = true }
+rand = { workspace = true }
 rayon = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }

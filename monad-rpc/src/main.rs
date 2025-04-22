@@ -12,8 +12,9 @@ use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
+use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -51,7 +52,7 @@ use crate::{
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
-    timing::TimingMiddleware,
+    timing::{RequestId, TimingMiddleware},
     trace::{
         monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
         monad_trace_transaction,
@@ -91,6 +92,7 @@ pub(crate) async fn rpc_handler(
     root_span: RootSpan,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
+    request_id: RequestId,
 ) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
         Ok(req) => req,
@@ -170,9 +172,14 @@ pub(crate) async fn rpc_handler(
     match &response {
         ResponseWrapper::Single(resp) => match resp.error {
             Some(_) => info!(?body, ?response, "rpc_request/response error"),
-            None => debug!(?body, ?response, "rpc_request/response successful"),
+            None => debug!(
+                ?body,
+                ?response,
+                ?request_id,
+                "rpc_request/response successful"
+            ),
         },
-        _ => debug!(?body, ?response, "rpc_batch_request/response"),
+        _ => debug!(?body, ?response, ?request_id, "rpc_batch_request/response"),
     }
 
     HttpResponse::Ok().json(&response)
@@ -257,6 +264,7 @@ async fn rpc_select(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
+                app_state.eth_call_gas_limit,
                 params,
             )
             .await
@@ -444,6 +452,7 @@ async fn rpc_select(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
+                app_state.eth_estimate_gas_gas_limit,
                 params,
             )
             .await
@@ -553,6 +562,8 @@ struct MonadRpcResources {
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
     logs_max_block_range: u64,
+    eth_call_gas_limit: u64,
+    eth_estimate_gas_gas_limit: u64,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -576,6 +587,8 @@ impl MonadRpcResources {
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
         logs_max_block_range: u64,
+        eth_call_gas_limit: u64,
+        eth_estimate_gas_gas_limit: u64,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -589,6 +602,8 @@ impl MonadRpcResources {
             allow_unprotected_txs,
             rate_limiter,
             logs_max_block_range,
+            eth_call_gas_limit,
+            eth_estimate_gas_gas_limit,
         }
     }
 }
@@ -619,29 +634,24 @@ async fn main() -> std::io::Result<()> {
 
     let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
         args.otel_endpoint.as_ref().map(|endpoint| {
-            opentelemetry_otlp::SpanExporterBuilder::Tonic(
-                opentelemetry_otlp::new_exporter()
-                    .tonic()
-                    .with_endpoint(endpoint),
-            )
-            .build_span_exporter()
-            .expect("cannot build span exporter for otel_endpoint")
+            opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()
+                .expect("cannot build span exporter for otel_endpoint")
         });
-
-    let rt = opentelemetry_sdk::runtime::Tokio;
 
     let otel_span_telemetry = match otlp_exporter {
         Some(exporter) => {
-            let otel_config = opentelemetry_sdk::trace::Config::default().with_resource(
-                opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+            let resource = opentelemetry_sdk::Resource::builder_empty()
+                .with_attribute(KeyValue::new(
                     "service.name".to_string(),
                     node_config.node_name.clone(),
-                )]),
-            );
-
-            let trace_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-                .with_config(otel_config)
-                .with_batch_exporter(exporter, rt)
+                ))
+                .build();
+            let trace_provider = SdkTracerProvider::builder()
+                .with_resource(resource)
+                .with_batch_exporter(exporter)
                 .build();
             let tracer = trace_provider.tracer("monad-rpc");
             Some(tracing_opentelemetry::layer().with_tracer(tracer))
@@ -820,6 +830,8 @@ async fn main() -> std::io::Result<()> {
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
         args.eth_get_logs_max_block_range,
+        args.eth_call_gas_limit,
+        args.eth_estimate_gas_gas_limit,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -909,6 +921,8 @@ mod tests {
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
             logs_max_block_range: 1000,
+            eth_call_gas_limit: u64::MAX,
+            eth_estimate_gas_gas_limit: u64::MAX,
         };
 
         test::init_service(

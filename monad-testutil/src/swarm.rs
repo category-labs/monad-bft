@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::ConsensusFullBlock, signature_collection::SignatureCollection,
-    validator_data::ValidatorSetData,
+    block::ConsensusFullBlock,
+    signature_collection::SignatureCollection,
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -65,6 +66,16 @@ pub fn make_state_configs<S: SwarmRelation>(
             .collect(),
     );
 
+    let forkpoint = Forkpoint::genesis();
+    let locked_epoch_validators: Vec<_> = forkpoint
+        .validator_sets
+        .iter()
+        .map(|locked_epoch| ValidatorSetDataWithEpoch {
+            epoch: locked_epoch.epoch,
+            validators: validator_data.clone(),
+        })
+        .collect();
+
     keys.into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadStateBuilder {
@@ -73,7 +84,8 @@ pub fn make_state_configs<S: SwarmRelation>(
             block_validator: block_validator(),
             block_policy: block_policy(),
             state_backend: state_backend(),
-            forkpoint: Forkpoint::genesis(validator_data.clone()),
+            forkpoint: forkpoint.clone(),
+            locked_epoch_validators: locked_epoch_validators.clone(),
 
             key,
             certkey,

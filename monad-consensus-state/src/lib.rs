@@ -21,13 +21,12 @@ use monad_consensus_types::{
         ProposedExecutionResult,
     },
     block_validator::{BlockValidationError, BlockValidator},
-    checkpoint::{Checkpoint, RootInfo},
+    checkpoint::{Checkpoint, LockedEpoch, RootInfo},
     metrics::Metrics,
     payload::RoundSignature,
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
-    validator_data::{ValidatorData, ValidatorSetData, ValidatorSetDataWithEpoch},
     voting::Vote,
 };
 use monad_crypto::certificate_signature::{
@@ -940,32 +939,10 @@ where
     fn checkpoint(&self) -> Checkpoint<SCT> {
         let val_set_data = |epoch: Epoch| {
             let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
-            let validator_set = self.val_epoch_map.get_val_set(&epoch)?.get_members();
-
-            let cert_pubkeys = self
-                .val_epoch_map
-                .get_cert_pubkeys(&epoch)
-                .unwrap()
-                .map
-                .clone();
-            let validators = cert_pubkeys
-                .iter()
-                .map(|(node_id, cert_pub_key)| {
-                    let stake = validator_set
-                        .get(node_id)
-                        .expect("no validator_set for node_id");
-                    ValidatorData {
-                        node_id: *node_id,
-                        stake: *stake,
-                        cert_pubkey: *cert_pub_key,
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            Some(ValidatorSetDataWithEpoch {
+            Some(LockedEpoch {
                 epoch,
                 round,
-                validators: ValidatorSetData(validators),
+                validators: None,
             })
         };
 

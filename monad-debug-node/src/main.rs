@@ -4,13 +4,11 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection, validator_data::ValidatorSetDataWithEpoch,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{
-    ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, GetValidatorSet,
-    ReadCommand, UpdateValidatorSet, WriteCommand,
+    ClearMetrics, ControlPanelCommand, GetFullNodes, GetMetrics, GetPeers, ReadCommand,
+    WriteCommand,
 };
 use monad_node_config::{
     FullNodeConfig, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
@@ -48,14 +46,6 @@ struct UpdateLogFilter {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Displays the list of validators of the current epoch
-    Validators,
-    /// Updates the validators using the provided TOML file
-    UpdateValidators {
-        /// Path to the TOML file
-        #[arg(short, long, value_name = "FILE")]
-        path: PathBuf,
-    },
     /// Gets snapshot of current metrics
     Metrics,
     /// Clears the metrics
@@ -123,60 +113,6 @@ fn main() -> Result<(), Error> {
     let mut write = Write { write };
 
     match cli.command {
-        Commands::Validators => {
-            rt.block_on(write.send(Command::Read(ReadCommand::GetValidatorSet(
-                GetValidatorSet::Request,
-            ))))?;
-
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
-
-            let parsed_validator_set = match response {
-                ControlPanelCommand::Read(read) => match read {
-                    ReadCommand::GetValidatorSet(v) => match v {
-                        GetValidatorSet::Response(s) => s,
-                        r => {
-                            return Err(Error::other(format!(
-                                "expected validator set response, got {:?}",
-                                r
-                            )));
-                        }
-                    },
-                    r => {
-                        return Err(Error::other(format!(
-                            "expected validator set response, got {:?}",
-                            r
-                        )));
-                    }
-                },
-                r => {
-                    return Err(Error::other(format!(
-                        "expected validator set response, got {:?}",
-                        r
-                    )));
-                }
-            };
-            println!("{}", toml::to_string(&parsed_validator_set).unwrap());
-        }
-        Commands::UpdateValidators { path } => {
-            let toml_choice = path;
-
-            let update_validator_set = toml::from_str::<
-                ValidatorSetDataWithEpoch<SignatureCollectionType>,
-            >(&std::fs::read_to_string(toml_choice).unwrap())
-            .map_err(Error::other)?;
-            let request = Command::Write(WriteCommand::UpdateValidatorSet(
-                UpdateValidatorSet::Request(update_validator_set),
-            ));
-
-            rt.block_on(write.send(request))?;
-
-            rt.block_on(write.send(Command::Read(ReadCommand::GetValidatorSet(
-                GetValidatorSet::Request,
-            ))))?;
-
-            let response = rt.block_on(read.next::<SignatureCollectionType>())?;
-            println!("{}", serde_json::to_string(&response).unwrap());
-        }
         Commands::ClearMetrics => {
             rt.block_on(write.send(Command::Write(WriteCommand::ClearMetrics(
                 ClearMetrics::Request,

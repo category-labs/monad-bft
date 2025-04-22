@@ -224,7 +224,7 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let state_backend = state_builder.state_backend.clone();
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -329,7 +329,7 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let state_backend = state_builder.state_backend.clone();
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -492,7 +492,7 @@ mod test {
             SeqNum(100),                         // state_sync_threshold
         );
 
-        let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].forkpoint.validator_sets
+        let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0].locked_epoch_validators
             [0]
         .validators
         .0
@@ -521,7 +521,7 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let state_backend = state_builder.state_backend.clone();
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -708,7 +708,7 @@ mod test {
                 .enumerate()
                 .map(|(seed, state_builder)| {
                     let state_backend = state_builder.state_backend.clone();
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
+                    let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,

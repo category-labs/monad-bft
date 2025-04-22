@@ -65,6 +65,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 102400)]
     pub eth_call_executor_node_lru_size: u32,
 
+    /// Set the gas limit for eth_call
+    #[arg(long, default_value_t = 30_000_000)]
+    pub eth_call_gas_limit: u64,
+
+    /// Set the gas limit for eth_estimateGas
+    #[arg(long, default_value_t = 30_000_000)]
+    pub eth_estimate_gas_gas_limit: u64,
+
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_buffered_read_requests: u32,
@@ -87,6 +95,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     pub compute_threadpool_size: usize,
 
+    /// Set the maximum number of finalized blocks in cache
+    #[arg(long, default_value_t = 200)]
+    pub max_finalized_block_cache_len: u64,
+
+    /// Set the maximum number of voted blocks in cache
+    #[arg(long, default_value_t = 3)]
+    pub max_voted_block_cache_len: u64,
+
     /* Archive Options */
     /// Set the s3 bucket name to read archive data from
     #[arg(long)]
@@ -104,15 +120,11 @@ pub struct Cli {
     #[arg(long)]
     pub archive_api_key: Option<String>,
 
+    /// Set the mongo url to read archive data from
     #[arg(long)]
     pub mongo_url: Option<String>,
 
+    /// Set the mongo db name to read archive data from
     #[arg(long)]
     pub mongo_db_name: Option<String>,
-
-    #[arg(long, default_value_t = 200)]
-    pub max_finalized_block_cache_len: u64,
-
-    #[arg(long, default_value_t = 3)]
-    pub max_voted_block_cache_len: u64,
 }

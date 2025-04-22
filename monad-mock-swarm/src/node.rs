@@ -125,6 +125,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 forkpoint: self.state_builder.forkpoint,
+                locked_epoch_validators: self.state_builder.locked_epoch_validators,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
 

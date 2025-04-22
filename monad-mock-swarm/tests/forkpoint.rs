@@ -5,6 +5,7 @@ use monad_chain_config::{
     revision::{ChainParams, MockChainRevision},
     MockChainConfig,
 };
+use monad_consensus_types::validator_data::ValidatorSetDataWithEpoch;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     NopSignature,
@@ -276,6 +277,9 @@ fn forkpoint_restart_f(
             Round(50),                           // epoch_start_delay
             statesync_threshold,                 // state_sync_threshold
         );
+        let validators = state_configs[0].locked_epoch_validators[0]
+            .validators
+            .clone();
         let state_configs_dup = make_state_configs::<ForkpointSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -311,19 +315,17 @@ fn forkpoint_restart_f(
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     let state_backend = state_builder.state_backend.clone();
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                        MockStateRootHashNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
                             validators
-                                .validators
                                 .0
                                 .iter()
                                 .map(|validator| validator.node_id)
@@ -376,7 +378,6 @@ fn forkpoint_restart_f(
             // Restart node from old forkpoint
             failed_node.get_forkpoint()
         };
-        assert_eq!(forkpoint.validate(&ValidatorSetFactory::default(),), Ok(()));
         let network_current_epoch = swarm
             .states()
             .iter()
@@ -400,20 +401,26 @@ fn forkpoint_restart_f(
             .max_by(|x, y| x.0.cmp(&y.0))
             .map(|t| t.1)
             .expect("current epoch must be scheduled");
-        let validators = forkpoint.validator_sets[0].clone();
+        restart_builder.locked_epoch_validators = forkpoint
+            .validator_sets
+            .iter()
+            .map(|locked_epoch| ValidatorSetDataWithEpoch {
+                epoch: locked_epoch.epoch,
+                validators: validators.clone(),
+            })
+            .collect();
         restart_builder.forkpoint = forkpoint.clone();
         let restart_builder_state_backend = restart_builder.state_backend.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
-            MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+            MockStateRootHashNop::new(validators.clone(), epoch_length),
             MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
             MockLedger::new(restart_builder_state_backend.clone()),
             MockStateSyncExecutor::new(
                 restart_builder_state_backend,
                 validators
-                    .validators
                     .0
                     .iter()
                     .map(|validator| validator.node_id)
@@ -558,6 +565,9 @@ fn forkpoint_restart_below_all(
         Round(50),                           // epoch_start_delay
         statesync_threshold,                 // state_sync_threshold
     );
+    let validators = state_configs[0].locked_epoch_validators[0]
+        .validators
+        .clone();
 
     let pubkey_iter = state_configs
         .iter()
@@ -625,19 +635,17 @@ fn forkpoint_restart_below_all(
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.forkpoint.validator_sets[0].clone();
                     let state_backend = state_builder.state_backend.clone();
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                        MockStateRootHashNop::new(validators.clone(), epoch_length),
                         MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                         MockLedger::new(state_backend.clone()),
                         MockStateSyncExecutor::new(
                             state_backend,
                             validators
-                                .validators
                                 .0
                                 .iter()
                                 .map(|validator| validator.node_id)
@@ -728,22 +736,27 @@ fn forkpoint_restart_below_all(
 
             let mut builder = state_configs_dup.swap_remove(builder_pos);
             let forkpoint = node.get_forkpoint();
-            assert_eq!(forkpoint.validate(&ValidatorSetFactory::default(),), Ok(()));
 
-            let validators = forkpoint.validator_sets[0].clone();
+            builder.locked_epoch_validators = forkpoint
+                .validator_sets
+                .iter()
+                .map(|locked_epoch| ValidatorSetDataWithEpoch {
+                    epoch: locked_epoch.epoch,
+                    validators: validators.clone(),
+                })
+                .collect();
             builder.forkpoint = forkpoint;
             let state_backend = builder.state_backend.clone();
             swarm.add_state(NodeBuilder::new(
                 ID::new(node_id),
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
-                MockStateRootHashNop::new(validators.validators.clone(), epoch_length),
+                MockStateRootHashNop::new(validators.clone(), epoch_length),
                 MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
                 MockLedger::new(state_backend.clone()),
                 MockStateSyncExecutor::new(
                     state_backend,
                     validators
-                        .validators
                         .0
                         .iter()
                         .map(|validator| validator.node_id)

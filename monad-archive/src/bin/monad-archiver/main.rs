@@ -22,7 +22,8 @@ async fn main() -> Result<()> {
     let metrics = Metrics::new(
         args.otel_endpoint,
         "monad-archiver",
-        args.archive_sink.replica_name(),
+        args.otel_replica_name_override
+            .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
     )?;
 
@@ -99,6 +100,7 @@ async fn main() -> Result<()> {
         args.max_concurrent_blocks,
         args.start_block,
         args.stop_block,
+        args.unsafe_skip_bad_blocks,
         metrics,
     ))
     .await

@@ -106,16 +106,23 @@ pub fn retry_strategy() -> std::iter::Map<ExponentialBackoff, fn(Duration) -> Du
 
 pub fn retry<A: tokio_retry::Action>(
     a: A,
-) -> RetryIf<std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration>, A, RetryTimeout> {
-    RetryIf::spawn(retry_strategy(), a, RetryTimeout::ms(10_000))
+) -> RetryIf<std::iter::Map<ExponentialBackoff, fn(Duration) -> Duration>, A, RetryTimeout>
+where
+    A::Error: std::fmt::Debug,
+{
+    RetryIf::spawn(retry_strategy(), a, RetryTimeout::ms(5_000))
 }
 
 pub struct RetryTimeout {
     cutoff: Instant,
 }
 
-impl<E> tokio_retry::Condition<E> for RetryTimeout {
-    fn should_retry(&mut self, _error: &E) -> bool {
+impl<E: std::fmt::Debug> tokio_retry::Condition<E> for RetryTimeout {
+    fn should_retry(&mut self, e: &E) -> bool {
+        #[cfg(test)]
+        eprintln!("Encountered error: {e:?}");
+
+        warn!("Encountered error: {e:?}, retrying...");
         Instant::now() < self.cutoff
     }
 }

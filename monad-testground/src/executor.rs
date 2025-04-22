@@ -6,7 +6,7 @@ use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
     signature_collection::SignatureCollection,
-    validator_data::ValidatorSetData,
+    validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
@@ -81,7 +81,7 @@ pub fn make_monad_executor<ST, SCT>(
     TokioTimer<MonadEvent<ST, SCT, MockExecutionProtocol>>,
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
-    BoxUpdater<'static, StateRootHashCommand<SCT>, MonadEvent<ST, SCT, MockExecutionProtocol>>,
+    BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
     TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
@@ -188,6 +188,15 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    let forkpoint = Forkpoint::genesis();
+    let locked_epoch_validators: Vec<_> = forkpoint
+        .validator_sets
+        .iter()
+        .map(|locked_epoch| ValidatorSetDataWithEpoch {
+            epoch: locked_epoch.epoch,
+            validators: config.validators.clone(),
+        })
+        .collect();
     MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
@@ -199,7 +208,8 @@ where
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: Default::default(),
-        forkpoint: Forkpoint::genesis(config.validators),
+        forkpoint,
+        locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
 

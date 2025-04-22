@@ -1,7 +1,7 @@
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
         Arc,
     },
 };
@@ -39,6 +39,7 @@ const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 #[derive(Clone)]
 pub struct TriedbReader {
     handle: TriedbHandle,
+    state_backend_total_lookups: Arc<AtomicU64>,
 }
 
 impl TriedbReader {
@@ -49,7 +50,10 @@ impl TriedbReader {
     }
 
     pub fn try_new(triedb_path: &Path) -> Option<Self> {
-        TriedbHandle::try_new(triedb_path).map(|handle| Self { handle })
+        TriedbHandle::try_new(triedb_path).map(|handle| Self {
+            handle,
+            state_backend_total_lookups: Default::default(),
+        })
     }
 
     pub fn get_latest_voted_block(&self) -> Option<SeqNum> {
@@ -257,7 +261,7 @@ impl StateBackend for TriedbReader {
         is_finalized: bool,
         eth_addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
-        if is_finalized
+        let statuses = if is_finalized
             && self
                 .raw_read_latest_finalized_block()
                 .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
@@ -281,7 +285,7 @@ impl StateBackend for TriedbReader {
                 return Err(StateBackendError::NeverAvailable);
             }
             // block >= earliest
-            Ok(statuses)
+            statuses
         } else {
             // check proposed, validate block_id
             trace!(?seq_num, ?round, "triedb read proposed");
@@ -308,8 +312,13 @@ impl StateBackend for TriedbReader {
                 return Err(StateBackendError::NotAvailableYet);
             }
 
-            Ok(statuses)
-        }
+            statuses
+        };
+
+        self.state_backend_total_lookups
+            .fetch_add(statuses.len() as u64, std::sync::atomic::Ordering::SeqCst);
+
+        Ok(statuses)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
@@ -318,5 +327,10 @@ impl StateBackend for TriedbReader {
 
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         self.get_latest_finalized_block()
+    }
+
+    fn total_db_lookups(&self) -> u64 {
+        self.state_backend_total_lookups
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }

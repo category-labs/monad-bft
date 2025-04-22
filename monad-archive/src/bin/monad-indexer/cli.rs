@@ -35,6 +35,9 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    #[arg(long)]
+    pub otel_replica_name_override: Option<String>,
+
     /// Maximum size of an encoded inline tx index entry
     /// If an entry is larger than this, it is stored as a reference pointing to
     /// the block level data store

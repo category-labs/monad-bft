@@ -16,7 +16,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, E
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, BASE_FEE_PER_GAS};
 use monad_state_backend::{StateBackend, StateBackendError};
 use monad_types::SeqNum;
-use tracing::warn;
+use tracing::{info, warn};
 
 use self::{pending::PendingTxMap, tracked::TrackedTxMap, transaction::ValidEthTransaction};
 use crate::EthTxPoolEventTracker;
@@ -212,6 +212,14 @@ where
         block_policy: &EthBlockPolicy<ST, SCT>,
         state_backend: &SBT,
     ) -> Result<ProposedExecutionInputs<EthExecutionProtocol>, StateBackendError> {
+        info!(
+            ?proposed_seq_num,
+            ?tx_limit,
+            ?proposal_gas_limit,
+            ?proposal_byte_limit,
+            "txpool creating proposal"
+        );
+
         self.tracked.evict_expired_txs(event_tracker);
 
         let timestamp_seconds = timestamp_ns / 1_000_000_000;

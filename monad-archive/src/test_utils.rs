@@ -58,7 +58,7 @@ pub fn mock_block(number: u64, transactions: Vec<TxEnvelopeWithSender>) -> Block
         body: BlockBody {
             transactions,
             ommers: vec![],
-            withdrawals: None,
+            withdrawals: Some(alloy_eips::eip4895::Withdrawals::default()),
         },
     }
 }

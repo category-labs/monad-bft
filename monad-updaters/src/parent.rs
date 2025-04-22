@@ -43,7 +43,7 @@ where
     TE: Executor<Command = TimerCommand<E>>,
     LE: Executor<Command = LedgerCommand<ST, SCT, EPT>>,
     CE: Executor<Command = CheckpointCommand<SCT>>,
-    SE: Executor<Command = StateRootHashCommand<SCT>>,
+    SE: Executor<Command = StateRootHashCommand>,
     TSE: Executor<Command = TimestampCommand>,
 
     TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT>>,

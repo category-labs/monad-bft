@@ -79,6 +79,15 @@ pub struct StateOverrideObject {
 }
 
 pub const ETH_CALL_SUCCESS: i32 = 0;
+pub const EVMC_OUT_OF_GAS: i32 = 3;
+
+#[derive(Clone, Debug, Default)]
+pub enum EthCallResult {
+    Success,
+    OutOfGas,
+    #[default]
+    OtherError,
+}
 
 #[derive(Clone, Debug)]
 pub enum CallResult {
@@ -95,6 +104,7 @@ pub struct SuccessCallResult {
 
 #[derive(Clone, Debug, Default)]
 pub struct FailureCallResult {
+    pub error_code: EthCallResult,
     pub message: String,
     pub data: Option<String>,
 }
@@ -132,6 +142,7 @@ pub async fn eth_call(
     // upper bound gas limit of transaction to block gas limit to prevent abuse of eth_call
     if transaction.gas_limit() > block_header.gas_limit {
         return CallResult::Failure(FailureCallResult {
+            error_code: EthCallResult::OtherError,
             message: "gas limit too high".into(),
             data: None,
         });
@@ -225,6 +236,7 @@ pub async fn eth_call(
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
             return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
                 message: "unsupported chain id".to_string(),
                 data: Some(chain_id.to_string()),
             });
@@ -269,6 +281,7 @@ pub async fn eth_call(
             warn!("callback from eth_call_executor failed: {:?}", e);
 
             return CallResult::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
                 message: "internal eth_call error".to_string(),
                 data: None,
             });
@@ -311,6 +324,11 @@ pub async fn eth_call(
                         None => message,
                     };
                     CallResult::Failure(FailureCallResult {
+                        error_code: if status_code == EVMC_OUT_OF_GAS {
+                            EthCallResult::OutOfGas
+                        } else {
+                            EthCallResult::OtherError
+                        },
                         message: formatted_message,
                         data: Some(format!("0x{}", hex::encode(&output_data))),
                     })
@@ -328,6 +346,11 @@ pub async fn eth_call(
                     };
 
                     CallResult::Failure(FailureCallResult {
+                        error_code: if status_code == EVMC_OUT_OF_GAS {
+                            EthCallResult::OutOfGas
+                        } else {
+                            EthCallResult::OtherError
+                        },
                         message,
                         data: None,
                     })

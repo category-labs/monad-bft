@@ -216,4 +216,18 @@ impl<'a> EthTxPoolEventTracker<'a> {
         self.metrics.tracked.addresses = tracked_addresses;
         self.metrics.tracked.txs = tracked_txs;
     }
+
+    pub fn record_create_proposal(
+        &mut self,
+        tracked_addresses: usize,
+        available_addresses: usize,
+        backend_lookups: u64,
+        proposal_txs: usize,
+    ) {
+        self.metrics.create_proposal += 1;
+        self.metrics.create_proposal_txs += proposal_txs as u64;
+        self.metrics.create_proposal_tracked_addresses += tracked_addresses as u64;
+        self.metrics.create_proposal_available_addresses += available_addresses as u64;
+        self.metrics.create_proposal_backend_lookups += backend_lookups;
+    }
 }

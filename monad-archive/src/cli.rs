@@ -208,9 +208,7 @@ impl ArchiveArgs {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
             ArchiveArgs::RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
-            ArchiveArgs::MongoDb(mongo_db_cli_args) => {
-                format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
-            }
+            ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
         }
     }
 }

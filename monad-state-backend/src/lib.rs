@@ -32,6 +32,8 @@ pub trait StateBackend {
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
     /// Fetches latest block from storage backend
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum>;
+
+    fn total_db_lookups(&self) -> u64;
 }
 
 pub trait StateBackendTest {
@@ -253,6 +255,7 @@ impl StateBackend for InMemoryStateInner {
             }
             proposal
         };
+
         Ok(addresses
             .map(|address| {
                 let nonce = state.nonces.get(address)?;
@@ -278,6 +281,10 @@ impl StateBackend for InMemoryStateInner {
             .map(|(block, _)| block)
             .copied()
     }
+
+    fn total_db_lookups(&self) -> u64 {
+        0
+    }
 }
 
 impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
@@ -301,6 +308,10 @@ impl<T: StateBackend> StateBackend for Arc<Mutex<T>> {
     fn raw_read_latest_finalized_block(&self) -> Option<SeqNum> {
         let state = self.lock().unwrap();
         state.raw_read_latest_finalized_block()
+    }
+
+    fn total_db_lookups(&self) -> u64 {
+        self.lock().unwrap().total_db_lookups()
     }
 }
 

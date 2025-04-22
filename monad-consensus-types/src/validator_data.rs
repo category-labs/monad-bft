@@ -1,3 +1,5 @@
+use std::{collections::BTreeMap, error::Error, ops::Bound, path::Path};
+
 use monad_crypto::certificate_signature::PubKey;
 use monad_proto::{
     error::ProtoError,
@@ -5,19 +7,20 @@ use monad_proto::{
 };
 use monad_types::{
     convert::{proto_to_pubkey, pubkey_to_proto},
-    Epoch, NodeId, Round, Stake,
+    Epoch, NodeId, Stake,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
+use crate::{
+    checkpoint::Checkpoint,
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidatorSetDataWithEpoch<SCT: SignatureCollection> {
     /// Validator set are active for this epoch
     pub epoch: Epoch,
-    /// By the end of epoch - 1, the next epoch is scheduled to start on round. Otherwise, it's left empty
-    pub round: Option<Round>,
-    // TODO: maybe flatten
+
     #[serde(bound(
         serialize = "SCT: SignatureCollection",
         deserialize = "SCT: SignatureCollection",
@@ -43,6 +46,57 @@ pub struct ValidatorData<SCT: SignatureCollection> {
     #[serde(serialize_with = "serialize_cert_pubkey::<_, SCT>")]
     #[serde(deserialize_with = "deserialize_cert_pubkey::<_, SCT>")]
     pub cert_pubkey: SignatureCollectionPubKeyType<SCT>,
+}
+
+pub struct ValidatorsConfig<SCT: SignatureCollection> {
+    pub validators: BTreeMap<Epoch, ValidatorSetData<SCT>>,
+}
+
+impl<SCT: SignatureCollection> ValidatorsConfig<SCT> {
+    pub fn read_from_path(validators_path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+        /// Top-level lists aren't supported in toml, so create this
+        #[derive(Deserialize)]
+        struct ValidatorsConfigFile<SCT: SignatureCollection> {
+            #[serde(bound(
+                serialize = "SCT: SignatureCollection",
+                deserialize = "SCT: SignatureCollection",
+            ))]
+            validator_sets: Vec<ValidatorSetDataWithEpoch<SCT>>,
+        }
+
+        let validators_config: ValidatorsConfigFile<SCT> =
+            toml::from_str(&std::fs::read_to_string(validators_path)?)?;
+        assert!(!validators_config.validator_sets.is_empty());
+        Ok(Self {
+            validators: validators_config
+                .validator_sets
+                .into_iter()
+                .map(|validator| (validator.epoch, validator.validators))
+                .collect(),
+        })
+    }
+
+    pub fn get_validator_set(&self, epoch: &Epoch) -> &ValidatorSetData<SCT> {
+        self.validators
+            .range((Bound::Included(Epoch(0)), Bound::Included(*epoch)))
+            .last()
+            .expect("no validator set <= block.epoch")
+            .1
+    }
+
+    pub fn get_locked_validator_sets(
+        &self,
+        forkpoint: &Checkpoint<SCT>,
+    ) -> Vec<ValidatorSetDataWithEpoch<SCT>> {
+        forkpoint
+            .validator_sets
+            .iter()
+            .map(|locked_epoch| ValidatorSetDataWithEpoch {
+                epoch: locked_epoch.epoch,
+                validators: self.get_validator_set(&locked_epoch.epoch).clone(),
+            })
+            .collect()
+    }
 }
 
 fn serialize_cert_pubkey<S, SCT>(

@@ -11,7 +11,9 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    metrics::Metrics, signature_collection::SignatureCollection, validator_data::ValidatorsConfig,
+};
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -44,7 +46,7 @@ use monad_validator::{
 };
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{event, info, warn, Instrument, Level};
 use tracing_subscriber::{
@@ -111,18 +113,19 @@ fn setup_tracing() -> Result<ReloadHandle, NodeSetupError> {
 }
 
 async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), ()> {
-    let checkpoint_validators_first = node_state
-        .forkpoint_config
-        .validator_sets
+    let locked_epoch_validators = ValidatorsConfig::read_from_path(&node_state.validators_path)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to read/parse validators_path={:?}, err={:?}",
+                &node_state.validators_path, err
+            )
+        })
+        .get_locked_validator_sets(&node_state.forkpoint_config);
+
+    let checkpoint_validators_first = locked_epoch_validators
         .first()
         .expect("no validator sets")
-        .clone();
-
-    let checkpoint_validators_last = node_state
-        .forkpoint_config
-        .validator_sets
-        .last()
-        .expect("no validator sets")
+        .validators
         .clone();
 
     {
@@ -195,8 +198,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
     let mut bootstrap_validators = Vec::new();
     let validator_set = checkpoint_validators_first
-        .clone()
-        .validators
         .0
         .into_iter()
         .map(|data| data.node_id)
@@ -240,11 +241,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         checkpoint: FileCheckpoint::new(node_state.forkpoint_path),
         state_root_hash: StateRootHashTriedbPoll::new(
             &node_state.triedb_path,
-            // Use the more recent of the 2 checkpoint validator sets for seeding the default e+2
-            // validator set. This allows us to manually change validator set e+1 without it
-            // getting rolled back in e+2.
-            // FIXME this should be deleted post staking module
-            checkpoint_validators_last.validators,
+            &node_state.validators_path,
             val_set_update_interval,
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
@@ -343,6 +340,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         val_set_update_interval,
         epoch_start_delay: Round(5000),
         beneficiary: node_state.node_config.beneficiary.into(),
+        locked_epoch_validators,
         forkpoint: node_state.forkpoint_config.into(),
         block_sync_override_peers,
         consensus_config: ConsensusConfig {
@@ -558,7 +556,7 @@ fn send_metrics(
     {
         let gauge = gauge_cache
             .entry(k)
-            .or_insert_with(|| meter.u64_gauge(k).try_init().unwrap());
+            .or_insert_with(|| meter.u64_gauge(k).build());
         gauge.record(v, &[]);
     }
 }
@@ -568,36 +566,32 @@ fn build_otel_meter_provider(
     service_name: String,
     interval: Duration,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, NodeSetupError> {
-    let exporter = opentelemetry_otlp::MetricsExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_metrics_exporter(
-        Box::<opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector>::default(),
-        Box::<opentelemetry_sdk::metrics::reader::DefaultAggregationSelector>::default(),
-    )?;
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .with_timeout(interval * 2)
+        .with_endpoint(otel_endpoint)
+        .build()?;
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(
-        exporter,
-        opentelemetry_sdk::runtime::Tokio,
-    )
-    .with_interval(interval / 2)
-    .with_timeout(interval * 2)
-    .build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+        .with_interval(interval / 2)
+        .build();
 
     let provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(reader)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            ),
-            opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-                CLIENT_VERSION,
-            ),
-        ]));
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(vec![
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                        service_name,
+                    ),
+                    opentelemetry::KeyValue::new(
+                        opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                        CLIENT_VERSION,
+                    ),
+                ])
+                .build(),
+        );
 
     Ok(provider_builder.build())
 }

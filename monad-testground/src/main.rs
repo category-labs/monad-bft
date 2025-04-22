@@ -28,6 +28,7 @@ use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
@@ -103,23 +104,23 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 fn make_provider(
     otel_endpoint: String,
     service_name: String,
-) -> opentelemetry_sdk::trace::TracerProvider {
-    let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_endpoint(otel_endpoint),
-    )
-    .build_span_exporter()
-    .unwrap();
+) -> opentelemetry_sdk::trace::SdkTracerProvider {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(otel_endpoint)
+        .build()
+        .unwrap();
     let rt = opentelemetry_sdk::runtime::Tokio;
-    let provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(
-            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            )]),
-        ))
-        .with_batch_exporter(exporter, rt);
+    let provider_builder = SdkTracerProvider::builder()
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attributes(vec![opentelemetry::KeyValue::new(
+                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                    service_name,
+                )])
+                .build(),
+        )
+        .with_batch_exporter(exporter);
     provider_builder.build()
 }
 

@@ -131,7 +131,7 @@ fn two_nodes_bls() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let state_backend = state_builder.state_backend.clone();
-                let validators = state_builder.forkpoint.validator_sets[0].clone();
+                let validators = state_builder.locked_epoch_validators[0].clone();
                 NodeBuilder::<BLSSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
