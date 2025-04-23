@@ -8,7 +8,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::NodeId;
-use rand::{RngCore, SeedableRng};
+use rand::{RngCore, SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, warn};
 
@@ -351,7 +351,16 @@ where
         } else {
             match self.peer_info.get(&target) {
                 Some(info) => vec![info.name_record],
-                None => vec![],
+                None => {
+                    // return random subset of peers up to MAX_PEER_IN_RESPONSE
+                    let mut peers: Vec<_> = self.peer_info.iter().collect();
+                    peers.shuffle(&mut self.rng);
+                    peers
+                        .into_iter()
+                        .take(MAX_PEER_IN_RESPONSE)
+                        .map(|(_k, v)| v.name_record)
+                        .collect()
+                }
             }
         };
 
@@ -570,6 +579,20 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
+    fn extract_lookup_responses(
+        cmds: Vec<PeerDiscoveryCommand<SignatureType>>,
+    ) -> Vec<PeerLookupResponse<SignatureType>> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                PeerDiscoveryCommand::RouterCommand {
+                    target: _target,
+                    message: PeerDiscoveryMessage::PeerLookupResponse(response),
+                } => Some(response),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
     #[test]
     fn test_check_peer_connection() {
         let keys = create_keys::<SignatureType>(3);
@@ -702,6 +725,66 @@ mod tests {
         // peer2 should be added to peer info and outstanding requests should be cleared
         assert!(state.peer_info.contains_key(&peer2_pubkey));
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 0);
+    }
+
+    #[test]
+    fn test_peer_lookup_target_not_found() {
+        let keys = create_keys::<SignatureType>(4);
+        let peer0 = &keys[0];
+        let peer0_pubkey = NodeId::new(peer0.pubkey());
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let peer2 = &keys[2];
+        let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
+
+        // peer_info contains peer1 and peer2
+        let peer_info = BTreeMap::from([
+            (peer1_pubkey, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(peer1, 0),
+            }),
+            (peer2_pubkey, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(peer2, 0),
+            }),
+        ]);
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: peer0_pubkey,
+            self_record: generate_name_record(peer0, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 10,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // receive a peer lookup request for peer3, which is not in peer_info
+        let cmds = state.handle_peer_lookup_request(peer1_pubkey, PeerLookupRequest {
+            lookup_id: 1,
+            target: peer3_pubkey,
+        });
+        assert_eq!(cmds.len(), 1);
+
+        // should return peer1 and peer2 instead
+        let response = extract_lookup_responses(cmds);
+        let response = response.first().unwrap();
+        assert_eq!(response.lookup_id, 1);
+        assert_eq!(response.target, peer3_pubkey);
+        assert_eq!(response.name_records.len(), 2);
+        let response_node_ids: Vec<_> = response
+            .name_records
+            .iter()
+            .map(|record| record.recover_pubkey().unwrap())
+            .collect();
+        assert!(response_node_ids.contains(&peer1_pubkey));
+        assert!(response_node_ids.contains(&peer2_pubkey));
     }
 
     #[test]
