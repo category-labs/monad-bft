@@ -36,7 +36,9 @@ use crate::{
         monad_eth_getBlockByNumber, monad_eth_getBlockReceipts,
         monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
     },
-    call::{monad_debug_traceCall, monad_eth_call},
+    call::{
+        monad_admin_ethCallStatistics, monad_debug_traceCall, monad_eth_call, EthCallStatsTracker,
+    },
     cli::Cli,
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
@@ -108,7 +110,13 @@ pub(crate) async fn rpc_handler(
             root_span.record("json_method", &request.method);
             ResponseWrapper::Single(Response::from_result(
                 request.id,
-                rpc_select(&app_state, &request.method, request.params).await,
+                rpc_select(
+                    &app_state,
+                    &request.method,
+                    request.params,
+                    request_id.clone(),
+                )
+                .await,
             ))
         }
         RequestWrapper::Batch(json_batch_request) => {
@@ -129,6 +137,7 @@ pub(crate) async fn rpc_handler(
             let batch_response =
                 futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
                     let app_state = app_state.clone(); // cheap copy
+                    let request_id = request_id.clone();
 
                     async move {
                         let Ok(request) = serde_json::from_value::<Request>(json_request) else {
@@ -136,7 +145,7 @@ pub(crate) async fn rpc_handler(
                         };
                         let (state, id, method, params) =
                             (app_state, request.id, request.method, request.params);
-                        (id, rpc_select(&state, &method, params).await)
+                        (id, rpc_select(&state, &method, params, request_id).await)
                     }
                 }))
                 .await
@@ -188,8 +197,30 @@ async fn rpc_select(
     app_state: &MonadRpcResources,
     method: &str,
     params: Value,
+    request_id: RequestId,
 ) -> Result<Value, JsonRpcError> {
     match method {
+        "admin_ethCallStatistics" => {
+            if app_state.enable_eth_call_statistics {
+                let available_permits = app_state.rate_limiter.available_permits();
+                if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                    monad_admin_ethCallStatistics(
+                        app_state.eth_call_executor_fibers,
+                        app_state.total_permits,
+                        available_permits,
+                        tracker,
+                    )
+                    .await
+                    .map(serialize_result)?
+                } else {
+                    Err(JsonRpcError::internal_error(
+                        "stats tracking not initialized".into(),
+                    ))
+                }
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
         "debug_getRawBlock" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
@@ -267,20 +298,39 @@ async fn rpc_select(
             };
 
             // acquire the concurrent requests permit
-            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                JsonRpcError::internal_error("eth_call concurrent requests limit".into())
-            })?;
+            let _permit = match app_state.rate_limiter.try_acquire() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                        tracker.record_queue_rejection().await;
+                    }
+                    return Err(JsonRpcError::internal_error(
+                        "eth_call concurrent requests limit".into(),
+                    ));
+                }
+            };
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(
+
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                tracker.record_request_start(&request_id).await;
+            }
+
+            let result = monad_eth_call(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
                 app_state.eth_call_gas_limit,
                 params,
             )
-            .await
-            .map(serialize_result)?
+            .await;
+
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                let is_error = result.is_err();
+                tracker.record_request_complete(&request_id, is_error).await;
+            }
+
+            result.map(serialize_result)?
         }
         "eth_sendRawTransaction" => {
             let params = serde_json::from_value(params).invalid_params()?;
@@ -458,20 +508,38 @@ async fn rpc_select(
             };
 
             // acquire the concurrent requests permit
-            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
-            })?;
+            let _permit = match app_state.rate_limiter.try_acquire() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                        tracker.record_queue_rejection().await;
+                    }
+                    return Err(JsonRpcError::internal_error(
+                        "eth_estimateGas concurrent requests limit".into(),
+                    ));
+                }
+            };
+
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                tracker.record_request_start(&request_id).await;
+            }
 
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(
+            let result = monad_eth_estimateGas(
                 triedb_env,
                 eth_call_executor.clone(),
                 app_state.chain_id,
                 app_state.eth_estimate_gas_gas_limit,
                 params,
             )
-            .await
-            .map(serialize_result)?
+            .await;
+
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                let is_error = result.is_err();
+                tracker.record_request_complete(&request_id, is_error).await;
+            }
+
+            result.map(serialize_result)?
         }
         "eth_gasPrice" => {
             if let Some(triedb_env) = &app_state.triedb_reader {
@@ -558,6 +626,8 @@ struct MonadRpcResources {
     txpool_bridge_client: EthTxPoolBridgeClient,
     triedb_reader: Option<TriedbEnv>,
     eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+    eth_call_executor_fibers: usize,
+    eth_call_stats_tracker: Option<Arc<EthCallStatsTracker>>,
     archive_reader: Option<ArchiveReader>,
     base_fee_per_gas: FixedFee,
     chain_id: u64,
@@ -565,12 +635,14 @@ struct MonadRpcResources {
     max_response_size: u32,
     allow_unprotected_txs: bool,
     rate_limiter: Arc<Semaphore>,
+    total_permits: usize,
     logs_max_block_range: u64,
     eth_call_gas_limit: u64,
     eth_estimate_gas_gas_limit: u64,
     dry_run_get_logs_index: bool,
     use_eth_get_logs_index: bool,
     max_finalized_block_cache_len: u64,
+    enable_eth_call_statistics: bool,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -586,6 +658,7 @@ impl MonadRpcResources {
         txpool_bridge_client: EthTxPoolBridgeClient,
         triedb_reader: Option<TriedbEnv>,
         eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
+        eth_call_executor_fibers: usize,
         archive_reader: Option<ArchiveReader>,
         fixed_base_fee: u128,
         chain_id: u64,
@@ -593,17 +666,25 @@ impl MonadRpcResources {
         max_response_size: u32,
         allow_unprotected_txs: bool,
         rate_limiter: Arc<Semaphore>,
+        total_permits: usize,
         logs_max_block_range: u64,
         eth_call_gas_limit: u64,
         eth_estimate_gas_gas_limit: u64,
         dry_run_get_logs_index: bool,
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
+        enable_eth_call_statistics: bool,
     ) -> Self {
         Self {
             txpool_bridge_client,
             triedb_reader,
             eth_call_executor,
+            eth_call_executor_fibers,
+            eth_call_stats_tracker: if enable_eth_call_statistics {
+                Some(Arc::new(EthCallStatsTracker::new()))
+            } else {
+                None
+            },
             archive_reader,
             base_fee_per_gas: FixedFee::new(fixed_base_fee),
             chain_id,
@@ -611,12 +692,14 @@ impl MonadRpcResources {
             max_response_size,
             allow_unprotected_txs,
             rate_limiter,
+            total_permits,
             logs_max_block_range,
             eth_call_gas_limit,
             eth_estimate_gas_gas_limit,
             dry_run_get_logs_index,
             use_eth_get_logs_index,
             max_finalized_block_cache_len,
+            enable_eth_call_statistics,
         }
     }
 }
@@ -840,6 +923,7 @@ async fn main() -> std::io::Result<()> {
         txpool_bridge_client,
         triedb_env,
         eth_call_executor,
+        args.eth_call_executor_fibers as usize,
         archive_reader,
         BASE_FEE_PER_GAS.into(),
         node_config.chain_id,
@@ -847,12 +931,14 @@ async fn main() -> std::io::Result<()> {
         args.max_response_size,
         args.allow_unprotected_txs,
         concurrent_requests_limiter,
+        args.eth_call_max_concurrent_requests as usize,
         args.eth_get_logs_max_block_range,
         args.eth_call_gas_limit,
         args.eth_estimate_gas_gas_limit,
         args.dry_run_get_logs_index,
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
+        args.enable_admin_eth_call_statistics,
     );
 
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
@@ -934,6 +1020,8 @@ mod tests {
             txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
             triedb_reader: None,
             eth_call_executor: None,
+            eth_call_executor_fibers: 64,
+            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::new())),
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,
@@ -941,12 +1029,14 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            total_permits: 1000,
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
+            enable_eth_call_statistics: true,
         };
 
         test::init_service(

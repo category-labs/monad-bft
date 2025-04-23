@@ -73,6 +73,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 30_000_000)]
     pub eth_estimate_gas_gas_limit: u64,
 
+    /// Enable admin_ethCallStatistics method
+    #[arg(long, default_value_t = false)]
+    pub enable_admin_eth_call_statistics: bool,
+
     /// Set the max concurrent requests for triedb reads
     #[arg(long, default_value_t = 20_000)]
     pub triedb_max_buffered_read_requests: u32,

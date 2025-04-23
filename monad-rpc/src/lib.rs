@@ -11,6 +11,7 @@ mod gas_oracle;
 mod hex;
 mod jsonrpc;
 mod meta;
+mod timing;
 mod trace;
 mod trace_handlers;
 mod txpool;

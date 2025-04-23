@@ -1,4 +1,12 @@
-use std::{cmp::min, sync::Arc};
+use std::{
+    cmp::min,
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
@@ -18,8 +26,105 @@ use crate::{
     eth_json_types::BlockTagOrHash,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
+    timing::RequestId,
     trace_handlers::{decode_call_frame, MonadCallFrame, TracerObject},
 };
+
+#[derive(Debug)]
+struct EthCallRequestStats {
+    entry_time: Instant,
+}
+
+#[derive(Debug)]
+struct CumulativeStats {
+    total_requests: AtomicU64,
+    total_errors: AtomicU64,
+    queue_rejections: AtomicU64,
+}
+
+impl Default for CumulativeStats {
+    fn default() -> Self {
+        Self {
+            total_requests: AtomicU64::new(0),
+            total_errors: AtomicU64::new(0),
+            queue_rejections: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Clone for CumulativeStats {
+    fn clone(&self) -> Self {
+        Self {
+            total_requests: AtomicU64::new(self.total_requests.load(Ordering::Relaxed)),
+            total_errors: AtomicU64::new(self.total_errors.load(Ordering::Relaxed)),
+            queue_rejections: AtomicU64::new(self.queue_rejections.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct EthCallStatsTracker {
+    active_requests: Arc<Mutex<HashMap<RequestId, EthCallRequestStats>>>,
+    stats: CumulativeStats,
+}
+
+impl EthCallStatsTracker {
+    pub fn new() -> Self {
+        Self {
+            active_requests: Arc::new(Mutex::new(HashMap::new())),
+            stats: CumulativeStats::default(),
+        }
+    }
+
+    pub async fn record_request_start(&self, request_id: &RequestId) {
+        let mut requests = self.active_requests.lock().await;
+        requests.insert(
+            request_id.clone(),
+            EthCallRequestStats {
+                entry_time: Instant::now(),
+            },
+        );
+
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub async fn record_request_complete(&self, request_id: &RequestId, is_error: bool) {
+        let mut requests = self.active_requests.lock().await;
+        requests.remove(request_id);
+
+        if is_error {
+            self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub async fn record_queue_rejection(&self) {
+        self.stats.queue_rejections.fetch_add(1, Ordering::Relaxed);
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub async fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
+        let requests = self.active_requests.lock().await;
+
+        if requests.is_empty() {
+            return (None, None, self.stats.clone());
+        }
+
+        let now = Instant::now();
+        let mut max_age = Duration::ZERO;
+        let mut total_age = Duration::ZERO;
+
+        for stats in requests.values() {
+            let age = now - stats.entry_time;
+            max_age = max_age.max(age);
+            total_age += age;
+        }
+
+        let avg_age = total_age / requests.len() as u32;
+
+        (Some(max_age), Some(avg_age), self.stats.clone())
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,6 +707,49 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             .await;
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EthCallCapacityStats {
+    pub inactive_executors: usize,
+    pub queued_requests: usize,
+    pub oldest_request_age_ms: u64,
+    pub average_request_age_ms: u64,
+    pub total_requests: u64,
+    pub total_errors: u64,
+    pub queue_rejections: u64,
+}
+
+/// Returns statistics about eth_call capacity including inactive executors and queued requests
+#[tracing::instrument(level = "debug")]
+#[monad_rpc_docs::rpc(method = "admin_ethCallStatistics")]
+pub async fn monad_admin_ethCallStatistics(
+    eth_call_executor_fibers: usize,
+    total_permits: usize,
+    available_permits: usize,
+    stats_tracker: &EthCallStatsTracker,
+) -> JsonRpcResult<EthCallCapacityStats> {
+    let active_requests = total_permits - available_permits;
+
+    let inactive_executors = if active_requests >= eth_call_executor_fibers {
+        0
+    } else {
+        eth_call_executor_fibers.saturating_sub(active_requests)
+    };
+
+    let queued_requests = active_requests.saturating_sub(eth_call_executor_fibers);
+    let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
+
+    Ok(EthCallCapacityStats {
+        inactive_executors,
+        queued_requests,
+        oldest_request_age_ms: max_age.map(|d| d.as_millis() as u64).unwrap_or(0),
+        average_request_age_ms: avg_age.map(|d| d.as_millis() as u64).unwrap_or(0),
+        total_requests: cumulative_stats.total_requests.load(Ordering::Relaxed),
+        total_errors: cumulative_stats.total_errors.load(Ordering::Relaxed),
+        queue_rejections: cumulative_stats.queue_rejections.load(Ordering::Relaxed),
+    })
 }
 
 #[cfg(test)]

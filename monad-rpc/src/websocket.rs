@@ -105,7 +105,8 @@ mod tests {
     use tracing_actix_web::TracingLogger;
 
     use crate::{
-        txpool::EthTxPoolBridgeClient, FixedFee, MonadJsonRootSpanBuilder, MonadRpcResources,
+        call::EthCallStatsTracker, txpool::EthTxPoolBridgeClient, FixedFee,
+        MonadJsonRootSpanBuilder, MonadRpcResources,
     };
 
     fn create_test_server() -> actix_test::TestServer {
@@ -113,6 +114,8 @@ mod tests {
             txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
             triedb_reader: None,
             eth_call_executor: None,
+            eth_call_executor_fibers: 64,
+            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::new())),
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 41454,
@@ -120,12 +123,14 @@ mod tests {
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,
             rate_limiter: Arc::new(Semaphore::new(1000)),
+            total_permits: 1000,
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
             dry_run_get_logs_index: false,
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
+            enable_eth_call_statistics: true,
         };
 
         actix_test::start(move || {
