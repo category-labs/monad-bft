@@ -240,7 +240,7 @@ where
 
     fn get_sock_addr_by_id(
         &self,
-        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
     ) -> Option<SocketAddrV4> {
         None
     }

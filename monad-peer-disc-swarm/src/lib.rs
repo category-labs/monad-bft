@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    net::SocketAddrV4,
     time::Duration,
 };
 
@@ -18,6 +19,7 @@ use monad_transformer::{ID, LinkMessage, Pipeline};
 use monad_types::NodeId;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use tracing::debug;
 
 pub mod builder;
 pub mod driver;
@@ -63,6 +65,7 @@ where
     S: PeerDiscSwarmRelation,
 {
     pub id: NodeId<SwarmPubKeyType<S>>,
+    pub addr: SocketAddrV4,
     pub algo_builder: B,
     pub router_scheduler: S::RouterSchedulerType,
     pub seed: u64,
@@ -354,8 +357,40 @@ where
     }
 }
 
+#[derive(Debug)]
+struct RoutingTable<P: PubKey> {
+    addr_to_id: BTreeMap<SocketAddrV4, NodeId<P>>,
+    id_to_addr: BTreeMap<NodeId<P>, SocketAddrV4>,
+}
+
+impl<P: PubKey> RoutingTable<P> {
+    fn new() -> Self {
+        Self {
+            addr_to_id: Default::default(),
+            id_to_addr: Default::default(),
+        }
+    }
+
+    fn route(&self, addr: &SocketAddrV4) -> Option<&NodeId<P>> {
+        self.addr_to_id.get(addr)
+    }
+
+    fn register(&mut self, addr: SocketAddrV4, node_id: NodeId<P>) {
+        // duplicate addr/id registering is test configuration error
+        assert!(self.addr_to_id.insert(addr, node_id).is_none());
+        assert!(self.id_to_addr.insert(node_id, addr).is_none());
+    }
+
+    fn unregister(&mut self, node_id: &NodeId<P>) {
+        // attempting to unregister a non-existent node_id is a test logic error
+        let addr = self.id_to_addr.remove(node_id).expect("exists");
+        assert!(self.addr_to_id.remove(&addr).is_some());
+    }
+}
+
 pub struct Nodes<S: PeerDiscSwarmRelation> {
     states: BTreeMap<NodeId<SwarmPubKeyType<S>>, Node<S>>,
+    routing_table: RoutingTable<SwarmPubKeyType<S>>,
     tick: Duration,
 
     rng: ChaCha8Rng,
@@ -412,9 +447,35 @@ where
 
             for (sched_tick, message) in emitted_messages {
                 assert_ne!(message.from, message.to);
-                if let Some(node) = self.states.get_mut(message.to.get_peer_id()) {
-                    node.push_inbound_message(sched_tick, message);
+                // Convert target node_id to address using sender's peer table
+                let Some(peer_addr) = self
+                    .states
+                    .get(&id)
+                    .expect("logic error, should be nonempty")
+                    .peer_disc_driver
+                    .get_peer_disc_state()
+                    .get_sock_addr_by_id(message.to.get_peer_id())
+                else {
+                    debug!(to=?message.to.get_peer_id(), "dropping outbound message: peer addr not found");
+                    continue;
+                };
+
+                // Find the target node with routing_table, which is the ground
+                // truth for name records
+                let Some(target_node) = self.routing_table.route(&peer_addr) else {
+                    debug!(to=?message.to.get_peer_id(), addr=?peer_addr, "routing failed: no node found with addr");
+                    continue;
+                };
+
+                if message.to.get_peer_id() != target_node {
+                    debug!("local peer table outdated");
                 }
+
+                let node = self
+                    .states
+                    .get_mut(target_node)
+                    .expect("routing table contain only entries for existing states");
+                node.push_inbound_message(sched_tick, message);
             }
             if state_updated {
                 return true;
@@ -432,7 +493,9 @@ where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
     {
         let id = node_builder.id;
+        let addr = node_builder.addr;
         let _node_span_entered = tracing::trace_span!("node", id = format!("{}", id)).entered();
+        self.routing_table.register(addr, id);
         let node = node_builder.build();
         self.states.insert(id, node);
     }
@@ -441,6 +504,7 @@ where
         &mut self,
         node_id: &NodeId<CertificateSignaturePubKey<S::SignatureType>>,
     ) -> Option<Node<S>> {
+        self.routing_table.unregister(node_id);
         self.states.remove(node_id)
     }
 }

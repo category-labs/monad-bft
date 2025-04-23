@@ -4,7 +4,7 @@ use monad_peer_discovery::PeerDiscoveryAlgoBuilder;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::{NodeBuilder, Nodes, PeerDiscSwarmRelation};
+use crate::{NodeBuilder, Nodes, PeerDiscSwarmRelation, RoutingTable};
 
 pub struct PeerDiscSwarmBuilder<S, B>
 where
@@ -22,10 +22,13 @@ where
     pub fn build(self) -> Nodes<S> {
         let _init_span_entered =
             tracing::trace_span!("init", tick = format!("{:?}", Duration::ZERO)).entered();
+
         let mut states = BTreeMap::new();
+        let mut routing_table = RoutingTable::new();
         for builder in self.builders {
             let id = builder.id;
             let _node_span_entered = tracing::trace_span!("node", id = format!("{}", id)).entered();
+            routing_table.register(builder.addr, id);
             let node = builder.build();
             states.insert(id, node);
         }
@@ -34,6 +37,7 @@ where
 
         Nodes {
             states,
+            routing_table,
             tick: Default::default(),
             rng: ChaCha8Rng::seed_from_u64(rng.r#gen()),
             current_seed: rng.r#gen(),

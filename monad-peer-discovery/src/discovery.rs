@@ -558,10 +558,10 @@ where
 
     fn get_sock_addr_by_id(
         &self,
-        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
     ) -> Option<SocketAddrV4> {
         self.peer_info
-            .get(&id)
+            .get(id)
             .map(|info| info.name_record.name_record.address)
     }
 }

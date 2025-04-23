@@ -1,9 +1,17 @@
-use std::{collections::BTreeMap, net::SocketAddrV4, str::FromStr, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::{Ipv4Addr, SocketAddrV4},
+    str::FromStr,
+    time::Duration,
+};
 
 use alloy_rlp::Encodable;
 use monad_crypto::{
     NopPubKey, NopSignature,
-    certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    },
+    hasher::{Hasher, HasherType},
 };
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
@@ -44,8 +52,14 @@ type SignatureType = NopSignature;
 type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
 
 fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType> {
+    let mut hasher = HasherType::new();
+    hasher.update(keypair.pubkey().bytes());
+    let hash = hasher.hash();
+    let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
+    assert_ne!(ipaddr_v4, Ipv4Addr::UNSPECIFIED);
+
     let name_record = NameRecord {
-        address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
+        address: SocketAddrV4::new(ipaddr_v4, 8000),
         seq: 0,
     };
     let mut encoded = Vec::new();
@@ -84,6 +98,7 @@ fn test_ping_pong() {
                     .collect::<BTreeMap<_, _>>();
                 NodeBuilder {
                     id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
@@ -173,6 +188,7 @@ fn test_new_node_joining() {
                     .collect::<BTreeMap<_, _>>();
                 NodeBuilder {
                     id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
@@ -238,6 +254,7 @@ fn test_update_name_record() {
                     .collect::<BTreeMap<_, _>>();
                 NodeBuilder {
                     id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
@@ -296,6 +313,7 @@ fn test_update_name_record() {
 
     let new_node_a_builder = NodeBuilder {
         id: node_a,
+        addr: new_name_record.address(),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_a,
             self_record: new_name_record,
@@ -359,6 +377,7 @@ fn test_prune_nodes() {
                     .collect::<BTreeMap<_, _>>();
                 NodeBuilder {
                     id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
