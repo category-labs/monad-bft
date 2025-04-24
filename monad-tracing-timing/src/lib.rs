@@ -156,13 +156,13 @@ where
 }
 
 pub trait TimingSpanExtension {
-    fn with_histogram(&self, histogram: Histogram<f64>) -> &Self;
-    fn with_timings(&self) -> &Self;
+    fn with_histogram(self, histogram: Histogram<f64>) -> Self;
+    fn with_timings(self) -> Self;
 }
 
 impl TimingSpanExtension for Span {
     // with_histogram enables this span to report total time spent to this histogram.
-    fn with_histogram(&self, histogram: Histogram<f64>) -> &Self {
+    fn with_histogram(self, histogram: Histogram<f64>) -> Self {
         self.with_subscriber(|(id, subscriber)| {
             if let Some(callback) = subscriber.downcast_ref::<MainSpanCallback>() {
                 callback.0(subscriber, id, histogram)
@@ -171,7 +171,7 @@ impl TimingSpanExtension for Span {
         self
     }
 
-    fn with_timings(&self) -> &Self {
+    fn with_timings(self) -> Self {
         self.with_subscriber(|(id, subscriber)| {
             if let Some(callback) = subscriber.downcast_ref::<MeteredSpanCallback>() {
                 callback.0(subscriber, id)
@@ -270,8 +270,7 @@ mod tests {
         tctx.run_test_function(|| {
             for (count, value) in samples.iter().cloned() {
                 (0..count).for_each(|_| {
-                    let span = info_span!("first");
-                    span.with_histogram(example.clone());
+                    let span = info_span!("first").with_histogram(example.clone());
                     let _ = span.enter();
                     tctx.mock.increment(Duration::from_secs(value as u64));
                 });
@@ -321,12 +320,10 @@ mod tests {
         tctx.run_test_function(|| {
             for (count, first, second) in samples {
                 for _ in 0..count {
-                    let span = info_span!("first");
-                    span.with_histogram(example.clone());
+                    let span = info_span!("first").with_histogram(example.clone());
                     let _enter = span.enter();
                     tctx.mock.increment(Duration::from_secs(first));
-                    let span = info_span!("second");
-                    span.with_timings();
+                    let span = info_span!("second").with_timings();
                     let _enter = span.enter();
                     tctx.mock.increment(Duration::from_secs(second));
                 }
@@ -372,11 +369,9 @@ mod tests {
         tctx.run_test_function(|| {
             for (count, first, second) in samples {
                 for _ in 0..count {
-                    let span1 = info_span!("first");
-                    span1.with_histogram(example.clone());
+                    let span1 = info_span!("first").with_histogram(example.clone());
                     let fut1 = async {
-                        let span2 = info_span!("second");
-                        span2.with_timings();
+                        let span2 = info_span!("second").with_timings();
                         let fut2 = async {
                             tctx.mock.increment(Duration::from_secs(second));
                         };
@@ -417,12 +412,12 @@ mod tests {
             ];
             let barrier = Barrier::new(spans.len());
             let futs = spans.into_iter().map(|(main, secondary)| {
-                main.with_histogram(example.clone());
+                let main = main.with_histogram(example.clone());
                 async {
                     // with barrier we ensure that the earlier spans will yield and let other to enter
                     // and on enter we overwrite main, and this is what we are testing here
                     barrier.wait().await;
-                    secondary.with_timings();
+                    let secondary= secondary.with_timings();
                     let fut2 = async {
                         tctx.mock.increment(Duration::from_secs(1));
                     };
