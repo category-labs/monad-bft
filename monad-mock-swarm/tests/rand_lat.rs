@@ -64,8 +64,13 @@ fn nodes_with_random_latency_cron() {
     let mut generator = StdRng::seed_from_u64(seed);
     while start_time.elapsed() < Duration::from_secs(time_seconds) {
         seed = generator.gen();
-        println!("seed is set to be {}", seed);
-        nodes_with_random_latency(seed);
+
+        match nodes_with_random_latency(seed) {
+            Ok(_) => {}
+            Err(_) => {
+                panic!("failing seed is {}", seed);
+            }
+        }
     }
 }
 
@@ -85,7 +90,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(4712443726697299681; "seed14")]
 #[test_case(5153471631950140680; "seed15")]
 #[test_case(4180491672667595808; "seed16")]
-fn nodes_with_random_latency(latency_seed: u64) {
+fn nodes_with_random_latency(latency_seed: u64) -> Result<(), String> {
     use std::time::Duration;
 
     use monad_transformer::RandLatencyTransformer;
@@ -157,11 +162,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
     let min_ledger_len = last_block - 5;
     let max_blocksync_requests = 50;
     let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
-    println!(
-        "tick {:?} max tick {:?}",
-        swarm.peek_tick().unwrap(),
-        max_tick
-    );
+
     let mut verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);
 
     let node_ids = swarm.states().keys().copied().collect_vec();
@@ -187,7 +188,10 @@ fn nodes_with_random_latency(latency_seed: u64) {
             max_blocksync_requests,
         );
 
-    assert!(verifier.verify(&swarm));
+    if !verifier.verify(&swarm) {
+        return Err("verification failed".to_string());
+    }
 
     swarm_ledger_verification(&swarm, min_ledger_len);
+    Ok(())
 }

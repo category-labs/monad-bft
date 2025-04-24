@@ -64,8 +64,12 @@ fn all_messages_delayed_cron() {
     let mut generator = StdRng::seed_from_u64(seed);
     while start_time.elapsed() < Duration::from_secs(time_seconds) {
         seed = generator.gen();
-        println!("seed for all_messages_delayed_cron is set to be {}", seed);
-        all_messages_delayed(TransformerReplayOrder::Random(seed));
+        match all_messages_delayed(TransformerReplayOrder::Random(seed)) {
+            Ok(_) => {}
+            Err(_) => {
+                panic!("failing seed is {}", seed);
+            }
+        }
     }
 }
 
@@ -76,7 +80,7 @@ fn all_messages_delayed_cron() {
 #[test_case(TransformerReplayOrder::Random(3); "random seed 3")]
 #[test_case(TransformerReplayOrder::Random(4); "random seed 4")]
 #[test_case(TransformerReplayOrder::Random(5); "random seed 5")]
-fn all_messages_delayed(direction: TransformerReplayOrder) {
+fn all_messages_delayed(direction: TransformerReplayOrder) -> Result<(), String> {
     // tracing_subscriber::fmt::init();
     let delta = Duration::from_millis(20);
     let max_blocksync_retries = 5;
@@ -108,8 +112,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     let mut filter_peers = HashSet::new();
     filter_peers.insert(first_node);
-
-    println!("delayed node ID: {}", first_node);
 
     let swarm_config = SwarmBuilder::<NoSerSwarm>(
         state_configs
@@ -276,5 +278,9 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             blocksync_requests_range.1 as u64,
         );
 
-    assert!(verifier_after_delayed_messages.verify(&swarm));
+    if !verifier_after_delayed_messages.verify(&swarm) {
+        return Err("verification failed".to_string());
+    }
+
+    Ok(())
 }
