@@ -417,7 +417,7 @@ mod tests {
                     // with barrier we ensure that the earlier spans will yield and let other to enter
                     // and on enter we overwrite main, and this is what we are testing here
                     barrier.wait().await;
-                    let secondary= secondary.with_timings();
+                    let secondary = secondary.with_timings();
                     let fut2 = async {
                         tctx.mock.increment(Duration::from_secs(1));
                     };

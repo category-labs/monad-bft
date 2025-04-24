@@ -123,6 +123,7 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
+            rpc_execution_histogram: None,
         };
 
         actix_test::start(move || {

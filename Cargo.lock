@@ -5105,8 +5105,8 @@ dependencies = [
  "monad-executor-glue",
  "monad-testutil",
  "monad-types",
- "rand",
- "rand_chacha",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "tracing",
 ]
 
@@ -5240,6 +5240,7 @@ dependencies = [
  "monad-ethcall",
  "monad-node-config",
  "monad-rpc-docs",
+ "monad-tracing-timing",
  "monad-triedb-utils",
  "monad-types",
  "notify",

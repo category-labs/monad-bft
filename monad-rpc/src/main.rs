@@ -7,22 +7,28 @@ use actix_web::{
 };
 use clap::Parser;
 use eth_json_types::serialize_result;
+use metrics::linear_boundaries;
 use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
+use monad_tracing_timing::{TimingSpanExtension, TimingsLayer};
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _, KeyValue};
+use opentelemetry::{
+    metrics::{Histogram, MeterProvider},
+    trace::TracerProvider as _,
+    KeyValue,
+};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, debug_span, error, info, warn, Instrument, Span};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
-    EnvFilter, Registry,
+    EnvFilter, Layer, Registry,
 };
 
 use crate::{
@@ -185,368 +191,1090 @@ pub(crate) async fn rpc_handler(
     HttpResponse::Ok().json(&response)
 }
 
+trait RPCMethod {
+    const METHOD: &'static str;
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError>;
+}
+
+struct DebugGetRawBlock;
+impl RPCMethod for DebugGetRawBlock {
+    const METHOD: &'static str = "debug_getRawBlock";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_getRawBlock(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugGetRawHeader;
+impl RPCMethod for DebugGetRawHeader {
+    const METHOD: &'static str = "debug_getRawHeader";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_getRawHeader(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugGetRawReceipts;
+impl RPCMethod for DebugGetRawReceipts {
+    const METHOD: &'static str = "debug_getRawReceipts";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_getRawReceipts(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugGetRawTransaction;
+impl RPCMethod for DebugGetRawTransaction {
+    const METHOD: &'static str = "debug_getRawTransaction";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_getRawTransaction(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugTraceBlockByHash;
+impl RPCMethod for DebugTraceBlockByHash {
+    const METHOD: &'static str = "debug_traceBlockByHash";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_traceBlockByHash(triedb_env, &resources.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugTraceBlockByNumber;
+impl RPCMethod for DebugTraceBlockByNumber {
+    const METHOD: &'static str = "debug_traceBlockByNumber";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_traceBlockByNumber(triedb_env, &resources.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugTraceCall;
+impl RPCMethod for DebugTraceCall {
+    const METHOD: &'static str = "debug_traceCall";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_traceCall(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct DebugTraceTransaction;
+impl RPCMethod for DebugTraceTransaction {
+    const METHOD: &'static str = "debug_traceTransaction";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_debug_traceTransaction(triedb_env, &resources.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct EthCall;
+impl RPCMethod for EthCall {
+    const METHOD: &'static str = "eth_call";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let Some(ref eth_call_executor) = resources.eth_call_executor else {
+            return Err(JsonRpcError::method_not_supported());
+        };
+
+        // acquire the concurrent requests permit
+        let _permit = &resources.rate_limiter.try_acquire().map_err(|_| {
+            JsonRpcError::internal_error("eth_call concurrent requests limit".into())
+        })?;
+
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_call(
+            triedb_env,
+            eth_call_executor.clone(),
+            resources.chain_id,
+            resources.eth_call_gas_limit,
+            params,
+        )
+        .await
+        .map(serialize_result)?
+    }
+}
+
+struct EthSendRawTransaction;
+impl RPCMethod for EthSendRawTransaction {
+    const METHOD: &'static str = "eth_sendRawTransaction";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        monad_eth_sendRawTransaction(
+            triedb_env,
+            &resources.txpool_bridge_client,
+            resources.base_fee_per_gas.clone(),
+            params,
+            resources.chain_id,
+            resources.allow_unprotected_txs,
+        )
+        .await
+        .map(serialize_result)?
+    }
+}
+
+struct EthGetLogs;
+impl RPCMethod for EthGetLogs {
+    const METHOD: &'static str = "eth_getLogs";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getLogs(
+            triedb_env,
+            &resources.archive_reader,
+            resources.logs_max_block_range,
+            params,
+        )
+        .await
+        .map(serialize_result)?
+    }
+}
+
+struct EthGetTransactionByHash;
+impl RPCMethod for EthGetTransactionByHash {
+    const METHOD: &'static str = "eth_getTransactionByHash";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = resources.triedb_reader.as_ref() {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByHash(triedb_env, &resources.archive_reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetBlockByHash;
+impl RPCMethod for EthGetBlockByHash {
+    const METHOD: &'static str = "eth_getBlockByHash";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockByHash(triedb_env, &resources.archive_reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetBlockByNumber;
+impl RPCMethod for EthGetBlockByNumber {
+    const METHOD: &'static str = "eth_getBlockByNumber";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockByNumber(reader, &resources.archive_reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetTransactionByBlockHashAndIndex;
+impl RPCMethod for EthGetTransactionByBlockHashAndIndex {
+    const METHOD: &'static str = "eth_getTransactionByBlockHashAndIndex";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByBlockHashAndIndex(
+                triedb_env,
+                &resources.archive_reader,
+                params,
+            )
+            .await
+            .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetTransactionByBlockNumberAndIndex;
+impl RPCMethod for EthGetTransactionByBlockNumberAndIndex {
+    const METHOD: &'static str = "eth_getTransactionByBlockNumberAndIndex";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionByBlockNumberAndIndex(
+                triedb_env,
+                &resources.archive_reader,
+                params,
+            )
+            .await
+            .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetBlockTransactionCountByHash;
+impl RPCMethod for EthGetBlockTransactionCountByHash {
+    const METHOD: &'static str = "eth_getBlockTransactionCountByHash";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = resources.triedb_reader.as_ref() {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockTransactionCountByHash(triedb_env, &resources.archive_reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetBlockTransactionCountByNumber;
+impl RPCMethod for EthGetBlockTransactionCountByNumber {
+    const METHOD: &'static str = "eth_getBlockTransactionCountByNumber";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = resources.triedb_reader.as_ref() {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBlockTransactionCountByNumber(
+                triedb_env,
+                &resources.archive_reader,
+                params,
+            )
+            .await
+            .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetBalance;
+impl RPCMethod for EthGetBalance {
+    const METHOD: &'static str = "eth_getBalance";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getBalance(reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetCode;
+impl RPCMethod for EthGetCode {
+    const METHOD: &'static str = "eth_getCode";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getCode(reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetStorageAt;
+impl RPCMethod for EthGetStorageAt {
+    const METHOD: &'static str = "eth_getStorageAt";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getStorageAt(reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetTransactionCount;
+impl RPCMethod for EthGetTransactionCount {
+    const METHOD: &'static str = "eth_getTransactionCount";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_getTransactionCount(reader, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthBlockNumber;
+impl RPCMethod for EthBlockNumber {
+    const METHOD: &'static str = "eth_blockNumber";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(reader) = &resources.triedb_reader {
+            monad_eth_blockNumber(reader).await.map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthChainId;
+impl RPCMethod for EthChainId {
+    const METHOD: &'static str = "eth_chainId";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        monad_eth_chainId(resources.chain_id)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct EthSyncing;
+impl RPCMethod for EthSyncing {
+    const METHOD: &'static str = "eth_syncing";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        monad_eth_syncing().await
+    }
+}
+
+struct EthEstimateGas;
+impl RPCMethod for EthEstimateGas {
+    const METHOD: &'static str = "eth_estimateGas";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let Some(triedb_env) = &resources.triedb_reader else {
+            return Err(JsonRpcError::method_not_supported());
+        };
+        let Some(ref eth_call_executor) = resources.eth_call_executor else {
+            return Err(JsonRpcError::method_not_supported());
+        };
+
+        // acquire the concurrent requests permit
+        let _permit = &resources.rate_limiter.try_acquire().map_err(|_| {
+            JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
+        })?;
+
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_estimateGas(
+            triedb_env,
+            eth_call_executor.clone(),
+            resources.chain_id,
+            resources.eth_estimate_gas_gas_limit,
+            params,
+        )
+        .await
+        .map(serialize_result)?
+    }
+}
+
+struct EthGasPrice;
+impl RPCMethod for EthGasPrice {
+    const METHOD: &'static str = "eth_gasPrice";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthMaxPriorityFeePerGas;
+impl RPCMethod for EthMaxPriorityFeePerGas {
+    const METHOD: &'static str = "eth_maxPriorityFeePerGas";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            monad_eth_maxPriorityFeePerGas(triedb_env)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthFeeHistory;
+impl RPCMethod for EthFeeHistory {
+    const METHOD: &'static str = "eth_feeHistory";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        if let Some(triedb_env) = &resources.triedb_reader {
+            let params = serde_json::from_value(params).invalid_params()?;
+            monad_eth_feeHistory(triedb_env, params)
+                .await
+                .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::method_not_supported())
+        }
+    }
+}
+
+struct EthGetTransactionReceipt;
+impl RPCMethod for EthGetTransactionReceipt {
+    const METHOD: &'static str = "eth_getTransactionReceipt";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let Some(triedb_reader) = &resources.triedb_reader else {
+            return Err(JsonRpcError::method_not_supported());
+        };
+
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getTransactionReceipt(triedb_reader, &resources.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct EthGetBlockReceipts;
+impl RPCMethod for EthGetBlockReceipts {
+    const METHOD: &'static str = "eth_getBlockReceipts";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_reader = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBlockReceipts(triedb_reader, &resources.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct EthGetProof;
+impl RPCMethod for EthGetProof {
+    const METHOD: &'static str = "eth_getProof";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let triedb_env = resources.triedb_reader.as_ref().method_not_supported()?;
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getProof(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct EthSendTransaction;
+impl RPCMethod for EthSendTransaction {
+    const METHOD: &'static str = "eth_sendTransaction";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+struct EthSignTransaction;
+impl RPCMethod for EthSignTransaction {
+    const METHOD: &'static str = "eth_signTransaction";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+struct EthSign;
+impl RPCMethod for EthSign {
+    const METHOD: &'static str = "eth_sign";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+struct EthHashrate;
+impl RPCMethod for EthHashrate {
+    const METHOD: &'static str = "eth_hashrate";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+struct NetVersion;
+impl RPCMethod for NetVersion {
+    const METHOD: &'static str = "net_version";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        serialize_result(resources.chain_id.to_string())
+    }
+}
+
+struct TraceBlock;
+impl RPCMethod for TraceBlock {
+    const METHOD: &'static str = "trace_block";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_trace_block(params).await.map(serialize_result)?
+    }
+}
+
+struct TraceCall;
+impl RPCMethod for TraceCall {
+    const METHOD: &'static str = "trace_call";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_trace_call(params).await.map(serialize_result)?
+    }
+}
+
+struct TraceCallMany;
+impl RPCMethod for TraceCallMany {
+    const METHOD: &'static str = "trace_callMany";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        monad_trace_callMany().await.map(serialize_result)?
+    }
+}
+
+struct TraceGet;
+impl RPCMethod for TraceGet {
+    const METHOD: &'static str = "trace_get";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_trace_get(params).await.map(serialize_result)?
+    }
+}
+
+struct TraceTransaction;
+impl RPCMethod for TraceTransaction {
+    const METHOD: &'static str = "trace_transaction";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_trace_transaction(params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct TxpoolStatusByHash;
+impl RPCMethod for TxpoolStatusByHash {
+    const METHOD: &'static str = "txpool_statusByHash";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_txpool_statusByHash(&resources.txpool_bridge_client, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct TxpoolStatusByAddress;
+impl RPCMethod for TxpoolStatusByAddress {
+    const METHOD: &'static str = "txpool_statusByAddress";
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_txpool_statusByAddress(&resources.txpool_bridge_client, params)
+            .await
+            .map(serialize_result)?
+    }
+}
+
+struct Web3ClientVersion;
+impl RPCMethod for Web3ClientVersion {
+    const METHOD: &'static str = "web3_clientVersion";
+
+    async fn call(
+        &self,
+        _resources: &MonadRpcResources,
+        _params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        serialize_result(WEB3_RPC_CLIENT_VERSION)
+    }
+}
+
+enum RegisteredMethods {
+    DebugGetRawBlock(DebugGetRawBlock),
+    DebugGetRawHeader(DebugGetRawHeader),
+    DebugGetRawReceipts(DebugGetRawReceipts),
+    DebugGetRawTransaction(DebugGetRawTransaction),
+    DebugTraceBlockByHash(DebugTraceBlockByHash),
+    DebugTraceBlockByNumber(DebugTraceBlockByNumber),
+    DebugTraceCall(DebugTraceCall),
+    DebugTraceTransaction(DebugTraceTransaction),
+    EthCall(EthCall),
+    EthSendRawTransaction(EthSendRawTransaction),
+    EthGetLogs(EthGetLogs),
+    EthGetTransactionByHash(EthGetTransactionByHash),
+    EthGetBlockByHash(EthGetBlockByHash),
+    EthGetBlockByNumber(EthGetBlockByNumber),
+    EthGetTransactionByBlockHashAndIndex(EthGetTransactionByBlockHashAndIndex),
+    EthGetTransactionByBlockNumberAndIndex(EthGetTransactionByBlockNumberAndIndex),
+    EthGetBlockTransactionCountByHash(EthGetBlockTransactionCountByHash),
+    EthGetBlockTransactionCountByNumber(EthGetBlockTransactionCountByNumber),
+    EthGetBalance(EthGetBalance),
+    EthGetCode(EthGetCode),
+    EthGetStorageAt(EthGetStorageAt),
+    EthGetTransactionCount(EthGetTransactionCount),
+    EthBlockNumber(EthBlockNumber),
+    EthChainId(EthChainId),
+    EthSyncing(EthSyncing),
+    EthEstimateGas(EthEstimateGas),
+    EthGasPrice(EthGasPrice),
+    EthMaxPriorityFeePerGas(EthMaxPriorityFeePerGas),
+    EthFeeHistory(EthFeeHistory),
+    EthGetTransactionReceipt(EthGetTransactionReceipt),
+    EthGetBlockReceipts(EthGetBlockReceipts),
+    EthGetProof(EthGetProof),
+    EthSendTransaction(EthSendTransaction),
+    EthSignTransaction(EthSignTransaction),
+    EthSign(EthSign),
+    EthHashrate(EthHashrate),
+    NetVersion(NetVersion),
+    TraceBlock(TraceBlock),
+    TraceCall(TraceCall),
+    TraceCallMany(TraceCallMany),
+    TraceGet(TraceGet),
+    TraceTransaction(TraceTransaction),
+    TxpoolStatusByHash(TxpoolStatusByHash),
+    TxpoolStatusByAddress(TxpoolStatusByAddress),
+    Web3ClientVersion(Web3ClientVersion),
+}
+
+impl RegisteredMethods {
+    fn span(&self) -> Span {
+        match self {
+            Self::DebugGetRawBlock(_) => debug_span!(DebugGetRawBlock::METHOD),
+            Self::DebugGetRawHeader(_) => debug_span!(DebugGetRawHeader::METHOD),
+            Self::DebugGetRawReceipts(_) => debug_span!(DebugGetRawReceipts::METHOD),
+            Self::DebugGetRawTransaction(_) => debug_span!(DebugGetRawTransaction::METHOD),
+            Self::DebugTraceBlockByHash(_) => debug_span!(DebugTraceBlockByHash::METHOD),
+            Self::DebugTraceBlockByNumber(_) => debug_span!(DebugTraceBlockByNumber::METHOD),
+            Self::DebugTraceCall(_) => debug_span!(DebugTraceCall::METHOD),
+            Self::DebugTraceTransaction(_) => debug_span!(DebugTraceTransaction::METHOD),
+            Self::EthCall(_) => debug_span!(EthCall::METHOD),
+            Self::EthSendRawTransaction(_) => debug_span!(EthSendRawTransaction::METHOD),
+            Self::EthGetLogs(_) => debug_span!(EthGetLogs::METHOD),
+            Self::EthGetTransactionByHash(_) => debug_span!(EthGetTransactionByHash::METHOD),
+            Self::EthGetBlockByHash(_) => debug_span!(EthGetBlockByHash::METHOD),
+            Self::EthGetBlockByNumber(_) => debug_span!(EthGetBlockByNumber::METHOD),
+            Self::EthGetTransactionByBlockHashAndIndex(_) => {
+                debug_span!(EthGetTransactionByBlockHashAndIndex::METHOD)
+            }
+            Self::EthGetTransactionByBlockNumberAndIndex(_) => {
+                debug_span!(EthGetTransactionByBlockNumberAndIndex::METHOD)
+            }
+            Self::EthGetBlockTransactionCountByHash(_) => {
+                debug_span!(EthGetBlockTransactionCountByHash::METHOD)
+            }
+            Self::EthGetBlockTransactionCountByNumber(_) => {
+                debug_span!(EthGetBlockTransactionCountByNumber::METHOD)
+            }
+            Self::EthGetBalance(_) => debug_span!(EthGetBalance::METHOD),
+            Self::EthGetCode(_) => debug_span!(EthGetCode::METHOD),
+            Self::EthGetStorageAt(_) => debug_span!(EthGetStorageAt::METHOD),
+            Self::EthGetTransactionCount(_) => debug_span!(EthGetTransactionCount::METHOD),
+            Self::EthBlockNumber(_) => debug_span!(EthBlockNumber::METHOD),
+            Self::EthChainId(_) => debug_span!(EthChainId::METHOD),
+            Self::EthSyncing(_) => debug_span!(EthSyncing::METHOD),
+            Self::EthEstimateGas(_) => debug_span!(EthEstimateGas::METHOD),
+            Self::EthGasPrice(_) => debug_span!(EthGasPrice::METHOD),
+            Self::EthMaxPriorityFeePerGas(_) => debug_span!(EthMaxPriorityFeePerGas::METHOD),
+            Self::EthFeeHistory(_) => debug_span!(EthFeeHistory::METHOD),
+            Self::EthGetTransactionReceipt(_) => debug_span!(EthGetTransactionReceipt::METHOD),
+            Self::EthGetBlockReceipts(_) => debug_span!(EthGetBlockReceipts::METHOD),
+            Self::EthGetProof(_) => debug_span!(EthGetProof::METHOD),
+            Self::EthSendTransaction(_) => debug_span!(EthSendTransaction::METHOD),
+            Self::EthSignTransaction(_) => debug_span!(EthSignTransaction::METHOD),
+            Self::EthSign(_) => debug_span!(EthSign::METHOD),
+            Self::EthHashrate(_) => debug_span!(EthHashrate::METHOD),
+            Self::NetVersion(_) => debug_span!(NetVersion::METHOD),
+            Self::TraceBlock(_) => debug_span!(TraceBlock::METHOD),
+            Self::TraceCall(_) => debug_span!(TraceCall::METHOD),
+            Self::TraceCallMany(_) => debug_span!(TraceCallMany::METHOD),
+            Self::TraceGet(_) => debug_span!(TraceGet::METHOD),
+            Self::TraceTransaction(_) => debug_span!(TraceTransaction::METHOD),
+            Self::TxpoolStatusByHash(_) => debug_span!(TxpoolStatusByHash::METHOD),
+            Self::TxpoolStatusByAddress(_) => debug_span!(TxpoolStatusByAddress::METHOD),
+            Self::Web3ClientVersion(_) => debug_span!(Web3ClientVersion::METHOD),
+        }
+    }
+
+    async fn call(
+        &self,
+        resources: &MonadRpcResources,
+        params: Value,
+    ) -> Result<Value, JsonRpcError> {
+        match self {
+            Self::DebugGetRawBlock(method) => method.call(resources, params).await,
+            Self::DebugGetRawHeader(method) => method.call(resources, params).await,
+            Self::DebugGetRawReceipts(method) => method.call(resources, params).await,
+            Self::DebugGetRawTransaction(method) => method.call(resources, params).await,
+            Self::DebugTraceBlockByHash(method) => method.call(resources, params).await,
+            Self::DebugTraceBlockByNumber(method) => method.call(resources, params).await,
+            Self::DebugTraceCall(method) => method.call(resources, params).await,
+            Self::DebugTraceTransaction(method) => method.call(resources, params).await,
+            Self::EthCall(method) => method.call(resources, params).await,
+            Self::EthSendRawTransaction(method) => method.call(resources, params).await,
+            Self::EthGetLogs(method) => method.call(resources, params).await,
+            Self::EthGetTransactionByHash(method) => method.call(resources, params).await,
+            Self::EthGetBlockByHash(method) => method.call(resources, params).await,
+            Self::EthGetBlockByNumber(method) => method.call(resources, params).await,
+            Self::EthGetTransactionByBlockHashAndIndex(method) => {
+                method.call(resources, params).await
+            }
+            Self::EthGetTransactionByBlockNumberAndIndex(method) => {
+                method.call(resources, params).await
+            }
+            Self::EthGetBlockTransactionCountByHash(method) => method.call(resources, params).await,
+            Self::EthGetBlockTransactionCountByNumber(method) => {
+                method.call(resources, params).await
+            }
+            Self::EthGetBalance(method) => method.call(resources, params).await,
+            Self::EthGetCode(method) => method.call(resources, params).await,
+            Self::EthGetStorageAt(method) => method.call(resources, params).await,
+            Self::EthGetTransactionCount(method) => method.call(resources, params).await,
+            Self::EthBlockNumber(method) => method.call(resources, params).await,
+            Self::EthChainId(method) => method.call(resources, params).await,
+            Self::EthSyncing(method) => method.call(resources, params).await,
+            Self::EthEstimateGas(method) => method.call(resources, params).await,
+            Self::EthGasPrice(method) => method.call(resources, params).await,
+            Self::EthMaxPriorityFeePerGas(method) => method.call(resources, params).await,
+            Self::EthFeeHistory(method) => method.call(resources, params).await,
+            Self::EthGetTransactionReceipt(method) => method.call(resources, params).await,
+            Self::EthGetBlockReceipts(method) => method.call(resources, params).await,
+            Self::EthGetProof(method) => method.call(resources, params).await,
+            Self::EthSendTransaction(method) => method.call(resources, params).await,
+            Self::EthSignTransaction(method) => method.call(resources, params).await,
+            Self::EthSign(method) => method.call(resources, params).await,
+            Self::EthHashrate(method) => method.call(resources, params).await,
+            Self::NetVersion(method) => method.call(resources, params).await,
+            Self::TraceBlock(method) => method.call(resources, params).await,
+            Self::TraceCall(method) => method.call(resources, params).await,
+            Self::TraceCallMany(method) => method.call(resources, params).await,
+            Self::TraceGet(method) => method.call(resources, params).await,
+            Self::TraceTransaction(method) => method.call(resources, params).await,
+            Self::TxpoolStatusByHash(method) => method.call(resources, params).await,
+            Self::TxpoolStatusByAddress(method) => method.call(resources, params).await,
+            Self::Web3ClientVersion(method) => method.call(resources, params).await,
+        }
+    }
+}
+
+impl TryFrom<&str> for RegisteredMethods {
+    type Error = JsonRpcError;
+
+    fn try_from(method_name: &str) -> Result<Self, Self::Error> {
+        match method_name {
+            DebugGetRawBlock::METHOD => Ok(Self::DebugGetRawBlock(DebugGetRawBlock)),
+            DebugGetRawHeader::METHOD => Ok(Self::DebugGetRawHeader(DebugGetRawHeader)),
+            DebugGetRawReceipts::METHOD => Ok(Self::DebugGetRawReceipts(DebugGetRawReceipts)),
+            DebugGetRawTransaction::METHOD => {
+                Ok(Self::DebugGetRawTransaction(DebugGetRawTransaction))
+            }
+            DebugTraceBlockByHash::METHOD => Ok(Self::DebugTraceBlockByHash(DebugTraceBlockByHash)),
+            DebugTraceBlockByNumber::METHOD => {
+                Ok(Self::DebugTraceBlockByNumber(DebugTraceBlockByNumber))
+            }
+            DebugTraceCall::METHOD => Ok(Self::DebugTraceCall(DebugTraceCall)),
+            DebugTraceTransaction::METHOD => Ok(Self::DebugTraceTransaction(DebugTraceTransaction)),
+            EthCall::METHOD => Ok(Self::EthCall(EthCall)),
+            EthSendRawTransaction::METHOD => Ok(Self::EthSendRawTransaction(EthSendRawTransaction)),
+            EthGetLogs::METHOD => Ok(Self::EthGetLogs(EthGetLogs)),
+            EthGetTransactionByHash::METHOD => {
+                Ok(Self::EthGetTransactionByHash(EthGetTransactionByHash))
+            }
+            EthGetBlockByHash::METHOD => Ok(Self::EthGetBlockByHash(EthGetBlockByHash)),
+            EthGetBlockByNumber::METHOD => Ok(Self::EthGetBlockByNumber(EthGetBlockByNumber)),
+            EthGetTransactionByBlockHashAndIndex::METHOD => Ok(
+                Self::EthGetTransactionByBlockHashAndIndex(EthGetTransactionByBlockHashAndIndex),
+            ),
+            EthGetTransactionByBlockNumberAndIndex::METHOD => {
+                Ok(Self::EthGetTransactionByBlockNumberAndIndex(
+                    EthGetTransactionByBlockNumberAndIndex,
+                ))
+            }
+            EthGetBlockTransactionCountByHash::METHOD => Ok(
+                Self::EthGetBlockTransactionCountByHash(EthGetBlockTransactionCountByHash),
+            ),
+            EthGetBlockTransactionCountByNumber::METHOD => Ok(
+                Self::EthGetBlockTransactionCountByNumber(EthGetBlockTransactionCountByNumber),
+            ),
+            EthGetBalance::METHOD => Ok(Self::EthGetBalance(EthGetBalance)),
+            EthGetCode::METHOD => Ok(Self::EthGetCode(EthGetCode)),
+            EthGetStorageAt::METHOD => Ok(Self::EthGetStorageAt(EthGetStorageAt)),
+            EthGetTransactionCount::METHOD => {
+                Ok(Self::EthGetTransactionCount(EthGetTransactionCount))
+            }
+            EthBlockNumber::METHOD => Ok(Self::EthBlockNumber(EthBlockNumber)),
+            EthChainId::METHOD => Ok(Self::EthChainId(EthChainId)),
+            EthSyncing::METHOD => Ok(Self::EthSyncing(EthSyncing)),
+            EthEstimateGas::METHOD => Ok(Self::EthEstimateGas(EthEstimateGas)),
+            EthGasPrice::METHOD => Ok(Self::EthGasPrice(EthGasPrice)),
+            EthMaxPriorityFeePerGas::METHOD => {
+                Ok(Self::EthMaxPriorityFeePerGas(EthMaxPriorityFeePerGas))
+            }
+            EthFeeHistory::METHOD => Ok(Self::EthFeeHistory(EthFeeHistory)),
+            EthGetTransactionReceipt::METHOD => {
+                Ok(Self::EthGetTransactionReceipt(EthGetTransactionReceipt))
+            }
+            EthGetBlockReceipts::METHOD => Ok(Self::EthGetBlockReceipts(EthGetBlockReceipts)),
+            EthGetProof::METHOD => Ok(Self::EthGetProof(EthGetProof)),
+            EthSendTransaction::METHOD => Ok(Self::EthSendTransaction(EthSendTransaction)),
+            EthSignTransaction::METHOD => Ok(Self::EthSignTransaction(EthSignTransaction)),
+            EthSign::METHOD => Ok(Self::EthSign(EthSign)),
+            EthHashrate::METHOD => Ok(Self::EthHashrate(EthHashrate)),
+            NetVersion::METHOD => Ok(Self::NetVersion(NetVersion)),
+            TraceBlock::METHOD => Ok(Self::TraceBlock(TraceBlock)),
+            TraceCall::METHOD => Ok(Self::TraceCall(TraceCall)),
+            TraceCallMany::METHOD => Ok(Self::TraceCallMany(TraceCallMany)),
+            TraceGet::METHOD => Ok(Self::TraceGet(TraceGet)),
+            TraceTransaction::METHOD => Ok(Self::TraceTransaction(TraceTransaction)),
+            TxpoolStatusByHash::METHOD => Ok(Self::TxpoolStatusByHash(TxpoolStatusByHash)),
+            TxpoolStatusByAddress::METHOD => Ok(Self::TxpoolStatusByAddress(TxpoolStatusByAddress)),
+            Web3ClientVersion::METHOD => Ok(Self::Web3ClientVersion(Web3ClientVersion)),
+            _ => Err(JsonRpcError::method_not_found()),
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip(app_state))]
 async fn rpc_select(
     app_state: &MonadRpcResources,
     method: &str,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    match method {
-        "debug_getRawBlock" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawBlock(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawHeader" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawHeader(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawReceipts" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawReceipts(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawTransaction" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawTransaction(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceBlockByHash" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceBlockByNumber" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceCall" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceCall(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceTransaction" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_call" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            // acquire the concurrent requests permit
-            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                JsonRpcError::internal_error("eth_call concurrent requests limit".into())
-            })?;
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_call(
-                triedb_env,
-                eth_call_executor.clone(),
-                app_state.chain_id,
-                app_state.eth_call_gas_limit,
-                params,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_sendRawTransaction" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            monad_eth_sendRawTransaction(
-                triedb_env,
-                &app_state.txpool_bridge_client,
-                app_state.base_fee_per_gas.clone(),
-                params,
-                app_state.chain_id,
-                app_state.allow_unprotected_txs,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_getLogs" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getLogs(
-                triedb_env,
-                &app_state.archive_reader,
-                app_state.logs_max_block_range,
-                params,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_getTransactionByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByHash(triedb_env, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockByHash" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByHash(triedb_env, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockByNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionByBlockHashAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockHashAndIndex(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionByBlockNumberAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockTransactionCountByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByHash(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockTransactionCountByNumber" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBalance" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBalance(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getCode" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getCode(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getStorageAt" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getStorageAt(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionCount" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionCount(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_blockNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                monad_eth_blockNumber(reader).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_chainId" => monad_eth_chainId(app_state.chain_id)
-            .await
-            .map(serialize_result)?,
-        "eth_syncing" => monad_eth_syncing().await,
-        "eth_estimateGas" => {
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            // acquire the concurrent requests permit
-            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                JsonRpcError::internal_error("eth_estimateGas concurrent requests limit".into())
-            })?;
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_estimateGas(
-                triedb_env,
-                eth_call_executor.clone(),
-                app_state.chain_id,
-                app_state.eth_estimate_gas_gas_limit,
-                params,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_gasPrice" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_maxPriorityFeePerGas" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_maxPriorityFeePerGas(triedb_env)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_feeHistory" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_feeHistory(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionReceipt" => {
-            let Some(triedb_reader) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(triedb_reader, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_getBlockReceipts" => {
-            let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getBlockReceipts(triedb_reader, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_getProof" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getProof(triedb_env, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
-        "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
-        "eth_sign" => Err(JsonRpcError::method_not_supported()),
-        "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
-        "net_version" => serialize_result(app_state.chain_id.to_string()),
-        "trace_block" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_block(params).await.map(serialize_result)?
-        }
-        "trace_call" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_call(params).await.map(serialize_result)?
-        }
-        "trace_callMany" => monad_trace_callMany().await.map(serialize_result)?,
-        "trace_get" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_get(params).await.map(serialize_result)?
-        }
-        "trace_transaction" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_transaction(params)
-                .await
-                .map(serialize_result)?
-        }
-        "txpool_statusByHash" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByHash(&app_state.txpool_bridge_client, params)
-                .await
-                .map(serialize_result)?
-        }
-        "txpool_statusByAddress" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByAddress(&app_state.txpool_bridge_client, params)
-                .await
-                .map(serialize_result)?
-        }
-        "web3_clientVersion" => serialize_result(WEB3_RPC_CLIENT_VERSION),
-        _ => Err(JsonRpcError::method_not_found()),
+    let method: RegisteredMethods = method.try_into()?;
+    let mut span = method.span();
+    if let Some(histogram) = &app_state.rpc_execution_histogram {
+        span = span.with_histogram(histogram.clone());
     }
+    method.call(app_state, params).instrument(span).await
 }
 
 #[derive(Clone)]
@@ -564,6 +1292,7 @@ struct MonadRpcResources {
     logs_max_block_range: u64,
     eth_call_gas_limit: u64,
     eth_estimate_gas_gas_limit: u64,
+    rpc_execution_histogram: Option<Histogram<f64>>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -589,6 +1318,7 @@ impl MonadRpcResources {
         logs_max_block_range: u64,
         eth_call_gas_limit: u64,
         eth_estimate_gas_gas_limit: u64,
+        rpc_execution_histogram: Option<Histogram<f64>>,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -604,6 +1334,7 @@ impl MonadRpcResources {
             logs_max_block_range,
             eth_call_gas_limit,
             eth_estimate_gas_gas_limit,
+            rpc_execution_histogram,
         }
     }
 }
@@ -615,12 +1346,12 @@ impl Actor for MonadRpcResources {
 pub struct MonadJsonRootSpanBuilder;
 
 impl RootSpanBuilder for MonadJsonRootSpanBuilder {
-    fn on_request_start(request: &ServiceRequest) -> tracing::Span {
+    fn on_request_start(request: &ServiceRequest) -> Span {
         tracing_actix_web::root_span!(request, json_method = tracing::field::Empty)
     }
 
     fn on_request_end<B: actix_web::body::MessageBody>(
-        span: tracing::Span,
+        span: Span,
         outcome: &Result<ServiceResponse<B>, Error>,
     ) {
     }
@@ -654,7 +1385,11 @@ async fn main() -> std::io::Result<()> {
                 .with_batch_exporter(exporter)
                 .build();
             let tracer = trace_provider.tracer("monad-rpc");
-            Some(tracing_opentelemetry::layer().with_tracer(tracer))
+            Some(
+                tracing_opentelemetry::layer()
+                    .with_tracer(tracer)
+                    .with_filter(EnvFilter::from_default_env()),
+            )
         }
         None => None,
     };
@@ -665,12 +1400,13 @@ async fn main() -> std::io::Result<()> {
         .with_current_span(false)
         .with_span_list(false)
         .with_writer(std::io::stdout)
-        .with_ansi(false);
+        .with_ansi(false)
+        .with_filter(EnvFilter::from_default_env());
 
     match otel_span_telemetry {
         Some(telemetry) => {
             let s = Registry::default()
-                .with(EnvFilter::from_default_env())
+                .with(TimingsLayer::new())
                 .with(telemetry)
                 .with(fmt_layer);
             tracing::subscriber::set_global_default(s).expect("failed to set logger");
@@ -818,22 +1554,6 @@ async fn main() -> std::io::Result<()> {
         )))
     });
 
-    let resources = MonadRpcResources::new(
-        txpool_bridge_client,
-        triedb_env,
-        eth_call_executor,
-        archive_reader,
-        BASE_FEE_PER_GAS.into(),
-        node_config.chain_id,
-        args.batch_request_limit,
-        args.max_response_size,
-        args.allow_unprotected_txs,
-        concurrent_requests_limiter,
-        args.eth_get_logs_max_block_range,
-        args.eth_call_gas_limit,
-        args.eth_estimate_gas_gas_limit,
-    );
-
     let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
         args.otel_endpoint.as_ref().map(|endpoint| {
             let provider = metrics::build_otel_meter_provider(
@@ -849,6 +1569,38 @@ async fn main() -> std::io::Result<()> {
     let with_metrics = meter_provider
         .as_ref()
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+
+    let rpc_execution_histogram = if let Some(meter_provider) = &meter_provider {
+        Some(
+            meter_provider
+                .meter("monad.rpc")
+                .f64_histogram("execution_duration")
+                .with_description("duration of the rpc method execution")
+                .with_unit("s")
+                // from 1ms to 1s with 10ms step (100 buckets)
+                .with_boundaries(linear_boundaries(0.001, 0.01, 100))
+                .build(),
+        )
+    } else {
+        None
+    };
+
+    let resources = MonadRpcResources::new(
+        txpool_bridge_client,
+        triedb_env,
+        eth_call_executor,
+        archive_reader,
+        BASE_FEE_PER_GAS.into(),
+        node_config.chain_id,
+        args.batch_request_limit,
+        args.max_response_size,
+        args.allow_unprotected_txs,
+        concurrent_requests_limiter,
+        args.eth_get_logs_max_block_range,
+        args.eth_call_gas_limit,
+        args.eth_estimate_gas_gas_limit,
+        rpc_execution_histogram,
+    );
 
     // main server app
     let app = match with_metrics {
@@ -923,6 +1675,7 @@ mod tests {
             logs_max_block_range: 1000,
             eth_call_gas_limit: u64::MAX,
             eth_estimate_gas_gas_limit: u64::MAX,
+            rpc_execution_histogram: None,
         };
 
         test::init_service(

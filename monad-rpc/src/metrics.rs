@@ -148,3 +148,16 @@ pub fn build_otel_meter_provider(
 
     Ok(provider_builder.build())
 }
+
+pub(crate) fn linear_boundaries<T>(start: T, step: T, count: usize) -> Vec<T>
+where
+    T: std::ops::Add<Output = T> + Copy,
+{
+    let mut boundaries = Vec::with_capacity(count);
+    let mut current = start;
+    for _ in 0..count {
+        boundaries.push(current);
+        current = current + step;
+    }
+    boundaries
+}
