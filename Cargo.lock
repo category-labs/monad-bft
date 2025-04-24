@@ -5183,6 +5183,7 @@ dependencies = [
  "monad-ethcall",
  "monad-node-config",
  "monad-rpc-docs",
+ "monad-tracing-timing",
  "monad-triedb-utils",
  "monad-types",
  "notify",

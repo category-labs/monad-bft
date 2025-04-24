@@ -13,7 +13,9 @@ use tracing::debug;
 use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
-use crate::{fee::FixedFee, txpool::EthTxPoolBridgeClient, websocket::Disconnect};
+use crate::{
+    fee::FixedFee, metrics::Metrics, txpool::EthTxPoolBridgeClient, websocket::Disconnect,
+};
 
 #[derive(Clone)]
 pub struct MonadRpcResources {
@@ -37,6 +39,7 @@ pub struct MonadRpcResources {
     pub use_eth_get_logs_index: bool,
     pub max_finalized_block_cache_len: u64,
     pub enable_eth_call_statistics: bool,
+    pub metrics: Option<Metrics>,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -68,6 +71,7 @@ impl MonadRpcResources {
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
         enable_eth_call_statistics: bool,
+        metrics: Option<Metrics>,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -94,6 +98,7 @@ impl MonadRpcResources {
             use_eth_get_logs_index,
             max_finalized_block_cache_len,
             enable_eth_call_statistics,
+            metrics,
         }
     }
 }

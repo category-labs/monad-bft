@@ -11,10 +11,12 @@ use monad_rpc::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
+    metrics,
     timing::TimingMiddleware,
     txpool::EthTxPoolBridge,
     websocket,
 };
+use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
 use tokio::sync::Semaphore;
@@ -29,7 +31,6 @@ use tracing_subscriber::{
 use self::cli::Cli;
 
 mod cli;
-mod metrics;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
@@ -38,6 +39,7 @@ async fn main() -> std::io::Result<()> {
         .expect("node toml parse error");
 
     let s = Registry::default()
+        .with(TimingsLayer::new())
         .with(EnvFilter::from_default_env())
         .with(
             FmtLayer::default()
@@ -178,7 +180,23 @@ async fn main() -> std::io::Result<()> {
         )))
     });
 
-    let resources = MonadRpcResources::new(
+    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
+        args.otel_endpoint.as_ref().map(|endpoint| {
+            let provider = metrics::build_otel_meter_provider(
+                endpoint,
+                node_config.node_name,
+                std::time::Duration::from_secs(5),
+            )
+            .expect("failed to build otel meter");
+            opentelemetry::global::set_meter_provider(provider.clone());
+            provider
+        });
+
+    let with_metrics = meter_provider
+        .as_ref()
+        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
+
+    let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         triedb_env,
         eth_call_executor,
@@ -198,23 +216,8 @@ async fn main() -> std::io::Result<()> {
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
         args.enable_admin_eth_call_statistics,
+        with_metrics.clone(),
     );
-
-    let meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider> =
-        args.otel_endpoint.as_ref().map(|endpoint| {
-            let provider = metrics::build_otel_meter_provider(
-                endpoint,
-                node_config.node_name,
-                std::time::Duration::from_secs(5),
-            )
-            .expect("failed to build otel meter");
-            opentelemetry::global::set_meter_provider(provider.clone());
-            provider
-        });
-
-    let with_metrics = meter_provider
-        .as_ref()
-        .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
     // main server app
     let app = match with_metrics {
@@ -224,7 +227,7 @@ async fn main() -> std::io::Result<()> {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
-                .app_data(web::Data::new(resources.clone()))
+                .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
@@ -237,7 +240,7 @@ async fn main() -> std::io::Result<()> {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
-                .app_data(web::Data::new(resources.clone()))
+                .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
         })
@@ -282,7 +285,7 @@ mod tests {
 
     async fn init_server(
     ) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
-        let resources = MonadRpcResources {
+        let app_state = MonadRpcResources {
             txpool_bridge_client: EthTxPoolBridgeClient::for_testing(),
             triedb_reader: None,
             eth_call_executor: None,
@@ -303,13 +306,14 @@ mod tests {
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
             enable_eth_call_statistics: true,
+            metrics: None,
         };
 
         test::init_service(
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(2_000_000))
-                .app_data(web::Data::new(resources.clone()))
+                .app_data(web::Data::new(app_state.clone()))
                 .service(web::resource("/").route(web::post().to(rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(websocket::handler))),
         )

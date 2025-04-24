@@ -1,6 +1,7 @@
 use actix_web::{web, HttpResponse};
+use monad_tracing_timing::TimingSpanExtension;
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::{debug, info, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
@@ -153,6 +154,758 @@ pub async fn rpc_handler(
     HttpResponse::Ok().json(&response)
 }
 
+#[allow(non_snake_case)]
+async fn admin_ethCallStatistics(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    if app_state.enable_eth_call_statistics {
+        let available_permits = app_state.rate_limiter.available_permits();
+        if let Some(tracker) = &app_state.eth_call_stats_tracker {
+            monad_admin_ethCallStatistics(
+                app_state.eth_call_executor_fibers,
+                app_state.total_permits,
+                available_permits,
+                tracker,
+            )
+            .await
+            .map(serialize_result)?
+        } else {
+            Err(JsonRpcError::internal_error(
+                "stats tracking not initialized".into(),
+            ))
+        }
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn debug_getRawBlock(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_getRawBlock(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_getRawHeader(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_getRawHeader(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_getRawReceipts(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_getRawReceipts(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_getRawTransaction(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_getRawTransaction(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_traceBlockByHash(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_traceBlockByNumber(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_traceCall(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+    // acquire the concurrent requests permit
+    let _permit = &app_state
+        .rate_limiter
+        .try_acquire()
+        .map_err(|_| JsonRpcError::internal_error("eth_call concurrent requests limit".into()))?;
+
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_traceCall(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        app_state.eth_call_provider_gas_limit,
+        params,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn debug_traceTransaction(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_call(
+    request_id: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+
+    // acquire the concurrent requests permit
+    let _permit = match app_state.rate_limiter.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                tracker.record_queue_rejection().await;
+            }
+            return Err(JsonRpcError::internal_error(
+                "eth_call concurrent requests limit".into(),
+            ));
+        }
+    };
+
+    let params = serde_json::from_value(params).invalid_params()?;
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        tracker.record_request_start(&request_id).await;
+    }
+
+    let result = monad_eth_call(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        app_state.eth_call_provider_gas_limit,
+        params,
+    )
+    .await;
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        let is_error = result.is_err();
+        tracker.record_request_complete(&request_id, is_error).await;
+    }
+
+    result.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_sendRawTransaction(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    monad_eth_sendRawTransaction(
+        triedb_env,
+        &app_state.txpool_bridge_client,
+        app_state.base_fee_per_gas.clone(),
+        params,
+        app_state.chain_id,
+        app_state.allow_unprotected_txs,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_getLogs(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_eth_getLogs(
+        triedb_env,
+        &app_state.archive_reader,
+        app_state.logs_max_block_range,
+        params,
+        app_state.use_eth_get_logs_index,
+        app_state.dry_run_get_logs_index,
+        app_state.max_finalized_block_cache_len,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_getTransactionByHash(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getTransactionByHash(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBlockByHash(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBlockByHash(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBlockByNumber(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBlockByNumber(reader, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getTransactionByBlockHashAndIndex(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getTransactionByBlockHashAndIndex(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getTransactionByBlockNumberAndIndex(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBlockTransactionCountByHash(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBlockTransactionCountByHash(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBlockTransactionCountByNumber(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBlockTransactionCountByNumber(triedb_env, &app_state.archive_reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBalance(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getBalance(reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getCode(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getCode(reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getStorageAt(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getStorageAt(reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getTransactionCount(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_getTransactionCount(reader, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_blockNumber(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(reader) = &app_state.triedb_reader {
+        monad_eth_blockNumber(reader).await.map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_chainId(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    monad_eth_chainId(app_state.chain_id)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_syncing(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    serialize_result(monad_eth_syncing().await)
+}
+
+#[allow(non_snake_case)]
+async fn eth_estimateGas(
+    request_id: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let Some(triedb_env) = &app_state.triedb_reader else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+    let Some(ref eth_call_executor) = app_state.eth_call_executor else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+
+    // acquire the concurrent requests permit
+    let _permit = match app_state.rate_limiter.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            if let Some(tracker) = &app_state.eth_call_stats_tracker {
+                tracker.record_queue_rejection().await;
+            }
+            return Err(JsonRpcError::internal_error(
+                "eth_estimateGas concurrent requests limit".into(),
+            ));
+        }
+    };
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        tracker.record_request_start(&request_id).await;
+    }
+
+    let params = serde_json::from_value(params).invalid_params()?;
+    let result = monad_eth_estimateGas(
+        triedb_env,
+        eth_call_executor.clone(),
+        app_state.chain_id,
+        app_state.eth_estimate_gas_provider_gas_limit,
+        params,
+    )
+    .await;
+
+    if let Some(tracker) = &app_state.eth_call_stats_tracker {
+        let is_error = result.is_err();
+        tracker.record_request_complete(&request_id, is_error).await;
+    }
+
+    result.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_gasPrice(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_maxPriorityFeePerGas(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        monad_eth_maxPriorityFeePerGas(triedb_env)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_feeHistory(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    if let Some(triedb_env) = &app_state.triedb_reader {
+        let params = serde_json::from_value(params).invalid_params()?;
+        monad_eth_feeHistory(triedb_env, params)
+            .await
+            .map(serialize_result)?
+    } else {
+        Err(JsonRpcError::method_not_supported())
+    }
+}
+
+#[allow(non_snake_case)]
+async fn eth_getTransactionReceipt(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let Some(triedb_reader) = &app_state.triedb_reader else {
+        return Err(JsonRpcError::method_not_supported());
+    };
+
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_eth_getTransactionReceipt(triedb_reader, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_getBlockReceipts(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_eth_getBlockReceipts(triedb_reader, &app_state.archive_reader, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn net_version(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    monad_net_version(app_state.chain_id).map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn trace_block(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_trace_block(params).await.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn trace_call(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_trace_call(params).await.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn trace_callMany(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    monad_trace_callMany().await.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn trace_get(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_trace_get(params).await.map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn trace_transaction(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_trace_transaction(params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn txpool_statusByHash(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_txpool_statusByHash(&app_state.txpool_bridge_client, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn txpool_statusByAddress(
+    _: RequestId,
+    app_state: &MonadRpcResources,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    let params = serde_json::from_value(params).invalid_params()?;
+    monad_txpool_statusByAddress(&app_state.txpool_bridge_client, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn web3_clientVersion(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    monad_web3_client_version().map(serialize_result)?
+}
+
+macro_rules! enabled_methods {
+    ($($(#[$attr:meta])* $method:ident),* $(,)?) => {
+
+        #[derive(Debug, Clone, Copy)]
+        #[allow(non_camel_case_types)]
+        enum EnabledMethod {
+            $(
+                $(#[$attr])*
+                $method,
+            )*
+        }
+
+        impl TryFrom<&str> for EnabledMethod {
+            type Error = JsonRpcError;
+
+            fn try_from(method: &str) -> Result<Self, Self::Error> {
+                match method {
+                    $(
+                        stringify!($method) => Ok(EnabledMethod::$method),
+                    )*
+                    _ => Err(JsonRpcError::method_not_found()),
+                }
+            }
+        }
+
+        impl EnabledMethod {
+            fn span(&self) -> Span {
+                match self {
+                    $(
+                        EnabledMethod::$method => trace_span!(stringify!($method)),
+                    )*
+                }
+            }
+
+            async fn call(
+                &self,
+                request_id: RequestId,
+                app_state: &MonadRpcResources,
+                params: Value,
+            ) -> Result<Value, JsonRpcError> {
+                match self {
+                    $(
+                        EnabledMethod::$method => $method(request_id, app_state, params).await,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+enabled_methods!(
+    admin_ethCallStatistics,
+    debug_getRawBlock,
+    debug_getRawHeader,
+    debug_getRawReceipts,
+    debug_getRawTransaction,
+    debug_traceBlockByHash,
+    debug_traceBlockByNumber,
+    debug_traceCall,
+    debug_traceTransaction,
+    eth_call,
+    eth_sendRawTransaction,
+    eth_getLogs,
+    eth_getTransactionByHash,
+    eth_getBlockByHash,
+    eth_getBlockByNumber,
+    eth_getTransactionByBlockHashAndIndex,
+    eth_getTransactionByBlockNumberAndIndex,
+    eth_getBlockTransactionCountByHash,
+    eth_getBlockTransactionCountByNumber,
+    eth_getBalance,
+    eth_getCode,
+    eth_getStorageAt,
+    eth_getTransactionCount,
+    eth_blockNumber,
+    eth_chainId,
+    eth_syncing,
+    eth_estimateGas,
+    eth_gasPrice,
+    eth_maxPriorityFeePerGas,
+    eth_feeHistory,
+    eth_getTransactionReceipt,
+    eth_getBlockReceipts,
+    net_version,
+    trace_block,
+    trace_call,
+    trace_callMany,
+    trace_get,
+    trace_transaction,
+    txpool_statusByHash,
+    txpool_statusByAddress,
+    web3_clientVersion
+);
+
 #[tracing::instrument(level = "debug", skip(app_state))]
 async fn rpc_select(
     app_state: &MonadRpcResources,
@@ -160,424 +913,13 @@ async fn rpc_select(
     params: Value,
     request_id: RequestId,
 ) -> Result<Value, JsonRpcError> {
-    match method {
-        "admin_ethCallStatistics" => {
-            if app_state.enable_eth_call_statistics {
-                let available_permits = app_state.rate_limiter.available_permits();
-                if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                    monad_admin_ethCallStatistics(
-                        app_state.eth_call_executor_fibers,
-                        app_state.total_permits,
-                        available_permits,
-                        tracker,
-                    )
-                    .await
-                    .map(serialize_result)?
-                } else {
-                    Err(JsonRpcError::internal_error(
-                        "stats tracking not initialized".into(),
-                    ))
-                }
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "debug_getRawBlock" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawBlock(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawHeader" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawHeader(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawReceipts" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawReceipts(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_getRawTransaction" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawTransaction(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceBlockByHash" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByHash(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceBlockByNumber" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceBlockByNumber(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "debug_traceCall" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-            // acquire the concurrent requests permit
-            let _permit = &app_state.rate_limiter.try_acquire().map_err(|_| {
-                JsonRpcError::internal_error("eth_call concurrent requests limit".into())
-            })?;
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceCall(
-                triedb_env,
-                eth_call_executor.clone(),
-                app_state.chain_id,
-                app_state.eth_call_provider_gas_limit,
-                params,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "debug_traceTransaction" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_traceTransaction(triedb_env, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_call" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            // acquire the concurrent requests permit
-            let _permit = match app_state.rate_limiter.try_acquire() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                        tracker.record_queue_rejection().await;
-                    }
-                    return Err(JsonRpcError::internal_error(
-                        "eth_call concurrent requests limit".into(),
-                    ));
-                }
-            };
-
-            let params = serde_json::from_value(params).invalid_params()?;
-
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_request_start(&request_id).await;
-            }
-
-            let result = monad_eth_call(
-                triedb_env,
-                eth_call_executor.clone(),
-                app_state.chain_id,
-                app_state.eth_call_provider_gas_limit,
-                params,
-            )
-            .await;
-
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                let is_error = result.is_err();
-                tracker.record_request_complete(&request_id, is_error).await;
-            }
-
-            result.map(serialize_result)?
-        }
-        "eth_sendRawTransaction" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-            monad_eth_sendRawTransaction(
-                triedb_env,
-                &app_state.txpool_bridge_client,
-                app_state.base_fee_per_gas.clone(),
-                params,
-                app_state.chain_id,
-                app_state.allow_unprotected_txs,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_getLogs" => {
-            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getLogs(
-                triedb_env,
-                &app_state.archive_reader,
-                app_state.logs_max_block_range,
-                params,
-                app_state.use_eth_get_logs_index,
-                app_state.dry_run_get_logs_index,
-                app_state.max_finalized_block_cache_len,
-            )
-            .await
-            .map(serialize_result)?
-        }
-        "eth_getTransactionByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByHash(triedb_env, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockByHash" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByHash(triedb_env, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockByNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockByNumber(reader, &app_state.archive_reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionByBlockHashAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockHashAndIndex(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionByBlockNumberAndIndex" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionByBlockNumberAndIndex(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockTransactionCountByHash" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByHash(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBlockTransactionCountByNumber" => {
-            if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBlockTransactionCountByNumber(
-                    triedb_env,
-                    &app_state.archive_reader,
-                    params,
-                )
-                .await
-                .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getBalance" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getBalance(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getCode" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getCode(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getStorageAt" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getStorageAt(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionCount" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_getTransactionCount(reader, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_blockNumber" => {
-            if let Some(reader) = &app_state.triedb_reader {
-                monad_eth_blockNumber(reader).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_chainId" => monad_eth_chainId(app_state.chain_id)
-            .await
-            .map(serialize_result)?,
-        "eth_syncing" => serialize_result(monad_eth_syncing().await),
-        "eth_estimateGas" => {
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-            let Some(ref eth_call_executor) = app_state.eth_call_executor else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            // acquire the concurrent requests permit
-            let _permit = match app_state.rate_limiter.try_acquire() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                        tracker.record_queue_rejection().await;
-                    }
-                    return Err(JsonRpcError::internal_error(
-                        "eth_estimateGas concurrent requests limit".into(),
-                    ));
-                }
-            };
-
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                tracker.record_request_start(&request_id).await;
-            }
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            let result = monad_eth_estimateGas(
-                triedb_env,
-                eth_call_executor.clone(),
-                app_state.chain_id,
-                app_state.eth_estimate_gas_provider_gas_limit,
-                params,
-            )
-            .await;
-
-            if let Some(tracker) = &app_state.eth_call_stats_tracker {
-                let is_error = result.is_err();
-                tracker.record_request_complete(&request_id, is_error).await;
-            }
-
-            result.map(serialize_result)?
-        }
-        "eth_gasPrice" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_maxPriorityFeePerGas" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                monad_eth_maxPriorityFeePerGas(triedb_env)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_feeHistory" => {
-            if let Some(triedb_env) = &app_state.triedb_reader {
-                let params = serde_json::from_value(params).invalid_params()?;
-                monad_eth_feeHistory(triedb_env, params)
-                    .await
-                    .map(serialize_result)?
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
-        "eth_getTransactionReceipt" => {
-            let Some(triedb_reader) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getTransactionReceipt(triedb_reader, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "eth_getBlockReceipts" => {
-            let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_eth_getBlockReceipts(triedb_reader, &app_state.archive_reader, params)
-                .await
-                .map(serialize_result)?
-        }
-        "net_version" => monad_net_version(app_state.chain_id).map(serialize_result)?,
-        "trace_block" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_block(params).await.map(serialize_result)?
-        }
-        "trace_call" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_call(params).await.map(serialize_result)?
-        }
-        "trace_callMany" => monad_trace_callMany().await.map(serialize_result)?,
-        "trace_get" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_get(params).await.map(serialize_result)?
-        }
-        "trace_transaction" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_transaction(params)
-                .await
-                .map(serialize_result)?
-        }
-        "txpool_statusByHash" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByHash(&app_state.txpool_bridge_client, params)
-                .await
-                .map(serialize_result)?
-        }
-        "txpool_statusByAddress" => {
-            let params = serde_json::from_value(params).invalid_params()?;
-            monad_txpool_statusByAddress(&app_state.txpool_bridge_client, params)
-                .await
-                .map(serialize_result)?
-        }
-        "web3_clientVersion" => monad_web3_client_version().map(serialize_result)?,
-        _ => Err(JsonRpcError::method_not_found()),
+    let method: EnabledMethod = method.try_into()?;
+    let mut span = method.span();
+    if let Some(metrics) = &app_state.metrics {
+        span = span.with_main_timings(metrics.execution_histogram.clone());
     }
+    method
+        .call(request_id, app_state, params)
+        .instrument(span)
+        .await
 }

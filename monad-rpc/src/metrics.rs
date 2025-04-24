@@ -97,6 +97,7 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 pub struct Metrics {
     request_duration: Histogram<f64>,
     active_requests: UpDownCounter<i64>,
+    pub(crate) execution_histogram: Histogram<f64>,
 }
 
 impl Metrics {
@@ -112,9 +113,17 @@ impl Metrics {
             .with_description("Number of concurrent http requests that are in-flight")
             .build();
 
+        let execution_histogram = meter
+            .f64_histogram("monad.rpc.execution_duration")
+            .with_description("duration of the rpc method execution")
+            .with_unit("s")
+            .with_boundaries(LOW_MS_TO_S.to_vec())
+            .build();
+
         Self {
             request_duration,
             active_requests,
+            execution_histogram,
         }
     }
 }
@@ -148,3 +157,7 @@ pub fn build_otel_meter_provider(
 
     Ok(provider_builder.build())
 }
+
+const LOW_MS_TO_S: &[f64] = &[
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0,
+];

@@ -5,6 +5,7 @@ pub mod gas_oracle;
 pub mod handlers;
 pub mod hex;
 pub mod jsonrpc;
+pub mod metrics;
 pub mod timing;
 pub mod trace;
 pub mod txpool;

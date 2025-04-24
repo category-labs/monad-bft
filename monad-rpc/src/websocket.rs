@@ -135,6 +135,7 @@ mod tests {
             use_eth_get_logs_index: false,
             max_finalized_block_cache_len: 200,
             enable_eth_call_statistics: true,
+            metrics: None,
         };
 
         actix_test::start(move || {

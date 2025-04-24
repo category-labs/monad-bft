@@ -28,6 +28,7 @@ monad-node-config = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
+monad-tracing-timing = { workspace = true }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
