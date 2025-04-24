@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use aws_config::{
-    meta::region::RegionProviderChain, timeout::TimeoutConfig, BehaviorVersion, Region, SdkConfig,
+    meta::region::RegionProviderChain, retry::RetryConfig, timeout::TimeoutConfig, BehaviorVersion,
+    Region, SdkConfig,
 };
 use eyre::{bail, OptionExt};
 use futures::join;
@@ -12,7 +13,10 @@ use crate::{
     prelude::*,
 };
 
-pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
+const DEFAULT_BLOB_STORE_TIMEOUT: u64 = 30;
+const DEFAULT_INDEX_STORE_TIMEOUT: u64 = 20;
+
+pub async fn get_aws_config(region: Option<String>, timeout_secs: u64) -> SdkConfig {
     let region_provider = RegionProviderChain::default_provider().or_else(
         region
             .map(Region::new)
@@ -32,11 +36,12 @@ pub async fn get_aws_config(region: Option<String>) -> SdkConfig {
         .region(region_provider)
         .timeout_config(
             TimeoutConfig::builder()
-                .operation_timeout(Duration::from_secs(5))
-                .operation_attempt_timeout(Duration::from_millis(1500))
-                .read_timeout(Duration::from_secs(2))
+                .operation_timeout(Duration::from_secs(timeout_secs))
+                .operation_attempt_timeout(Duration::from_secs(timeout_secs))
+                .read_timeout(Duration::from_secs(timeout_secs))
                 .build(),
         )
+        .retry_config(RetryConfig::adaptive())
         .load()
         .await
 }
@@ -232,14 +237,14 @@ impl AwsCliArgs {
     pub async fn build_blob_store(&self, metrics: &Metrics) -> KVStoreErased {
         S3Bucket::new(
             self.bucket.clone(),
-            &get_aws_config(self.region.clone()).await,
+            &get_aws_config(self.region.clone(), DEFAULT_BLOB_STORE_TIMEOUT).await,
             metrics.clone(),
         )
         .into()
     }
 
     pub async fn build_index_store(&self, metrics: &Metrics) -> KVStoreErased {
-        let config = &get_aws_config(self.region.clone()).await;
+        let config = &get_aws_config(self.region.clone(), DEFAULT_INDEX_STORE_TIMEOUT).await;
 
         DynamoDBArchive::new(
             S3Bucket::new(self.bucket.clone(), config, metrics.clone()),

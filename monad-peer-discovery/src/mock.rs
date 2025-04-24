@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddrV4, time::Duration};
 
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -6,9 +6,10 @@ use monad_crypto::certificate_signature::{
 use monad_types::NodeId;
 use tracing::debug;
 
-use crate::algo::{
+use crate::{
     PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, Ping, Pong,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
+    PeerLookupResponse, Ping, Pong,
 };
 
 struct PeerState {
@@ -68,7 +69,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryBuilder for PingPongDisco
 
         let cmds = peers
             .into_iter()
-            .flat_map(|peer| state.handle_send_ping(peer))
+            .flat_map(|peer| state.send_ping(peer))
             .collect();
 
         (state, cmds)
@@ -87,7 +88,7 @@ impl<ST: CertificateSignatureRecoverable> PingPongDiscovery<ST> {
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
                 node_id: peer,
                 duration: self.ping_period,
-                on_timeout: PeerDiscoveryEvent::SendPing { target: peer },
+                on_timeout: PeerDiscoveryEvent::SendPing { to: peer },
             }),
         ]
     }
@@ -99,7 +100,7 @@ where
 {
     type SignatureType = ST;
 
-    fn handle_send_ping(
+    fn send_ping(
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
@@ -168,7 +169,44 @@ where
         cmds
     }
 
+    fn send_peer_lookup_request(
+        &mut self,
+        to: NodeId<CertificateSignaturePubKey<ST>>,
+        target: NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?to, ?target, "sending peer lookup request");
+
+        Vec::new()
+    }
+
+    fn handle_peer_lookup_request(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        request: PeerLookupRequest<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, ?request, "handling peer lookup request");
+
+        Vec::new()
+    }
+
+    fn handle_peer_lookup_response(
+        &mut self,
+        from: NodeId<CertificateSignaturePubKey<ST>>,
+        response: PeerLookupResponse<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?from, ?response, "handling peer lookup response");
+
+        Vec::new()
+    }
+
     fn metrics(&self) -> &PeerDiscMetrics {
         &self.metrics
+    }
+
+    fn get_sock_addr_by_id(
+        &self,
+        id: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<SocketAddrV4> {
+        None
     }
 }

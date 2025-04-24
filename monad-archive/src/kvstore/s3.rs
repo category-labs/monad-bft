@@ -81,31 +81,20 @@ impl KVReader for S3Bucket {
 impl KVStore for S3Bucket {
     // Upload rlp-encoded bytes with retry
     async fn put(&self, key: impl AsRef<str>, data: Vec<u8>) -> Result<()> {
-        retry(|| {
-            let client = &self.client;
-            let bucket = &self.bucket;
-            let key = key.as_ref().to_string();
-            let body = ByteStream::from(data.clone());
-            let metrics = &self.metrics;
+        let key = key.as_ref();
 
-            async move {
-                client
-                    .put_object()
-                    .bucket(bucket)
-                    .key(&key)
-                    .body(body)
-                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
-                    .send()
-                    .await
-                    .wrap_err_with(|| {
-                        metrics.inc_counter(AWS_S3_ERRORS);
-                        format!("Failed to upload {}. Retrying...", key)
-                    })
-            }
-        })
-        .await
-        .map(|_| ())
-        .wrap_err_with(|| format!("Failed to upload {}. Retrying...", key.as_ref()))?;
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(data.clone()))
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await
+            .wrap_err_with(|| {
+                self.metrics.inc_counter(AWS_S3_ERRORS);
+                format!("Failed to upload, retries exhausted. Key: {}", key)
+            })?;
 
         self.metrics.counter(AWS_S3_WRITES, 1);
         Ok(())
@@ -153,29 +142,19 @@ impl KVStore for S3Bucket {
     }
 
     async fn delete(&self, key: impl AsRef<str>) -> Result<()> {
-        retry(|| {
-            let client = &self.client;
-            let bucket = &self.bucket;
-            let key = key.as_ref().to_string();
-            let metrics = &self.metrics;
+        let key = key.as_ref();
 
-            async move {
-                client
-                    .delete_object()
-                    .bucket(bucket)
-                    .key(&key)
-                    .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
-                    .send()
-                    .await
-                    .wrap_err_with(|| {
-                        metrics.inc_counter(AWS_S3_ERRORS);
-                        format!("Failed to delete {}. Retrying...", key)
-                    })
-            }
-        })
-        .await
-        .map(|_| ())
-        .wrap_err_with(|| format!("Failed to delete {}. Retrying...", key.as_ref()))?;
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .request_payer(aws_sdk_s3::types::RequestPayer::Requester)
+            .send()
+            .await
+            .wrap_err_with(|| {
+                self.metrics.inc_counter(AWS_S3_ERRORS);
+                format!("Failed to delete, retries exhausted. Key: {}", key)
+            })?;
 
         Ok(())
     }

@@ -5100,9 +5100,13 @@ dependencies = [
 name = "monad-peer-discovery"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-crypto",
  "monad-executor-glue",
+ "monad-testutil",
  "monad-types",
+ "rand",
+ "rand_chacha",
  "tracing",
 ]
 
