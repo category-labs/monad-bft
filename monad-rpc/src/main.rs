@@ -1018,250 +1018,98 @@ impl RPCMethod for Web3ClientVersion {
     }
 }
 
-enum RegisteredMethods {
-    DebugGetRawBlock(DebugGetRawBlock),
-    DebugGetRawHeader(DebugGetRawHeader),
-    DebugGetRawReceipts(DebugGetRawReceipts),
-    DebugGetRawTransaction(DebugGetRawTransaction),
-    DebugTraceBlockByHash(DebugTraceBlockByHash),
-    DebugTraceBlockByNumber(DebugTraceBlockByNumber),
-    DebugTraceCall(DebugTraceCall),
-    DebugTraceTransaction(DebugTraceTransaction),
-    EthCall(EthCall),
-    EthSendRawTransaction(EthSendRawTransaction),
-    EthGetLogs(EthGetLogs),
-    EthGetTransactionByHash(EthGetTransactionByHash),
-    EthGetBlockByHash(EthGetBlockByHash),
-    EthGetBlockByNumber(EthGetBlockByNumber),
-    EthGetTransactionByBlockHashAndIndex(EthGetTransactionByBlockHashAndIndex),
-    EthGetTransactionByBlockNumberAndIndex(EthGetTransactionByBlockNumberAndIndex),
-    EthGetBlockTransactionCountByHash(EthGetBlockTransactionCountByHash),
-    EthGetBlockTransactionCountByNumber(EthGetBlockTransactionCountByNumber),
-    EthGetBalance(EthGetBalance),
-    EthGetCode(EthGetCode),
-    EthGetStorageAt(EthGetStorageAt),
-    EthGetTransactionCount(EthGetTransactionCount),
-    EthBlockNumber(EthBlockNumber),
-    EthChainId(EthChainId),
-    EthSyncing(EthSyncing),
-    EthEstimateGas(EthEstimateGas),
-    EthGasPrice(EthGasPrice),
-    EthMaxPriorityFeePerGas(EthMaxPriorityFeePerGas),
-    EthFeeHistory(EthFeeHistory),
-    EthGetTransactionReceipt(EthGetTransactionReceipt),
-    EthGetBlockReceipts(EthGetBlockReceipts),
-    EthGetProof(EthGetProof),
-    EthSendTransaction(EthSendTransaction),
-    EthSignTransaction(EthSignTransaction),
-    EthSign(EthSign),
-    EthHashrate(EthHashrate),
-    NetVersion(NetVersion),
-    TraceBlock(TraceBlock),
-    TraceCall(TraceCall),
-    TraceCallMany(TraceCallMany),
-    TraceGet(TraceGet),
-    TraceTransaction(TraceTransaction),
-    TxpoolStatusByHash(TxpoolStatusByHash),
-    TxpoolStatusByAddress(TxpoolStatusByAddress),
-    Web3ClientVersion(Web3ClientVersion),
+macro_rules! registered_methods {
+    ($($method:ident),* $(,)?) => {
+        enum RegisteredMethods {
+            $(
+                $method($method),
+            )*
+        }
+
+        impl RegisteredMethods {
+            fn span(&self) -> Span {
+                match self {
+                    $(
+                        Self::$method(_) => debug_span!($method::METHOD),
+                    )*
+                }
+            }
+
+            async fn call(
+                &self,
+                resources: &MonadRpcResources,
+                params: Value,
+            ) -> Result<Value, JsonRpcError> {
+                match self {
+                    $(
+                        Self::$method(method) => method.call(resources, params).await,
+                    )*
+                }
+            }
+        }
+
+        impl TryFrom<&str> for RegisteredMethods {
+            type Error = JsonRpcError;
+
+            fn try_from(method: &str) -> Result<Self, Self::Error> {
+                match method {
+                    $(
+                        $method::METHOD => Ok(Self::$method($method{})),
+                    )*
+                    _ => Err(JsonRpcError::method_not_found()),
+                }
+            }
+        }
+    };
 }
 
-impl RegisteredMethods {
-    fn span(&self) -> Span {
-        match self {
-            Self::DebugGetRawBlock(_) => debug_span!(DebugGetRawBlock::METHOD),
-            Self::DebugGetRawHeader(_) => debug_span!(DebugGetRawHeader::METHOD),
-            Self::DebugGetRawReceipts(_) => debug_span!(DebugGetRawReceipts::METHOD),
-            Self::DebugGetRawTransaction(_) => debug_span!(DebugGetRawTransaction::METHOD),
-            Self::DebugTraceBlockByHash(_) => debug_span!(DebugTraceBlockByHash::METHOD),
-            Self::DebugTraceBlockByNumber(_) => debug_span!(DebugTraceBlockByNumber::METHOD),
-            Self::DebugTraceCall(_) => debug_span!(DebugTraceCall::METHOD),
-            Self::DebugTraceTransaction(_) => debug_span!(DebugTraceTransaction::METHOD),
-            Self::EthCall(_) => debug_span!(EthCall::METHOD),
-            Self::EthSendRawTransaction(_) => debug_span!(EthSendRawTransaction::METHOD),
-            Self::EthGetLogs(_) => debug_span!(EthGetLogs::METHOD),
-            Self::EthGetTransactionByHash(_) => debug_span!(EthGetTransactionByHash::METHOD),
-            Self::EthGetBlockByHash(_) => debug_span!(EthGetBlockByHash::METHOD),
-            Self::EthGetBlockByNumber(_) => debug_span!(EthGetBlockByNumber::METHOD),
-            Self::EthGetTransactionByBlockHashAndIndex(_) => {
-                debug_span!(EthGetTransactionByBlockHashAndIndex::METHOD)
-            }
-            Self::EthGetTransactionByBlockNumberAndIndex(_) => {
-                debug_span!(EthGetTransactionByBlockNumberAndIndex::METHOD)
-            }
-            Self::EthGetBlockTransactionCountByHash(_) => {
-                debug_span!(EthGetBlockTransactionCountByHash::METHOD)
-            }
-            Self::EthGetBlockTransactionCountByNumber(_) => {
-                debug_span!(EthGetBlockTransactionCountByNumber::METHOD)
-            }
-            Self::EthGetBalance(_) => debug_span!(EthGetBalance::METHOD),
-            Self::EthGetCode(_) => debug_span!(EthGetCode::METHOD),
-            Self::EthGetStorageAt(_) => debug_span!(EthGetStorageAt::METHOD),
-            Self::EthGetTransactionCount(_) => debug_span!(EthGetTransactionCount::METHOD),
-            Self::EthBlockNumber(_) => debug_span!(EthBlockNumber::METHOD),
-            Self::EthChainId(_) => debug_span!(EthChainId::METHOD),
-            Self::EthSyncing(_) => debug_span!(EthSyncing::METHOD),
-            Self::EthEstimateGas(_) => debug_span!(EthEstimateGas::METHOD),
-            Self::EthGasPrice(_) => debug_span!(EthGasPrice::METHOD),
-            Self::EthMaxPriorityFeePerGas(_) => debug_span!(EthMaxPriorityFeePerGas::METHOD),
-            Self::EthFeeHistory(_) => debug_span!(EthFeeHistory::METHOD),
-            Self::EthGetTransactionReceipt(_) => debug_span!(EthGetTransactionReceipt::METHOD),
-            Self::EthGetBlockReceipts(_) => debug_span!(EthGetBlockReceipts::METHOD),
-            Self::EthGetProof(_) => debug_span!(EthGetProof::METHOD),
-            Self::EthSendTransaction(_) => debug_span!(EthSendTransaction::METHOD),
-            Self::EthSignTransaction(_) => debug_span!(EthSignTransaction::METHOD),
-            Self::EthSign(_) => debug_span!(EthSign::METHOD),
-            Self::EthHashrate(_) => debug_span!(EthHashrate::METHOD),
-            Self::NetVersion(_) => debug_span!(NetVersion::METHOD),
-            Self::TraceBlock(_) => debug_span!(TraceBlock::METHOD),
-            Self::TraceCall(_) => debug_span!(TraceCall::METHOD),
-            Self::TraceCallMany(_) => debug_span!(TraceCallMany::METHOD),
-            Self::TraceGet(_) => debug_span!(TraceGet::METHOD),
-            Self::TraceTransaction(_) => debug_span!(TraceTransaction::METHOD),
-            Self::TxpoolStatusByHash(_) => debug_span!(TxpoolStatusByHash::METHOD),
-            Self::TxpoolStatusByAddress(_) => debug_span!(TxpoolStatusByAddress::METHOD),
-            Self::Web3ClientVersion(_) => debug_span!(Web3ClientVersion::METHOD),
-        }
-    }
-
-    async fn call(
-        &self,
-        resources: &MonadRpcResources,
-        params: Value,
-    ) -> Result<Value, JsonRpcError> {
-        match self {
-            Self::DebugGetRawBlock(method) => method.call(resources, params).await,
-            Self::DebugGetRawHeader(method) => method.call(resources, params).await,
-            Self::DebugGetRawReceipts(method) => method.call(resources, params).await,
-            Self::DebugGetRawTransaction(method) => method.call(resources, params).await,
-            Self::DebugTraceBlockByHash(method) => method.call(resources, params).await,
-            Self::DebugTraceBlockByNumber(method) => method.call(resources, params).await,
-            Self::DebugTraceCall(method) => method.call(resources, params).await,
-            Self::DebugTraceTransaction(method) => method.call(resources, params).await,
-            Self::EthCall(method) => method.call(resources, params).await,
-            Self::EthSendRawTransaction(method) => method.call(resources, params).await,
-            Self::EthGetLogs(method) => method.call(resources, params).await,
-            Self::EthGetTransactionByHash(method) => method.call(resources, params).await,
-            Self::EthGetBlockByHash(method) => method.call(resources, params).await,
-            Self::EthGetBlockByNumber(method) => method.call(resources, params).await,
-            Self::EthGetTransactionByBlockHashAndIndex(method) => {
-                method.call(resources, params).await
-            }
-            Self::EthGetTransactionByBlockNumberAndIndex(method) => {
-                method.call(resources, params).await
-            }
-            Self::EthGetBlockTransactionCountByHash(method) => method.call(resources, params).await,
-            Self::EthGetBlockTransactionCountByNumber(method) => {
-                method.call(resources, params).await
-            }
-            Self::EthGetBalance(method) => method.call(resources, params).await,
-            Self::EthGetCode(method) => method.call(resources, params).await,
-            Self::EthGetStorageAt(method) => method.call(resources, params).await,
-            Self::EthGetTransactionCount(method) => method.call(resources, params).await,
-            Self::EthBlockNumber(method) => method.call(resources, params).await,
-            Self::EthChainId(method) => method.call(resources, params).await,
-            Self::EthSyncing(method) => method.call(resources, params).await,
-            Self::EthEstimateGas(method) => method.call(resources, params).await,
-            Self::EthGasPrice(method) => method.call(resources, params).await,
-            Self::EthMaxPriorityFeePerGas(method) => method.call(resources, params).await,
-            Self::EthFeeHistory(method) => method.call(resources, params).await,
-            Self::EthGetTransactionReceipt(method) => method.call(resources, params).await,
-            Self::EthGetBlockReceipts(method) => method.call(resources, params).await,
-            Self::EthGetProof(method) => method.call(resources, params).await,
-            Self::EthSendTransaction(method) => method.call(resources, params).await,
-            Self::EthSignTransaction(method) => method.call(resources, params).await,
-            Self::EthSign(method) => method.call(resources, params).await,
-            Self::EthHashrate(method) => method.call(resources, params).await,
-            Self::NetVersion(method) => method.call(resources, params).await,
-            Self::TraceBlock(method) => method.call(resources, params).await,
-            Self::TraceCall(method) => method.call(resources, params).await,
-            Self::TraceCallMany(method) => method.call(resources, params).await,
-            Self::TraceGet(method) => method.call(resources, params).await,
-            Self::TraceTransaction(method) => method.call(resources, params).await,
-            Self::TxpoolStatusByHash(method) => method.call(resources, params).await,
-            Self::TxpoolStatusByAddress(method) => method.call(resources, params).await,
-            Self::Web3ClientVersion(method) => method.call(resources, params).await,
-        }
-    }
-}
-
-impl TryFrom<&str> for RegisteredMethods {
-    type Error = JsonRpcError;
-
-    fn try_from(method_name: &str) -> Result<Self, Self::Error> {
-        match method_name {
-            DebugGetRawBlock::METHOD => Ok(Self::DebugGetRawBlock(DebugGetRawBlock)),
-            DebugGetRawHeader::METHOD => Ok(Self::DebugGetRawHeader(DebugGetRawHeader)),
-            DebugGetRawReceipts::METHOD => Ok(Self::DebugGetRawReceipts(DebugGetRawReceipts)),
-            DebugGetRawTransaction::METHOD => {
-                Ok(Self::DebugGetRawTransaction(DebugGetRawTransaction))
-            }
-            DebugTraceBlockByHash::METHOD => Ok(Self::DebugTraceBlockByHash(DebugTraceBlockByHash)),
-            DebugTraceBlockByNumber::METHOD => {
-                Ok(Self::DebugTraceBlockByNumber(DebugTraceBlockByNumber))
-            }
-            DebugTraceCall::METHOD => Ok(Self::DebugTraceCall(DebugTraceCall)),
-            DebugTraceTransaction::METHOD => Ok(Self::DebugTraceTransaction(DebugTraceTransaction)),
-            EthCall::METHOD => Ok(Self::EthCall(EthCall)),
-            EthSendRawTransaction::METHOD => Ok(Self::EthSendRawTransaction(EthSendRawTransaction)),
-            EthGetLogs::METHOD => Ok(Self::EthGetLogs(EthGetLogs)),
-            EthGetTransactionByHash::METHOD => {
-                Ok(Self::EthGetTransactionByHash(EthGetTransactionByHash))
-            }
-            EthGetBlockByHash::METHOD => Ok(Self::EthGetBlockByHash(EthGetBlockByHash)),
-            EthGetBlockByNumber::METHOD => Ok(Self::EthGetBlockByNumber(EthGetBlockByNumber)),
-            EthGetTransactionByBlockHashAndIndex::METHOD => Ok(
-                Self::EthGetTransactionByBlockHashAndIndex(EthGetTransactionByBlockHashAndIndex),
-            ),
-            EthGetTransactionByBlockNumberAndIndex::METHOD => {
-                Ok(Self::EthGetTransactionByBlockNumberAndIndex(
-                    EthGetTransactionByBlockNumberAndIndex,
-                ))
-            }
-            EthGetBlockTransactionCountByHash::METHOD => Ok(
-                Self::EthGetBlockTransactionCountByHash(EthGetBlockTransactionCountByHash),
-            ),
-            EthGetBlockTransactionCountByNumber::METHOD => Ok(
-                Self::EthGetBlockTransactionCountByNumber(EthGetBlockTransactionCountByNumber),
-            ),
-            EthGetBalance::METHOD => Ok(Self::EthGetBalance(EthGetBalance)),
-            EthGetCode::METHOD => Ok(Self::EthGetCode(EthGetCode)),
-            EthGetStorageAt::METHOD => Ok(Self::EthGetStorageAt(EthGetStorageAt)),
-            EthGetTransactionCount::METHOD => {
-                Ok(Self::EthGetTransactionCount(EthGetTransactionCount))
-            }
-            EthBlockNumber::METHOD => Ok(Self::EthBlockNumber(EthBlockNumber)),
-            EthChainId::METHOD => Ok(Self::EthChainId(EthChainId)),
-            EthSyncing::METHOD => Ok(Self::EthSyncing(EthSyncing)),
-            EthEstimateGas::METHOD => Ok(Self::EthEstimateGas(EthEstimateGas)),
-            EthGasPrice::METHOD => Ok(Self::EthGasPrice(EthGasPrice)),
-            EthMaxPriorityFeePerGas::METHOD => {
-                Ok(Self::EthMaxPriorityFeePerGas(EthMaxPriorityFeePerGas))
-            }
-            EthFeeHistory::METHOD => Ok(Self::EthFeeHistory(EthFeeHistory)),
-            EthGetTransactionReceipt::METHOD => {
-                Ok(Self::EthGetTransactionReceipt(EthGetTransactionReceipt))
-            }
-            EthGetBlockReceipts::METHOD => Ok(Self::EthGetBlockReceipts(EthGetBlockReceipts)),
-            EthGetProof::METHOD => Ok(Self::EthGetProof(EthGetProof)),
-            EthSendTransaction::METHOD => Ok(Self::EthSendTransaction(EthSendTransaction)),
-            EthSignTransaction::METHOD => Ok(Self::EthSignTransaction(EthSignTransaction)),
-            EthSign::METHOD => Ok(Self::EthSign(EthSign)),
-            EthHashrate::METHOD => Ok(Self::EthHashrate(EthHashrate)),
-            NetVersion::METHOD => Ok(Self::NetVersion(NetVersion)),
-            TraceBlock::METHOD => Ok(Self::TraceBlock(TraceBlock)),
-            TraceCall::METHOD => Ok(Self::TraceCall(TraceCall)),
-            TraceCallMany::METHOD => Ok(Self::TraceCallMany(TraceCallMany)),
-            TraceGet::METHOD => Ok(Self::TraceGet(TraceGet)),
-            TraceTransaction::METHOD => Ok(Self::TraceTransaction(TraceTransaction)),
-            TxpoolStatusByHash::METHOD => Ok(Self::TxpoolStatusByHash(TxpoolStatusByHash)),
-            TxpoolStatusByAddress::METHOD => Ok(Self::TxpoolStatusByAddress(TxpoolStatusByAddress)),
-            Web3ClientVersion::METHOD => Ok(Self::Web3ClientVersion(Web3ClientVersion)),
-            _ => Err(JsonRpcError::method_not_found()),
-        }
-    }
-}
+registered_methods!(
+    DebugGetRawBlock,
+    DebugGetRawHeader,
+    DebugGetRawReceipts,
+    DebugGetRawTransaction,
+    DebugTraceBlockByHash,
+    DebugTraceBlockByNumber,
+    DebugTraceCall,
+    DebugTraceTransaction,
+    EthCall,
+    EthSendRawTransaction,
+    EthGetLogs,
+    EthGetTransactionByHash,
+    EthGetBlockByHash,
+    EthGetBlockByNumber,
+    EthGetTransactionByBlockHashAndIndex,
+    EthGetTransactionByBlockNumberAndIndex,
+    EthGetBlockTransactionCountByHash,
+    EthGetBlockTransactionCountByNumber,
+    EthGetBalance,
+    EthGetCode,
+    EthGetStorageAt,
+    EthGetTransactionCount,
+    EthBlockNumber,
+    EthChainId,
+    EthSyncing,
+    EthEstimateGas,
+    EthGasPrice,
+    EthMaxPriorityFeePerGas,
+    EthFeeHistory,
+    EthGetTransactionReceipt,
+    EthGetBlockReceipts,
+    EthGetProof,
+    EthSendTransaction,
+    EthSignTransaction,
+    EthSign,
+    EthHashrate,
+    NetVersion,
+    TraceBlock,
+    TraceCall,
+    TraceCallMany,
+    TraceGet,
+    TraceTransaction,
+    TxpoolStatusByHash,
+    TxpoolStatusByAddress,
+    Web3ClientVersion
+);
 
 #[tracing::instrument(level = "debug", skip(app_state))]
 async fn rpc_select(
