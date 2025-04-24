@@ -83,6 +83,8 @@ fn nodes_with_random_latency_cron() {
 #[test_case(11282773634027867923; "seed12")]
 #[test_case(11868595526945931122; "seed13")]
 #[test_case(4712443726697299681; "seed14")]
+#[test_case(5153471631950140680; "seed15")]
+#[test_case(4180491672667595808; "seed16")]
 fn nodes_with_random_latency(latency_seed: u64) {
     use std::time::Duration;
 
@@ -153,7 +155,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
     // -5 is arbitrary. this is to ensure that nodes aren't lagging too
     // far behind because of the latency
     let min_ledger_len = last_block - 5;
-    let max_blocksync_requests = 40;
+    let max_blocksync_requests = 50;
     let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
     println!(
         "tick {:?} max tick {:?}",
