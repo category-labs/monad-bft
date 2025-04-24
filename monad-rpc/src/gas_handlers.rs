@@ -8,11 +8,12 @@ use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::FeeHistory;
 use monad_ethcall::{CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
+use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{Round, SeqNum};
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::trace;
+use tracing::{debug_span, trace, Instrument};
 
 use crate::{
     block_handlers::get_block_key_from_tag,
@@ -81,6 +82,7 @@ impl EthCallProvider for GasEstimator {
             eth_call_executor.unwrap(),
             &state_override,
         )
+        .instrument(debug_span!("monad_eth_call").with_timings())
         .await
     }
 }

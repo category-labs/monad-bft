@@ -14,10 +14,11 @@ use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use alloy_rlp::{encode_list, BytesMut, Decodable, Encodable};
 use futures::{channel::oneshot, FutureExt};
+use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb::{TraverseEntry, TriedbHandle};
 use monad_types::{Round, SeqNum};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::{debug_span, error, trace_span, warn, Instrument, Span};
 
 use crate::{
     decode::{
@@ -624,6 +625,24 @@ impl std::fmt::Debug for TriedbEnv {
     }
 }
 
+macro_rules! create_span_for_key_input {
+    ($type_name:expr, $key_input:expr) => {
+        match $key_input {
+            KeyInput::State => debug_span!(concat!($type_name, "_state")),
+            KeyInput::Address(_) => debug_span!(concat!($type_name, "_address")),
+            KeyInput::Storage(_, _) => debug_span!(concat!($type_name, "_storage")),
+            KeyInput::CodeHash(_) => debug_span!(concat!($type_name, "_code_hash")),
+            KeyInput::ReceiptIndex(_) => debug_span!(concat!($type_name, "_receipt_index")),
+            KeyInput::TxIndex(_) => debug_span!(concat!($type_name, "_tx_index")),
+            KeyInput::BlockHeader => debug_span!(concat!($type_name, "_block_header")),
+            KeyInput::TxHash(_) => debug_span!(concat!($type_name, "_tx_hash")),
+            KeyInput::BlockHash(_) => debug_span!(concat!($type_name, "_block_hash")),
+            KeyInput::CallFrame => debug_span!(concat!($type_name, "_call_frame")),
+            KeyInput::BftBlock => debug_span!(concat!($type_name, "_bft_block")),
+        }
+    };
+}
+
 impl TriedbEnv {
     pub fn new(
         triedb_path: &Path,
@@ -751,8 +770,11 @@ impl TriedbEnv {
     where
         F: FnOnce(Vec<u8>) -> Result<T, String>,
     {
+        let span = create_span_for_key_input!("async_request", key_input).with_timings();
         let (receiver, counter) = self.send_async_request(block_key, key_input)?;
-        TriedbEnv::handle_async_result(receiver, counter, decoder).await
+        TriedbEnv::handle_async_result(receiver, counter, decoder)
+            .instrument(span)
+            .await
     }
 
     fn send_traverse_request(
@@ -859,8 +881,11 @@ impl TriedbEnv {
     where
         F: FnOnce(Vec<TraverseEntry>) -> Result<T, String>,
     {
+        let span = create_span_for_key_input!("async_range", key_input).with_timings();
         let receiver = self.send_async_range_request(block_key, key_input, txn_index, txn_count)?;
-        TriedbEnv::handle_async_range_result(receiver, decoder).await
+        TriedbEnv::handle_async_range_result(receiver, decoder)
+            .instrument(span)
+            .await
     }
 
     async fn handle_traverse_request<T>(
@@ -869,8 +894,11 @@ impl TriedbEnv {
         key_input: KeyInput<'_>,
         parser: impl FnOnce(Vec<TraverseEntry>) -> Result<Vec<T>, String>,
     ) -> Result<Vec<T>, String> {
+        let span = create_span_for_key_input!("traverse", key_input).with_timings();
         let receiver = self.send_traverse_request(block_key, key_input)?;
-        TriedbEnv::handle_traverse_result(receiver, parser).await
+        TriedbEnv::handle_traverse_result(receiver, parser)
+            .instrument(span)
+            .await
     }
 }
 

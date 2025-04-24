@@ -1,7 +1,7 @@
 use alloy_primitives::keccak256;
 use alloy_rlp::Encodable;
 use monad_types::Round;
-use tracing::warn;
+use tracing::{debug_span, warn, Span};
 
 // Table nibbles
 const STATE_NIBBLE: u8 = 0;

@@ -15,6 +15,7 @@ monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
 monad-state-backend = { workspace = true }
+monad-tracing-timing = { workspace = true }
 monad-triedb = { workspace = true }
 monad-types = { workspace = true }
 
