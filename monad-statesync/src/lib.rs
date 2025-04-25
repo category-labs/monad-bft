@@ -59,7 +59,7 @@ where
         incoming_request_timeout: Duration,
         uds_path: String,
     ) -> Self {
-        Self {
+        let mut this = Self {
             incoming_request_timeout,
             uds_path,
 
@@ -75,7 +75,11 @@ where
             waker: None,
             metrics: Default::default(),
             _phantom: Default::default(),
-        }
+        };
+
+        this.update_syncing_metrics();
+
+        this
     }
 
     fn update_syncing_metrics(&mut self) {
