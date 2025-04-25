@@ -83,6 +83,8 @@ impl EthTxPoolBridge {
     async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusSender)>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
+        cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 result = tx_receiver.recv_async() => {
@@ -177,6 +179,7 @@ impl<'a> Sink<&'a TxEnvelope> for EthTxPoolBridge {
                 };
             }
         }
+
         Poll::Pending
     }
 
