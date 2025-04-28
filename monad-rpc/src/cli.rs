@@ -67,11 +67,11 @@ pub struct Cli {
 
     /// Set the gas limit for eth_call
     #[arg(long, default_value_t = 30_000_000)]
-    pub eth_call_gas_limit: u64,
+    pub eth_call_provider_gas_limit: u64,
 
     /// Set the gas limit for eth_estimateGas
     #[arg(long, default_value_t = 30_000_000)]
-    pub eth_estimate_gas_gas_limit: u64,
+    pub eth_estimate_gas_provider_gas_limit: u64,
 
     /// Enable admin_ethCallStatistics method
     #[arg(long, default_value_t = false)]

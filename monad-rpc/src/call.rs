@@ -390,7 +390,7 @@ pub async fn fill_gas_params<T: Triedb>(
     tx: &mut CallRequest,
     header: &mut Header,
     state_overrides: &StateOverrideSet,
-    eth_call_gas_limit: U256,
+    eth_call_provider_gas_limit: U256,
 ) -> Result<(), JsonRpcError> {
     // Geth checks that the sender can pay for gas if gas price is populated.
     // Set the base fee to zero if gas price is not populated.
@@ -407,14 +407,14 @@ pub async fn fill_gas_params<T: Triedb>(
                 let allowance =
                     sender_gas_allowance(triedb_env, block_key, header, tx, state_overrides)
                         .await?;
-                tx.gas = Some(U256::from(allowance).min(eth_call_gas_limit));
+                tx.gas = Some(U256::from(allowance).min(eth_call_provider_gas_limit));
             }
         }
         _ => {
             header.base_fee_per_gas = Some(0);
             tx.fill_gas_prices(U256::ZERO)?;
             if tx.gas.is_none() {
-                tx.gas = Some(U256::from(header.gas_limit).min(eth_call_gas_limit));
+                tx.gas = Some(U256::from(header.gas_limit).min(eth_call_provider_gas_limit));
             }
         }
     }
@@ -535,7 +535,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
-    eth_call_gas_limit: u64,
+    eth_call_provider_gas_limit: u64,
     mut params: CallParams,
 ) -> Result<CallResult, JsonRpcError> {
     params.tx().input.input = match (
@@ -551,9 +551,9 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         (None, data) | (data, None) => data,
     };
 
-    if params.tx().gas > Some(U256::from(eth_call_gas_limit)) {
+    if params.tx().gas > Some(U256::from(eth_call_provider_gas_limit)) {
         return Err(JsonRpcError::eth_call_error(
-            "provider-specified max eth_call gas limit exceeded".to_string(),
+            "user-specified gas exceeds provider limit".to_string(),
             None,
         ));
     }
@@ -584,13 +584,18 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
     let state_overrides = params.state_overrides().clone();
 
+    let original_tx_gas = params
+        .tx()
+        .gas
+        .unwrap_or(U256::from(header.header.gas_limit));
+    let eth_call_provider_gas_limit = eth_call_provider_gas_limit.min(header.header.gas_limit);
     fill_gas_params(
         triedb_env,
         block_key,
         params.tx(),
         &mut header.header,
         &state_overrides,
-        U256::from(eth_call_gas_limit),
+        U256::from(eth_call_provider_gas_limit),
     )
     .await?;
 
@@ -612,7 +617,8 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 
     let state_overrides = params.state_overrides().clone();
     let trace = params.trace();
-    Ok(eth_call(
+    let header_gas_limit = header.header.gas_limit;
+    match eth_call(
         tx_chain_id,
         txn,
         header.header,
@@ -623,7 +629,23 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         &state_overrides,
         trace,
     )
-    .await)
+    .await
+    {
+        monad_ethcall::CallResult::Failure(error)
+            if matches!(error.error_code, monad_ethcall::EthCallResult::OutOfGas) =>
+        {
+            if eth_call_provider_gas_limit < header_gas_limit
+                && U256::from(eth_call_provider_gas_limit) < original_tx_gas
+            {
+                return Err(JsonRpcError::eth_call_error(
+                    "provider-specified max eth_call gas limit exceeded".to_string(),
+                    None,
+                ));
+            }
+            return Err(JsonRpcError::eth_call_error("out of gas".to_string(), None));
+        }
+        result => Ok(result),
+    }
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
@@ -633,7 +655,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
-    eth_call_gas_limit: u64,
+    eth_call_provider_gas_limit: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_call: {params:?}");
@@ -642,7 +664,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         triedb_env,
         eth_call_executor,
         chain_id,
-        eth_call_gas_limit,
+        eth_call_provider_gas_limit,
         CallParams::Call(params),
     )
     .await?

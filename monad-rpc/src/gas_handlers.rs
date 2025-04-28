@@ -90,7 +90,8 @@ async fn estimate_gas<T: EthCallProvider>(
     provider: &T,
     eth_call_executor: Option<Arc<Mutex<EthCallExecutor>>>,
     call_request: &mut CallRequest,
-    gas_limit: u64,
+    original_tx_gas: U256,
+    provider_gas_limit: u64,
     protocol_gas_limit: u64,
 ) -> Result<Quantity, JsonRpcError> {
     let mut txn: TxEnvelope = call_request.clone().try_into()?;
@@ -105,11 +106,19 @@ async fn estimate_gas<T: EthCallProvider>(
             ..
         }) => (gas_used, gas_refund),
         monad_ethcall::CallResult::Failure(error) => match error.error_code {
-            monad_ethcall::EthCallResult::OutOfGas if gas_limit < protocol_gas_limit => {
+            monad_ethcall::EthCallResult::OutOfGas => {
+                if provider_gas_limit < protocol_gas_limit
+                    && U256::from(provider_gas_limit) < original_tx_gas
+                {
+                    return Err(JsonRpcError::eth_call_error(
+                        "provider-specified eth_estimateGas gas limit exceeded".to_string(),
+                        error.data,
+                    ));
+                }
                 return Err(JsonRpcError::eth_call_error(
-                    "provider-specified eth_estimateGas gas limit exceeded".to_string(),
+                    "out of gas".to_string(),
                     error.data,
-                ))
+                ));
             }
             _ => return Err(JsonRpcError::eth_call_error(error.message, error.data)),
         },
@@ -200,7 +209,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     triedb_env: &T,
     eth_call_executor: Arc<Mutex<EthCallExecutor>>,
     chain_id: u64,
-    gas_limit: u64,
+    provider_gas_limit: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_estimateGas: {params:?}");
@@ -217,9 +226,9 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         (None, data) | (data, None) => data,
     };
 
-    if params.tx.gas > Some(U256::from(gas_limit)) {
+    if params.tx.gas > Some(U256::from(provider_gas_limit)) {
         return Err(JsonRpcError::eth_call_error(
-            "max eth_estimateGas gas limit exceeded".to_string(),
+            "user-specified gas exceeds provider limit".to_string(),
             None,
         ));
     }
@@ -246,13 +255,15 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         }
     };
 
+    let provider_gas_limit = provider_gas_limit.min(header.header.gas_limit);
+    let original_tx_gas = params.tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     fill_gas_params(
         triedb_env,
         block_key,
         &mut params.tx,
         &mut header.header,
         &params.state_override_set,
-        U256::from(gas_limit),
+        U256::from(provider_gas_limit),
     )
     .await?;
 
@@ -304,7 +315,8 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         &eth_call_provider,
         Some(eth_call_executor),
         &mut params.tx,
-        gas_limit,
+        original_tx_gas,
+        provider_gas_limit,
         protocol_gas_limit,
     )
     .await
@@ -481,7 +493,15 @@ mod tests {
         };
 
         // should return gas estimation failure
-        let result = estimate_gas(&provider, None, &mut call_request, u64::MAX, u64::MAX).await;
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::from(30_000),
+            u64::MAX,
+            u64::MAX,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -495,7 +515,15 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, None, &mut call_request, u64::MAX, u64::MAX).await;
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::MAX,
+            u64::MAX,
+            u64::MAX,
+        )
+        .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
@@ -513,7 +541,15 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, None, &mut call_request, u64::MAX, u64::MAX).await;
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::from(70_000),
+            u64::MAX,
+            u64::MAX,
+        )
+        .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
@@ -531,7 +567,15 @@ mod tests {
         };
 
         // should return correct gas estimation
-        let result = estimate_gas(&provider, None, &mut call_request, u64::MAX, u64::MAX).await;
+        let result = estimate_gas(
+            &provider,
+            None,
+            &mut call_request,
+            U256::from(60_000),
+            u64::MAX,
+            u64::MAX,
+        )
+        .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Quantity(60267));
     }
