@@ -136,6 +136,11 @@ impl<PT: PubKey> InFlightRequest<PT> {
     }
 }
 
+pub(crate) enum RequestPollResult<PT: PubKey> {
+    Request(NodeId<PT>, StateSyncRequest),
+    Timer(Option<Instant>),
+}
+
 impl<PT: PubKey> OutboundRequests<PT> {
     pub fn new(
         max_parallel_requests: usize,
@@ -273,13 +278,14 @@ impl<PT: PubKey> OutboundRequests<PT> {
     }
 
     #[must_use]
-    pub async fn poll(&mut self) -> (NodeId<PT>, StateSyncRequest) {
+    pub fn poll(&mut self) -> RequestPollResult<PT> {
         // check if we can immediately queue another request
         if self.in_flight_requests.len() < self.max_parallel_requests
             && !self.pending_requests.is_empty()
         {
             let to_send = self.pending_requests.pop_first().expect("!is_empty()");
-            return self.insert_request(to_send);
+            let (peer, request) = self.insert_request(to_send);
+            return RequestPollResult::Request(peer, request);
         }
 
         // find request that will timeout first
@@ -289,19 +295,21 @@ impl<PT: PubKey> OutboundRequests<PT> {
             .min_by_key(|(_, in_flight_request)| in_flight_request.last_active)
         else {
             // no outstanding requests, so yield forever
-            return futures::future::pending().await;
+            return RequestPollResult::Timer(None);
         };
 
         if in_flight_request.last_active.elapsed() < self.request_timeout {
             // wait until request times out
-            tokio::time::sleep_until((in_flight_request.last_active + self.request_timeout).into())
-                .await;
+            return RequestPollResult::Timer(Some(
+                in_flight_request.last_active + self.request_timeout,
+            ));
         }
 
         // Reinitialize request since selecting new peer may change the version
         let to_send = *request;
         self.in_flight_requests.remove(&to_send);
 
-        self.insert_request(to_send)
+        let (peer, request) = self.insert_request(to_send);
+        RequestPollResult::Request(peer, request)
     }
 }

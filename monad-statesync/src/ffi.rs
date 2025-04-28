@@ -1,7 +1,7 @@
 use std::{
     ffi::CString,
     ops::DerefMut,
-    pin::{pin, Pin},
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
@@ -9,7 +9,7 @@ use std::{
 
 use alloy_consensus::Header;
 use alloy_rlp::Encodable;
-use futures::{FutureExt, Stream};
+use futures::{Future, Stream};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     SessionId, StateSyncBadVersion, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
@@ -17,7 +17,10 @@ use monad_executor_glue::{
 };
 use monad_types::{DropTimer, NodeId, SeqNum};
 
-use crate::{bindings, outbound_requests::OutboundRequests};
+use crate::{
+    bindings,
+    outbound_requests::{OutboundRequests, RequestPollResult},
+};
 
 type StateSyncContext = Box<dyn FnMut(bindings::monad_sync_request)>;
 
@@ -40,6 +43,8 @@ pub(crate) struct StateSync<PT: PubKey> {
     response_tx: std::sync::mpsc::Sender<SyncResponse<PT>>,
 
     progress: Arc<Mutex<Progress>>,
+
+    sleep_future: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +336,8 @@ impl<PT: PubKey> StateSync<PT> {
             response_tx,
 
             progress: progress_clone,
+
+            sleep_future: None,
         }
     }
 
@@ -430,12 +437,32 @@ impl<PT: PubKey> Stream for StateSync<PT> {
             }
         }
 
-        let fut = this.outbound_requests.poll();
-        if let Poll::Ready((peer, request)) = pin!(fut).poll_unpin(cx) {
-            return Poll::Ready(Some(SyncRequest::Request((peer, request))));
+        match this.outbound_requests.poll() {
+            RequestPollResult::Request(peer, request) => {
+                this.sleep_future = None;
+                Poll::Ready(Some(SyncRequest::Request((peer, request))))
+            }
+            RequestPollResult::Timer(Some(instant)) => {
+                match this.sleep_future.as_mut() {
+                    Some(s) if s.deadline() != instant.into() => s.as_mut().reset(instant.into()),
+                    Some(_) => {}
+                    None => {
+                        this.sleep_future =
+                            Some(Box::pin(tokio::time::sleep_until(instant.into())));
+                    }
+                }
+                let sleep_future = this.sleep_future.as_mut().unwrap();
+                if sleep_future.as_mut().poll(cx).is_ready() {
+                    this.sleep_future = None;
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Pending
+            }
+            RequestPollResult::Timer(None) => {
+                this.sleep_future = None;
+                Poll::Pending
+            }
         }
-
-        Poll::Pending
     }
 }
 
