@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
@@ -19,10 +20,11 @@ const EGRESS_MAX_RETRIES: usize = 2;
 
 const INGRESS_CHUNK_MAX_SIZE: usize = 128;
 const INGRESS_CHUNK_INTERVAL_MS: u64 = 8;
+const INGRESS_MAX_SIZE: usize = 64 * 1024;
 
 #[pin_project(project = EthTxPoolForwardingManagerProjected)]
 pub struct EthTxPoolForwardingManager {
-    ingress: Vec<Recovered<TxEnvelope>>,
+    ingress: VecDeque<Recovered<TxEnvelope>>,
     #[pin]
     ingress_timer: tokio::time::Interval,
     ingress_waker: Option<Waker>,
@@ -39,7 +41,7 @@ impl EthTxPoolForwardingManager {
         ingress_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         Self {
-            ingress: Vec::default(),
+            ingress: VecDeque::default(),
             ingress_timer,
             ingress_waker: None,
 
@@ -68,13 +70,11 @@ impl EthTxPoolForwardingManager {
             return Poll::Pending;
         };
 
-        if INGRESS_CHUNK_MAX_SIZE > ingress.len() {
-            Poll::Ready(std::mem::take(ingress))
-        } else {
-            let mut chunk = ingress.split_off(INGRESS_CHUNK_MAX_SIZE);
-            std::mem::swap(ingress, &mut chunk);
-            Poll::Ready(chunk)
-        }
+        Poll::Ready(
+            ingress
+                .drain(..INGRESS_CHUNK_MAX_SIZE.min(ingress.len()))
+                .collect(),
+        )
     }
 
     pub fn poll_egress(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<Bytes>> {
@@ -105,7 +105,10 @@ impl EthTxPoolForwardingManagerProjected<'_> {
             ..
         } = self;
 
-        ingress.extend(txs);
+        ingress.extend(
+            txs.into_iter()
+                .take(INGRESS_MAX_SIZE.saturating_sub(ingress.len())),
+        );
 
         if ingress.is_empty() {
             return;
