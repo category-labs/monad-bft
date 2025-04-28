@@ -2,6 +2,7 @@ pub mod brotli;
 pub mod deflate;
 pub mod lz4;
 pub mod nop;
+pub mod zstd;
 
 pub trait CompressionAlgo {
     type CompressError: std::error::Error;

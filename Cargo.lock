@@ -4536,6 +4536,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "peak_alloc",
+ "zstd",
 ]
 
 [[package]]
@@ -5071,6 +5072,7 @@ dependencies = [
  "monad-block-persist",
  "monad-bls",
  "monad-chain-config",
+ "monad-compress",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-control-panel",
@@ -5213,6 +5215,7 @@ dependencies = [
  "hex",
  "itertools 0.10.5",
  "lru",
+ "monad-compress",
  "monad-consensus-types",
  "monad-crypto",
  "monad-dataplane",
@@ -5413,6 +5416,7 @@ dependencies = [
  "futures-util",
  "monad-bls",
  "monad-chain-config",
+ "monad-compress",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-control-panel",

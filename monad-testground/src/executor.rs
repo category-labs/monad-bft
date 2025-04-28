@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, time::Duration};
 
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
+use monad_compress::{nop::NopCompression, CompressionAlgo};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
@@ -26,17 +27,18 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
 
-pub enum RouterConfig<ST, SCT, EPT>
+pub enum RouterConfig<ST, SCT, EPT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    CA: CompressionAlgo,
 {
     Local(
         /// Must be passed ahead-of-time because they can't be instantiated individually
         LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
-    RaptorCast(RaptorCastConfig<ST>),
+    RaptorCast(RaptorCastConfig<ST, CA>),
 }
 
 pub enum LedgerConfig {
@@ -53,13 +55,14 @@ where
     },
 }
 
-pub struct ExecutorConfig<ST, SCT, EPT>
+pub struct ExecutorConfig<ST, SCT, EPT, CA>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
+    CA: CompressionAlgo,
 {
-    pub router_config: RouterConfig<ST, SCT, EPT>,
+    pub router_config: RouterConfig<ST, SCT, EPT, CA>,
     pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -68,7 +71,7 @@ where
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
     state_backend: InMemoryState,
-    config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
+    config: ExecutorConfig<ST, SCT, MockExecutionProtocol, NopCompression>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
@@ -104,6 +107,7 @@ where
                 MonadMessage<ST, SCT, MockExecutionProtocol>,
                 VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                 MonadEvent<ST, SCT, MockExecutionProtocol>,
+                NopCompression,
             >::new(config)),
         },
         timer: TokioTimer::default(),

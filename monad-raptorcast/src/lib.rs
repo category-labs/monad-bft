@@ -11,6 +11,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream};
+use monad_compress::CompressionAlgo;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -31,9 +32,10 @@ use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
-pub struct RaptorCastConfig<ST>
+pub struct RaptorCastConfig<ST, CA>
 where
     ST: CertificateSignatureRecoverable,
+    CA: CompressionAlgo,
 {
     // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -49,13 +51,16 @@ where
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub up_bandwidth_mbps: u64,
     pub mtu: u16,
+
+    pub compression_algo: CA,
 }
 
-pub struct RaptorCast<ST, M, OM, SE>
+pub struct RaptorCast<ST, M, OM, SE, CA>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    CA: CompressionAlgo,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -73,6 +78,8 @@ where
     dataplane: Dataplane,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
 
+    compression_algo: CA,
+
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
     _phantom: PhantomData<(OM, SE)>,
@@ -88,13 +95,14 @@ pub enum RaptorCastEvent<E, P: PubKey> {
     PeerManagerResponse(PeerManagerResponse<P>),
 }
 
-impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, CA> RaptorCast<ST, M, OM, SE, CA>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    CA: CompressionAlgo,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new(config: RaptorCastConfig<ST, CA>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
         let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
         Self {
@@ -112,6 +120,8 @@ where
 
             dataplane,
             pending_events: Default::default(),
+
+            compression_algo: config.compression_algo,
 
             waker: None,
             metrics: Default::default(),
@@ -150,11 +160,12 @@ where
     }
 }
 
-impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, CA> Executor for RaptorCast<ST, M, OM, SE, CA>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
+    CA: CompressionAlgo,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -358,30 +369,44 @@ where
 
 #[derive(Debug)]
 struct UnknownMessageError(String);
+
 fn handle_message<
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    CA: CompressionAlgo,
 >(
     bytes: &Bytes,
+    compression_algo: &CA,
 ) -> Result<InboundRouterMessage<M, CertificateSignaturePubKey<ST>>, UnknownMessageError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
-    else {
-        // if that fails, try to deserialize as an old message instead
-        return match M::deserialize(bytes) {
+    if let Ok(inbound) =
+        InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
+    {
+        Ok(inbound)
+    // if that fails, try to deserialize as an old message
+    } else if let Ok(old_message) = M::deserialize(bytes) {
+        Ok(InboundRouterMessage::Application(old_message))
+    // else, decompress, then try to deserialize as an old message
+    } else {
+        let mut decompressed_message = Vec::new();
+        if let Err(err) = compression_algo.decompress(bytes, &mut decompressed_message) {
+            return Err(UnknownMessageError(format!("decompress error: {:?}", err)));
+        }
+
+        match M::deserialize(&Bytes::from(decompressed_message)) {
             Ok(old_message) => Ok(InboundRouterMessage::Application(old_message)),
-            Err(err) => Err(UnknownMessageError(format!("{:?}", err))),
-        };
-    };
-    Ok(inbound)
+            Err(err) => Err(UnknownMessageError(format!("deserialize error {:?}", err))),
+        }
+    }
 }
 
-impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
+impl<ST, M, OM, E, CA> Stream for RaptorCast<ST, M, OM, E, CA>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
     OM: Serializable<Bytes> + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    CA: CompressionAlgo,
     Self: Unpin,
 {
     type Item = E;
@@ -439,7 +464,10 @@ where
                 )
             };
             let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match handle_message::<ST, M>(&decoded) {
+                |(from, decoded)| match handle_message::<ST, M, CA>(
+                    &decoded,
+                    &this.compression_algo,
+                ) {
                     Ok(inbound) => match inbound {
                         InboundRouterMessage::Application(app_message) => {
                             Some(app_message.event(from))
@@ -481,13 +509,14 @@ where
                 }
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message = match handle_message::<ST, M>(&app_message_bytes) {
-                Ok(message) => message,
-                Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "failed to deserialize message");
-                    continue;
-                }
-            };
+            let deserialized_message =
+                match handle_message::<ST, M, CA>(&app_message_bytes, &this.compression_algo) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::warn!(?err, ?from_addr, "failed to deserialize message");
+                        continue;
+                    }
+                };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {

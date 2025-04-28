@@ -10,6 +10,7 @@ use chrono::Utc;
 use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_compress::zstd::ZstdCompression;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     metrics::Metrics, signature_collection::SignatureCollection, validator_data::ValidatorsConfig,
@@ -493,7 +494,7 @@ async fn build_raptorcast_router<ST, SCT, M, OM>(
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, ZstdCompression>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -520,6 +521,7 @@ where
         )),
         up_bandwidth_mbps: network_config.max_mbps.into(),
         mtu: network_config.mtu,
+        compression_algo: ZstdCompression::default(),
     })
 }
 
