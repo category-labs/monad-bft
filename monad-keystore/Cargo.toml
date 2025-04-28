@@ -20,7 +20,6 @@ monad-secp = { workspace = true }
 aes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 ctr = { workspace = true }
-dialoguer = { workspace = true }
 hdwallet = { workspace = true }
 hex = { workspace = true }
 pbkdf2 = { workspace = true, features = ["simple"] }

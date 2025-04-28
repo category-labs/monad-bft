@@ -3,15 +3,10 @@
 /// DO NOT USE IN PRODUCTION YET
 /// `cargo run -- --mode create --key-type [bls|secp] --keystore-path <path_for_file_to_be_created>`
 use std::path::PathBuf;
-use std::{fs::File, io::Write};
 
 use bip39::{Language, Mnemonic, MnemonicType, Seed};
-use clap::Parser;
-use dialoguer::{theme::ColorfulTheme, Input};
-use hdwallet::{
-    traits::{Deserialize, Serialize},
-    ExtendedPrivKey,
-};
+use clap::{Parser, Subcommand, ValueEnum};
+use hdwallet::ExtendedPrivKey;
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
 
@@ -26,96 +21,111 @@ pub mod keystore;
 #[derive(Parser)]
 #[command(name = "monad-keystore", about, long_about = None)]
 struct Args {
-    /// Mode
-    #[arg(long)]
-    mode: String,
+    #[command(subcommand)]
+    mode: Commands,
+}
 
-    /// Key type
-    #[arg(long)]
-    key_type: String,
+#[derive(Subcommand)]
+enum Commands {
+    /// Create new random key
+    Create {
+        /// Path to write keystore file
+        #[arg(long)]
+        keystore_path: PathBuf,
 
-    /// Path to read/write keystore file
-    #[arg(long)]
-    keystore_path: PathBuf,
+        /// Keystore password
+        #[arg(long)]
+        password: String,
 
-    /// Password to encrypt private key
-    #[arg(long)]
-    password: Option<String>,
+        /// Optionally print public key
+        #[arg(long)]
+        key_type: Option<KeyType>,
+    },
+    /// Recovers key from keystore
+    Recover {
+        /// Path to read keystore file
+        #[arg(long)]
+        keystore_path: PathBuf,
 
-    /// Path to read/write private key as JSON object
-    #[arg(
-        long,
-        help = "Path to read/write private key as JSON object. WARNING: Using this argument is potentially unsafe. It is ill-advised to write keys to disk."
-    )]
-    private_key_path: Option<PathBuf>,
+        /// Keystore password
+        #[arg(long)]
+        password: String,
+
+        /// Optionally print public key
+        #[arg(long)]
+        key_type: Option<KeyType>,
+    },
+    /// Regenerate keystore from private key
+    Import {
+        /// Private key in hex
+        #[arg(long)]
+        private_key: String,
+
+        /// Path to write keystore file
+        #[arg(long)]
+        keystore_path: PathBuf,
+
+        /// Keystore password
+        #[arg(long)]
+        password: String,
+
+        /// Optionally print public key
+        #[arg(long)]
+        key_type: Option<KeyType>,
+    },
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum KeyType {
+    Secp,
+    Bls,
 }
 
 fn main() {
     let args = Args::parse();
     let mode = args.mode;
-    let key_type = args.key_type;
-    let keystore_path = args.keystore_path;
-    let private_key_path = args.private_key_path;
 
-    match mode.as_str() {
-        "create" => {
+    match mode {
+        Commands::Create {
+            keystore_path,
+            password,
+            key_type,
+        } => {
             println!("It is recommended to generate key in air-gapped machine to be secure.");
             println!("This tool is currently not fit for production use.");
-            let password: String = if args.password.is_some() {
-                args.password.unwrap()
-            } else {
-                Input::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Provide a password to encrypt generated key.")
-                    .allow_empty(true)
-                    .interact_text()
-                    .unwrap()
-            };
 
             // create a new randomly generated mnemonic phrase
             let mnemonic = Mnemonic::new(MnemonicType::Words12, Language::English);
 
-            // get the HD wallet seed and the correspondin private key
+            // get the HD wallet seed and the corresponding private key
             let seed = Seed::new(&mnemonic, "");
             let master_private_key = ExtendedPrivKey::with_seed(seed.as_bytes())
                 .expect("Failed to create master private key");
-            if let Some(private_key_path) = private_key_path {
-                let json = serde_json::to_string(&ExtendedPrivKey::serialize(&master_private_key))
-                    .expect("failed to serialize key to JSON");
-                let mut file = File::create(private_key_path.clone())
-                    .expect("failed to open file for writing");
-                file.write_all(json.as_bytes())
-                    .expect("failed to write key to file");
-                println!("Successfully wrote private key to {:?}", private_key_path);
-            }
             let private_key = master_private_key.private_key.as_ref();
             println!(
-                "Keep your private key securely {:?}",
+                "Keep your private key securely: {:?}",
                 hex::encode(private_key)
             );
 
-            // generate public key
-            print_public_key(private_key, &key_type);
+            if let Some(key_type) = key_type {
+                // print public key
+                print_public_key(private_key, key_type);
+            }
 
             // generate keystore json file
-            let result =
-                Keystore::create_keystore_json(private_key, password.as_str(), &keystore_path);
+            let result = Keystore::create_keystore_json(private_key, &password, &keystore_path);
             if result.is_ok() {
                 println!("Successfully generated keystore file.");
             } else {
                 println!("Keystore file generation failed, try again.");
             }
         }
-        "recover" => {
+        Commands::Recover {
+            keystore_path,
+            password,
+            key_type,
+        } => {
             println!("Recovering private and public key from keystore file...");
-            let password: String = if args.password.is_some() {
-                args.password.unwrap()
-            } else {
-                Input::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Provide a password to decrypt generated key.")
-                    .allow_empty(true)
-                    .interact_text()
-                    .unwrap()
-            };
 
             // recover private key
             let result = Keystore::load_key(&keystore_path, &password);
@@ -141,67 +151,55 @@ fn main() {
                 }
             };
             println!(
-                "Keep your private key securely {:?}",
+                "Keep your private key securely: {:?}",
                 hex::encode(&private_key)
             );
 
-            print_public_key(&private_key, &key_type);
+            if let Some(key_type) = key_type {
+                // print public key
+                print_public_key(&private_key, key_type);
+            }
         }
-        "import" => {
-            let Some(private_key_path) = private_key_path else {
-                println!("error: a value is required for '--private-key-path <PRIVATE_KEY_PATH>' but none was supplied");
-                return;
+        Commands::Import {
+            private_key,
+            keystore_path,
+            password,
+            key_type,
+        } => {
+            let private_key_hex = match private_key.strip_prefix("0x") {
+                Some(hex) => hex,
+                None => &private_key,
             };
-            let Some(password) = args.password else {
-                println!(
-                    "error: a value is required for '--password <PASSWORD>' but none was supplied"
-                );
-                return;
-            };
-            let private_key = ExtendedPrivKey::deserialize(
-                &serde_json::from_str::<Vec<u8>>(
-                    &std::fs::read_to_string(private_key_path)
-                        .expect("failed to read private key JSON file"),
-                )
-                .expect("failed to parse private key file as JSON"),
-            )
-            .expect("failed to deserialize Vec<u8> into ExtendedPrivKey");
+            let private_key =
+                hex::decode(private_key_hex).expect("failed to parse private key as hex");
 
-            // generate public key
-            print_public_key(private_key.private_key.as_ref(), &key_type);
+            if let Some(key_type) = key_type {
+                // print public key
+                print_public_key(&private_key, key_type);
+            }
 
             // generate keystore json file
-            let result = Keystore::create_keystore_json(
-                private_key.private_key.as_ref(),
-                password.as_str(),
-                &keystore_path,
-            );
+            let result = Keystore::create_keystore_json(&private_key, &password, &keystore_path);
             if result.is_ok() {
                 println!("Successfully generated keystore file.");
             } else {
                 println!("Keystore file generation failed, try again.");
             }
         }
-        _ => {
-            println!("Unknown mode.");
-        }
     }
 }
 
-pub fn print_public_key(private_key: &[u8], key_type: &str) {
+fn print_public_key(private_key: &[u8], key_type: KeyType) {
     match key_type {
-        "bls" => {
+        KeyType::Bls => {
             let bls_keypair = BlsKeyPair::from_bytes(private_key.to_vec());
             let pubkey = bls_keypair.unwrap().pubkey();
             println!("BLS public key: {:?}", pubkey);
         }
-        "secp" => {
+        KeyType::Secp => {
             let secp_keypair = KeyPair::from_bytes(&mut private_key.to_vec());
             let pubkey = secp_keypair.unwrap().pubkey();
             println!("Secp public key: {:?}", pubkey);
-        }
-        _ => {
-            println!("Unsupported key type, try again.")
         }
     }
 }
