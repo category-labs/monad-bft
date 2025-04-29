@@ -196,7 +196,7 @@ fn test_new_node_joining() {
     while nodes.step_until(Duration::from_secs(0)) {}
 
     // NodeA, NodeB and NodeC should now have peer_info of each other
-    for (node_id, state) in nodes.states() {
+    for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         for node_id in all_peers.keys() {
             if node_id == &state.self_id {
@@ -204,15 +204,6 @@ fn test_new_node_joining() {
             }
             assert!(state.peer_info.contains_key(node_id));
         }
-
-        // NodeC should have received two lookup requests and sent two responses
-        if node_id == &NodeId::new(third_key.pubkey()) {
-            let metrics = state.metrics();
-            assert!(metrics["recv_lookup_request"] == 2);
-            assert!(metrics["send_lookup_response"] == 2);
-        }
-
-        assert!(state.outstanding_lookup_requests.is_empty());
     }
 }
 

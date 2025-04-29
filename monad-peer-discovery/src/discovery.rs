@@ -186,10 +186,9 @@ where
             return cmds;
         };
 
+        // TODO: use connection heuristics to decide if attaching local_name_record
         let ping_msg = Ping {
             id: self.rng.next_u32(),
-            local_record_seq: self.self_record.seq(),
-            // FIXME: optionally include
             local_name_record: Some(self.self_record),
         };
 
@@ -217,19 +216,51 @@ where
 
         let mut cmds = Vec::new();
 
-        // TODO: remove sending peer lookup request. Instead update local record if present
-        // if sender of ping does not exist in local record or has higher sequence number
-        // send a PeerLookupRequest to get the node information subsequently
-        if self
-            .peer_info
-            .get(&from)
-            .is_none_or(|info| info.name_record.seq() < ping_msg.local_record_seq)
-        {
-            debug!(
-                target=?from, "Ping sender not found in local record, sending peer lookup request to target",
-            );
-            // sends PeerLookupRequest to ping sender
-            cmds.extend(self.send_peer_lookup_request(from, from));
+        if let Some(peer_name_record) = ping_msg.local_name_record {
+            if self
+                .peer_info
+                .get(&from)
+                .is_none_or(|local| peer_name_record.seq() > local.name_record.seq())
+            {
+                let verified = peer_name_record
+                    .recover_pubkey()
+                    .is_ok_and(|recovered_node_id| recovered_node_id == from);
+
+                if verified {
+                    self.peer_info
+                        .entry(from)
+                        .and_modify(|info| {
+                            info.name_record = peer_name_record;
+                        })
+                        .or_insert_with(|| PeerInfo {
+                            last_ping: None,
+                            unresponsive_pings: 0,
+                            name_record: peer_name_record,
+                        });
+                } else {
+                    debug!("invalid signature in ping.local_name_record");
+                    return cmds;
+                }
+            } else if self
+                .peer_info
+                .get(&from)
+                .is_some_and(|local| peer_name_record.seq() < local.name_record.seq())
+            {
+                warn!(
+                    ?from,
+                    "peer updated name record sequence number went backwards"
+                );
+                return cmds;
+            } else if self.peer_info.get(&from).is_some_and(|local| {
+                peer_name_record.seq() == local.name_record.seq()
+                    && peer_name_record != local.name_record
+            }) {
+                warn!(
+                    ?from,
+                    "peer updated name record without bumping sequence number"
+                );
+                return cmds;
+            }
         }
 
         // respond to ping
@@ -537,7 +568,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddrV4, str::FromStr};
+    use std::net::{Ipv4Addr, SocketAddrV4};
 
     use alloy_rlp::Encodable;
     use monad_crypto::{
@@ -547,6 +578,7 @@ mod tests {
     use monad_testutil::signing::create_keys;
     use monad_types::NodeId;
     use rand::SeedableRng;
+    use test_case::test_case;
 
     use super::*;
     use crate::NameRecord;
@@ -554,9 +586,11 @@ mod tests {
     type KeyPairType = NopKeyPair;
     type SignatureType = NopSignature;
 
+    const DUMMY_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 8000);
+
     fn generate_name_record(keypair: &KeyPairType, seq_num: u64) -> MonadNameRecord<SignatureType> {
         let name_record = NameRecord {
-            address: SocketAddrV4::from_str("1.1.1.1:8000").unwrap(),
+            address: DUMMY_ADDR,
             seq: seq_num,
         };
         let mut encoded = Vec::new();
@@ -591,6 +625,30 @@ mod tests {
                     target: _target,
                     message: PeerDiscoveryMessage::PeerLookupResponse(response),
                 } => Some(response),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn extract_ping(cmds: Vec<PeerDiscoveryCommand<SignatureType>>) -> Vec<Ping<SignatureType>> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                PeerDiscoveryCommand::RouterCommand {
+                    target: _,
+                    message: PeerDiscoveryMessage::Ping(ping),
+                } => Some(ping),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn extract_pong(cmds: Vec<PeerDiscoveryCommand<SignatureType>>) -> Vec<Pong> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                PeerDiscoveryCommand::RouterCommand {
+                    target: _,
+                    message: PeerDiscoveryMessage::Pong(pong),
+                } => Some(pong),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -961,5 +1019,134 @@ mod tests {
 
         state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
         assert!(state.outstanding_lookup_requests.is_empty());
+    }
+
+    #[test]
+    fn test_ping_unseen_peer() {
+        let keys = create_keys::<SignatureType>(2);
+        let node0_key = &keys[0];
+        let node0 = NodeId::new(node0_key.pubkey());
+        let node1_key = &keys[1];
+        let node1 = NodeId::new(node1_key.pubkey());
+
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: node0,
+            self_record: generate_name_record(node0_key, 0),
+            peer_info: BTreeMap::from([(node1, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(node1_key, 1),
+            })]),
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 3,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        let cmds = state.send_ping(node1);
+        assert_eq!(cmds.len(), 5);
+
+        assert!(matches!(
+            cmds[0],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                timer_kind: TimerKind::PingTimeout,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cmds[1],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
+                timer_kind: TimerKind::SendPing,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cmds[2],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                timer_kind: TimerKind::PingTimeout,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cmds[3],
+            PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
+                timer_kind: TimerKind::SendPing,
+                ..
+            })
+        ));
+        assert!(matches!(
+            cmds[4],
+            PeerDiscoveryCommand::RouterCommand { .. }
+        ));
+
+        let ping = extract_ping(cmds)[0];
+
+        // ping always carries local_name_record
+        assert!(ping.local_name_record.is_some());
+    }
+
+    const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
+    const NEW_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000);
+
+    #[test_case(None, NameRecord { address: NEW_ADDR, seq: 1 }, true, NameRecord { address: NEW_ADDR, seq: 1 }; "first record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 2 }, true, NameRecord { address: NEW_ADDR, seq: 2 }; "newer record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: OLD_ADDR, seq: 1 }, true, NameRecord { address: OLD_ADDR, seq: 1 }; "same record")]
+    #[test_case(Some(NameRecord { address: NEW_ADDR, seq: 2 }), NameRecord { address: OLD_ADDR, seq: 1 }, false, NameRecord { address: NEW_ADDR, seq: 2 }; "older record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 1 }, false, NameRecord { address: OLD_ADDR, seq: 1 }; "conflicting record")]
+    fn test_ping_record(
+        known_record: Option<NameRecord>,
+        incoming_record: NameRecord,
+        expected_pong: bool,
+        expected_record: NameRecord,
+    ) {
+        let keys = create_keys::<SignatureType>(2);
+        let node0_key = &keys[0];
+        let node0 = NodeId::new(node0_key.pubkey());
+        let node1_key = &keys[1];
+        let node1 = NodeId::new(node1_key.pubkey());
+
+        let peer_info = match known_record {
+            Some(record) => BTreeMap::from([(node1, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: MonadNameRecord::new(record, node1_key),
+            })]),
+            None => BTreeMap::new(),
+        };
+
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: node0,
+            self_record: generate_name_record(node0_key, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            prune_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 3,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        let cmds = state.handle_ping(node1, Ping {
+            id: 7,
+            local_name_record: Some(MonadNameRecord::new(incoming_record, node1_key)),
+        });
+
+        if expected_pong {
+            assert_eq!(cmds.len(), 1);
+            let pong = extract_pong(cmds)[0];
+            assert_eq!(pong, Pong {
+                ping_id: 7,
+                local_record_seq: 0
+            });
+
+            let node1_record = state.peer_info.get(&node1).unwrap().name_record.name_record;
+            assert_eq!(expected_record, node1_record);
+        } else {
+            assert!(cmds.is_empty());
+        }
     }
 }

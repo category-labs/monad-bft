@@ -85,6 +85,7 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
     }
 }
 
+#[derive(Debug)]
 pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPing {
         to: NodeId<CertificateSignaturePubKey<ST>>,
@@ -129,6 +130,7 @@ pub enum TimerKind {
     Prune,
 }
 
+#[derive(Debug)]
 pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     Schedule {
         node_id: NodeId<CertificateSignaturePubKey<ST>>,
@@ -142,6 +144,7 @@ pub enum PeerDiscoveryTimerCommand<E, ST: CertificateSignatureRecoverable> {
     },
 }
 
+#[derive(Debug)]
 pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
     RouterCommand {
         target: NodeId<CertificateSignaturePubKey<ST>>,

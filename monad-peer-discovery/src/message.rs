@@ -85,13 +85,12 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
 #[rlp(trailing)]
 pub struct Ping<ST: CertificateSignatureRecoverable> {
     pub id: u32,
-    pub local_record_seq: u64,
     pub local_name_record: Option<MonadNameRecord<ST>>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Eq for Ping<ST> {}
 
-#[derive(Debug, Clone, Copy, RlpDecodable, RlpEncodable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpDecodable, RlpEncodable)]
 pub struct Pong {
     pub ping_id: u32,
     pub local_record_seq: u64,
@@ -127,7 +126,6 @@ mod test {
         let key = get_key::<SignatureType>(37);
         let ping = Ping {
             id: 257,
-            local_record_seq: 2,
             local_name_record: Some(MonadNameRecord::<SignatureType>::new(
                 NameRecord {
                     address: SocketAddrV4::from_str("127.0.0.1:8000").unwrap(),
@@ -148,7 +146,6 @@ mod test {
     fn test_ping_without_record_rlp_roundtrip() {
         let ping = Ping {
             id: 257,
-            local_record_seq: 2,
             local_name_record: None,
         };
 

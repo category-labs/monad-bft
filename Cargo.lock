@@ -5081,6 +5081,7 @@ dependencies = [
  "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "test-case",
  "tracing",
 ]
 

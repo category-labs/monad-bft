@@ -123,7 +123,6 @@ where
         let ping_id = peer_state.last_ping.map_or(0, |ping| ping.id + 1);
         let ping = Ping {
             id: ping_id,
-            local_record_seq: self.local_name_record.seq(),
             // FIXME: make this optional
             local_name_record: Some(self.local_name_record),
         };
