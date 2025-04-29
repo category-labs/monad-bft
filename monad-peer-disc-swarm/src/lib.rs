@@ -58,6 +58,7 @@ pub enum SwarmEvent {
     DriverEvent,
     ExecutorEvent,
     InboundMessage,
+    TestEvent,
 }
 
 pub struct NodeBuilder<S, B>
@@ -101,6 +102,8 @@ where
     pub executor: MockPeerDiscExecutor<S>,
     pub pending_inbound_messages:
         BTreeMap<Duration, VecDeque<LinkMessage<SwarmPubKeyType<S>, S::TransportMessage>>>,
+    // used for manually invoking event in testings
+    pub pending_test_event: BTreeMap<Duration, PeerDiscoveryEvent<SwarmSignatureType<S>>>,
 
     rng: ChaCha8Rng,
     current_seed: usize,
@@ -223,6 +226,7 @@ where
             peer_disc_driver,
             executor,
             pending_inbound_messages: Default::default(),
+            pending_test_event: Default::default(),
             rng,
             current_seed,
             outbound_pipeline,
@@ -249,6 +253,13 @@ where
                 .chain(self.pending_inbound_messages.first_key_value().map(
                     |(min_scheduled_tick, _)| (*min_scheduled_tick, SwarmEvent::InboundMessage),
                 ))
+                .chain(
+                    self.pending_test_event
+                        .first_key_value()
+                        .map(|(min_scheduled_tick, _)| {
+                            (*min_scheduled_tick, SwarmEvent::TestEvent)
+                        }),
+                )
                 .min_set();
 
         if !events.is_empty() {
@@ -338,6 +349,21 @@ where
                         *message.from.get_peer_id(),
                         message.message,
                     );
+                    continue;
+                }
+                SwarmEvent::TestEvent => {
+                    let (scheduled_tick, event) = self
+                        .pending_test_event
+                        .first_entry()
+                        .expect("logic error, should be nonempty")
+                        .remove_entry();
+
+                    assert_eq!(tick, scheduled_tick);
+
+                    let router_cmds = self.peer_disc_driver.update(event);
+                    self.executor.update_tick(tick);
+                    self.executor.exec(router_cmds);
+
                     continue;
                 }
             }
@@ -506,5 +532,16 @@ where
     ) -> Option<Node<S>> {
         self.routing_table.unregister(node_id);
         self.states.remove(node_id)
+    }
+
+    pub fn insert_test_event(
+        &mut self,
+        node_id: &NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+        sched_tick: Duration,
+        event: PeerDiscoveryEvent<S::SignatureType>,
+    ) {
+        if let Some(node) = self.states.get_mut(node_id) {
+            node.pending_test_event.insert(sched_tick, event);
+        }
     }
 }
