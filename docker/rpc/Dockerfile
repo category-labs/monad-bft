@@ -11,6 +11,8 @@ RUN apt update && apt install -y \
   gnupg \
   software-properties-common \
   wget \
+  git \
+  python-is-python3 \
   cgroup-tools \
   libstdc++-13-dev \
   gcc-13 \
