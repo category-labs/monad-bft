@@ -141,13 +141,24 @@ where
             }
             Some(address) => {
                 let app_message = make_app_message();
+                let mut compressed_app_message = Vec::new();
+                if let Err(err) = self
+                    .compression_algo
+                    .compress(&app_message, &mut compressed_app_message)
+                {
+                    tracing::error!("compression error: {:?}", err);
+                    return;
+                }
+                let compressed_app_message = Bytes::from(compressed_app_message);
+
                 // TODO make this more sophisticated
                 // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = ST::sign(&app_message, &self.key).serialize();
+                let mut signed_message =
+                    BytesMut::zeroed(SIGNATURE_SIZE + compressed_app_message.len());
+                let signature = ST::sign(&compressed_app_message, &self.key).serialize();
                 assert_eq!(signature.len(), SIGNATURE_SIZE);
                 signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
+                signed_message[SIGNATURE_SIZE..].copy_from_slice(&compressed_app_message);
                 self.dataplane.tcp_write(
                     *address,
                     TcpMsg {
@@ -268,6 +279,14 @@ where
                             };
 
                             let app_message = message.serialize();
+                            let mut compressed_app_message = Vec::new();
+                            if let Err(err) = self
+                                .compression_algo
+                                .compress(&app_message, &mut compressed_app_message)
+                            {
+                                tracing::error!("compression error: {:?}", err);
+                                return;
+                            }
 
                             if epoch_validators.validators.contains_key(&self_id) {
                                 let message: M = message.into();
@@ -300,7 +319,7 @@ where
                             self.dataplane.udp_write_unicast(udp_build(
                                 &epoch,
                                 build_target,
-                                app_message,
+                                Bytes::from(compressed_app_message),
                             ));
                         }
                         RouterTarget::PointToPoint(to) => {
@@ -313,10 +332,18 @@ where
                                 }
                             } else {
                                 let app_message = message.serialize();
+                                let mut compressed_app_message = Vec::new();
+                                if let Err(err) = self
+                                    .compression_algo
+                                    .compress(&app_message, &mut compressed_app_message)
+                                {
+                                    tracing::error!("compression error: {:?}", err);
+                                    return;
+                                }
                                 self.dataplane.udp_write_unicast(udp_build(
                                     &self.current_epoch,
                                     BuildTarget::PointToPoint(&to),
-                                    app_message,
+                                    Bytes::from(compressed_app_message),
                                 ));
                             }
                         }
