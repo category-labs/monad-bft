@@ -7,13 +7,13 @@ use monad_types::NodeId;
 use tracing::debug;
 
 use crate::{
-    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
-    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
-    PeerLookupResponse, Ping, Pong, TimerKind,
+    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
+    PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
-struct PeerState {
-    last_ping: Option<Ping>,
+struct PeerState<ST: CertificateSignatureRecoverable> {
+    last_ping: Option<Ping<ST>>,
     alive: bool,
 }
 
@@ -21,7 +21,8 @@ struct PeerState {
 // peer discovery implementation
 pub struct PingPongDiscovery<ST: CertificateSignatureRecoverable> {
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
-    peer_state: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerState>,
+    local_name_record: MonadNameRecord<ST>,
+    peer_state: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerState<ST>>,
 
     ping_period: Duration,
 
@@ -30,6 +31,7 @@ pub struct PingPongDiscovery<ST: CertificateSignatureRecoverable> {
 
 pub struct PingPongDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    pub local_name_record: MonadNameRecord<ST>,
     pub peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub ping_period: Duration,
 }
@@ -55,6 +57,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder
 
         let mut state = PingPongDiscovery {
             self_id: self.self_id,
+            local_name_record: self.local_name_record,
             peer_state: peers
                 .iter()
                 .cloned()
@@ -120,7 +123,9 @@ where
         let ping_id = peer_state.last_ping.map_or(0, |ping| ping.id + 1);
         let ping = Ping {
             id: ping_id,
-            local_record_seq: 1,
+            local_record_seq: self.local_name_record.seq(),
+            // FIXME: make this optional
+            local_name_record: Some(self.local_name_record),
         };
         peer_state.last_ping = Some(ping);
 
@@ -135,7 +140,7 @@ where
     fn handle_ping(
         &mut self,
         from: NodeId<CertificateSignaturePubKey<ST>>,
-        ping: Ping,
+        ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?ping, "handle ping");
         *self.metrics.entry("recv_ping").or_default() += 1;

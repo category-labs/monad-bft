@@ -23,7 +23,7 @@ const MAX_PEER_IN_RESPONSE: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
-    pub last_ping: Option<Ping>,
+    pub last_ping: Option<Ping<ST>>,
     pub unresponsive_pings: u32,
     pub name_record: MonadNameRecord<ST>,
 }
@@ -188,7 +188,9 @@ where
 
         let ping_msg = Ping {
             id: self.rng.next_u32(),
-            local_record_seq: self.self_record.name_record.seq,
+            local_record_seq: self.self_record.seq(),
+            // FIXME: optionally include
+            local_name_record: Some(self.self_record),
         };
 
         peer_entry.last_ping = Some(ping_msg);
@@ -208,13 +210,14 @@ where
     fn handle_ping(
         &mut self,
         from: NodeId<CertificateSignaturePubKey<ST>>,
-        ping_msg: Ping,
+        ping_msg: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from, ?ping_msg, "handling ping request");
         *self.metrics.entry("recv_ping").or_default() += 1;
 
         let mut cmds = Vec::new();
 
+        // TODO: remove sending peer lookup request. Instead update local record if present
         // if sender of ping does not exist in local record or has higher sequence number
         // send a PeerLookupRequest to get the node information subsequently
         if self

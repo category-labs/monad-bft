@@ -14,4 +14,5 @@ rand_chacha = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-secp = { workspace = true }
 monad-testutil = { workspace = true }

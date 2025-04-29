@@ -5076,6 +5076,7 @@ dependencies = [
  "alloy-rlp",
  "monad-crypto",
  "monad-executor-glue",
+ "monad-secp",
  "monad-testutil",
  "monad-types",
  "rand 0.8.5",

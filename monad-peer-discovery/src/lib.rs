@@ -4,43 +4,21 @@ use std::{
     time::Duration,
 };
 
-use alloy_rlp::{Decodable, Encodable, encode_list};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, encode_list};
+use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_executor_glue::Message;
 use monad_types::NodeId;
 use tracing::warn;
 
 pub mod discovery;
+pub mod message;
 pub mod mock;
 
+pub use message::PeerDiscoveryMessage;
+
 pub type PeerDiscMetrics = HashMap<&'static str, u64>;
-
-#[derive(Debug, Clone, Copy)]
-pub struct Ping {
-    id: u32,
-    local_record_seq: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Pong {
-    ping_id: u32,
-    local_record_seq: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct PeerLookupRequest<ST: CertificateSignatureRecoverable> {
-    lookup_id: u32,
-    target: NodeId<CertificateSignaturePubKey<ST>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PeerLookupResponse<ST: CertificateSignatureRecoverable> {
-    lookup_id: u32,
-    target: NodeId<CertificateSignaturePubKey<ST>>,
-    name_records: Vec<MonadNameRecord<ST>>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NameRecord {
@@ -72,13 +50,23 @@ impl Decodable for NameRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, RlpEncodable, RlpDecodable)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,
 }
 
 impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
+    pub fn new(name_record: NameRecord, key: &ST::KeyPairType) -> Self {
+        let mut encoded = Vec::new();
+        name_record.encode(&mut encoded);
+        let signature = ST::sign(&encoded, key);
+        Self {
+            name_record,
+            signature,
+        }
+    }
+
     pub fn recover_pubkey(
         &self,
     ) -> Result<NodeId<CertificateSignaturePubKey<ST>>, <ST as CertificateSignature>::Error> {
@@ -103,7 +91,7 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     },
     PingRequest {
         from: NodeId<CertificateSignaturePubKey<ST>>,
-        ping: Ping,
+        ping: Ping<ST>,
     },
     PongResponse {
         from: NodeId<CertificateSignaturePubKey<ST>>,
@@ -131,32 +119,6 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         lookup_id: u32,
     },
     Prune,
-}
-
-#[derive(Debug, Clone)]
-pub enum PeerDiscoveryMessage<ST: CertificateSignatureRecoverable> {
-    Ping(Ping),
-    Pong(Pong),
-    PeerLookupRequest(PeerLookupRequest<ST>),
-    PeerLookupResponse(PeerLookupResponse<ST>),
-}
-
-impl<ST: CertificateSignatureRecoverable> Message for PeerDiscoveryMessage<ST> {
-    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
-    type Event = PeerDiscoveryEvent<ST>;
-
-    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-        match self {
-            PeerDiscoveryMessage::Ping(ping) => PeerDiscoveryEvent::PingRequest { from, ping },
-            PeerDiscoveryMessage::Pong(pong) => PeerDiscoveryEvent::PongResponse { from, pong },
-            PeerDiscoveryMessage::PeerLookupRequest(request) => {
-                PeerDiscoveryEvent::PeerLookupRequest { from, request }
-            }
-            PeerDiscoveryMessage::PeerLookupResponse(response) => {
-                PeerDiscoveryEvent::PeerLookupResponse { from, response }
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -199,7 +161,7 @@ pub trait PeerDiscoveryAlgo {
     fn handle_ping(
         &mut self,
         from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-        ping: Ping,
+        ping: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_pong(
