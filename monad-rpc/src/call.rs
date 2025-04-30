@@ -103,7 +103,7 @@ impl EthCallStatsTracker {
         self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub async fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
+    async fn get_stats(&self) -> (Option<Duration>, Option<Duration>, CumulativeStats) {
         let requests = self.active_requests.lock().await;
 
         if requests.is_empty() {
@@ -744,6 +744,7 @@ pub struct EthCallCapacityStats {
 }
 
 /// Returns statistics about eth_call capacity including inactive executors and queued requests
+#[allow(non_snake_case)]
 #[tracing::instrument(level = "debug")]
 #[monad_rpc_docs::rpc(method = "admin_ethCallStatistics")]
 pub async fn monad_admin_ethCallStatistics(
@@ -754,11 +755,7 @@ pub async fn monad_admin_ethCallStatistics(
 ) -> JsonRpcResult<EthCallCapacityStats> {
     let active_requests = total_permits - available_permits;
 
-    let inactive_executors = if active_requests >= eth_call_executor_fibers {
-        0
-    } else {
-        eth_call_executor_fibers.saturating_sub(active_requests)
-    };
+    let inactive_executors = eth_call_executor_fibers.saturating_sub(active_requests);
 
     let queued_requests = active_requests.saturating_sub(eth_call_executor_fibers);
     let (max_age, avg_age, cumulative_stats) = stats_tracker.get_stats().await;
