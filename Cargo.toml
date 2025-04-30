@@ -25,6 +25,7 @@ monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }
+monad-compress = { path = "./monad-compress" }
 monad-consensus = { path = "./monad-consensus" }
 monad-consensus-state = { path = "./monad-consensus-state" }
 monad-consensus-types = { path = "./monad-consensus-types" }
@@ -198,3 +199,4 @@ vergen-git2 = "1.0.5"
 wasm-bindgen = "0.2"
 zerocopy = "0.6"
 zeroize = "1.3"
+zstd = "0.13"

@@ -12,6 +12,7 @@ bench = false
 [dependencies]
 monad-bls = { workspace = true }
 monad-chain-config = { workspace = true }
+monad-compress = { workspace = true }
 monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-control-panel = { workspace = true }

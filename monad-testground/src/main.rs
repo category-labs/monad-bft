@@ -8,6 +8,7 @@ use executor::{LedgerConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{revision::ChainParams, MockChainConfig};
+use monad_compress::{nop::NopCompression, CompressionAlgo};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::MockExecutionProtocol,
@@ -48,7 +49,7 @@ where
 {
     pub num_nodes: usize,
     pub simulation_length: Duration,
-    pub executor_config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
+    pub executor_config: ExecutorConfig<ST, SCT, MockExecutionProtocol, NopCompression>,
     pub state_config: StateConfig<ST, SCT>,
 }
 
@@ -290,6 +291,7 @@ where
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,
                             mtu: DEFAULT_MTU,
+                            compression_algo: NopCompression::new(0, 0, Vec::new()),
                         }),
                     },
                     ledger_config: match args.ledger {
