@@ -4790,6 +4790,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-state-backend",
  "monad-types",
+ "monad-updaters",
  "pin-project",
  "rayon",
  "serde",

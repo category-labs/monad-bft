@@ -2,7 +2,10 @@ use std::{
     io,
     marker::PhantomData,
     pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     task::Poll,
     time::Duration,
 };
@@ -23,6 +26,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
 use monad_state_backend::StateBackend;
 use monad_types::DropTimer;
+use monad_updaters::TokioTaskUpdater;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{debug, error, info};
@@ -58,7 +62,7 @@ where
 
     forwarding_manager: Pin<Box<EthTxPoolForwardingManager>>,
 
-    metrics: EthTxPoolExecutorMetrics,
+    metrics: Arc<EthTxPoolExecutorMetrics>,
     executor_metrics: ExecutorMetrics,
 
     _phantom: PhantomData<CRT>,
@@ -68,9 +72,10 @@ impl<ST, SCT, SBT, CCT, CRT> EthTxPoolExecutor<ST, SCT, SBT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend,
-    CCT: ChainConfig<CRT>,
-    CRT: ChainRevision,
+    SBT: StateBackend + Send + 'static,
+    CCT: ChainConfig<CRT> + Send + 'static,
+    CRT: ChainRevision + Send + 'static,
+    Self: Unpin,
 {
     pub fn new(
         block_policy: EthBlockPolicy<ST, SCT>,
@@ -81,36 +86,82 @@ where
         hard_tx_expiry: Duration,
         chain_config: CCT,
         proposal_gas_limit: u64,
-    ) -> io::Result<Self> {
+    ) -> io::Result<TokioTaskUpdater<Pin<Box<Self>>, MonadEvent<ST, SCT, EthExecutionProtocol>>>
+    {
+        let ipc = Box::pin(EthTxPoolIpcServer::new(ipc_config)?);
+
         let (events_tx, events) = mpsc::unbounded_channel();
 
-        let pool = EthTxPool::new(
-            do_local_insert,
-            soft_tx_expiry,
-            hard_tx_expiry,
-            proposal_gas_limit,
-            // it's safe to default max_code_size to zero because it gets set on commit + reset
-            0,
-        );
+        let metrics = Arc::new(EthTxPoolExecutorMetrics::default());
+        let mut executor_metrics = ExecutorMetrics::default();
 
-        Ok(Self {
-            pool,
-            ipc: Box::pin(EthTxPoolIpcServer::new(ipc_config)?),
-            block_policy,
-            has_been_reset: false,
-            state_backend,
-            chain_config,
+        metrics.update(&mut executor_metrics);
 
-            events_tx,
-            events,
+        Ok(TokioTaskUpdater::new(
+            {
+                let metrics = metrics.clone();
 
-            forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+                move |command_rx, event_tx| {
+                    let pool = EthTxPool::new(
+                        do_local_insert,
+                        soft_tx_expiry,
+                        hard_tx_expiry,
+                        proposal_gas_limit,
+                        // it's safe to default max_code_size to zero because it gets set on commit + reset
+                        0,
+                    );
 
-            metrics: EthTxPoolExecutorMetrics::default(),
-            executor_metrics: ExecutorMetrics::default(),
+                    Self {
+                        pool,
+                        ipc,
+                        block_policy,
+                        has_been_reset: false,
+                        state_backend,
+                        chain_config,
 
-            _phantom: PhantomData,
-        })
+                        events_tx,
+                        events,
+
+                        forwarding_manager: Box::pin(EthTxPoolForwardingManager::new()),
+
+                        metrics,
+                        executor_metrics,
+
+                        _phantom: PhantomData,
+                    }
+                    .run(command_rx, event_tx)
+                }
+            },
+            Box::new(move |executor_metrics: &mut ExecutorMetrics| {
+                metrics.update(executor_metrics)
+            }),
+        ))
+    }
+
+    async fn run(
+        mut self,
+        mut command_rx: mpsc::Receiver<
+            Vec<TxPoolCommand<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT>, SBT>>,
+        >,
+        event_tx: mpsc::Sender<MonadEvent<ST, SCT, EthExecutionProtocol>>,
+    ) {
+        use futures::StreamExt;
+
+        loop {
+            tokio::select! {
+                biased;
+
+                commands = command_rx.recv() => {
+                    let commands = commands.unwrap();
+
+                    self.exec(commands);
+                }
+
+                event = self.next() => {
+                    event_tx.send(event.unwrap()).await.unwrap();
+                }
+            }
+        }
     }
 }
 
