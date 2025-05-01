@@ -12,6 +12,10 @@ use alloy_rlp::Encodable;
 use alloy_sol_types::decode_revert_reason;
 use bindings::monad_eth_call_result;
 use futures::channel::oneshot::{channel, Sender};
+use monad_chain_config::{
+    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+    MONAD_TESTNET_CHAIN_ID,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -236,10 +240,11 @@ pub async fn eth_call(
         }
     }
 
-    let chain_id = match chain_id {
-        1 => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
-        20143 => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
-        10143 => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+    let chain_config = match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+        MONAD_DEVNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        MONAD_TESTNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+        MONAD_MAINNET_CHAIN_ID => bindings::monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
         _ => {
             unsafe { bindings::monad_state_override_destroy(override_ctx) };
 
@@ -263,7 +268,7 @@ pub async fn eth_call(
 
         bindings::monad_eth_call_executor_submit(
             eth_call_executor,
-            chain_id,
+            chain_config,
             rlp_encoded_tx.as_ptr(),
             rlp_encoded_tx.len(),
             rlp_encoded_block_header.as_ptr(),

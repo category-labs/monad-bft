@@ -9,6 +9,8 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-chain-config = { workspace = true }
+
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }

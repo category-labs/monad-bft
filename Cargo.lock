@@ -4840,6 +4840,7 @@ dependencies = [
  "cmake",
  "futures",
  "hex",
+ "monad-chain-config",
  "serde",
  "tokio",
  "tracing",
