@@ -264,8 +264,11 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 futures.push(fut.boxed());
             }
 
-            // If we have a pending response, schedule a timeout for the client
-            if wip_response.unacknowledged_responses > 0 {
+            // If we have a pending response, schedule a timeout for the client that supports completions
+            if wip_response.unacknowledged_responses > 0
+                && wip_response.pending_response_completions.is_some()
+                && wip_response.response.version >= STATESYNC_VERSION_V2
+            {
                 let fut = async {
                     tokio::time::sleep_until(
                         (wip_response.completion_time + CLIENT_TIMEOUT).into(),
@@ -508,6 +511,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     "unexpected completion from execution client"
                 );
             }
+            wip_response.completion_time = Instant::now();
             self.maybe_send_batch();
         } else {
             tracing::warn!(
