@@ -938,6 +938,9 @@ where
     #[must_use]
     fn checkpoint(&self) -> Checkpoint<SCT> {
         let val_set_data = |epoch: Epoch| {
+            // return early if validator set isn't locked
+            let _ = self.val_epoch_map.get_val_set(&epoch)?;
+
             let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
             Some(LockedEpoch {
                 epoch,
