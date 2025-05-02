@@ -252,7 +252,7 @@ impl JsonRpcError {
         Self {
             code: -32603,
             message: format!(
-                "Contract code size is {} bytes and exceeds 24576 bytes",
+                "Contract code size is {} bytes and exceeds code size limit",
                 size
             ),
             data: None,

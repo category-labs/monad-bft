@@ -11,6 +11,7 @@ use std::{
 use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_primitives::{Address, PrimitiveSignature, TxKind, Uint, U256, U64, U8};
 use alloy_rpc_types::AccessList;
+use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{eth_call, CallResult, EthCallExecutor, StateOverrideSet};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -316,6 +317,8 @@ impl TryFrom<CallRequest> for TxEnvelope {
                     to: if let Some(to) = call_request.to {
                         TxKind::Call(to)
                     } else {
+                        // EIP-3860
+                        check_contract_creation_size(&call_request)?;
                         TxKind::Create
                     },
                     value: call_request.value.unwrap_or_default(),
@@ -364,13 +367,8 @@ impl TryFrom<CallRequest> for TxEnvelope {
                     to: if let Some(to) = call_request.to {
                         TxKind::Call(to)
                     } else {
-                        // EIP-170
-                        if let Some(code) = call_request.input.data.as_ref() {
-                            if code.len() > 0x6000 {
-                                return Err(JsonRpcError::code_size_too_large(code.len()));
-                            }
-                        }
-
+                        // EIP-3860
+                        check_contract_creation_size(&call_request)?;
                         TxKind::Create
                     },
                     value: call_request.value.unwrap_or_default(),
@@ -381,6 +379,19 @@ impl TryFrom<CallRequest> for TxEnvelope {
             }
         }
     }
+}
+
+pub fn check_contract_creation_size(call_request: &CallRequest) -> Result<(), JsonRpcError> {
+    // EIP-3860
+    let max_code_size = MonadExecutionRevision::LATEST
+        .execution_chain_params()
+        .max_code_size;
+    if let Some(code) = call_request.input.input.as_ref() {
+        if code.len() > 2 * max_code_size {
+            return Err(JsonRpcError::code_size_too_large(code.len()));
+        }
+    }
+    Ok(())
 }
 
 /// Populate gas limit and gas prices
@@ -775,8 +786,8 @@ pub async fn monad_admin_ethCallStatistics(
 mod tests {
     use std::collections::HashMap;
 
-    use alloy_consensus::Header;
-    use alloy_primitives::{Address, U256};
+    use alloy_consensus::{Header, TxEnvelope};
+    use alloy_primitives::{Address, Bytes, U256};
     use monad_ethcall::{StateOverrideObject, StateOverrideSet};
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -785,8 +796,7 @@ mod tests {
     use monad_types::SeqNum;
     use serde_json::json;
 
-    use super::{fill_gas_params, CallRequest, GasPriceDetails};
-    use crate::call::sender_gas_allowance;
+    use super::*;
 
     #[test]
     fn parse_call_request() {
@@ -1002,5 +1012,37 @@ mod tests {
             sender_gas_allowance(&mock_triedb, block_key, &header, &call_request, &overrides).await;
         let gas_limit = result.unwrap();
         assert_eq!(U256::from(gas_limit), balance_override / gas_price);
+    }
+
+    #[test]
+    fn test_tx_envelope_try_from() {
+        let max_code_size = MonadExecutionRevision::LATEST
+            .execution_chain_params()
+            .max_code_size;
+
+        let call_request = CallRequest {
+            input: CallInput {
+                input: Some(Bytes::from(vec![3; 2 * max_code_size + 1])),
+                data: None,
+            },
+            ..Default::default()
+        };
+
+        let result: Result<TxEnvelope, _> = call_request.try_into();
+        assert_eq!(
+            result,
+            Err(JsonRpcError::code_size_too_large(2 * max_code_size + 1))
+        );
+
+        let call_request = CallRequest {
+            input: CallInput {
+                input: Some(Bytes::from(vec![3; 2 * max_code_size])),
+                data: None,
+            },
+            ..Default::default()
+        };
+
+        let result: Result<TxEnvelope, _> = call_request.try_into();
+        assert!(result.is_ok());
     }
 }

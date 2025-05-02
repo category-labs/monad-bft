@@ -5202,6 +5202,7 @@ dependencies = [
  "futures-util",
  "itertools 0.10.5",
  "monad-archive",
+ "monad-chain-config",
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",

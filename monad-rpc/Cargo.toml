@@ -18,6 +18,7 @@ path = "./bin/docs.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+monad-chain-config = { workspace = true }
 monad-archive = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
