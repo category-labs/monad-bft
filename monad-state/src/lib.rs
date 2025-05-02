@@ -140,12 +140,10 @@ impl<SCT: SignatureCollection> Forkpoint<SCT> {
                 LockedEpoch {
                     epoch: Epoch(1),
                     round: Some(GENESIS_ROUND),
-                    validators: None,
                 },
                 LockedEpoch {
                     epoch: Epoch(2),
                     round: None,
-                    validators: None,
                 },
             ],
         }
@@ -1346,12 +1344,10 @@ mod test {
                 LockedEpoch {
                     epoch: Epoch(3),
                     round: Some(Round(3050)),
-                    validators: None,
                 },
                 LockedEpoch {
                     epoch: Epoch(4),
                     round: None,
-                    validators: None,
                 },
             ],
         }

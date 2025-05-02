@@ -942,11 +942,7 @@ where
             let _ = self.val_epoch_map.get_val_set(&epoch)?;
 
             let round = self.epoch_manager.epoch_starts.get(&epoch).copied();
-            Some(LockedEpoch {
-                epoch,
-                round,
-                validators: None,
-            })
+            Some(LockedEpoch { epoch, round })
         };
 
         let base_epoch = self.consensus.pending_block_tree.root().epoch;

@@ -4564,7 +4564,6 @@ dependencies = [
  "monad-types",
  "prost 0.12.6",
  "serde",
- "serde_json",
  "toml 0.7.8",
 ]
 
