@@ -28,12 +28,7 @@ pub struct TraceCallObject {
     pub data: Option<String>,
 }
 
-#[allow(non_snake_case)]
-pub async fn monad_trace_block(params: BlockTags) -> JsonRpcResult<String> {
-    Err(JsonRpcError::method_not_supported())
-}
-
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct TraceCallParams {
     pub calls: Vec<TraceCallObject>,
     pub block: BlockTags,

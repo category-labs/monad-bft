@@ -55,12 +55,10 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, Response, ResponseWrapper},
     timing::{RequestId, TimingMiddleware},
-    trace::{
-        monad_trace_block, monad_trace_call, monad_trace_callMany, monad_trace_get,
-        monad_trace_transaction,
-    },
+    trace::{monad_trace_call, monad_trace_callMany, monad_trace_get, monad_trace_transaction},
     trace_handlers::{
         monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
+        monad_trace_block,
     },
     txpool::{EthTxPoolBridge, EthTxPoolBridgeClient},
     vpool::{monad_txpool_statusByAddress, monad_txpool_statusByHash},
@@ -586,8 +584,11 @@ async fn rpc_select(
         }
         "net_version" => monad_net_version(app_state.chain_id).map(serialize_result)?,
         "trace_block" => {
+            let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_trace_block(params).await.map(serialize_result)?
+            monad_trace_block(triedb_env, &app_state.archive_reader, params)
+                .await
+                .map(serialize_result)?
         }
         "trace_call" => {
             let params = serde_json::from_value(params).invalid_params()?;
