@@ -134,7 +134,7 @@ struct PendingRequest<PT: PubKey> {
 }
 
 // maximum number of responses we can send before client needs to acknowledge
-const MAX_UNACKOWLEDGED_RESPONSES: usize = 100;
+const MAX_UNACKNOWLEDGED_RESPONSES: usize = 100;
 
 #[derive(Debug)]
 struct WipResponse<PT: PubKey> {
@@ -163,7 +163,7 @@ struct WipResponse<PT: PubKey> {
 const MESSAGE_SCHEDULE_DURATION: Duration = Duration::from_millis(500);
 
 // Timeout for the client to acknowledge a message
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl<PT: PubKey> WipResponse<PT> {
     pub fn new(from: NodeId<PT>, rx_time: Instant, request: StateSyncRequest) -> Self {
@@ -191,7 +191,7 @@ impl<PT: PubKey> WipResponse<PT> {
         self.pending_response_completions.as_ref().is_none_or(|r| {
             r.len() < MAX_PENDING_RESPONSES
                 && (self.response.version < STATESYNC_VERSION_V2
-                    || self.unacknowledged_responses < MAX_UNACKOWLEDGED_RESPONSES)
+                    || self.unacknowledged_responses < MAX_UNACKNOWLEDGED_RESPONSES)
         })
     }
 

@@ -24,8 +24,10 @@ use zerocopy::AsBytes;
 use super::{message_timeout, TcpMsg, TcpMsgHdr};
 
 // These are per-peer limits.
-pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 10;
-pub const QUEUED_MESSAGE_LIMIT: usize = 20;
+pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
+// should be higher than MAX_UNACKNOWLEDGED_RESPONSES
+pub const QUEUED_MESSAGE_LIMIT: usize = 150;
+// TODO add QUEUED_MESSAGE_BYTE_LIMIT
 
 pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 
