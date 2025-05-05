@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, net::SocketAddrV4, str::FromStr, time::Duration
 use alloy_rlp::Encodable;
 use monad_crypto::{
     NopPubKey, NopSignature,
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
 };
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
@@ -15,6 +15,7 @@ use monad_peer_discovery::{
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_testutil::signing::create_keys;
+use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
 use monad_types::NodeId;
 use tracing_test::traced_test;
 struct PeerDiscSwarm {}
@@ -30,6 +31,11 @@ impl PeerDiscSwarmRelation for PeerDiscSwarm {
         SwarmPubKeyType<Self>,
         PeerDiscoveryMessage<SwarmSignatureType<Self>>,
         PeerDiscoveryMessage<SwarmSignatureType<Self>>,
+    >;
+
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
     >;
 }
 
@@ -82,8 +88,8 @@ fn test_ping_pong() {
                         self_id,
                         self_record: generate_name_record(key),
                         peer_info,
-                        ping_period: Duration::from_secs(2),
-                        prune_period: Duration::from_secs(4),
+                        ping_period: Duration::from_secs(5),
+                        prune_period: Duration::from_secs(30),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         rng_seed: 123456,
@@ -91,6 +97,9 @@ fn test_ping_pong() {
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
                     seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_secs(1),
+                    ))],
                 }
             })
             .collect(),
@@ -99,15 +108,16 @@ fn test_ping_pong() {
 
     let mut nodes = swarm_builder.build();
 
-    while nodes.step_until(Duration::from_secs(10)) {}
+    while nodes.step_until(Duration::from_secs(20)) {}
 
-    // first ping is sent out at t=0. we expect 6 at t=10 (inclusive of t=0 and t=10)
+    // first ping is sent out at t=0. we expect 5 send_ping at t=20
+    // other metrics should be 4 due to message delay
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics["send_ping"] == 6);
-        assert!(metrics["send_pong"] == 6);
-        assert!(metrics["recv_ping"] == 6);
-        assert!(metrics["recv_pong"] == 6);
+        assert_eq!(metrics["send_ping"], 5);
+        assert_eq!(metrics["send_pong"], 4);
+        assert_eq!(metrics["recv_ping"], 4);
+        assert_eq!(metrics["recv_pong"], 4);
     }
 }
 
@@ -176,6 +186,7 @@ fn test_new_node_joining() {
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
                     seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
                 }
             })
             .collect(),
@@ -249,6 +260,7 @@ fn test_update_name_record() {
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
                     seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
                 }
             })
             .collect(),
@@ -305,6 +317,7 @@ fn test_update_name_record() {
         },
         router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
         seed: 1,
+        outbound_pipeline: vec![],
     };
 
     nodes.add_state(new_node_a_builder);
@@ -368,6 +381,7 @@ fn test_prune_nodes() {
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
                         .build(),
                     seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
                 }
             })
             .collect(),

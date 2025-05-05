@@ -14,7 +14,7 @@ use monad_peer_discovery::{
     PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent, PeerDiscoveryMessage,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
-use monad_transformer::{ID, LinkMessage};
+use monad_transformer::{ID, LinkMessage, Pipeline};
 use monad_types::NodeId;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -44,6 +44,11 @@ pub trait PeerDiscSwarmRelation {
             InboundMessage = PeerDiscoveryMessage<SwarmSignatureType<Self>>,
             TransportMessage = Self::TransportMessage,
         >;
+
+    type Pipeline: Pipeline<
+            Self::TransportMessage,
+            NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+        >;
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -61,6 +66,7 @@ where
     pub algo_builder: B,
     pub router_scheduler: S::RouterSchedulerType,
     pub seed: u64,
+    pub outbound_pipeline: S::Pipeline,
 }
 
 impl<S, B> NodeBuilder<S, B>
@@ -69,7 +75,13 @@ where
     B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
 {
     pub fn build(self) -> Node<S> {
-        Node::new(self.id, self.algo_builder, self.router_scheduler, self.seed)
+        Node::new(
+            self.id,
+            self.algo_builder,
+            self.router_scheduler,
+            self.seed,
+            self.outbound_pipeline,
+        )
     }
 }
 
@@ -89,6 +101,7 @@ where
 
     rng: ChaCha8Rng,
     current_seed: usize,
+    outbound_pipeline: S::Pipeline,
 }
 
 pub struct MockPeerDiscExecutor<S: PeerDiscSwarmRelation> {
@@ -186,6 +199,7 @@ where
         algo_builder: B,
         router_scheduler: S::RouterSchedulerType,
         seed: u64,
+        outbound_pipeline: S::Pipeline,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = S::PeerDiscoveryAlgoType>,
@@ -208,6 +222,7 @@ where
             pending_inbound_messages: Default::default(),
             rng,
             current_seed,
+            outbound_pipeline,
         }
     }
 
@@ -280,7 +295,6 @@ where
                                 if to == self.id {
                                     self.executor.router.process_inbound(tick, self.id, ser);
                                 } else {
-                                    // TODO: add delay to message
                                     let lm = LinkMessage {
                                         from: ID::new(self.id),
                                         to: ID::new(to),
@@ -288,7 +302,11 @@ where
 
                                         from_tick: tick,
                                     };
-                                    emitted_messages.push((tick, lm));
+                                    let outbound_transformed = self.outbound_pipeline.process(lm);
+                                    for (delay, msg) in outbound_transformed {
+                                        let sched_tick = tick + delay;
+                                        emitted_messages.push((sched_tick, msg));
+                                    }
                                 }
                                 continue;
                             }
