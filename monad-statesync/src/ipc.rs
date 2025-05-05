@@ -188,11 +188,11 @@ impl<PT: PubKey> WipResponse<PT> {
 
     // Wait for both tcp completions and acknowledgements from client
     pub fn can_send(&self) -> bool {
-        self.pending_response_completions
-            .as_ref()
-            .is_none_or(|r| r.len() < MAX_PENDING_RESPONSES)
-            && (self.response.version < STATESYNC_VERSION_V2
-                || self.unacknowledged_responses < MAX_UNACKOWLEDGED_RESPONSES)
+        self.pending_response_completions.as_ref().is_none_or(|r| {
+            r.len() < MAX_PENDING_RESPONSES
+                && (self.response.version < STATESYNC_VERSION_V2
+                    || self.unacknowledged_responses < MAX_UNACKOWLEDGED_RESPONSES)
+        })
     }
 
     // Check if we have more space in the buffer
