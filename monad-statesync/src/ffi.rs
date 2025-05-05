@@ -406,18 +406,6 @@ impl<PT: PubKey> Stream for StateSync<PT> {
         while let Poll::Ready(request) = this.request_rx.poll_recv(cx) {
             match request.expect("request_tx dropped") {
                 SyncRequest::Request(request) => {
-                    if this
-                        .current_target
-                        .as_ref()
-                        .is_some_and(|current_target| current_target.number != request.target)
-                    {
-                        tracing::debug!(
-                            ?request,
-                            current_target =? this.current_target,
-                            "dropping request for stale target"
-                        );
-                        continue;
-                    }
                     this.outbound_requests.queue_request(request);
                 }
                 SyncRequest::DoneSync(target) => {
