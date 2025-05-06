@@ -5382,6 +5382,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-tracing-timing"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "futures",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "quanta",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
@@ -6522,6 +6536,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bd1fe6824cea6538803de3ff1bc0cf3949024db3d43c9643024bfb33a807c0e"
+dependencies = [
+ "crossbeam-utils",
+ "libc",
+ "once_cell",
+ "raw-cpuid",
+ "wasi 0.11.0+wasi-snapshot-preview1",
+ "web-sys",
+ "winapi",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6709,6 +6738,15 @@ dependencies = [
  "strum 0.26.1",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "raw-cpuid"
+version = "11.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6df7ab838ed27997ba19a4664507e6f82b41fe6e20be42929332156e5e85146"
+dependencies = [
+ "bitflags 2.4.1",
 ]
 
 [[package]]
