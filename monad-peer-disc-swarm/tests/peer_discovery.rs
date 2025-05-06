@@ -18,7 +18,7 @@ use monad_peer_disc_swarm::{
     builder::PeerDiscSwarmBuilder,
 };
 use monad_peer_discovery::{
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryMessage,
+    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent, PeerDiscoveryMessage,
     discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -147,7 +147,7 @@ fn test_new_node_joining() {
 
     // initialize peer info of the three nodes
     // NodeA name record: NodeB
-    // NodeB name record: NodeA,
+    // NodeB name record: NodeA
     // NodeC name record: NodeA, NodeB
     // (we can assume that NodeA and NodeB are the bootstrap nodes in a network)
     let bootstrap_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = bootstrap_keys
@@ -425,6 +425,279 @@ fn test_prune_nodes() {
 
 #[traced_test]
 #[test]
+fn test_peer_lookup_random_nodes() {
+    let keys = create_keys::<SignatureType>(5);
+
+    let subset_keys = &keys[0..2];
+    let all_keys = &keys[0..4];
+    let non_existent_key = &keys[4];
+
+    // initialize peer info
+    // NodeA name record: NodeB, NodeC, NodeD
+    // NodeB name record: NodeA
+    let subset_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = subset_keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = all_keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: subset_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peers = if key.pubkey() == subset_keys.first().unwrap().pubkey() {
+                    all_peers.clone()
+                } else {
+                    subset_peers.clone()
+                };
+                let peer_info = peers
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(2),
+                        prune_period: Duration::from_secs(60),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+    let mut nodes = swarm_builder.build();
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // NodeA and NodeB should now have peer_info of each other
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        for node_id in subset_peers.keys() {
+            if node_id == &state.self_id {
+                continue;
+            }
+            assert!(state.peer_info.contains_key(node_id));
+        }
+    }
+
+    let node_a = NodeId::new(subset_keys[0].pubkey());
+    let node_b = NodeId::new(subset_keys[1].pubkey());
+    let nonexistent_id = NodeId::new(non_existent_key.pubkey());
+
+    // NodeB send lookup request to NodeA for nonexistent node
+    let lookup_event = PeerDiscoveryEvent::SendPeerLookup {
+        to: node_a,
+        target: nonexistent_id,
+    };
+    nodes.insert_test_event(&node_b, Duration::from_secs(0), lookup_event);
+
+    while nodes.step_until(Duration::from_secs(0)) {}
+
+    // NodeB should know about all subset peers through the random response
+    let node_b_state = nodes
+        .states()
+        .get(&node_b)
+        .expect("Node B state should exist")
+        .peer_disc_driver
+        .get_peer_disc_state();
+    for node_id in all_peers.keys() {
+        assert!(node_b_state.peer_info.contains_key(node_id));
+    }
+}
+
+#[traced_test]
+#[test]
 fn test_peer_lookup_retry() {
-    // TODO: handle case when the peer lookup request is not being handled
+    let keys = create_keys::<SignatureType>(3);
+    let node_a_key = &keys[0];
+    let node_a = NodeId::new(node_a_key.pubkey());
+    let node_b_key = &keys[1];
+    let node_b = NodeId::new(node_b_key.pubkey());
+    let node_c_key = &keys[2];
+    let node_c = NodeId::new(node_c_key.pubkey());
+    let (subset_keys, _) = (&keys[0..2], &keys[2]);
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = subset_keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: subset_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info: if self_id == node_a {
+                            let mut info = BTreeMap::new();
+                            info.insert(node_b, PeerInfo {
+                                last_ping: None,
+                                unresponsive_pings: 0,
+                                name_record: generate_name_record(node_b_key),
+                            });
+                            info.insert(node_c, PeerInfo {
+                                last_ping: None,
+                                unresponsive_pings: 0,
+                                name_record: generate_name_record(node_c_key),
+                            });
+                            info
+                        } else {
+                            let mut info = BTreeMap::new();
+                            info.insert(node_a, PeerInfo {
+                                last_ping: None,
+                                unresponsive_pings: 0,
+                                name_record: generate_name_record(node_a_key),
+                            });
+                            info
+                        },
+                        ping_period: Duration::from_secs(15),
+                        prune_period: Duration::from_secs(30),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_secs(2),
+                    ))],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    // initialize peer info
+    // NodeA name record: NodeB, NodeC
+    // NodeB name record: NodeA
+    // NodeB send peer lookup request to NodeA, requesting for NodeC
+    // Outbound message latency of NodeB is 2 seconds while timeout is 1 second
+    let lookup_event = PeerDiscoveryEvent::SendPeerLookup {
+        to: node_a,
+        target: node_c,
+    };
+    nodes.insert_test_event(&node_b, Duration::from_secs(0), lookup_event);
+
+    while nodes.step_until(Duration::from_secs(10)) {}
+
+    for (node, state) in nodes.states() {
+        if node == &node_b {
+            let state = state.peer_disc_driver.get_peer_disc_state();
+            let metrics = state.metrics();
+            assert_eq!(metrics["lookup_timeout"], 4);
+            assert_eq!(metrics["drop_lookup_response"], 4);
+
+            // Due to lookup timeout, NodeB still does not have name record of NodeC
+            assert!(!state.peer_info.contains_key(&node_c));
+        }
+    }
+}
+
+#[traced_test]
+#[test]
+fn test_ping_timeout() {
+    let keys = create_keys::<SignatureType>(2);
+    let all_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = keys
+        .iter()
+        .map(|k| {
+            (NodeId::new(k.pubkey()), PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record: generate_name_record(k),
+            })
+        })
+        .collect();
+    let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
+        builders: keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                let self_id = NodeId::new(key.pubkey());
+                let peer_info = all_peers
+                    .clone()
+                    .into_iter()
+                    .filter(|(id, _)| id != &self_id)
+                    .collect::<BTreeMap<_, _>>();
+                NodeBuilder {
+                    id: NodeId::new(key.pubkey()),
+                    addr: generate_name_record(key).address(),
+                    algo_builder: PeerDiscoveryBuilder {
+                        self_id,
+                        self_record: generate_name_record(key),
+                        peer_info,
+                        ping_period: Duration::from_secs(5),
+                        prune_period: Duration::from_secs(20),
+                        request_timeout: Duration::from_secs(1),
+                        prune_threshold: 3,
+                        rng_seed: 123456,
+                    },
+                    router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
+                        .build(),
+                    seed: i.try_into().unwrap(),
+                    outbound_pipeline: vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_secs(2),
+                    ))],
+                }
+            })
+            .collect(),
+        seed: 7,
+    };
+
+    let mut nodes = swarm_builder.build();
+
+    while nodes.step_until(Duration::from_secs(20)) {}
+
+    // message latency of 2 seconds
+    // ping timeout of 1 second
+    // verify that ping timeout event is recorded correctly and subsequent pong is dropped
+    // unresponsive_pings accumulate until being pruned
+    for state in nodes.states().values() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        let metrics = state.metrics();
+        assert_eq!(metrics["send_ping"], 5);
+        assert_eq!(metrics["ping_timeout"], 4);
+        assert_eq!(metrics["recv_pong"], 4);
+        assert_eq!(metrics["drop_pong"], 4);
+
+        assert!(state.peer_info.is_empty());
+    }
 }

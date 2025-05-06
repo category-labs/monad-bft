@@ -297,12 +297,14 @@ where
                 info.unresponsive_pings = 0;
             } else {
                 debug!(?from, "dropping pong, ping id not found or does not match");
+                *self.metrics.entry("drop_pong").or_default() += 1;
             }
         } else {
             debug!(
                 ?from,
                 "dropping pong, ping sender does not exist in peer info"
             );
+            *self.metrics.entry("drop_pong").or_default() += 1;
         }
 
         cmds
@@ -314,6 +316,7 @@ where
         ping_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, ?ping_id, "handling ping timeout");
+        *self.metrics.entry("ping_timeout").or_default() += 1;
 
         let cmds = Vec::new();
 
@@ -433,6 +436,7 @@ where
                 ?response,
                 "peer lookup response not in outstanding requests, dropping response..."
             );
+            *self.metrics.entry("drop_lookup_response").or_default() += 1;
             return cmds;
         }
 
@@ -441,6 +445,7 @@ where
                 ?response,
                 "response includes number of peers larger than max, dropping response..."
             );
+            *self.metrics.entry("drop_lookup_response").or_default() += 1;
             return cmds;
         }
 
@@ -483,6 +488,7 @@ where
         lookup_id: u32,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?lookup_id, "peer lookup request timeout");
+        *self.metrics.entry("lookup_timeout").or_default() += 1;
 
         let mut cmds = Vec::new();
 
