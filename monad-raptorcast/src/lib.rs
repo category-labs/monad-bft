@@ -12,7 +12,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream};
-use message::{DeserializeError, InboundRouterMessage};
+use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage, SerializeError};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -124,7 +124,7 @@ where
     fn tcp_build_and_send(
         &mut self,
         to: &NodeId<CertificateSignaturePubKey<ST>>,
-        make_app_message: impl FnOnce() -> Bytes,
+        make_app_message: impl FnOnce() -> Result<Bytes, SerializeError>,
         completion: Option<oneshot::Sender<()>>,
     ) {
         match self.known_addresses.get(to) {
@@ -132,7 +132,13 @@ where
                 tracing::warn!(?to, "not sending message, address unknown");
             }
             Some(address) => {
-                let app_message = make_app_message();
+                let app_message = match make_app_message() {
+                    Ok(data) => data,
+                    Err(err) => {
+                        tracing::error!(?err, "unable to serialize outbound message");
+                        return;
+                    }
+                };
                 // TODO make this more sophisticated
                 // include timestamp, etc
                 let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
@@ -258,10 +264,8 @@ where
                                 continue;
                             };
 
-                            let app_message = message.serialize();
-
                             if epoch_validators.validators.contains_key(&self_id) {
-                                let message: M = message.into();
+                                let message: M = message.clone().into();
                                 self.pending_events
                                     .push_back(RaptorCastEvent::Message(message.event(self_id)));
                                 if let Some(waker) = self.waker.take() {
@@ -288,6 +292,15 @@ where
                                 _ => unreachable!(),
                             };
 
+                            let outbound_message = OutboundRouterMessage::AppMessage(message);
+                            let app_message = match outbound_message.try_serialize() {
+                                Ok(data) => data,
+                                Err(err) => {
+                                    tracing::error!(?err, "unable to serialize outbound message");
+                                    continue;
+                                }
+                            };
+
                             self.dataplane.udp_write_unicast(udp_build(
                                 &epoch,
                                 build_target,
@@ -303,7 +316,17 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                let app_message = message.serialize();
+                                let outbound_message = OutboundRouterMessage::AppMessage(message);
+                                let app_message = match outbound_message.try_serialize() {
+                                    Ok(data) => data,
+                                    Err(err) => {
+                                        tracing::error!(
+                                            ?err,
+                                            "unable to serialize outbound message"
+                                        );
+                                        continue;
+                                    }
+                                };
                                 self.dataplane.udp_write_unicast(udp_build(
                                     &self.current_epoch,
                                     BuildTarget::PointToPoint(&to),
@@ -320,7 +343,12 @@ where
                                     waker.wake()
                                 }
                             } else {
-                                self.tcp_build_and_send(&to, || message.serialize(), completion)
+                                let outbound_message = OutboundRouterMessage::AppMessage(message);
+                                self.tcp_build_and_send(
+                                    &to,
+                                    || outbound_message.try_serialize(),
+                                    completion,
+                                )
                             }
                         }
                     };

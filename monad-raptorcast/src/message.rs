@@ -17,7 +17,7 @@ impl NetworkMessageVersion {
     pub fn version() -> Self {
         Self {
             serialize_version: SERIALIZE_VERSION,
-            compression_version: UNCOMPRESSED_VERSION,
+            compression_version: DEFAULT_ZSTD_VERSION,
         }
     }
 }
