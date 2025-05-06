@@ -173,6 +173,7 @@ serde_json = "1.0"
 serial_test = "3.2.0"
 sha2 = "0.10"
 simple-xml-builder = "1.1"
+socket2 = "0.5.9"
 sorted_vector_map = "0.2.0"
 sorted-vec = "0.8.3"
 syn = { version = "1.0.0", features = ["full"] }

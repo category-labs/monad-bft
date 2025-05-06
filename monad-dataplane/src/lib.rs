@@ -6,8 +6,76 @@ use monoio::{IoUringDriver, RuntimeBuilder};
 use tokio::sync::{mpsc, mpsc::error::TrySendError};
 use tracing::warn;
 
+pub(crate) mod buffer_ext;
 pub mod tcp;
 pub mod udp;
+
+pub struct DataplaneBuilder {
+    local_addr: SocketAddr,
+    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
+    up_bandwidth_mbps: u64,
+    buffer_size: Option<usize>,
+}
+
+impl DataplaneBuilder {
+    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
+        Self {
+            local_addr: *local_addr,
+            up_bandwidth_mbps,
+            buffer_size: None,
+        }
+    }
+
+    /// with_buffer_size sets the buffer size for udp and tcp sockets that are managed by dataplane
+    /// to a requested value.
+    pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
+        self.buffer_size = Some(buffer_size);
+        self
+    }
+
+    pub fn build(self) -> Dataplane {
+        let DataplaneBuilder {
+            local_addr,
+            up_bandwidth_mbps,
+            buffer_size,
+        } = self;
+
+        let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
+        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
+        let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
+        let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
+
+        thread::spawn(move || {
+            RuntimeBuilder::<IoUringDriver>::new()
+                .enable_timer()
+                .build()
+                .expect("Failed building the Runtime")
+                .block_on(async move {
+                    tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx, buffer_size);
+
+                    udp::spawn_tasks(
+                        local_addr,
+                        udp_ingress_tx,
+                        udp_egress_rx,
+                        up_bandwidth_mbps,
+                        buffer_size,
+                    );
+
+                    futures::future::pending::<()>().await;
+                });
+        });
+
+        Dataplane {
+            tcp_ingress_rx,
+            tcp_egress_tx,
+            udp_ingress_rx,
+            udp_egress_tx,
+
+            tcp_msgs_dropped: 0,
+            udp_msgs_dropped: 0,
+        }
+    }
+}
 
 pub struct Dataplane {
     tcp_ingress_rx: mpsc::Receiver<(SocketAddr, Bytes)>,
@@ -50,40 +118,6 @@ const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
-    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub fn new(local_addr: &SocketAddr, up_bandwidth_mbps: u64) -> Self {
-        let local_addr = *local_addr;
-
-        let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
-        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
-        let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
-        let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
-
-        thread::spawn(move || {
-            RuntimeBuilder::<IoUringDriver>::new()
-                .enable_timer()
-                .build()
-                .expect("Failed building the Runtime")
-                .block_on(async move {
-                    tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx);
-
-                    udp::spawn_tasks(local_addr, udp_ingress_tx, udp_egress_rx, up_bandwidth_mbps);
-
-                    futures::future::pending::<()>().await;
-                });
-        });
-
-        Dataplane {
-            tcp_ingress_rx,
-            tcp_egress_tx,
-            udp_ingress_rx,
-            udp_egress_tx,
-
-            tcp_msgs_dropped: 0,
-            udp_msgs_dropped: 0,
-        }
-    }
-
     pub async fn tcp_read(&mut self) -> (SocketAddr, Bytes) {
         self.tcp_ingress_rx
             .recv()

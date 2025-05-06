@@ -4,7 +4,7 @@ use futures::{channel::oneshot, executor};
 use monad_dataplane::{
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
-    BroadcastMsg, Dataplane, RecvMsg, TcpMsg, UnicastMsg,
+    BroadcastMsg, DataplaneBuilder, RecvMsg, TcpMsg, UnicastMsg,
 };
 use ntest::timeout;
 use rand::Rng;
@@ -33,8 +33,8 @@ fn udp_broadcast() {
     let tx_addr = "127.0.0.1:9001".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -66,8 +66,8 @@ fn udp_unicast() {
     let tx_addr = "127.0.0.1:9003".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -100,8 +100,8 @@ fn tcp_very_slow() {
     let tx_addr = "127.0.0.1:9005".parse().unwrap();
     let num_msgs = 2;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -143,8 +143,8 @@ fn tcp_slow() {
     let tx_addr = "127.0.0.1:9007".parse().unwrap();
     let num_msgs = 10;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -183,8 +183,8 @@ fn tcp_rapid() {
     let tx_addr = "127.0.0.1:9009".parse().unwrap();
     let num_msgs = 1024;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -232,8 +232,8 @@ fn tcp_connect_fail() {
     let rx_addr = "127.0.0.1:9010".parse().unwrap();
     let tx_addr = "127.0.0.1:9011".parse().unwrap();
 
-    // let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    // let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -264,8 +264,8 @@ fn tcp_exceed_queue_limits() {
     let tx_addr = "127.0.0.1:9013".parse().unwrap();
     let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS).build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -322,8 +322,10 @@ fn broadcast_all_strides() {
     let rx_addr = "127.0.0.1:9014".parse().unwrap();
     let tx_addr = "127.0.0.1:9015".parse().unwrap();
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_buffer_size(400 << 10)
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));
@@ -365,8 +367,10 @@ fn unicast_all_strides() {
     let rx_addr = "127.0.0.1:9016".parse().unwrap();
     let tx_addr = "127.0.0.1:9017".parse().unwrap();
 
-    let mut rx = Dataplane::new(&rx_addr, UP_BANDWIDTH_MBPS);
-    let mut tx = Dataplane::new(&tx_addr, UP_BANDWIDTH_MBPS);
+    let mut rx = DataplaneBuilder::new(&rx_addr, UP_BANDWIDTH_MBPS)
+        .with_buffer_size(400 << 10)
+        .build();
+    let mut tx = DataplaneBuilder::new(&tx_addr, UP_BANDWIDTH_MBPS).build();
 
     // Allow Dataplane threads to set themselves up.
     sleep(Duration::from_millis(10));

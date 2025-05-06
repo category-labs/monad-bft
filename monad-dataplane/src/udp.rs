@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use super::RecvMsg;
+use crate::buffer_ext::SocketBufferExt;
 
 // When running in docker with vpnkit, the maximum safe MTU is 1480, as per:
 // https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
@@ -33,9 +34,34 @@ pub fn spawn_tasks(
     udp_ingress_tx: mpsc::Sender<RecvMsg>,
     udp_egress_rx: mpsc::Receiver<(SocketAddr, Bytes, u16)>,
     up_bandwidth_mbps: u64,
+    buffer_size: Option<usize>,
 ) {
     // Bind the UDP socket and clone it for use in different tasks.
     let udp_socket_rx = UdpSocket::bind(local_addr).unwrap();
+
+    if let Some(requested_buffer_size) = buffer_size {
+        if let Err(e) = udp_socket_rx.set_recv_buffer_size(requested_buffer_size) {
+            panic!("set_recv_buffer_size to {requested_buffer_size} failed with: {e}");
+        }
+        let actual_buffer_size = udp_socket_rx
+            .recv_buffer_size()
+            .expect("get recv buffer size");
+        if actual_buffer_size < requested_buffer_size {
+            panic!("unable to set udp receive buffer size to {requested_buffer_size}. Got {actual_buffer_size} instead. Set net.core.rmem_max to at least {requested_buffer_size}");
+        }
+    }
+    if let Some(requested_buffer_size) = buffer_size {
+        if let Err(e) = udp_socket_rx.set_send_buffer_size(requested_buffer_size) {
+            panic!("set_send_buffer_size to {requested_buffer_size} failed with: {e}");
+        }
+        let actual_buffer_size = udp_socket_rx
+            .send_buffer_size()
+            .expect("get send buffer size");
+        if actual_buffer_size < requested_buffer_size {
+            panic!("unable to set udp send buffer size to {requested_buffer_size}. got {actual_buffer_size} instead. set net.core.wmem_max to at least {requested_buffer_size}");
+        }
+    }
+
     let raw_fd = udp_socket_rx.as_raw_fd();
     let udp_socket_tx =
         UdpSocket::from_std(unsafe { std::net::UdpSocket::from_raw_fd(raw_fd) }).unwrap();

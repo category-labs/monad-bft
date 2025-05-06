@@ -1,6 +1,6 @@
 use std::{thread::sleep, time::Duration};
 
-use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane};
+use monad_dataplane::{udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, DataplaneBuilder};
 use tracing::debug;
 
 /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
@@ -25,7 +25,8 @@ fn address_family_mismatch() {
     }));
 
     for addr in BIND_ADDRS {
-        let mut dataplane = Dataplane::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS);
+        let mut dataplane =
+            DataplaneBuilder::new(&addr.parse().unwrap(), UP_BANDWIDTH_MBPS).build();
 
         // Allow Dataplane thread to set itself up.
         sleep(Duration::from_millis(10));

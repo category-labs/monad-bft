@@ -291,6 +291,7 @@ where
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,
                             mtu: DEFAULT_MTU,
+                            buffer_size: Some(62_500_000),
                         }),
                     },
                     ledger_config: match args.ledger {

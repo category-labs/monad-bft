@@ -114,7 +114,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "slab",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "tokio",
 ]
 
@@ -164,7 +164,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "mio 0.8.9",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "tokio",
  "tracing",
 ]
@@ -267,7 +267,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "smallvec",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "time",
  "url",
 ]
@@ -3550,7 +3550,7 @@ dependencies = [
  "http-body 1.0.1",
  "hyper 1.4.1",
  "pin-project-lite",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "tokio",
  "tower 0.4.13",
  "tower-service",
@@ -3859,7 +3859,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b58db92f96b720de98181bbbe63c831e87005ab460c1bf306eb2622b4707997f"
 dependencies = [
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "widestring",
  "windows-sys 0.48.0",
  "winreg 0.50.0",
@@ -4029,9 +4029,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.158"
+version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8adc4bb1803a324070e64a98ae98f38934d91957a99cfb3a43dcbc01bc56439"
+checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
 
 [[package]]
 name = "libgit2-sys"
@@ -4568,6 +4568,7 @@ dependencies = [
  "monoio",
  "ntest",
  "rand 0.8.5",
+ "socket2 0.5.9",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5594,7 +5595,7 @@ dependencies = [
  "serde_with",
  "sha-1",
  "sha2",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "stringprep",
  "strsim 0.11.1",
  "take_mut",
@@ -5637,7 +5638,7 @@ dependencies = [
  "nix",
  "once_cell",
  "pin-project-lite",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "threadpool",
  "windows-sys 0.48.0",
 ]
@@ -6550,7 +6551,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.0",
  "rustls 0.23.21",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "thiserror 2.0.9",
  "tokio",
  "tracing",
@@ -6585,7 +6586,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "tracing",
  "windows-sys 0.52.0",
 ]
@@ -7657,9 +7658,9 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.5.7"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce305eb0b4296696835b71df73eb912e0f1ffd2556a501fcede6e0c50349191c"
+checksum = "4f5fd57c80058a56cf5c777ab8a126398ece8e442983605d280a44ce79d0edef"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
@@ -8130,7 +8131,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.5.7",
+ "socket2 0.5.9",
  "tokio-macros",
  "windows-sys 0.52.0",
 ]

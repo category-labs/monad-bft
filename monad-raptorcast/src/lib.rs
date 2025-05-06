@@ -15,7 +15,9 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_dataplane::{udp::segment_size_for_mtu, BroadcastMsg, Dataplane, TcpMsg, UnicastMsg};
+use monad_dataplane::{
+    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
+};
 use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -49,6 +51,7 @@ where
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     pub up_bandwidth_mbps: u64,
     pub mtu: u16,
+    pub buffer_size: Option<usize>,
 }
 
 pub struct RaptorCast<ST, M, OM, SE>
@@ -96,7 +99,11 @@ where
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
-        let dataplane = Dataplane::new(&config.local_addr, config.up_bandwidth_mbps);
+        let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
+        if let Some(buffer_size) = config.buffer_size {
+            builder = builder.with_buffer_size(buffer_size);
+        }
+        let dataplane = builder.build();
         Self {
             epoch_validators: Default::default(),
             full_nodes: FullNodes::new(config.full_nodes),

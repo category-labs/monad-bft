@@ -11,6 +11,9 @@ pub struct NodeNetworkConfig {
     pub max_rtt_ms: u64,
     pub max_mbps: u16,
 
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: Option<usize>,
+
     #[serde(default = "default_mtu")]
     pub mtu: u16,
 }
@@ -19,4 +22,9 @@ pub struct NodeNetworkConfig {
 // https://github.com/moby/vpnkit/tree/v0.5.0/src/hostnet/slirp.ml#L17-L18
 fn default_mtu() -> u16 {
     1480
+}
+
+fn default_buffer_size() -> Option<usize> {
+    // recommended value at the time of the commit
+    Some(62_500_000)
 }

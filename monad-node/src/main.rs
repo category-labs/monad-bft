@@ -520,6 +520,7 @@ where
         )),
         up_bandwidth_mbps: network_config.max_mbps.into(),
         mtu: network_config.mtu,
+        buffer_size: network_config.buffer_size,
     })
 }
 

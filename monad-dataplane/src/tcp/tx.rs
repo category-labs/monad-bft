@@ -14,14 +14,15 @@ use monoio::{
     spawn,
     time::{sleep, timeout},
 };
-use tokio::sync::{
-    mpsc,
-    mpsc::error::{TryRecvError, TrySendError},
+use tokio::sync::mpsc::{
+    self,
+    error::{TryRecvError, TrySendError},
 };
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::AsBytes;
 
 use super::{message_timeout, TcpMsg, TcpMsgHdr};
+use crate::buffer_ext::SocketBufferExt;
 
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
@@ -120,7 +121,10 @@ struct TxStateInner {
     peer_channels: BTreeMap<SocketAddr, mpsc::Sender<TcpMsg>>,
 }
 
-pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
+pub async fn task(
+    mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    buffer_size: Option<usize>,
+) {
     let tx_state = TxState::new();
 
     let mut conn_id: u64 = 0;
@@ -140,6 +144,7 @@ pub async fn task(mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>) {
                 addr,
                 msg_receiver,
                 tx_state_peer_handle,
+                buffer_size,
             ));
 
             conn_id += 1;
@@ -152,6 +157,7 @@ async fn task_connection(
     addr: SocketAddr,
     mut msg_receiver: mpsc::Receiver<TcpMsg>,
     _tx_state_peer_handle: TxStatePeerHandle,
+    buffer_size: Option<usize>,
 ) {
     trace!(
         conn_id,
@@ -159,7 +165,9 @@ async fn task_connection(
         "starting TCP transmit connection task for peer"
     );
 
-    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver).await {
+    if let Err(err) =
+        connect_and_send_messages(conn_id, &addr, &mut msg_receiver, buffer_size).await
+    {
         let mut additional_messages_dropped = 0;
 
         // Throw away (and fail) all remaining queued messages immediately.
@@ -190,6 +198,7 @@ async fn connect_and_send_messages(
     conn_id: u64,
     addr: &SocketAddr,
     msg_receiver: &mut mpsc::Receiver<TcpMsg>,
+    buffer_size: Option<usize>,
 ) -> Result<(), Error> {
     let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -200,6 +209,21 @@ async fn connect_and_send_messages(
                 format!("error connecting to remote host: {}", err),
             )
         })?;
+
+    if let Some(requested_buffer_size) = buffer_size {
+        stream.set_send_buffer_size(requested_buffer_size)?;
+        let actual_buffer_size = stream.send_buffer_size()?;
+        if actual_buffer_size < requested_buffer_size {
+            panic!(
+                "unable to set tcp send buffer size for connection {:?} to address {:?}. requested {}, actual {}. maximal net.ipv4.tcp_rmem should be set to at least {}",
+                conn_id,
+                addr,
+                requested_buffer_size,
+                actual_buffer_size,
+                requested_buffer_size
+            );
+        }
+    }
 
     trace!(conn_id, ?addr, "outbound TCP connection established");
 

@@ -118,6 +118,7 @@ fn service(
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
                     mtu: DEFAULT_MTU,
+                    buffer_size: None,
                 };
 
                 let mut service = RaptorCast::<
