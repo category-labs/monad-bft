@@ -31,7 +31,7 @@ use tracing_subscriber::{
     EnvFilter, Registry,
 };
 use websocket::WebSocketServerHandle;
-use websocket_server::{WebSocketServer, WebSocketServerCommand};
+use websocket_server::WebSocketServer;
 
 use crate::{
     account_handlers::{
@@ -912,20 +912,18 @@ async fn main() -> std::io::Result<()> {
             libc::MAP_POPULATE
         };
 
-        let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10000);
-        let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
+        let (ws_tx, ws_rx) = flume::bounded::<PollResult>(10_000);
+        let (websocket_broadcast_tx, _) =
+            tokio::sync::broadcast::channel::<websocket_server::Event>(10_000);
 
-        let ws_server = WebSocketServer::new(
-            ws_rx_cmd,
-            ws_rx,
-            args.ws_max_connections,
-            args.ws_max_subscriptions_per_connection,
-        );
+        let ws_server = WebSocketServer::new(ws_rx, websocket_broadcast_tx.clone());
         tokio::spawn(async move {
             ws_server.run().await;
         });
 
-        let ws_server_handle = WebSocketServerHandle { cmd_tx: ws_tx_cmd };
+        let ws_server_handle = WebSocketServerHandle {
+            tx: websocket_broadcast_tx,
+        };
 
         tokio::spawn(async move {
             let event_ring = EventRing::mmap_from_file(
@@ -954,7 +952,7 @@ async fn main() -> std::io::Result<()> {
             loop {
                 let exec_event = event_stream.poll();
                 if matches!(exec_event, PollResult::NotReady) {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     continue;
                 }
 

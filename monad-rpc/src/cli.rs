@@ -33,14 +33,6 @@ pub struct Cli {
     #[arg(long, default_value_t = 8081)]
     pub ws_port: u16,
 
-    /// Set the max number of concurrent connections for the WebSocket server
-    #[arg(long, default_value_t = 20_000)]
-    pub ws_max_connections: usize,
-
-    /// Set the max number of concurrent subscriptions per connection for the WebSocket server
-    #[arg(long, default_value_t = 1000)]
-    pub ws_max_subscriptions_per_connection: usize,
-
     /// Set the max number of requests in a batch request
     #[arg(long, default_value_t = 5000)]
     pub batch_request_limit: u16,

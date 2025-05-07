@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-
 use alloy_consensus::{Transaction, TxReceipt};
 use alloy_primitives::U256;
-use alloy_rpc_types::eth::{Filter, FilteredParams};
 use monad_exec_events::{
     block_builder::{BlockBuilder, BlockUpdate, ExecutedBlockInfo},
     consensus_state_tracker::{ConsensusStateResult, ConsensusStateTracker},
@@ -10,280 +7,177 @@ use monad_exec_events::{
     exec_events::{ConsensusState, ExecEvent},
 };
 use monad_types::BlockId;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
-use crate::{
-    eth_json_types::{
-        BlockCommitState, EthSubscribeResult, FixedData, SpeculativeLog, SpeculativeNewHead,
-        StreamEvent, StreamItem, SubscriptionKind, SubscriptionResult,
-    },
-    websocket::WebSocketSessionCommand,
-};
+use crate::eth_json_types::{BlockCommitState, StreamEvent, StreamItem};
 
 pub struct WebSocketServer {
-    // All active websocket sessions.
-    sessions: HashMap<SessionId, Session>,
-    max_sessions: usize,
-    max_subscriptions: usize,
     rx: flume::Receiver<PollResult>,
-    cmd_rx: flume::Receiver<WebSocketServerCommand>,
     block_builder: BlockBuilder,
     consensus_state_tracker: ConsensusStateTracker<Box<ExecutedBlockInfo>>,
+    broadcaster: tokio::sync::broadcast::Sender<Event>,
 }
-
-#[derive(Debug)]
-pub enum WebSocketServerError {
-    InternalError,
-    NotAcceptingConnections,
-    MaxSessionsReached,
-}
-
-// Commands send to WebSocketServer from active websocket sessions.
-#[derive(Debug)]
-pub enum WebSocketServerCommand {
-    AddSubscription {
-        conn_id: SessionId,
-        kind: SubscriptionKind,
-        filter: Option<Filter>,
-        res_tx: tokio::sync::oneshot::Sender<Result<SubscriptionId, WebSocketServerError>>,
-    },
-    RemoveSubscription {
-        conn_id: SessionId,
-        id: SubscriptionId,
-        res_tx: tokio::sync::oneshot::Sender<bool>,
-    },
-    AddSession {
-        res_tx: tokio::sync::oneshot::Sender<Result<SessionId, WebSocketServerError>>,
-        conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
-    },
-    RemoveSession {
-        conn_id: SessionId,
-    },
-}
-
-#[derive(Clone)]
-pub struct Session {
-    conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
-    subscriptions: HashMap<SubscriptionId, SubscriptionInfo>,
-}
-
-#[derive(Clone)]
-struct SubscriptionInfo {
-    conn_id: SessionId,
-    kind: SubscriptionKind,
-    filter: Option<Filter>,
-}
-
-#[derive(Debug)]
-struct PublishMessage {
-    id: SubscriptionId,
-    kind: SubscriptionKind,
-    block_header: alloy_rpc_types::eth::Header,
-    logs: Vec<alloy_rpc_types::Log>,
-    filter: Option<Filter>,
-    commit_state: BlockCommitState,
-    block_id: BlockId,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
-pub struct SubscriptionId(pub FixedData<16>);
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct SessionId(FixedData<16>);
 
 enum ReferendumOutcome {
     Advanced(ConsensusState),
     Abandoned,
 }
 
-fn new_id() -> FixedData<16> {
-    let mut rng = rand::thread_rng();
-    let random_bytes: [u8; 16] = rng.gen();
-    FixedData(random_bytes)
+#[derive(Clone)]
+pub enum Event {
+    ProcessedBlock {
+        header: alloy_rpc_types::eth::Header,
+        block_id: BlockId,
+        commit_state: BlockCommitState,
+    },
+    ProcessedLogs {
+        logs: Vec<alloy_rpc_types::eth::Log>,
+        header: alloy_rpc_types::eth::Header,
+        block_id: BlockId,
+        commit_state: BlockCommitState,
+    },
+    Event(StreamItem),
 }
 
 impl WebSocketServer {
-    pub fn new(
-        cmd_rx: flume::Receiver<WebSocketServerCommand>,
-        rx: flume::Receiver<PollResult>,
-        max_sessions: usize,
-        max_subscriptions: usize,
-    ) -> Self {
+    pub fn new(rx: flume::Receiver<PollResult>, broadcaster: tokio::sync::broadcast::Sender<Event>) -> Self {
         Self {
-            sessions: HashMap::new(),
             rx,
-            cmd_rx,
-            max_sessions,
-            max_subscriptions,
             block_builder: BlockBuilder::new(),
             consensus_state_tracker: ConsensusStateTracker::new(),
+            broadcaster,
         }
     }
 
     pub async fn run(mut self) {
-        let mut accept_connections: bool = true;
         loop {
-            tokio::select! {
-                biased;
-                Ok(poll_result) = self.rx.recv_async() => {
-                    match poll_result {
-                        PollResult::Disconnected => {
-                            error!(
-                                "event stream disconnected; stopping all websocket sessions"
-                            );
-                            self.disconnect_all();
-                            accept_connections = false;
-                        },
-                        PollResult::Gap { last_read_seqno, last_write_seqno } => {
-                            warn!("event stream gap detected: {last_read_seqno} -> {last_write_seqno}");
-                            self.process_event_stream_item(StreamEvent::StreamGap {
-                                last_read_seqno,
-                                next_seqno: last_write_seqno,
-                            });
-                            self.block_builder.drop_block();
-                            self.consensus_state_tracker.reset_all();
-                        }
-                        PollResult::PayloadExpired { expired_seqno, last_write_seqno, .. } => {
-                            warn!("event stream has expired payload at {expired_seqno} -> {last_write_seqno}");
-                            self.process_event_stream_item(StreamEvent::StreamGap {
-                                last_read_seqno: expired_seqno - 1,
-                                next_seqno: last_write_seqno
-                            });
-                            self.block_builder.drop_block();
-                            self.consensus_state_tracker.reset_all();
-                        }
-                        PollResult::Ready{ seqno, event } => {
-                            if let ExecEvent::Referendum { proposal_meta, outcome } = &event {
-                                if let ConsensusStateResult::Finalization{ finalized_proposal: _, abandoned_proposals } = self.consensus_state_tracker.update_proposal(proposal_meta.block_number, &proposal_meta.id, *outcome) {
-                                    for abandoned in abandoned_proposals {
-                                        self.process_block_update(&abandoned.user_data, ReferendumOutcome::Abandoned);
-                                        self.process_event_stream_item(StreamEvent::AbandonedProposal {
-                                            proposal_meta: abandoned.proposal_meta
-                                        });
-                                    }
-                                }
-
-                                if let Some(opt_proposal_state) = self.consensus_state_tracker.get(proposal_meta.block_number, &proposal_meta.id) {
-                                    self.process_block_update(&opt_proposal_state.user_data, ReferendumOutcome::Advanced(*outcome));
-                                }
-                            }
-
-                            // TODO(ken): cloning this is a bad idea
-                            self.process_event_stream_item(StreamEvent::ExecutionEvent {
-                                seqno,
-                                event: event.clone()
-                            });
-
-                            match self.block_builder.try_append(event) {
-                                Some(BlockUpdate::Failed(failed_info)) => {
-                                    error!("event stream received failed block, execution daemon is likely dead: {:?}",failed_info);
-                                    self.disconnect_all();
-                                    accept_connections=false;
-                                }
-
-                                Some(BlockUpdate::Executed(exec_info)) => {
-                                    let proposal_meta = exec_info.proposal_meta;
-                                    let consensus_state = exec_info.consensus_state;
-                                    assert_eq!(consensus_state, ConsensusState::Proposed);
-                                    if let ConsensusStateResult::Outstanding{ updated_proposal, .. } = self.consensus_state_tracker.add_proposal(proposal_meta, consensus_state, exec_info) {
-                                        self.process_block_update(&updated_proposal.user_data,
-                                            ReferendumOutcome::Advanced(ConsensusState::Proposed))
-                                    }
-                                },
-
-                                implicit_drop @ Some(BlockUpdate::ImplicitDrop{ .. }) => {
-                                    // Because we explicitly call BlockBuilder::drop_block, we
-                                    // don't expect this to ever happen
-                                    panic!("implicit_drop should never happen here, but it did: {:?}", implicit_drop.unwrap());
-                                }
-
-                                Some(BlockUpdate::OrphanedEvent(_)) | Some(BlockUpdate::NonBlockEvent(_)) | None => (),
-                            }
-                        }
-                        PollResult::NotReady => unreachable!(),
+            if let Ok(poll_result) = self.rx.recv_async().await {
+                match poll_result {
+                    PollResult::Disconnected => {
+                        error!("event stream disconnected; stopping all websocket sessions");
+                        return;
                     }
-                }
-                Ok(cmd) = self.cmd_rx.recv_async() => {
-                    match cmd {
-                        WebSocketServerCommand::AddSubscription { conn_id,kind, filter, res_tx } => {
-                            let id = self.add_subscription(conn_id, kind, filter);
-                            if let Err(err) = res_tx.send(id) {
-                                warn!("WebSocketServer AddSubscription send error: {err:?}");
-                            }
-                        }
-                        WebSocketServerCommand::RemoveSubscription {conn_id, id, res_tx } => {
-                            let res = self.remove_subscription(conn_id, id);
-                            if let Err(err) = res_tx.send(res) {
-                                warn!("WebSocketServer RemoveSubscription send error: {err:?}");
-                            }
-                        }
-                        WebSocketServerCommand::AddSession { res_tx, conn_tx } => {
-                            if !accept_connections {
-                                if let Err(err) = res_tx.send(Err(WebSocketServerError::NotAcceptingConnections)) {
-                                    warn!("WebSocketServer AddSession not_accepting send error: {err:?}");
+                    PollResult::Gap {
+                        last_read_seqno,
+                        last_write_seqno,
+                    } => {
+                        warn!("event stream gap detected: {last_read_seqno} -> {last_write_seqno}");
+                        self.process_event_stream_item(StreamEvent::StreamGap {
+                            last_read_seqno,
+                            next_seqno: last_write_seqno,
+                        })
+                        .await;
+                        self.block_builder.drop_block();
+                        self.consensus_state_tracker.reset_all();
+                    }
+                    PollResult::PayloadExpired {
+                        expired_seqno,
+                        last_write_seqno,
+                        ..
+                    } => {
+                        warn!("event stream has expired payload at {expired_seqno} -> {last_write_seqno}");
+                        self.process_event_stream_item(StreamEvent::StreamGap {
+                            last_read_seqno: expired_seqno - 1,
+                            next_seqno: last_write_seqno,
+                        })
+                        .await;
+                        self.block_builder.drop_block();
+                        self.consensus_state_tracker.reset_all();
+                    }
+                    PollResult::Ready { seqno, event } => {
+                        if let ExecEvent::Referendum {
+                            proposal_meta,
+                            outcome,
+                        } = &event
+                        {
+                            if let ConsensusStateResult::Finalization {
+                                finalized_proposal: _,
+                                abandoned_proposals,
+                            } = self.consensus_state_tracker.update_proposal(
+                                proposal_meta.block_number,
+                                &proposal_meta.id,
+                                *outcome,
+                            ) {
+                                for abandoned in abandoned_proposals {
+                                    self.process_block_update(
+                                        &abandoned.user_data,
+                                        ReferendumOutcome::Abandoned,
+                                    )
+                                    .await;
+                                    self.process_event_stream_item(
+                                        StreamEvent::AbandonedProposal {
+                                            proposal_meta: abandoned.proposal_meta,
+                                        },
+                                    )
+                                    .await;
                                 }
-                            } else {
-                                let conn_id = SessionId(new_id());
-                                let ok = self.add_session(conn_id, conn_tx);
-                                if ok {
-                                    if let Err(err) = res_tx.send(Ok(conn_id)) {
-                                        warn!("WebSocketServer AddSession ok send error: {err:?}");
-                                    }
-                                } else {
-                                   if let Err(err) = res_tx.send(Err(WebSocketServerError::MaxSessionsReached)) {
-                                        warn!("WebSocketServer AddSession not ok send error: {err:?}");
-                                    }
-                                }
+                            }
+
+                            if let Some(opt_proposal_state) = self
+                                .consensus_state_tracker
+                                .get(proposal_meta.block_number, &proposal_meta.id)
+                            {
+                                self.process_block_update(
+                                    &opt_proposal_state.user_data,
+                                    ReferendumOutcome::Advanced(*outcome),
+                                )
+                                .await;
                             }
                         }
-                        WebSocketServerCommand::RemoveSession {conn_id} => {
-                            self.sessions.remove(&conn_id);
+
+                        // TODO(ken): cloning this is a bad idea
+                        self.process_event_stream_item(StreamEvent::ExecutionEvent {
+                            seqno,
+                            event: event.clone(),
+                        })
+                        .await;
+
+                        match self.block_builder.try_append(event) {
+                            Some(BlockUpdate::Failed(failed_info)) => {
+                                error!("event stream received failed block, execution daemon is likely dead: {:?}",failed_info);
+                                return;
+                            }
+
+                            Some(BlockUpdate::Executed(exec_info)) => {
+                                let proposal_meta = exec_info.proposal_meta;
+                                let consensus_state = exec_info.consensus_state;
+                                assert_eq!(consensus_state, ConsensusState::Proposed);
+                                if let ConsensusStateResult::Outstanding {
+                                    updated_proposal, ..
+                                } = self.consensus_state_tracker.add_proposal(
+                                    proposal_meta,
+                                    consensus_state,
+                                    exec_info,
+                                ) {
+                                    self.process_block_update(
+                                        &updated_proposal.user_data,
+                                        ReferendumOutcome::Advanced(ConsensusState::Proposed),
+                                    )
+                                    .await
+                                }
+                            }
+
+                            implicit_drop @ Some(BlockUpdate::ImplicitDrop { .. }) => {
+                                // Because we explicitly call BlockBuilder::drop_block, we
+                                // don't expect this to ever happen
+                                panic!(
+                                    "implicit_drop should never happen here, but it did: {:?}",
+                                    implicit_drop.unwrap()
+                                );
+                            }
+
+                            Some(BlockUpdate::OrphanedEvent(_))
+                            | Some(BlockUpdate::NonBlockEvent(_))
+                            | None => (),
                         }
                     }
+                    PollResult::NotReady => unreachable!(),
                 }
             }
         }
     }
 
-    fn add_subscription(
-        &mut self,
-        conn_id: SessionId,
-        kind: SubscriptionKind,
-        filter: Option<Filter>,
-    ) -> Result<SubscriptionId, WebSocketServerError> {
-        self.sessions.get_mut(&conn_id).map_or(
-            Err(WebSocketServerError::InternalError),
-            |session| {
-                if session.subscriptions.len() >= self.max_subscriptions {
-                    warn!("max subscriptions reached for session: {:?}", conn_id);
-                    Err(WebSocketServerError::MaxSessionsReached)
-                } else {
-                    let sub_id = SubscriptionId(new_id());
-                    session.subscriptions.insert(
-                        sub_id,
-                        SubscriptionInfo {
-                            conn_id,
-                            kind,
-                            filter,
-                        },
-                    );
-                    Ok(sub_id)
-                }
-            },
-        )
-    }
-
-    fn remove_subscription(&mut self, conn_id: SessionId, id: SubscriptionId) -> bool {
-        self.sessions
-            .get_mut(&conn_id)
-            .map(|session| session.subscriptions.remove(&id).is_some())
-            .unwrap_or(false)
-    }
-
-    fn process_block_update(
+    async fn process_block_update(
         &mut self,
         block_update: &ExecutedBlockInfo,
         referendum_outcome: ReferendumOutcome,
@@ -377,218 +271,30 @@ impl WebSocketServer {
             ReferendumOutcome::Abandoned => BlockCommitState::Abandoned,
         };
 
-        // Publish the block and logs to all subscriptions
-        self.sessions.iter().for_each(|(_, session)| {
-            session.subscriptions.iter().for_each(|(id, info)| {
-                // Check that the message is ready to be broadcast to the session.
-                if (matches!(info.kind, SubscriptionKind::NewHeads)
-                    && matches!(commit_state, BlockCommitState::Finalized))
-                    || (matches!(info.kind, SubscriptionKind::Logs)
-                        && matches!(commit_state, BlockCommitState::Finalized))
-                    || (matches!(info.kind, SubscriptionKind::MonadNewHeads))
-                    || (matches!(info.kind, SubscriptionKind::MonadLogs))
-                {
-                    let subscription_msg = PublishMessage {
-                        id: *id,
-                        kind: info.kind.clone(),
-                        block_header: block.header.clone(),
-                        logs: logs.clone(),
-                        filter: info.filter.clone(),
-                        commit_state,
-                        block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
-                    };
+        if let Err(err) = self.broadcaster.send(Event::ProcessedBlock {
+            header: block.header.clone(),
+            block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
+            commit_state,
+        }) {
+            warn!("publish processed block send error: {err}");
+        }
 
-                    self.publish_subscription(subscription_msg, info.conn_id);
-                }
-            });
-        });
-    }
-
-    fn process_event_stream_item(&mut self, event: StreamEvent) {
-        self.sessions.iter().for_each(|(_, session)| {
-            session.subscriptions.iter().for_each(|(id, info)| {
-                if matches!(info.kind, SubscriptionKind::MonadEventStream) {
-                    if let Err(err) =
-                        session
-                            .conn_tx
-                            .send(WebSocketSessionCommand::PublishMessage {
-                                messages: vec![EthSubscribeResult {
-                                    subscription: id.0,
-                                    result: SubscriptionResult::MonadEventStream(StreamItem {
-                                        protocol_version: 1,
-                                        event: event.clone(),
-                                    }),
-                                }],
-                            })
-                    {
-                        warn!("process_event_stream_item send error: {err:?}");
-                    }
-                }
-            })
-        })
-    }
-
-    fn add_session(
-        &mut self,
-        conn_id: SessionId,
-        conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
-    ) -> bool {
-        if self.sessions.len() >= self.max_sessions {
-            warn!("max sessions reached, not adding new session");
-            return false;
-        };
-
-        match self.sessions.get(&conn_id) {
-            Some(_) => {
-                warn!("session already exists, not adding new session");
-                false
-            }
-            None => {
-                self.sessions.insert(
-                    conn_id,
-                    Session {
-                        conn_tx,
-                        subscriptions: HashMap::new(),
-                    },
-                );
-                true
-            }
+        if let Err(err) = self.broadcaster.send(Event::ProcessedLogs {
+            logs,
+            header: block.header.clone(),
+            block_id: BlockId(monad_types::Hash(block_update.proposal_meta.id.0 .0)),
+            commit_state,
+        }) {
+            warn!("publish processed log send error: {err}");
         }
     }
 
-    fn disconnect_all(&mut self) {
-        self.sessions.iter().for_each(|(_, session)| {
-            if let Err(err) = session.conn_tx.send(WebSocketSessionCommand::Disconnect {}) {
-                warn!("disconnect_all send error: {err:?}");
-            }
-        });
-    }
-
-    fn publish_subscription(&self, msg: PublishMessage, session: SessionId) {
-        debug!("Handling subscription message: {:?}", msg);
-
-        let ctx = match self.sessions.get(&session) {
-            Some(ctx) => &ctx.conn_tx,
-            None => {
-                error!("session not found for id: {:?}", session);
-                return;
-            }
-        };
-
-        match msg.kind {
-            SubscriptionKind::NewHeads
-                if matches!(msg.commit_state, BlockCommitState::Finalized) =>
-            {
-                let body = EthSubscribeResult {
-                    subscription: msg.id.0,
-                    result: SubscriptionResult::NewHeads(msg.block_header),
-                };
-
-                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage {
-                    messages: vec![body],
-                }) {
-                    warn!("publish_subscription NewHeads send error: {err:?}");
-                }
-            }
-            SubscriptionKind::Logs if matches!(msg.commit_state, BlockCommitState::Finalized) => {
-                let Some(filtered_logs) = maybe_filter_logs(msg.filter, msg.block_header, msg.logs)
-                else {
-                    return;
-                };
-
-                let messages = filtered_logs
-                    .into_iter()
-                    .map(|log| EthSubscribeResult {
-                        subscription: msg.id.0,
-                        result: SubscriptionResult::Logs(log),
-                    })
-                    .collect();
-                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage { messages }) {
-                    warn!("publish_subscription Logs send error: {err:?}");
-                }
-            }
-            SubscriptionKind::MonadNewHeads => {
-                let body = EthSubscribeResult {
-                    subscription: msg.id.0,
-                    result: SubscriptionResult::SpeculativeNewHeads(SpeculativeNewHead {
-                        header: msg.block_header,
-                        block_id: msg.block_id,
-                        commit_state: msg.commit_state,
-                    }),
-                };
-
-                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage {
-                    messages: vec![body],
-                }) {
-                    warn!("publish_subscription MonadNewHeads send error: {err:?}");
-                }
-            }
-            SubscriptionKind::MonadLogs => {
-                let Some(filtered_logs) = maybe_filter_logs(msg.filter, msg.block_header, msg.logs)
-                else {
-                    return;
-                };
-
-                let messages = filtered_logs
-                    .into_iter()
-                    .map(|log| EthSubscribeResult {
-                        subscription: msg.id.0,
-                        result: SubscriptionResult::SpeculativeLogs(SpeculativeLog {
-                            log,
-                            block_id: msg.block_id,
-                            commit_state: msg.commit_state,
-                        }),
-                    })
-                    .collect();
-                if let Err(err) = ctx.send(WebSocketSessionCommand::PublishMessage { messages }) {
-                    warn!("publish_subscription MonadLogs send error: {err:?}");
-                }
-            }
-            _ => {}
-        };
-    }
-}
-
-fn maybe_filter_logs(
-    filter: Option<Filter>,
-    header: alloy_rpc_types::eth::Header,
-    logs: Vec<alloy_rpc_types::Log>,
-) -> Option<Vec<alloy_rpc_types::Log>> {
-    match filter {
-        Some(filter) => {
-            // Before doing any work, check if the block's bloom filter matches the filter.
-            if FilteredParams::matches_address(
-                header.logs_bloom,
-                &FilteredParams::address_filter(&filter.address),
-            ) && FilteredParams::matches_topics(
-                header.logs_bloom,
-                &FilteredParams::topics_filter(&filter.topics),
-            ) {
-                let filtered_params = FilteredParams::new(Some(filter));
-
-                // Filter all logs
-                let logs: Vec<alloy_rpc_types::Log> = logs
-                    .into_iter()
-                    .filter_map(|log| {
-                        if !(filtered_params.filter.is_some()
-                            && (!filtered_params.filter_address(&log.address())
-                                || !filtered_params.filter_topics(log.topics())))
-                        {
-                            Some(log)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                Some(logs)
-            } else {
-                // The block's bloom filter doesn't match the filter, so we can skip this block.
-                None
-            }
-        }
-        None => {
-            // Return all logs in the block
-            Some(logs)
+    async fn process_event_stream_item(&mut self, event: StreamEvent) {
+        if let Err(err) = self.broadcaster.send(Event::Event(StreamItem {
+            protocol_version: 1,
+            event: event.clone(),
+        })) {
+            warn!("could not broadcast event stream item: {err}")
         }
     }
 }

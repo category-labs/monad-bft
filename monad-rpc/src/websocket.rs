@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     pin::pin,
     time::{Duration, Instant},
 };
@@ -6,98 +7,32 @@ use std::{
 use actix_http::ws;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::{AggregatedMessage, CloseReason};
-use alloy_rpc_types::eth::{pubsub::Params, Filter};
+use alloy_rpc_types::eth::{pubsub::Params, Filter, FilteredParams};
 use futures::StreamExt;
-use serde::Serialize;
+use itertools::Itertools;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::spawn_local,
-};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     eth_json_types::{
-        serialize_result, EthSubscribeRequest, EthSubscribeResult, EthUnsubscribeRequest,
-        SubscriptionKind,
+        serialize_result, BlockCommitState, EthSubscribeRequest, EthSubscribeResult,
+        EthUnsubscribeRequest, FixedData, SpeculativeLog, SpeculativeNewHead, SubscriptionKind,
+        SubscriptionResult,
     },
     jsonrpc::{JsonRpcError, Request, RequestWrapper},
-    websocket_server::{SessionId, SubscriptionId, WebSocketServerCommand, WebSocketServerError},
 };
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
 
-// A message from the websocket server to a session
-pub enum WebSocketSessionCommand {
-    // Publishes a message to the session
-    PublishMessage { messages: Vec<EthSubscribeResult> },
-    // Closes the session
-    Disconnect {},
-}
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
+pub struct SubscriptionId(pub FixedData<16>);
 
-// Sessions use the server handle to send commands to the server
 #[derive(Clone)]
 pub struct WebSocketServerHandle {
-    pub cmd_tx: flume::Sender<WebSocketServerCommand>,
-}
-
-impl WebSocketServerHandle {
-    async fn connect(
-        &self,
-        conn_tx: mpsc::UnboundedSender<WebSocketSessionCommand>,
-    ) -> Result<SessionId, WebSocketServerError> {
-        let (res_tx, res_rx) = oneshot::channel();
-        if let Err(err) = self
-            .cmd_tx
-            .send(WebSocketServerCommand::AddSession { res_tx, conn_tx })
-        {
-            warn!("WebSocketServerHandle connect send error: {err:?}");
-        }
-        res_rx.await.unwrap_or(Err(WebSocketServerError::InternalError))
-    }
-
-    async fn add_subscription(
-        &self,
-        conn_id: SessionId,
-        kind: SubscriptionKind,
-        filter: Option<Filter>,
-    ) -> Result<SubscriptionId, WebSocketServerError> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if let Err(err) = self.cmd_tx.send(WebSocketServerCommand::AddSubscription {
-            conn_id,
-            kind,
-            filter,
-            res_tx: tx,
-        }) {
-            warn!("WebSocketServerHandle add_subscription send error: {err:?}");
-        }
-        rx.await.unwrap_or(Err(WebSocketServerError::InternalError))
-    }
-
-    async fn remove_subscription(&self, conn_id: SessionId, id: SubscriptionId) -> bool {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if let Err(err) = self
-            .cmd_tx
-            .send(WebSocketServerCommand::RemoveSubscription {
-                conn_id,
-                id,
-                res_tx: tx,
-            })
-        {
-            warn!("WebSocketServerHandle remove_subscription send error: {err:?}");
-        }
-        rx.await.unwrap_or(false)
-    }
-
-    async fn remove_session(&self, conn_id: SessionId) {
-        if let Err(err) = self
-            .cmd_tx
-            .send(WebSocketServerCommand::RemoveSession { conn_id })
-        {
-            warn!("WebSocketServerHandle remove_session send error: {err:?}");
-        }
-    }
+    pub tx: tokio::sync::broadcast::Sender<crate::websocket_server::Event>,
 }
 
 pub async fn ws_handler(
@@ -106,37 +41,18 @@ pub async fn ws_handler(
     server: web::Data<WebSocketServerHandle>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
-    spawn_local(handler(server.as_ref().clone(), session, msg_stream));
+    actix_rt::spawn(handler(session, msg_stream, server.tx.subscribe()));
     Ok(res)
 }
 
 async fn handler(
-    server: WebSocketServerHandle,
     mut session: actix_ws::Session,
     msg_stream: actix_ws::MessageStream,
+    rx: tokio::sync::broadcast::Receiver<crate::websocket_server::Event>,
 ) {
+    debug!("new websocket connection started");
     let mut last_heartbeat = Instant::now();
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-
-    // Channel to communicate with the server
-    let (conn_tx, mut conn_rx) = mpsc::unbounded_channel::<WebSocketSessionCommand>();
-
-    // Add the session to the server
-    let conn_id = match server.connect(conn_tx).await {
-        Ok(id) => id,
-        Err(_) => {
-            if let Err(err) = session
-                .close(Some(CloseReason {
-                    code: ws::CloseCode::Error,
-                    description: Some("server is not accepting new connections".to_string()),
-                }))
-                .await
-            {
-                warn!("ws handler not_accepting close error: {err:?}");
-            }
-            return;
-        }
-    };
 
     let msg_stream = msg_stream
         .max_frame_size(128 * 1024)
@@ -144,13 +60,15 @@ async fn handler(
         .max_continuation_size(2 * 1024 * 1024);
 
     let mut msg_stream = pin!(msg_stream);
-    let mut server_cmds = pin!(conn_rx);
+    let mut broadcast_rx = pin!(rx);
+
+    let mut subscriptions: HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>> =
+        HashMap::new();
 
     let close_reason = loop {
         tokio::select! {
             _ = interval.tick() => {
                 if Instant::now().duration_since(last_heartbeat) > CLIENT_TIMEOUT {
-                    server.remove_session(conn_id).await;
                     break None;
                 }
 
@@ -174,7 +92,7 @@ async fn handler(
                         let request = to_request::<Request>(&body);
                         match request {
                             Ok(req) => {
-                                handle_request(&mut session, &server, &conn_id, req).await;
+                                handle_request(&mut session, &mut subscriptions, req).await;
                             }
                             Err(e) => {
                                 if let Err(err) = session
@@ -190,7 +108,7 @@ async fn handler(
                         let request = to_request::<Request>(&body);
                         match request {
                             Ok(req) => {
-                                handle_request(&mut session, &server, &conn_id, req).await;
+                                handle_request(&mut session, &mut subscriptions, req).await;
                             }
                             Err(e) => {
                                 if let Err(err) = session
@@ -202,50 +120,26 @@ async fn handler(
                         };
                     }
                     Some(Ok(AggregatedMessage::Close(reason))) => {
-                        server.remove_session(conn_id).await;
                         break reason;
                     }
                     Some(Err(err)) => {
                         error!("error in websocket stream: {:?}", err);
-                        server.remove_session(conn_id).await;
                         break None;
                     }
                     None => {
-                        server.remove_session(conn_id).await;
                         break None;
                     }
                 }
             }
-            cmd = server_cmds.recv() => {
+            cmd = broadcast_rx.recv() => {
                 match cmd {
-                    Some(WebSocketSessionCommand::PublishMessage { messages }) => {
-                        for msg in messages {
-                            match serde_json::to_value(&msg) {
-                                Ok(body) => {
-                                    let update = crate::jsonrpc::Notification::new(
-                                        "eth_subscription".to_string(),
-                                        body,
-                                    );
-                                    if let Err(err) = session.text(to_response(&update)).await {
-                                        warn!("ws handler PublishMessage text error: {err:?}");
-                                    }
-                                },
-                                Err(e) => {
-                                    error!("failed to serialize websocket message {:?} : {:?}", msg, e);
-                                }
-                            }
-                        }
+                    Ok(msg) => {
+                        handle_notification(&mut session, &subscriptions, msg).await;
                     }
-                    Some(WebSocketSessionCommand::Disconnect {}) => {
-                        server.remove_session(conn_id).await;
-                        break Some(CloseReason {
-                            code: ws::CloseCode::Away,
-                            description: Some("server disconnected stream".to_string()),
-                        });
+                    Err(err) => {
+                        warn!("received error from websocket server: {err:?}");
+                        break Some(CloseReason { code: ws::CloseCode::Error, description: Some("websocket server is not running".to_string()) })
                     }
-                    None => {
-                        break None
-                    },
                 }
             }
         };
@@ -256,10 +150,185 @@ async fn handler(
     }
 }
 
+async fn handle_notification(
+    mut session: &mut actix_ws::Session,
+    subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
+    msg: crate::websocket_server::Event,
+) {
+    match msg {
+        crate::websocket_server::Event::ProcessedBlock {
+            header,
+            commit_state: BlockCommitState::Finalized,
+            ..
+        } if subscriptions.contains_key(&SubscriptionKind::NewHeads) => {
+            match serde_json::to_value(SubscriptionResult::NewHeads(header)) {
+                Ok(result) => {
+                    if let Some(subs) = subscriptions.get(&SubscriptionKind::NewHeads) {
+                        for (id, _) in subs.iter() {
+                            send_notification(&mut session, id.clone(), result.clone()).await;
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!("error serializing NewHeads to JSON: {err:?}");
+                }
+            }
+        }
+        crate::websocket_server::Event::ProcessedBlock {
+            header,
+            block_id,
+            commit_state,
+        } if subscriptions.contains_key(&SubscriptionKind::MonadNewHeads) => {
+            match serde_json::to_value(SubscriptionResult::SpeculativeNewHeads(
+                SpeculativeNewHead {
+                    header,
+                    block_id,
+                    commit_state,
+                },
+            )) {
+                Ok(result) => {
+                    if let Some(subs) = subscriptions.get(&SubscriptionKind::MonadNewHeads) {
+                        for (id, _) in subs.iter() {
+                            send_notification(&mut session, id.clone(), result.clone()).await;
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!("error serializing SpeculativeNewHeads to JSON: {err:?}");
+                }
+            }
+        }
+        crate::websocket_server::Event::ProcessedLogs {
+            logs,
+            header,
+            commit_state: BlockCommitState::Finalized,
+            ..
+        } if subscriptions.contains_key(&SubscriptionKind::Logs) => {
+            if let Some(subs) = subscriptions.get(&SubscriptionKind::Logs) {
+                for (id, filter) in subs.iter() {
+                    let logs = maybe_filter_logs(filter, &header, &logs);
+
+                    match logs {
+                        Some(logs) => {
+                            for log in logs {
+                                match serde_json::to_value(SubscriptionResult::Logs(log.clone())) {
+                                    Ok(result) => {
+                                        send_notification(&mut session, id.clone(), result.clone())
+                                            .await;
+                                    }
+                                    Err(err) => {
+                                        error!("error serializing Logs to JSON: {err:?}");
+                                    }
+                                }
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        crate::websocket_server::Event::ProcessedLogs {
+            logs,
+            header,
+            block_id,
+            commit_state,
+        } if subscriptions.contains_key(&SubscriptionKind::MonadLogs) => {
+            if let Some(subs) = subscriptions.get(&SubscriptionKind::MonadLogs) {
+                for (id, filter) in subs.iter() {
+                    let logs = maybe_filter_logs(filter, &header, &logs);
+
+                    match logs {
+                        Some(logs) => {
+                            for log in logs {
+                                match serde_json::to_value(SubscriptionResult::SpeculativeLogs(
+                                    SpeculativeLog {
+                                        log: log.clone(),
+                                        block_id,
+                                        commit_state,
+                                    },
+                                )) {
+                                    Ok(result) => {
+                                        send_notification(&mut session, id.clone(), result.clone())
+                                            .await;
+                                    }
+                                    Err(err) => {
+                                        error!("error serializing MonadLogs to JSON: {err:?}");
+                                    }
+                                }
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        crate::websocket_server::Event::Event(event)
+            if subscriptions.contains_key(&SubscriptionKind::MonadEventStream) =>
+        {
+            match serde_json::to_value(SubscriptionResult::MonadEventStream(event)) {
+                Ok(result) => {
+                    if let Some(subs) = subscriptions.get(&SubscriptionKind::MonadEventStream) {
+                        for (id, _) in subs.iter() {
+                            send_notification(&mut session, id.clone(), result.clone()).await;
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!("error serializing MonadEventStream to JSON: {err:?}");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn maybe_filter_logs<'a>(
+    filter: &Option<Filter>,
+    header: &alloy_rpc_types::eth::Header,
+    logs: &'a [alloy_rpc_types::Log],
+) -> Option<Vec<&'a alloy_rpc_types::Log>> {
+    match filter {
+        Some(filter) => {
+            // Before doing any work, check if the block's bloom filter matches the filter.
+            if FilteredParams::matches_address(
+                header.logs_bloom,
+                &FilteredParams::address_filter(&filter.address),
+            ) && FilteredParams::matches_topics(
+                header.logs_bloom,
+                &FilteredParams::topics_filter(&filter.topics),
+            ) {
+                let filtered_params: FilteredParams = FilteredParams::new(Some(filter.clone()));
+
+                // Filter all logs
+                let logs: Vec<&alloy_rpc_types::Log> = logs
+                    .into_iter()
+                    .filter_map(|log| {
+                        if !(filtered_params.filter.is_some()
+                            && (!filtered_params.filter_address(&log.address())
+                                || !filtered_params.filter_topics(log.topics())))
+                        {
+                            Some(log)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Some(logs)
+            } else {
+                // The block's bloom filter doesn't match the filter, so we can skip this block.
+                None
+            }
+        }
+        None => {
+            // Return all logs in the block
+            Some(logs.iter().collect_vec())
+        }
+    }
+}
+
 async fn handle_request(
     ctx: &mut actix_ws::Session,
-    server: &WebSocketServerHandle,
-    conn_id: &SessionId,
+    subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     request: Request,
 ) {
     match request.method.as_str() {
@@ -301,34 +370,26 @@ async fn handle_request(
                 }
             };
 
-            let sub_id = server.add_subscription(*conn_id, req.kind, filter).await;
-            match sub_id {
-                Ok(id) => {
-                    if let Err(err) = ctx
-                        .text(to_response(&crate::jsonrpc::Response::from_result(
-                            request.id,
-                            serialize_result(id),
-                        )))
-                        .await
-                    {
-                        warn!("ws handle_request subscribe text error: {err:?}");
-                    }
-                }
-                Err(_) => {
-                    if let Err(err) = ctx
-                        .text(to_response(&crate::jsonrpc::Response::new(
-                            None,
-                            Some(JsonRpcError::internal_error(
-                                "cannot subscribe to topic".to_string(),
-                            )),
-                            request.id,
-                        )))
-                        .await
-                    {
-                        warn!("ws handle_request subscribe cannot_subscribe text error: {err:?}");
-                    }
-                }
+            let mut rng = rand::thread_rng();
+            let random_bytes: [u8; 16] = rng.gen();
+            let id = SubscriptionId(FixedData(random_bytes));
+
+            debug!("received subscribe request for {:?}", &req.kind);
+
+            if let Err(err) = ctx
+                .text(to_response(&crate::jsonrpc::Response::from_result(
+                    request.id,
+                    serialize_result(id),
+                )))
+                .await
+            {
+                warn!("ws handle_request subscribe text error: {err:?}");
             }
+
+            subscriptions
+                .entry(req.kind)
+                .or_insert_with(Vec::new)
+                .push((id, filter));
         }
         "eth_unsubscribe" => {
             let params: EthUnsubscribeRequest = match serde_json::from_value(request.params) {
@@ -348,9 +409,18 @@ async fn handle_request(
                 }
             };
 
-            let exists = server
-                .remove_subscription(*conn_id, SubscriptionId(params.id))
-                .await;
+            debug!("received unsubscribe request");
+
+            let mut exists: bool = false;
+            for vec in subscriptions.values_mut() {
+                let original_len = vec.len();
+                vec.retain(|x| x.0 != SubscriptionId(params.id));
+                if vec.len() < original_len {
+                    exists = true;
+                    break;
+                }
+            }
+
             if let Err(err) = ctx
                 .text(to_response(&crate::jsonrpc::Response::from_result(
                     request.id,
@@ -376,6 +446,22 @@ async fn handle_request(
     }
 }
 
+#[inline]
+async fn send_notification(session: &mut actix_ws::Session, id: SubscriptionId, result: Value) {
+    match serde_json::to_value(EthSubscribeResult::new(id.0, result)) {
+        Ok(body) => {
+            let update = crate::jsonrpc::Notification::new("eth_subscription".to_string(), body);
+            if let Err(err) = session.text(to_response(&update)).await {
+                warn!("ws handler PublishMessage text error: {err:?}");
+            };
+        }
+        Err(err) => {
+            error!("error serializing EthSubscribeResult to JSON: {err:?}");
+        }
+    };
+}
+
+#[inline]
 fn to_response<S: Serialize + std::fmt::Debug>(resp: &S) -> String {
     match serde_json::to_string(resp) {
         Ok(resp) => resp,
@@ -431,14 +517,14 @@ mod tests {
     use serde_json::json;
     use tracing_actix_web::TracingLogger;
 
-    use super::{ws_handler, WebSocketServerCommand, WebSocketServerHandle};
+    use super::{ws_handler, WebSocketServerHandle};
     use crate::{
         eth_json_types::{
             BlockCommitState, EthSubscribeResult, FixedData, SpeculativeNewHead, StreamEvent,
             SubscriptionResult,
         },
         hex,
-        websocket_server::WebSocketServer,
+        websocket_server::{Event, WebSocketServer},
         MonadJsonRootSpanBuilder,
     };
 
@@ -621,38 +707,34 @@ mod tests {
 
         let mut update_count: u32 = 0;
 
-        let mut res = Vec::new();
+        // let mut res = Vec::new();
 
         loop {
             match event_stream.poll() {
                 pr @ PollResult::Ready { .. } => {
-                    res.push(pr);
-                    update_count += 1;
-                    if update_count == 100 {
-                        break;
-                    }
+                    tx.send(pr.clone()).expect("send failed");
+                    tokio::task::yield_now().await;
+                    // update_count += 1;
+                    // if update_count == 100 {
+                    //     break;
+                    // }
                 }
-                _ => break,
+                _ => {}
             }
         }
-
-        async move {
-            for update in res.iter() {
-                tx.send(update.clone()).expect("send failed");
-            }
-        }
-        .await;
     }
 
     fn create_test_server(rx_exec_events: Receiver<PollResult>) -> actix_test::TestServer {
-        let (ws_tx_cmd, ws_rx_cmd) = flume::bounded::<WebSocketServerCommand>(1000);
+        let (websocket_broadcast_tx, websocket_broadcast_rx) = tokio::sync::broadcast::channel::<Event>(10_000);
 
-        let ws_server = WebSocketServer::new(ws_rx_cmd, rx_exec_events, 50, 50);
+        let ws_server = WebSocketServer::new(rx_exec_events, websocket_broadcast_tx.clone());
         tokio::spawn(async move {
             ws_server.run().await;
         });
 
-        let ws_server_handle = WebSocketServerHandle { cmd_tx: ws_tx_cmd };
+        let ws_server_handle = WebSocketServerHandle {
+            tx: websocket_broadcast_tx,
+        };
         actix_test::start(move || {
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
@@ -665,7 +747,7 @@ mod tests {
     #[actix_rt::test]
     async fn websocket_wait_for_ping() {
         let (tx, rx) = flume::bounded::<PollResult>(100000000);
-        tokio::spawn(exec_event_loop(tx));
+        tokio::spawn(exec_event_loop(tx.clone()));
         let mut server = create_test_server(rx);
         let mut framed = server.ws_at("/ws/").await.unwrap();
         let frame = framed.next().await.unwrap().unwrap();
@@ -679,9 +761,8 @@ mod tests {
     #[actix_rt::test]
     async fn websocket_eth_subscribe() {
         let (tx, rx) = flume::bounded::<PollResult>(100000000);
-        tokio::spawn(exec_event_loop(tx));
-        let mut server = create_test_server(rx);
-
+        tokio::spawn(exec_event_loop(tx.clone()));
+        let mut server: actix_test::TestServer = create_test_server(rx);
         let mut framed = server.ws_at("/ws/").await.unwrap();
 
         let _frame = framed.next().await.unwrap().unwrap();
@@ -870,7 +951,13 @@ mod tests {
                     "Unexpected block hash in update"
                 );
             } else {
-                panic!("Expected text frame containing block update");
+                if matches!(update, Some(Frame::Ping(_))) {
+                    continue;
+                };
+                panic!(
+                    "Expected text frame containing block update, got {:?}",
+                    update
+                );
             }
         }
     }
@@ -953,134 +1040,6 @@ mod tests {
 
         let frame = conn2.next().await.unwrap().unwrap();
         assert!(matches!(frame, Frame::Close(_)));
-    }
-
-    #[actix_rt::test]
-    async fn websocket_too_many_sessions() {
-        let (tx, rx) = flume::bounded::<PollResult>(100000000);
-        tokio::spawn(exec_event_loop(tx));
-        let mut server = create_test_server(rx);
-
-        // Create MAX_SESSIONS connections with backoff
-        let mut conns = Vec::new();
-        for idx in 0..50 {
-            let mut retries = 3;
-            let mut conn = None;
-
-            while retries > 0 {
-                match server.ws_at("/ws/").await {
-                    Ok(connection) => {
-                        conn = Some(connection);
-                        break;
-                    }
-                    Err(_) => {
-                        retries -= 1;
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    }
-                }
-            }
-
-            let mut conn = conn.expect(&format!("connection failed at {idx} after retries"));
-
-            // Handle the initial ping
-            let frame = conn.next().await.unwrap().unwrap();
-            assert_eq!(frame, Frame::Ping(Bytes::from_static(b"")));
-            conn.send(ws::Message::Pong(Bytes::from_static(b"")))
-                .await
-                .unwrap();
-
-            conns.push(conn);
-
-            // Add a small delay between connections
-            if idx % 10 == 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            }
-        }
-
-        // Try to create one more connection - it should fail with a close frame
-        let mut conn = server.ws_at("/ws/").await.unwrap();
-        let frame = conn.next().await.unwrap().unwrap();
-        assert!(
-            matches!(&frame, Frame::Close(Some(close_frame)) if close_frame.code == actix_ws::CloseCode::Error)
-        );
-
-        // Verify the error message
-        if let Frame::Close(Some(close_frame)) = frame {
-            assert_eq!(
-                close_frame.description.as_deref(),
-                Some("server is not accepting new connections")
-            );
-        }
-
-        // Try another connection to make sure it's still rejecting
-        let mut conn2 = server.ws_at("/ws/").await.unwrap();
-        let frame2 = conn2.next().await.unwrap().unwrap();
-        assert!(
-            matches!(frame2, Frame::Close(Some(close_frame)) if close_frame.code == actix_ws::CloseCode::Error)
-        );
-    }
-
-    #[actix_rt::test]
-    async fn websocket_too_many_topics() {
-        let (tx, rx) = flume::bounded::<PollResult>(100000000);
-        tokio::spawn(exec_event_loop(tx));
-        let mut server = create_test_server(rx);
-
-        let mut conn = server.ws_at("/ws/").await.unwrap();
-        // Handle the initial ping
-        let frame = conn.next().await.unwrap().unwrap();
-        assert_eq!(frame, Frame::Ping(Bytes::from_static(b"")));
-        conn.send(ws::Message::Pong(Bytes::from_static(b"")))
-            .await
-            .unwrap();
-
-        let subscribe_msg = json!({
-            "jsonrpc": "2.0",
-            "method": "eth_subscribe",
-            "params": ["logs"],
-            "id": 1
-        });
-
-        // Subscribe to MAX_TOPICS topics
-        for _ in 0..50 {
-            conn.send(ws::Message::Text(subscribe_msg.to_string().into()))
-                .await
-                .unwrap();
-            let frame = conn.next().await.unwrap().unwrap();
-
-            let body = match frame {
-                Frame::Text(frame) => frame,
-                _ => panic!("Expected text frame"),
-            };
-
-            let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert!(
-                response.get("result").is_some(),
-                "Expected subscription response"
-            );
-        }
-
-        // Try to subscribe to one more topic - it should fail with an error
-        conn.send(ws::Message::Text(subscribe_msg.to_string().into()))
-            .await
-            .unwrap();
-        let frame = conn.next().await.unwrap().unwrap();
-
-        let body = match frame {
-            Frame::Text(frame) => frame,
-            _ => panic!("Expected text frame"),
-        };
-        let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        // Check if it's an error response
-        assert!(response.get("error").is_some(), "Expected error response");
-
-        // Verify error code and message
-        assert_eq!(response["error"]["code"].as_i64().unwrap(), -32603);
-        assert_eq!(
-            response["error"]["message"].as_str().unwrap(),
-            "Internal error: cannot subscribe to topic"
-        );
     }
 
     #[actix_rt::test]
@@ -1208,13 +1167,13 @@ mod tests {
         // Assert the order of notifications received by client.
         for idx in 0..6 {
             let frame = framed.next().await.unwrap().unwrap();
-            assert!(matches!(frame, Frame::Text(_)));
             if let Frame::Text(update) = frame {
                 let update: serde_json::Value = serde_json::from_slice(&update).unwrap();
                 let update: crate::jsonrpc::Notification = serde_json::from_value(update).unwrap();
                 let update: EthSubscribeResult = serde_json::from_value(update.params).unwrap();
                 assert_eq!(update.subscription.0, subscription_id.0);
-                match update.result {
+                let result: SubscriptionResult = serde_json::from_value(update.result).unwrap();
+                match result {
                     SubscriptionResult::SpeculativeNewHeads(SpeculativeNewHead {
                         header: _,
                         block_id,
@@ -1252,6 +1211,8 @@ mod tests {
                         panic!("Expected speculative new head");
                     }
                 }
+            } else {
+                panic!("Expected a text frame, got {frame:?}");
             }
         }
     }
@@ -1299,6 +1260,8 @@ mod tests {
             subscription_ids.push(subscription_id);
         }
 
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
         // Create a block with an erc20 transfer log
         let txs = vec![make_erc20_tx()];
 
@@ -1343,7 +1306,8 @@ mod tests {
                         .iter()
                         .find(|id| id.0 == update.subscription.0)
                         .expect("subscription not found");
-                    let log = match update.result {
+                    let result: SubscriptionResult = serde_json::from_value(update.result).unwrap();
+                    let log = match result {
                         SubscriptionResult::Logs(logs) => logs,
                         r => panic!("Expected logs; got {r:#?}"),
                     };
@@ -1352,7 +1316,11 @@ mod tests {
                     assert_eq!(*log.topics().first().unwrap(), ERC20_TRANSFER_TOPIC);
                     assert_eq!(log.data().data, Bytes::from_static(&ERC20_LOG_DATA));
                 }
-                Frame::Ping(_) | Frame::Pong(_) => {}
+                Frame::Ping(_) | Frame::Pong(_) => {
+                    conn.send(ws::Message::Pong(Bytes::from_static(b"")))
+                        .await
+                        .unwrap();
+                }
                 Frame::Close(_) if idx > 4 => {
                     break;
                 }
@@ -1416,7 +1384,8 @@ mod tests {
                     let update: crate::jsonrpc::Notification =
                         serde_json::from_value(update).unwrap();
                     let update: EthSubscribeResult = serde_json::from_value(update.params).unwrap();
-                    match update.result {
+                    let result: SubscriptionResult = serde_json::from_value(update.result).unwrap();
+                    match result {
                         SubscriptionResult::MonadEventStream(actual) => {
                             let expected = expected_updates.get(update_count).unwrap();
                             assert_eq!(actual.event, *expected);

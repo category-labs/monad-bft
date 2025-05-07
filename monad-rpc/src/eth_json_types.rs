@@ -470,7 +470,7 @@ pub struct EthSubscribeRequest {
     pub params: Params,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum SubscriptionKind {
     // Equivalent to Geth's "newHeads" subscription.
@@ -495,10 +495,19 @@ pub struct EthUnsubscribeRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EthSubscribeResult {
     pub subscription: FixedData<16>,
-    pub result: SubscriptionResult,
+    pub result: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl EthSubscribeResult {
+    pub fn new(id: FixedData<16>, result: Value) -> Self {
+        Self {
+            subscription: id,
+            result,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum SubscriptionResult {
     // Returns all headers with their corresponding commit state.
@@ -521,7 +530,7 @@ pub enum BlockCommitState {
     Abandoned,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpeculativeNewHead {
     #[serde(flatten)]
     pub header: alloy_rpc_types::eth::Header,
@@ -529,7 +538,7 @@ pub struct SpeculativeNewHead {
     pub commit_state: BlockCommitState,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpeculativeLog {
     #[serde(flatten)]
     pub log: alloy_rpc_types::eth::Log,
@@ -537,7 +546,7 @@ pub struct SpeculativeLog {
     pub commit_state: BlockCommitState,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StreamItem {
     pub protocol_version: u8,
     #[serde(flatten)]
