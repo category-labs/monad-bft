@@ -117,6 +117,7 @@ message ProtoMonadMessage {
     ProtoStateSyncNetworkMessage state_sync_message = 6;
   }
 }
+
 message ProtoDiscoveryRequest {
   monad_proto.discovery.ProtoMonadNameRecord self = 1;
 }
@@ -132,10 +133,38 @@ message ProtoDiscoveryMessage {
   }
 }
 
+message ProtoPrepareGroup {
+  monad_proto.basic.ProtoNodeId validator_id    = 1;
+  uint64                        max_group_size  = 2;
+  monad_proto.basic.ProtoRound  start_round     = 3;
+  monad_proto.basic.ProtoRound  end_round       = 4;
+}
+
+message ProtoPrepareGroupResponse {
+  ProtoPrepareGroup             req             = 1;
+  monad_proto.basic.ProtoNodeId node_id         = 2;
+  bool                          accept          = 3;
+}
+
+message ProtoConfirmGroup {
+  ProtoPrepareGroup                                   prepare       = 1;
+  repeated monad_proto.basic.ProtoNodeId              peers         = 2;
+  repeated monad_proto.discovery.ProtoMonadNameRecord name_records  = 3;
+}
+
+message ProtoFullNodesGroupMessage {
+  oneof message {
+      ProtoPrepareGroup         prepare_group           = 1;
+      ProtoPrepareGroupResponse prepare_group_response  = 2;
+      ProtoConfirmGroup         confirm_group           = 3;
+  }
+}
+
 message ProtoRouterMessage {
   oneof message {
     // keep compatible with ProtoMonadMessage
     bytes app_message = 7;
     ProtoDiscoveryMessage discovery_message = 8;
+    ProtoFullNodesGroupMessage full_nodes_group_message = 9;
   }
 }

@@ -19,6 +19,7 @@ monad-merkle = { workspace = true }
 monad-raptor = { workspace = true }
 monad-secp = { workspace = true }
 monad-types = { workspace = true }
+monad-testutil = { workspace = true }
 
 bitvec = { workspace = true }
 bytes = { workspace = true }
@@ -27,7 +28,9 @@ hex = { workspace = true }
 itertools = { workspace = true }
 lru = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
 tracing = { workspace = true }
+iset = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }

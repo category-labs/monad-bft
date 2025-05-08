@@ -18,6 +18,12 @@ impl<ST> EpochValidators<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
+    pub fn new() -> Self {
+        Self {
+            validators: BTreeMap::new(),
+        }
+    }
+
     /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
     /// the validator set is reverted back to normal.
     pub fn view_without(
@@ -34,6 +40,28 @@ where
             view: &mut self.validators,
             removed,
         }
+    }
+
+    /// Hack needed because Raptorcast currently requires EpochValidators as target.
+    /// Ideally we'd like to be able to pass FullNodesView as well as ValidatorsView
+    /// when raptor-casting, or perhaps via a common traits
+    pub fn new_from_full_nodes(full_nodes: FullNodesView<CertificateSignaturePubKey<ST>>) -> Self {
+        let validators = full_nodes
+            .view()
+            .iter()
+            .cloned()
+            .map(|node_id| (node_id, Validator { stake: Stake(1) }))
+            .collect();
+        Self { validators }
+    }
+}
+
+impl<ST> Default for EpochValidators<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

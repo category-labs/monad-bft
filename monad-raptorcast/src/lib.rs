@@ -27,6 +27,8 @@ use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
 
+pub mod config;
+pub mod raptorcast_secondary;
 pub mod udp;
 pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, Validator};
@@ -458,6 +460,13 @@ where
                             );
                             None
                         }
+                        InboundRouterMessage::FullNodesGroup(_) => {
+                            tracing::error!(
+                                ?from,
+                                "Received FullNodesGroup, but it's implemented on a different branch"
+                            );
+                            None
+                        }
                     },
                     Err(err) => {
                         tracing::warn!(
@@ -512,6 +521,9 @@ where
                 InboundRouterMessage::Discovery(discovery_message) => {
                     // pass message to self.discovery
                     tracing::warn!(?from_addr, discovery_message = ?discovery_message, "unhandled discovery message");
+                }
+                InboundRouterMessage::FullNodesGroup(_) => {
+                    tracing::error!("Received FullNodesGroup, implemented in a different branch");
                 }
             }
         }
