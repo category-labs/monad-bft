@@ -3,7 +3,9 @@ use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 #[cfg(feature = "crypto")]
 use monad_consensus_types::checkpoint::Checkpoint;
-use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthExecutionProtocol};
 use monad_secp::SecpSignature;
 use serde::Deserialize;
@@ -13,6 +15,7 @@ pub use self::{
     consensus::NodeConsensusConfig,
     fullnode::{FullNodeConfig, FullNodeIdentityConfig},
     network::NodeNetworkConfig,
+    peers::PeerConfig,
     sync_peers::{BlockSyncPeersConfig, StateSyncPeersConfig, SyncPeerIdentityConfig},
 };
 
@@ -20,11 +23,12 @@ mod bootstrap;
 mod consensus;
 mod fullnode;
 mod network;
+mod peers;
 mod sync_peers;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeConfig<P: PubKey> {
+pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     /////////////////////////////////
     // NODE-SPECIFIC CONFIGURATION //
     /////////////////////////////////
@@ -42,15 +46,19 @@ pub struct NodeConfig<P: PubKey> {
     pub statesync_threshold: u16,
     pub statesync_max_concurrent_requests: u8,
 
-    #[serde(bound = "P:PubKey")]
-    pub bootstrap: NodeBootstrapConfig<P>,
-    #[serde(bound = "P:PubKey")]
-    pub fullnode: FullNodeConfig<P>,
-    #[serde(bound = "P:PubKey")]
-    pub blocksync_override: BlockSyncPeersConfig<P>,
-    #[serde(bound = "P:PubKey")]
-    pub statesync: StateSyncPeersConfig<P>,
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub bootstrap: NodeBootstrapConfig<CertificateSignaturePubKey<ST>>,
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub fullnode: FullNodeConfig<CertificateSignaturePubKey<ST>>,
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub blocksync_override: BlockSyncPeersConfig<CertificateSignaturePubKey<ST>>,
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub statesync: StateSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     pub network: NodeNetworkConfig,
+
+    // FIXME: merge this with bootstrap field
+    #[serde(bound = "ST: CertificateSignatureRecoverable")]
+    pub peer_discovery: PeerConfig<ST>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////
@@ -67,4 +75,4 @@ pub type SignatureCollectionType =
 pub type ExecutionProtocolType = EthExecutionProtocol;
 #[cfg(feature = "crypto")]
 pub type ForkpointConfig = Checkpoint<SignatureCollectionType>;
-pub type MonadNodeConfig = NodeConfig<CertificateSignaturePubKey<SignatureType>>;
+pub type MonadNodeConfig = NodeConfig<SignatureType>;

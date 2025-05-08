@@ -14,8 +14,8 @@ use tokio_util::time::{DelayQueue, delay_queue::Key};
 use tracing::error;
 
 use crate::{
-    PeerDiscoveryAlgo, PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage,
-    PeerDiscoveryTimerCommand, TimerKind,
+    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent,
+    PeerDiscoveryMessage, PeerDiscoveryTimerCommand, TimerKind,
 };
 
 pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
@@ -129,12 +129,16 @@ where
 }
 
 impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
-    pub fn new(peer_discovery: PD) -> Self {
-        Self {
+    pub fn new<B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>>(builder: B) -> Self {
+        let (peer_discovery, init_cmds) = builder.build();
+        let mut driver = Self {
             pd: peer_discovery,
             timer: Default::default(),
             pending_emits: Default::default(),
-        }
+        };
+        let emits = driver.exec_and_emit(init_cmds);
+        driver.pending_emits.extend(emits);
+        driver
     }
 
     pub fn update(&mut self, event: PeerDiscoveryEvent<PD::SignatureType>) {

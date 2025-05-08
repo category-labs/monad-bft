@@ -21,6 +21,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_eth_types::Balance;
 use monad_executor::Executor;
+use monad_peer_discovery::mock::PingPongDiscoveryBuilder;
 use monad_raptorcast::RaptorCastConfig;
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
@@ -49,7 +50,8 @@ where
 {
     pub num_nodes: usize,
     pub simulation_length: Duration,
-    pub executor_config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
+    pub executor_config:
+        ExecutorConfig<ST, SCT, MockExecutionProtocol, PingPongDiscoveryBuilder<ST>>,
     pub state_config: StateConfig<ST, SCT>,
 }
 
@@ -287,6 +289,10 @@ where
                             key: keypair,
                             known_addresses: known_addresses.clone(),
                             full_nodes: Default::default(),
+                            peer_discovery_builder: PingPongDiscoveryBuilder {
+                                peers: vec![],
+                                ping_period: Duration::from_secs(60),
+                            },
                             redundancy: 3,
                             local_addr: address.parse().unwrap(),
                             up_bandwidth_mbps: 1_000,

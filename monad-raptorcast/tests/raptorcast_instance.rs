@@ -16,6 +16,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::mock::{PingPongDiscovery, PingPongDiscoveryBuilder};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
@@ -28,6 +29,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+type PeerDiscoveryType = PingPongDiscovery<SignatureType>;
 
 // Try to crash the R10 managed decoder by feeding it encoded symbols of different sizes.
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
@@ -390,6 +392,10 @@ pub fn set_up_test(
                 key: rx_keypair,
                 full_nodes: Default::default(),
                 known_addresses,
+                peer_discovery_builder: PingPongDiscoveryBuilder {
+                    peers: vec![],
+                    ping_period: Duration::from_secs(60),
+                },
                 redundancy: 2,
                 local_addr: rx_addr,
                 up_bandwidth_mbps: 1_000,
@@ -402,6 +408,7 @@ pub fn set_up_test(
                 MockMessage,
                 MockMessage,
                 <MockMessage as Message>::Event,
+                PeerDiscoveryType,
             >::new(service_config);
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {

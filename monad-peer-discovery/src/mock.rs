@@ -7,9 +7,9 @@ use monad_types::NodeId;
 use tracing::debug;
 
 use crate::{
-    MonadNameRecord, PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
-    PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand,
-    PeerLookupRequest, PeerLookupResponse, Ping, Pong, TimerKind,
+    PeerDiscMetrics, PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand,
+    PeerDiscoveryEvent, PeerDiscoveryMessage, PeerDiscoveryTimerCommand, PeerLookupRequest,
+    PeerLookupResponse, Ping, Pong, TimerKind,
 };
 
 struct PeerState<ST: CertificateSignatureRecoverable> {
@@ -20,18 +20,12 @@ struct PeerState<ST: CertificateSignatureRecoverable> {
 // Periodically pings the peer. Peers responds with a pong. It's not an actual
 // peer discovery implementation
 pub struct PingPongDiscovery<ST: CertificateSignatureRecoverable> {
-    self_id: NodeId<CertificateSignaturePubKey<ST>>,
-    local_name_record: MonadNameRecord<ST>,
     peer_state: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerState<ST>>,
-
     ping_period: Duration,
-
     metrics: PeerDiscMetrics,
 }
 
 pub struct PingPongDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
-    pub self_id: NodeId<CertificateSignaturePubKey<ST>>,
-    pub local_name_record: MonadNameRecord<ST>,
     pub peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     pub ping_period: Duration,
 }
@@ -49,18 +43,10 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder
             PeerDiscoveryCommand<<Self::PeerDiscoveryAlgoType as PeerDiscoveryAlgo>::SignatureType>,
         >,
     ) {
-        let peers: Vec<_> = self
-            .peers
-            .into_iter()
-            .filter(|p| p != &self.self_id)
-            .collect();
-
         let mut state = PingPongDiscovery {
-            self_id: self.self_id,
-            local_name_record: self.local_name_record,
-            peer_state: peers
-                .iter()
-                .cloned()
+            peer_state: self
+                .peers
+                .into_iter()
                 .map(|p| {
                     (p, PeerState {
                         last_ping: None,
@@ -72,7 +58,8 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder
             metrics: Default::default(),
         };
 
-        let cmds = peers
+        let peer_keys: Vec<_> = state.peer_state.keys().cloned().collect();
+        let cmds = peer_keys
             .into_iter()
             .flat_map(|peer| state.send_ping(peer))
             .collect();
@@ -123,8 +110,7 @@ where
         let ping_id = peer_state.last_ping.map_or(0, |ping| ping.id + 1);
         let ping = Ping {
             id: ping_id,
-            // FIXME: make this optional
-            local_name_record: Some(self.local_name_record),
+            local_name_record: None,
         };
         peer_state.last_ping = Some(ping);
 

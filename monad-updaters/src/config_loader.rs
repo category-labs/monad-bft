@@ -76,7 +76,8 @@ where
 
 impl<ST, SCT, EPT> ConfigLoader<ST, SCT, EPT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(
         config_path: PathBuf,
@@ -139,10 +140,7 @@ where
         }
     }
 
-    fn extract_config_update(
-        &mut self,
-        node_config: NodeConfig<SCT::NodeIdPubKey>,
-    ) -> ConfigEvent<SCT> {
+    fn extract_config_update(&mut self, node_config: NodeConfig<ST>) -> ConfigEvent<SCT> {
         let full_nodes = node_config
             .fullnode
             .identities
@@ -175,12 +173,10 @@ where
 
     fn reload(&mut self) {
         let config_event = match std::fs::read_to_string(&self.config_path) {
-            Ok(config_string) => {
-                match toml::from_str::<NodeConfig<SCT::NodeIdPubKey>>(&config_string) {
-                    Ok(node_config) => self.extract_config_update(node_config),
-                    Err(err) => ConfigEvent::LoadError(err.to_string()),
-                }
-            }
+            Ok(config_string) => match toml::from_str::<NodeConfig<ST>>(&config_string) {
+                Ok(node_config) => self.extract_config_update(node_config),
+                Err(err) => ConfigEvent::LoadError(err.to_string()),
+            },
             Err(err) => ConfigEvent::LoadError(err.to_string()),
         };
         match self.response_tx.try_send(config_event) {
@@ -217,7 +213,8 @@ where
 
 impl<ST, SCT, EPT> Executor for ConfigLoader<ST, SCT, EPT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Command = ConfigReloadCommand;
 

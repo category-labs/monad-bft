@@ -15,6 +15,7 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
+use monad_peer_discovery::mock::{PingPongDiscovery, PingPongDiscoveryBuilder};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
@@ -44,6 +45,7 @@ pub fn main() {
 
 type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+type PeerDiscoveryType = PingPongDiscovery<SignatureType>;
 
 fn service(
     num_rt: usize,
@@ -115,6 +117,10 @@ fn service(
                     key,
                     full_nodes: Default::default(),
                     known_addresses,
+                    peer_discovery_builder: PingPongDiscoveryBuilder {
+                        peers: vec![],
+                        ping_period: Duration::from_secs(60),
+                    },
                     redundancy: 2,
                     local_addr: server_address,
                     up_bandwidth_mbps: 1_000,
@@ -127,6 +133,7 @@ fn service(
                     MockMessage,
                     MockMessage,
                     <MockMessage as Message>::Event,
+                    PeerDiscoveryType,
                 >::new(service_config);
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),

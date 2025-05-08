@@ -10,7 +10,7 @@ use std::{
 use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;
@@ -216,7 +216,7 @@ fn deserialize_big_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let buf = <std::string::String as Deserialize>::deserialize(deserializer)?;
+    let buf = <String as Deserialize>::deserialize(deserializer)?;
     u64::from_str(&buf).map_err(<D::Error as serde::de::Error>::custom)
 }
 
@@ -382,6 +382,35 @@ where
     let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
 
     P::from_bytes(&bytes).map_err(<D::Error as serde::de::Error>::custom)
+}
+
+pub fn serialize_certificate_signature<S, ST>(
+    signature: &ST,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    ST: CertificateSignatureRecoverable,
+{
+    let hex_str = "0x".to_string() + &hex::encode(signature.serialize());
+    serializer.serialize_str(&hex_str)
+}
+
+pub fn deserialize_certificate_signature<'de, D, ST>(deserializer: D) -> Result<ST, D::Error>
+where
+    ST: CertificateSignatureRecoverable,
+    D: Deserializer<'de>,
+{
+    let buf = <String as Deserialize>::deserialize(deserializer)?;
+
+    let hex_str = match buf.strip_prefix("0x") {
+        Some(hex_str) => hex_str,
+        None => &buf,
+    };
+
+    let bytes = hex::decode(hex_str).map_err(<D::Error as serde::de::Error>::custom)?;
+
+    ST::deserialize(bytes.as_ref()).map_err(<D::Error as serde::de::Error>::custom)
 }
 
 /// BlockId uniquely identifies a block

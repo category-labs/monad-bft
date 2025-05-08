@@ -33,6 +33,15 @@ peers = []
 # address = "x.x.x.x:xxxx"
 # secp256k1_pubkey = "..."
 
+[peer_discovery]
+local_record_seq_num = 0
+peers = []
+# [[peer_discovery.peers]]
+# address = "x.x.x.x:xxxx"
+# record_seq_num = x
+# secp256k1_pubkey = "..."
+# name_record_sig = "..."
+
 [fullnode]
 identities = []
 # [[fullnode.identities]]

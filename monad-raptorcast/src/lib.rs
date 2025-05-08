@@ -11,8 +11,8 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream};
-use message::{DeserializeError, InboundRouterMessage};
+use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
+use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -24,9 +24,14 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
 };
+use monad_peer_discovery::{
+    driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
+    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+};
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
+use tracing::{debug, error, warn};
 
 pub mod message;
 pub mod udp;
@@ -34,14 +39,16 @@ pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
+const PEER_DISCOVERY_ENABLED: bool = false;
 
-pub struct RaptorCastConfig<ST>
+pub struct RaptorCastConfig<ST, B>
 where
     ST: CertificateSignatureRecoverable,
 {
     // TODO support dynamic updating
     pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
     pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
+    pub peer_discovery_builder: B,
 
     pub key: ST::KeyPairType,
     /// amount of redundancy to send
@@ -56,11 +63,12 @@ where
     pub buffer_size: Option<usize>,
 }
 
-pub struct RaptorCast<ST, M, OM, SE>
+pub struct RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -71,7 +79,9 @@ where
 
     // TODO support dynamic updating
     full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
+    // TODO: replace known_addresses with peer_discovery_driver
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    peer_discovery_driver: PeerDiscoveryDriver<PD>,
 
     current_epoch: Epoch,
 
@@ -96,13 +106,17 @@ pub enum RaptorCastEvent<E, P: PubKey> {
     PeerManagerResponse(PeerManagerResponse<P>),
 }
 
-impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, PD> RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+    pub fn new<B>(config: RaptorCastConfig<ST, B>) -> Self
+    where
+        B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
+    {
         assert!(config.redundancy >= 1);
         let self_id = NodeId::new(config.key.pubkey());
         let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
@@ -111,11 +125,13 @@ where
         }
         let dataplane = builder.build();
         let is_fullnode = false; // This will come from the config in upcoming PR
+
         Self {
             epoch_validators: Default::default(),
             rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
             full_nodes: FullNodes::new(config.full_nodes),
             known_addresses: config.known_addresses,
+            peer_discovery_driver: PeerDiscoveryDriver::new(config.peer_discovery_builder),
 
             key: config.key,
             redundancy: config.redundancy,
@@ -142,7 +158,7 @@ where
     ) {
         match self.known_addresses.get(to) {
             None => {
-                tracing::warn!(?to, "not sending message, address unknown");
+                warn!(?to, "not sending message, address unknown");
             }
             Some(address) => {
                 let app_message = make_app_message();
@@ -165,11 +181,12 @@ where
     }
 }
 
-impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
+impl<ST, M, OM, SE, PD> Executor for RaptorCast<ST, M, OM, SE, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -204,9 +221,7 @@ where
                                 .map(|v| v.stake)
                                 == Some(validator_stake)
                         ));
-                        tracing::warn!(
-                            "duplicate validator set update (this is safe but unexpected)"
-                        )
+                        warn!("duplicate validator set update (this is safe but unexpected)")
                     } else {
                         let removed = self.epoch_validators.insert(
                             epoch,
@@ -226,48 +241,19 @@ where
                         );
                         assert!(removed.is_none());
                     }
+                    // TODO: peer discovery to discover new peers
                 }
                 RouterCommand::Publish { target, message } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {
-                        tracing::warn!(?elapsed, "long time to publish message")
+                        warn!(?elapsed, "long time to publish message")
                     });
-
-                    let udp_build = |epoch: &Epoch,
-                                     build_target: BuildTarget<ST>,
-                                     app_message: Bytes|
-                     -> UnicastMsg {
-                        let segment_size = segment_size_for_mtu(self.mtu);
-
-                        let unix_ts_ms = std::time::UNIX_EPOCH
-                            .elapsed()
-                            .expect("time went backwards")
-                            .as_millis()
-                            .try_into()
-                            .expect("unix epoch doesn't fit in u64");
-
-                        let messages = udp::build_messages::<ST>(
-                            &self.key,
-                            segment_size,
-                            app_message,
-                            self.redundancy,
-                            epoch.0,
-                            unix_ts_ms,
-                            build_target,
-                            &self.known_addresses,
-                        );
-
-                        UnicastMsg {
-                            msgs: messages,
-                            stride: segment_size,
-                        }
-                    };
 
                     // send message to self if applicable
                     match target {
                         RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
                             let Some(epoch_validators) = self.epoch_validators.get_mut(&epoch)
                             else {
-                                tracing::error!(
+                                error!(
                                     "don't have epoch validators populated for epoch: {:?}",
                                     epoch
                                 );
@@ -304,11 +290,16 @@ where
                                 _ => unreachable!(),
                             };
 
-                            self.dataplane.udp_write_unicast(udp_build(
+                            let unicast_msg = udp_build(
                                 &epoch,
                                 build_target,
                                 app_message,
-                            ));
+                                self.mtu,
+                                &self.key,
+                                self.redundancy,
+                                &self.known_addresses,
+                            );
+                            self.dataplane.udp_write_unicast(unicast_msg);
                         }
                         RouterTarget::PointToPoint(to) => {
                             if to == self_id {
@@ -320,11 +311,16 @@ where
                                 }
                             } else {
                                 let app_message = message.serialize();
-                                self.dataplane.udp_write_unicast(udp_build(
+                                let unicast_msg = udp_build(
                                     &self.current_epoch,
-                                    BuildTarget::PointToPoint(&to),
+                                    BuildTarget::<ST>::PointToPoint(&to),
                                     app_message,
-                                ));
+                                    self.mtu,
+                                    &self.key,
+                                    self.redundancy,
+                                    &self.known_addresses,
+                                );
+                                self.dataplane.udp_write_unicast(unicast_msg);
                             }
                         }
                         RouterTarget::TcpPointToPoint { to, completion } => {
@@ -374,14 +370,49 @@ where
     }
 }
 
+fn udp_build<ST: CertificateSignatureRecoverable>(
+    epoch: &Epoch,
+    build_target: BuildTarget<ST>,
+    app_message: Bytes,
+    mtu: u16,
+    key: &ST::KeyPairType,
+    redundancy: u8,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+) -> UnicastMsg {
+    let segment_size = segment_size_for_mtu(mtu);
+
+    let unix_ts_ms = std::time::UNIX_EPOCH
+        .elapsed()
+        .expect("time went backwards")
+        .as_millis()
+        .try_into()
+        .expect("unix epoch doesn't fit in u64");
+
+    let messages = udp::build_messages::<ST>(
+        key,
+        segment_size,
+        app_message,
+        redundancy,
+        epoch.0,
+        unix_ts_ms,
+        build_target,
+        known_addresses,
+    );
+
+    UnicastMsg {
+        msgs: messages,
+        stride: segment_size,
+    }
+}
+
 fn try_deserialize_router_message<
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M>, DeserializeError> {
+) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M>::try_deserialize(bytes) else {
+    let Ok(inbound) = InboundRouterMessage::<M, ST>::try_deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         return match M::deserialize(bytes) {
             Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
@@ -391,12 +422,14 @@ fn try_deserialize_router_message<
     Ok(inbound)
 }
 
-impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
+impl<ST, M, OM, E, PD> Stream for RaptorCast<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    PD: PeerDiscoveryAlgo<SignatureType = ST>,
+    PeerDiscoveryDriver<PD>: Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -469,9 +502,17 @@ where
                                 InboundRouterMessage::AppMessage(app_message) => {
                                     Some(app_message.event(from))
                                 }
+                                InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                                    if PEER_DISCOVERY_ENABLED {
+                                        // handle peer discovery message in driver
+                                        this.peer_discovery_driver
+                                            .update(peer_disc_message.event(from));
+                                    }
+                                    None
+                                }
                             },
                             Err(err) => {
-                                tracing::warn!(
+                                warn!(
                                     ?from,
                                     ?err,
                                     decoded = hex::encode(&decoded),
@@ -494,7 +535,7 @@ where
             let signature = match ST::deserialize(signature_bytes) {
                 Ok(signature) => signature,
                 Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "invalid signature");
+                    warn!(?err, ?from_addr, "invalid signature");
                     continue;
                 }
             };
@@ -503,14 +544,14 @@ where
                 match try_deserialize_router_message::<ST, M>(&app_message_bytes) {
                     Ok(message) => message,
                     Err(err) => {
-                        tracing::warn!(?err, ?from_addr, "failed to deserialize message");
+                        warn!(?err, ?from_addr, "failed to deserialize message");
                         continue;
                     }
                 };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "failed to recover pubkey");
+                    warn!(?err, ?from_addr, "failed to recover pubkey");
                     continue;
                 }
             };
@@ -521,6 +562,47 @@ where
                     return Poll::Ready(Some(
                         RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
                     ));
+                }
+                InboundRouterMessage::PeerDiscoveryMessage(message) => {
+                    // peer discovery message should come through udp
+                    debug!(
+                        ?message,
+                        "dropping peer discovery message, should come through udp channel"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // TODO: remove the following block when we want to enable peer discovery messages
+        if PEER_DISCOVERY_ENABLED {
+            while let Poll::Ready(Some(peer_disc_emit)) =
+                this.peer_discovery_driver.poll_next_unpin(cx)
+            {
+                match peer_disc_emit {
+                    PeerDiscoveryEmit::RouterCommand { target, message } => {
+                        match OutboundRouterMessage::try_serialize(
+                            OutboundRouterMessage::<OM, ST>::PeerDiscoveryMessage(message),
+                        ) {
+                            Ok(router_message) => {
+                                let current_epoch = this.current_epoch;
+                                let unicast_msg = udp_build(
+                                    &current_epoch,
+                                    BuildTarget::<ST>::PointToPoint(&target),
+                                    router_message,
+                                    this.mtu,
+                                    &this.key,
+                                    this.redundancy,
+                                    &this.known_addresses,
+                                );
+                                this.dataplane.udp_write_unicast(unicast_msg);
+                            }
+                            Err(e) => {
+                                warn!("unable to serialize peer discovery message {:?}", e);
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
         }

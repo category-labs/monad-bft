@@ -13,6 +13,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
+use monad_peer_discovery::mock::{PingPongDiscovery, PingPongDiscoveryBuilder};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -26,7 +27,7 @@ use monad_updaters::{
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
 
-pub enum RouterConfig<ST, SCT, EPT>
+pub enum RouterConfig<ST, SCT, EPT, B>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -36,7 +37,7 @@ where
         /// Must be passed ahead-of-time because they can't be instantiated individually
         LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
-    RaptorCast(RaptorCastConfig<ST>),
+    RaptorCast(RaptorCastConfig<ST, B>),
 }
 
 pub enum LedgerConfig {
@@ -53,13 +54,13 @@ where
     },
 }
 
-pub struct ExecutorConfig<ST, SCT, EPT>
+pub struct ExecutorConfig<ST, SCT, EPT, B>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub router_config: RouterConfig<ST, SCT, EPT>,
+    pub router_config: RouterConfig<ST, SCT, EPT, B>,
     pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -68,7 +69,7 @@ where
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
     state_backend: InMemoryState,
-    config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
+    config: ExecutorConfig<ST, SCT, MockExecutionProtocol, PingPongDiscoveryBuilder<ST>>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
@@ -104,6 +105,7 @@ where
                 MonadMessage<ST, SCT, MockExecutionProtocol>,
                 VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                 MonadEvent<ST, SCT, MockExecutionProtocol>,
+                PingPongDiscovery<ST>,
             >::new(config)),
         },
         timer: TokioTimer::default(),

@@ -17,7 +17,7 @@ use monad_consensus_types::{
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
@@ -26,8 +26,12 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, SignatureCollectionType,
-    SignatureType,
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, PeerConfig,
+    SignatureCollectionType, SignatureType,
+};
+use monad_peer_discovery::{
+    discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
+    MonadNameRecord, NameRecord,
 };
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
@@ -161,6 +165,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
             node_state.node_config.network.clone(),
+            node_state.node_config.peer_discovery,
             node_state.router_identity,
             known_addresses
                 .iter()
@@ -490,10 +495,11 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 
 async fn build_raptorcast_router<ST, SCT, M, OM>(
     network_config: NodeNetworkConfig,
+    peer_discovery_config: PeerConfig<ST>,
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
+) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -507,6 +513,64 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
 {
+    // TODO: also include self record in node.toml
+    let self_record = NameRecord {
+        address: SocketAddrV4::new(
+            network_config.bind_address_host,
+            network_config.bind_address_port,
+        ),
+        seq: peer_discovery_config.local_record_seq_num,
+    };
+    let self_record = MonadNameRecord::new(self_record, &identity);
+
+    // initial set of peers
+    let peer_info = peer_discovery_config
+        .peers
+        .iter()
+        .filter_map(|peer| {
+            let node_id = NodeId::new(peer.secp256k1_pubkey);
+            let name_record = NameRecord {
+                address: peer.address,
+                seq: peer.record_seq_num,
+            };
+
+            // verify signature of name record
+            let mut encoded = Vec::new();
+            name_record.encode(&mut encoded);
+            match peer
+                .name_record_sig
+                .verify(&encoded, &peer.secp256k1_pubkey)
+            {
+                Ok(_) => Some((
+                    node_id,
+                    PeerInfo {
+                        last_ping: None,
+                        unresponsive_pings: 0,
+                        name_record: MonadNameRecord {
+                            name_record,
+                            signature: peer.name_record_sig,
+                        },
+                    },
+                )),
+                Err(_) => {
+                    warn!(?node_id, "invalid name record signature in config file");
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // TODO: make it configurable in node.toml
+    let peer_discovery_builder = PeerDiscoveryBuilder {
+        self_id: NodeId::new(identity.pubkey()),
+        self_record,
+        peer_info,
+        ping_period: Duration::from_secs(30),
+        prune_period: Duration::from_secs(600),
+        request_timeout: Duration::from_secs(10),
+        prune_threshold: 3,
+        rng_seed: 123456,
+    };
     RaptorCast::new(RaptorCastConfig {
         key: identity,
         known_addresses: known_addresses.into_iter().collect(),
@@ -514,6 +578,7 @@ where
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
             .collect(),
+        peer_discovery_builder,
         redundancy: 3,
         local_addr: SocketAddr::V4(SocketAddrV4::new(
             network_config.bind_address_host,
