@@ -3,7 +3,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{error::ProtoError, proto::message::*};
-use monad_types::ExecutionProtocol;
+use monad_types::{ExecutionProtocol, PingSequence};
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
@@ -32,6 +32,16 @@ where
                 }
                 VerifiedMonadMessage::StateSyncMessage(msg) => {
                     proto_monad_message::OneofMessage::StateSyncMessage(msg.into())
+                }
+                VerifiedMonadMessage::PingRequest(msg) => {
+                    proto_monad_message::OneofMessage::PingRequest(ProtoPingRequest {
+                        sequence: msg.0,
+                    })
+                }
+                VerifiedMonadMessage::PingResponse(msg) => {
+                    proto_monad_message::OneofMessage::PingResponse(ProtoPingResponse {
+                        sequence: msg.0,
+                    })
                 }
             }),
         }
@@ -62,6 +72,12 @@ where
             }
             Some(proto_monad_message::OneofMessage::StateSyncMessage(msg)) => {
                 MonadMessage::StateSyncMessage(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::PingRequest(msg)) => {
+                MonadMessage::PingRequest(PingSequence(msg.sequence))
+            }
+            Some(proto_monad_message::OneofMessage::PingResponse(msg)) => {
+                MonadMessage::PingResponse(PingSequence(msg.sequence))
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

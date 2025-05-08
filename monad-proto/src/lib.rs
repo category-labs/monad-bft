@@ -29,4 +29,5 @@ pub mod proto {
     include_proto!(event);
     include_proto!(validator_data);
     include_proto!(blocksync);
+    include_proto!(blocktimestamp);
 }

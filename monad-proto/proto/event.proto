@@ -5,6 +5,7 @@ package monad_proto.event;
 import "basic.proto";
 import "block.proto";
 import "blocksync.proto";
+import "blocktimestamp.proto";
 import "message.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
@@ -256,6 +257,15 @@ message ProtoConfigEvent {
   }
 }
 
+message ProtoBlockTimestampEvent {
+  oneof event {
+    monad_proto.blocktimestamp.ProtoPingRequest ping_request = 1;
+    monad_proto.blocktimestamp.ProtoPingResponse ping_response = 2;
+    monad_proto.blocktimestamp.ProtoPingTick ping_tick = 3;
+    monad_proto.blocktimestamp.ProtoTimestampEnterEpoch timestamp_enter_epoch = 4;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
@@ -267,5 +277,6 @@ message ProtoMonadEvent{
     ProtoTimestampUpdate timestamp_update_event = 8;
     ProtoStateSyncEvent state_sync_event = 9;
     ProtoConfigEvent config_event = 10;
+    ProtoBlockTimestampEvent block_timestamp_event = 11;
   }
 }

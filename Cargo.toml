@@ -22,6 +22,7 @@ ignored = [
 monad-archive = { path = "./monad-archive" }
 monad-block-persist = { path = "./monad-block-persist" }
 monad-blocksync = { path = "./monad-blocksync" }
+monad-blocktimestamp = { path = "./monad-blocktimestamp" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }

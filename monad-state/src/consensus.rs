@@ -23,9 +23,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand, LoopbackCommand,
-    MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
-    TimerCommand, TimestampCommand, TxPoolCommand,
+    BlockSyncEvent, BlockTimestampEvent, CheckpointCommand, Command, ConsensusEvent, LedgerCommand,
+    LoopbackCommand, MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent,
+    TimeoutVariant, TimerCommand, TimestampCommand, TxPoolCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
@@ -69,7 +69,7 @@ where
     leader_election: &'a LT,
     version: &'a MonadVersion,
 
-    block_timestamp: &'a BlockTimestamp,
+    block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
     block_validator: &'a BVT,
     beneficiary: &'a [u8; 20],
     nodeid: &'a NodeId<CertificateSignaturePubKey<ST>>,
@@ -108,7 +108,7 @@ where
             leader_election: &monad_state.leader_election,
             version: &monad_state.version,
 
-            block_timestamp: &monad_state.block_timestamp,
+            block_timestamp: &mut monad_state.block_timestamp,
             block_validator: &monad_state.block_validator,
             beneficiary: &monad_state.beneficiary,
             nodeid: &monad_state.nodeid,
@@ -538,7 +538,12 @@ where
                 parent_cmds.push(Command::TxPoolCommand(TxPoolCommand::EnterRound {
                     epoch,
                     round,
-                }))
+                }));
+                parent_cmds.push(Command::LoopbackCommand(LoopbackCommand::Forward(
+                    MonadEvent::BlockTimestampEvent(BlockTimestampEvent::TimestampEnterEpoch {
+                        epoch,
+                    }),
+                )));
             }
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {

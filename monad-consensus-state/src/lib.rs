@@ -160,7 +160,7 @@ where
     /// Policy for validating incoming proposals
     pub block_validator: &'a BVT,
     /// Track local timestamp and validate proposal timestamps
-    pub block_timestamp: &'a BlockTimestamp,
+    pub block_timestamp: &'a mut BlockTimestamp<SCT::NodeIdPubKey>,
 
     /// Destination address for proposal payments
     pub beneficiary: &'a [u8; 20],
@@ -565,14 +565,29 @@ where
         // where timestamp validation is done, in block_policy right now.
         // block_policy doesn't have visibility on whether current round is
         // bumped. Deferring the move
+
         /*
-        if let Some(ts_delta) = self
-            .block_timestamp
-            .valid_block_timestamp(block.get_qc().get_timestamp(), block.get_timestamp())
-        {
-            // only update timestamp if the block advanced us our round
-            if block_round > original_round {
-                cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+        if let Some(parent_timestamp) = self
+            .consensus
+            .blocktree()
+            .get_timestamp_of_qc(block.get_qc()) {
+
+            if let Ok(Some(ts_delta)) = self.block_timestamp.valid_block_timestamp(
+                parent_timestamp,
+                block.get_timestamp(),
+                self.config
+                        .chain_config
+                        .get_chain_revision(round)
+                        .chain_params()
+                        .vote_pace
+                        .as_nanos(),
+                &author,
+            ) {
+                // only update timestamp if the block advanced us our round
+                if block_round > original_round {
+                    info!(?ts_delta, "update timestamp");
+                    cmds.push(ConsensusCommand::TimestampUpdate(ts_delta));
+                }
             }
         }
         */
@@ -863,6 +878,9 @@ where
             message: ProtocolMessage::Vote(vote_msg),
         }
         .sign(self.keypair);
+        if next_leader != *self.nodeid {
+            self.block_timestamp.vote_sent(round);
+        }
         let send_cmd = ConsensusCommand::Publish {
             target: RouterTarget::PointToPoint(next_leader),
             message: msg,
@@ -1212,8 +1230,9 @@ where
                     .chain_params()
                     .vote_pace
                     .as_nanos(),
+                validated_block.get_author(),
             )
-            .is_none()
+            .is_err()
         {
             self.metrics.consensus_events.failed_ts_validation += 1;
             warn!(
@@ -1619,6 +1638,7 @@ mod test {
         quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
+        validator_data,
         voting::{ValidatorMapping, Vote},
     };
     use monad_crypto::{
@@ -1642,7 +1662,7 @@ mod test {
     };
     use monad_types::{
         BlockId, Epoch, ExecutionProtocol, MockableFinalizedHeader, MockableProposedHeader, NodeId,
-        Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
+        PingSequence, Round, RouterTarget, SeqNum, Stake, GENESIS_SEQ_NUM,
     };
     use monad_validator::{
         epoch_manager::EpochManager,
@@ -1655,8 +1675,9 @@ mod test {
     use tracing_test::traced_test;
 
     use crate::{
-        timestamp::BlockTimestamp, ConsensusCommand, ConsensusConfig, ConsensusState,
-        ConsensusStateWrapper, OutgoingVoteStatus,
+        timestamp::{BlockTimestamp, PING_PERIOD_SEC},
+        ConsensusCommand, ConsensusConfig, ConsensusState, ConsensusStateWrapper,
+        OutgoingVoteStatus,
     };
 
     const BASE_FEE: u128 = BASE_FEE_PER_GAS as u128;
@@ -1701,7 +1722,7 @@ mod test {
         block_validator: BVT,
         block_policy: BPT,
         state_backend: SBT,
-        block_timestamp: BlockTimestamp,
+        block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
         beneficiary: [u8; 20],
         nodeid: NodeId<CertificateSignaturePubKey<ST>>,
         consensus_config: ConsensusConfig<MockChainConfig, MockChainRevision>,
@@ -2451,6 +2472,10 @@ mod test {
             || EthValidator::new(0),
             execution_delay,
         );
+        for ctx in &mut ctx {
+            ctx.wrapped_state().block_timestamp.update_time(1000);
+        }
+
         let mut wrapped_state = ctx[0].wrapped_state();
 
         // our initial starting logic has consensus in round 1 so the first proposal does not
@@ -2461,6 +2486,50 @@ mod test {
 
         let p2 = env.next_proposal_empty();
         let (author, _, verified_message) = p2.destructure();
+
+        let val_set = wrapped_state
+            .val_epoch_map
+            .get_val_set(
+                &wrapped_state
+                    .epoch_manager
+                    .get_epoch(verified_message.block_header.round)
+                    .unwrap(),
+            )
+            .unwrap();
+        let val_data = val_set
+            .get_members()
+            .iter()
+            .map(
+                |(node_id, stake)| validator_data::ValidatorData::<SignatureCollectionType> {
+                    node_id: *node_id,
+                    stake: *stake,
+                    cert_pubkey: node_id.pubkey(),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        let epoch = wrapped_state
+            .epoch_manager
+            .get_epoch(verified_message.block_header.round)
+            .unwrap();
+
+        let vals = validator_data::ValidatorSetDataWithEpoch::<SignatureCollectionType> {
+            validators: validator_data::ValidatorSetData::<SignatureCollectionType>(val_data),
+            epoch,
+        };
+        wrapped_state
+            .block_timestamp
+            .update_validators(&vals, wrapped_state.nodeid);
+
+        for _ in 0..PING_PERIOD_SEC {
+            wrapped_state.block_timestamp.tick();
+        }
+        for val in val_set.get_members().keys() {
+            wrapped_state
+                .block_timestamp
+                .pong_received(*val, PingSequence(1));
+        }
+        wrapped_state.block_timestamp.vote_sent(Round(1));
         let cmds = wrapped_state.handle_proposal_message(author, verified_message.clone());
         assert!(find_timestamp_update_cmd(&cmds).is_some());
 
@@ -2475,7 +2544,10 @@ mod test {
         let p7 = env.next_proposal_empty();
         let (author, _, verified_message) = p7.destructure();
         let cmds = wrapped_state.handle_proposal_message(author, verified_message);
-        assert!(find_timestamp_update_cmd(&cmds).is_some());
+        assert!(
+            find_timestamp_update_cmd(&cmds).is_none(),
+            "no timestamp adjustment because did not vote previous round"
+        );
     }
 
     #[test]

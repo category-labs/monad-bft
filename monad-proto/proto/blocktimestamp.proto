@@ -1,0 +1,22 @@
+
+syntax = "proto3";
+
+package monad_proto.blocktimestamp;
+
+import "basic.proto";
+
+message ProtoPingRequest {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message ProtoPingResponse {
+  monad_proto.basic.ProtoNodeId sender = 1;
+  uint64 sequence = 2;
+}
+
+message ProtoPingTick { }
+
+message ProtoTimestampEnterEpoch {
+  monad_proto.basic.ProtoEpoch epoch = 1;
+}

@@ -588,6 +588,8 @@ impl MonadVersion {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, RlpEncodableWrapper, RlpDecodableWrapper)]
+pub struct PingSequence(pub u64);
 
 #[cfg(test)]
 mod test {

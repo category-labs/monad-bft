@@ -17,7 +17,10 @@ use monad_consensus::{
     messages::consensus_message::ConsensusMessage,
     validation::signing::{verify_qc, Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{timestamp::BlockTimestamp, ConsensusConfig, ConsensusState};
+use monad_consensus_state::{
+    timestamp::{BlockTimestamp, PING_TICK_DURATION},
+    ConsensusConfig, ConsensusState,
+};
 use monad_consensus_types::{
     block::{BlockPolicy, OptimisticCommit},
     block_validator::BlockValidator,
@@ -33,16 +36,16 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
-    BlockSyncEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand, ConsensusEvent,
-    ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers, LedgerCommand,
-    MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
-    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
-    ValidatorEvent, WriteCommand,
+    BlockSyncEvent, BlockTimestampEvent, ClearMetrics, Command, ConfigEvent, ConfigReloadCommand,
+    ConsensusEvent, ControlPanelCommand, ControlPanelEvent, GetFullNodes, GetMetrics, GetPeers,
+    LedgerCommand, MempoolEvent, Message, MonadEvent, ReadCommand, ReloadConfig, RouterCommand,
+    StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage,
+    TimeoutVariant, TimerCommand, TxPoolCommand, ValidatorEvent, WriteCommand,
 };
 use monad_state_backend::StateBackend;
 use monad_types::{
-    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
-    GENESIS_ROUND,
+    Epoch, ExecutionProtocol, MonadVersion, NodeId, PingSequence, Round, RouterTarget, SeqNum,
+    GENESIS_BLOCK_ID, GENESIS_ROUND,
 };
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
@@ -341,7 +344,7 @@ where
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
 
-    block_timestamp: BlockTimestamp,
+    block_timestamp: BlockTimestamp<SCT::NodeIdPubKey>,
     block_validator: BVT,
     block_policy: BPT,
     state_backend: SBT,
@@ -410,6 +413,8 @@ where
     BlockSyncResponse(BlockSyncResponseMessage<ST, SCT, EPT>),
     ForwardedTx(Vec<Bytes>),
     StateSyncMessage(StateSyncNetworkMessage),
+    PingRequest(PingSequence), // TODO: wrap PingRequest and PingResponse in PingMessage enum.
+    PingResponse(PingSequence),
 }
 
 impl<ST, SCT, EPT> From<Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>>
@@ -457,6 +462,14 @@ where
                 let enc: [&dyn Encodable; 3] = [&monad_version, &5u8, &m];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::PingRequest(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &6u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
+            Self::PingResponse(m) => {
+                let enc: [&dyn Encodable; 3] = [&monad_version, &7u8, &m];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 
@@ -487,6 +500,14 @@ where
                 let enc: Vec<&dyn Encodable> = vec![&monad_version, &5u8, &m];
                 Encodable::length(&enc)
             }
+            Self::PingRequest(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &6u8, &m];
+                Encodable::length(&enc)
+            }
+            Self::PingResponse(m) => {
+                let enc: Vec<&dyn Encodable> = vec![&monad_version, &7u8, &m];
+                Encodable::length(&enc)
+            }
         }
     }
 }
@@ -511,6 +532,10 @@ where
     ForwardedTx(Vec<Bytes>),
     /// State Sync msgs
     StateSyncMessage(StateSyncNetworkMessage),
+
+    PingRequest(PingSequence),
+
+    PingResponse(PingSequence),
 }
 
 impl<ST, SCT, EPT> Decodable for MonadMessage<ST, SCT, EPT>
@@ -538,6 +563,8 @@ where
             5 => Ok(Self::StateSyncMessage(StateSyncNetworkMessage::decode(
                 &mut payload,
             )?)),
+            6 => Ok(Self::PingRequest(PingSequence::decode(&mut payload)?)),
+            7 => Ok(Self::PingResponse(PingSequence::decode(&mut payload)?)),
             _ => Err(alloy_rlp::Error::Custom(
                 "failed to decode unknown MonadMessage",
             )),
@@ -584,6 +611,8 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
+            VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
         }
     }
 }
@@ -628,6 +657,8 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
             VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
             VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
+            VerifiedMonadMessage::PingRequest(seq) => MonadMessage::PingRequest(seq),
+            VerifiedMonadMessage::PingResponse(seq) => MonadMessage::PingResponse(seq),
         }
     }
 }
@@ -674,6 +705,18 @@ where
             }
             MonadMessage::StateSyncMessage(msg) => {
                 MonadEvent::StateSyncEvent(StateSyncEvent::Inbound(from, msg))
+            }
+            MonadMessage::PingRequest(sequence) => {
+                MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingRequest {
+                    sender: from,
+                    sequence,
+                })
+            }
+            MonadMessage::PingResponse(sequence) => {
+                MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingResponse {
+                    sender: from,
+                    sequence,
+                })
             }
         }
     }
@@ -807,6 +850,12 @@ where
         tracing::info!(?root, ?high_qc, "starting up, syncing");
         init_cmds.extend(monad_state.maybe_start_consensus());
 
+        init_cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+            duration: PING_TICK_DURATION,
+            variant: TimeoutVariant::BlockTimestampPing,
+            on_timeout: MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingTick {}),
+        }));
+
         (monad_state, init_cmds)
     }
 }
@@ -861,6 +910,13 @@ where
             }
 
             MonadEvent::ValidatorEvent(validator_event) => {
+                match &validator_event {
+                    ValidatorEvent::UpdateValidators(val_set) => {
+                        self.block_timestamp
+                            .update_validators(val_set, &self.nodeid);
+                    }
+                }
+
                 let validator_cmds = EpochChildState::new(self).update(validator_event);
 
                 validator_cmds
@@ -1054,6 +1110,46 @@ where
                     vec![Command::RouterCommand(RouterCommand::UpdatePeers(
                         known_peers_update.known_peers,
                     ))]
+                }
+            },
+            MonadEvent::BlockTimestampEvent(timestamp_event) => match timestamp_event {
+                BlockTimestampEvent::PingRequest { sender, sequence } => {
+                    tracing::debug!(?sender, ?sequence, "received ping request");
+                    vec![Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::PointToPoint(sender),
+                        message: VerifiedMonadMessage::PingResponse(sequence),
+                    })]
+                }
+                BlockTimestampEvent::PingResponse { sender, sequence } => {
+                    tracing::debug!(?sender, ?sequence, "received ping response");
+                    self.block_timestamp.pong_received(sender, sequence);
+                    vec![]
+                }
+                // TODO: move generating response to BlockTimestamp via calling update -> BlockTimestampCommand.
+                BlockTimestampEvent::PingTick => {
+                    tracing::debug!("ping tick");
+                    let mut cmds = self
+                        .block_timestamp
+                        .tick()
+                        .into_iter()
+                        .map(|(node, sequence)| {
+                            tracing::debug!(?node, ?sequence, "sending ping request");
+                            Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::PointToPoint(node),
+                                message: VerifiedMonadMessage::PingRequest(sequence),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                        duration: PING_TICK_DURATION,
+                        variant: TimeoutVariant::BlockTimestampPing,
+                        on_timeout: MonadEvent::BlockTimestampEvent(BlockTimestampEvent::PingTick),
+                    }));
+                    cmds
+                }
+                BlockTimestampEvent::TimestampEnterEpoch { epoch } => {
+                    self.block_timestamp.enter_epoch(epoch);
+                    vec![]
                 }
             },
         }

@@ -115,6 +115,8 @@ message ProtoMonadMessage {
     ProtoBlockSyncResponseMessage block_sync_response = 3;
     ProtoForwardedTx forwarded_tx = 5;
     ProtoStateSyncNetworkMessage state_sync_message = 6;
+    ProtoPingRequest ping_request = 7;
+    ProtoPingResponse ping_response = 8;
   }
 }
 message ProtoDiscoveryRequest {
@@ -138,4 +140,12 @@ message ProtoRouterMessage {
     bytes app_message = 7;
     ProtoDiscoveryMessage discovery_message = 8;
   }
+}
+
+message ProtoPingRequest {
+  uint64 sequence = 1;
+}
+
+message ProtoPingResponse {
+  uint64 sequence = 1;
 }
