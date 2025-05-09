@@ -225,28 +225,28 @@ async fn rpc_select(
         "debug_getRawBlock" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawBlock(triedb_env, params)
+            monad_debug_getRawBlock(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawHeader" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawHeader(triedb_env, params)
+            monad_debug_getRawHeader(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawReceipts" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawReceipts(triedb_env, params)
+            monad_debug_getRawReceipts(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
         "debug_getRawTransaction" => {
             let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
             let params = serde_json::from_value(params).invalid_params()?;
-            monad_debug_getRawTransaction(triedb_env, params)
+            monad_debug_getRawTransaction(triedb_env, &app_state.archive_reader, params)
                 .await
                 .map(serialize_result)?
         }
