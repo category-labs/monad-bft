@@ -279,7 +279,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         loopback: LoopbackExecutor::default(),
         state_sync: StateSync::<SignatureType, SignatureCollectionType>::new(
             vec![statesync_triedb_path.to_string_lossy().to_string()],
-            node_state.genesis_path.to_string_lossy().to_string(),
             node_state.statesync_sq_thread_cpu,
             state_sync_peers,
             node_state

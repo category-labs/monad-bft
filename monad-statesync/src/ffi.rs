@@ -139,7 +139,6 @@ impl Progress {
 impl<PT: PubKey> StateSync<PT> {
     pub fn start(
         db_paths: &[String],
-        genesis_path: &str,
         sq_thread_cpu: Option<u32>,
         state_sync_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
@@ -151,8 +150,6 @@ impl<PT: PubKey> StateSync<PT> {
                 CString::new(path.to_owned()).expect("invalid db_path - does it contain null byte?")
             })
             .collect();
-        let genesis_path =
-            CString::new(genesis_path).expect("invalid genesis_path - does it contain null byte?");
 
         let (request_tx, request_rx) =
             tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest, PT>>();
@@ -191,7 +188,6 @@ impl<PT: PubKey> StateSync<PT> {
             let mut sync_ctx = SyncCtx::new(
                 db_paths_ptr,
                 num_db_paths,
-                genesis_path.as_ptr(),
                 sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
                 &mut *request_ctx as *mut _ as *mut bindings::monad_statesync_client,
                 Some(statesync_send_request),
@@ -459,7 +455,6 @@ impl<PT: PubKey> Stream for StateSync<PT> {
 struct SyncCtx {
     dbname_paths: *const *const ::std::os::raw::c_char,
     len: usize,
-    genesis_file: *const ::std::os::raw::c_char,
     sq_thread_cpu: Option<::std::os::raw::c_uint>,
     request_ctx: *mut bindings::monad_statesync_client,
     statesync_send_request: ::std::option::Option<
@@ -476,7 +471,6 @@ impl SyncCtx {
     fn new(
         dbname_paths: *const *const ::std::os::raw::c_char,
         len: usize,
-        genesis_file: *const ::std::os::raw::c_char,
         sq_thread_cpu: Option<::std::os::raw::c_uint>,
         request_ctx: *mut bindings::monad_statesync_client,
         statesync_send_request: ::std::option::Option<
@@ -489,7 +483,6 @@ impl SyncCtx {
         Self {
             dbname_paths,
             len,
-            genesis_file,
             sq_thread_cpu,
             request_ctx,
             statesync_send_request,
@@ -503,7 +496,6 @@ impl SyncCtx {
             let ctx = bindings::monad_statesync_client_context_create(
                 self.dbname_paths,
                 self.len,
-                self.genesis_file,
                 self.sq_thread_cpu
                     .unwrap_or(bindings::MONAD_SQPOLL_DISABLED),
                 self.request_ctx,

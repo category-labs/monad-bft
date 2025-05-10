@@ -25,7 +25,6 @@ pub struct NodeState {
     pub bls12_381_identity: BlsKeyPair,
 
     pub forkpoint_path: PathBuf,
-    pub genesis_path: PathBuf,
     pub wal_path: PathBuf,
     pub ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
@@ -46,7 +45,6 @@ impl NodeState {
             forkpoint_config: forkpoint_config_path,
             validators_path,
             devnet_chain_config_override: maybe_devnet_chain_config_override_path,
-            genesis_path,
             wal_path,
             ledger_path,
             mempool_ipc_path,
@@ -132,7 +130,6 @@ impl NodeState {
             bls12_381_identity: bls_key,
 
             forkpoint_path: forkpoint_config_path,
-            genesis_path,
             wal_path,
             ledger_path,
             triedb_path,

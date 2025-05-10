@@ -29,10 +29,6 @@ pub struct Cli {
     #[arg(long)]
     pub devnet_chain_config_override: Option<PathBuf>,
 
-    /// Set the genesis config path
-    #[arg(long)]
-    pub genesis_path: PathBuf,
-
     /// Set the path where the write-ahead log will be stored
     #[arg(long)]
     pub wal_path: PathBuf,

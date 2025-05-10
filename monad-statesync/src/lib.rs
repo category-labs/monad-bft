@@ -51,7 +51,6 @@ where
 {
     pub fn new(
         db_paths: Vec<String>,
-        genesis_path: String,
         sq_thread_cpu: Option<u32>,
         state_sync_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
@@ -65,7 +64,6 @@ where
 
             mode: StateSyncMode::Sync(ffi::StateSync::start(
                 &db_paths,
-                &genesis_path,
                 sq_thread_cpu,
                 &state_sync_peers,
                 max_parallel_requests,
