@@ -5151,6 +5151,7 @@ dependencies = [
  "monad-merkle",
  "monad-raptor",
  "monad-secp",
+ "monad-testutil",
  "monad-types",
  "rand 0.8.5",
  "tokio",

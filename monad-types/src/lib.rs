@@ -93,6 +93,37 @@ impl Debug for Round {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct RoundSpan {
+    pub start: Round, // inclusive
+    pub end: Round,   // exclusive
+}
+
+impl RoundSpan {
+    pub fn new(start: Round, end: Round) -> Self {
+        assert!(start <= end);
+        Self { start, end }
+    }
+    pub fn single(start: Round) -> Self {
+        Self::new(start, start + Round(1))
+    }
+    pub fn contains(&self, round: Round) -> bool {
+        self.start <= round && round < self.end
+    }
+    pub fn overlaps(&self, other: &RoundSpan) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+}
+
+impl Default for RoundSpan {
+    fn default() -> Self {
+        Self {
+            start: Round::MIN,
+            end: Round::MIN,
+        }
+    }
+}
+
 /// Consensus epoch
 ///
 /// During an epoch, the validator set remain stable: no validator is allowed to

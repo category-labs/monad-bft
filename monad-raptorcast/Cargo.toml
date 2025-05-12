@@ -30,6 +30,8 @@ rand = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-testutil = { workspace = true }
+
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
 futures-util = { workspace = true }

@@ -13,3 +13,5 @@ test-keys
 *.swp
 .idea
 .cargo/config.toml
+/*.log
+.gdbinit
