@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
@@ -422,7 +423,7 @@ pub fn set_up_test(
     (tx_nodeid, tx_keypair, rx_nodeid, known_addresses)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, RlpEncodable, RlpDecodable)]
 struct MockMessage {
     id: u32,
     message_len: usize,

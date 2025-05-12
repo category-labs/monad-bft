@@ -9,8 +9,10 @@ use std::{
     time::Duration,
 };
 
+use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream};
+use message::{DeserializeError, InboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -18,7 +20,6 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::{
     udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
 };
-use monad_discovery::message::InboundRouterMessage;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, RouterCommand,
@@ -27,6 +28,7 @@ use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
 
+pub mod message;
 pub mod udp;
 pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, Validator};
@@ -57,8 +59,8 @@ where
 pub struct RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
+    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
     key: ST::KeyPairType,
     redundancy: u8,
@@ -94,8 +96,8 @@ pub enum RaptorCastEvent<E, P: PubKey> {
 impl<ST, M, OM, SE> RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
+    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
         let self_id = NodeId::new(config.key.pubkey());
@@ -160,8 +162,8 @@ where
 impl<ST, M, OM, SE> Executor for RaptorCast<ST, M, OM, SE>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
+    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
@@ -363,21 +365,18 @@ where
     }
 }
 
-#[derive(Debug)]
-struct UnknownMessageError(String);
 fn handle_message<
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M, CertificateSignaturePubKey<ST>>, UnknownMessageError> {
+) -> Result<InboundRouterMessage<M>, DeserializeError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M, CertificateSignaturePubKey<ST>>::deserialize(bytes)
-    else {
+    let Ok(inbound) = InboundRouterMessage::<M>::try_deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         return match M::deserialize(bytes) {
-            Ok(old_message) => Ok(InboundRouterMessage::Application(old_message)),
-            Err(err) => Err(UnknownMessageError(format!("{:?}", err))),
+            Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
+            Err(err) => Err(DeserializeError(format!("{:?}", err))),
         };
     };
     Ok(inbound)
@@ -386,8 +385,8 @@ fn handle_message<
 impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
 where
     ST: CertificateSignatureRecoverable,
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
-    OM: Serializable<Bytes> + Into<M> + Clone,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
+    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
     E: From<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
     Self: Unpin,
 {
@@ -448,15 +447,8 @@ where
             let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
                 |(from, decoded)| match handle_message::<ST, M>(&decoded) {
                     Ok(inbound) => match inbound {
-                        InboundRouterMessage::Application(app_message) => {
+                        InboundRouterMessage::AppMessage(app_message) => {
                             Some(app_message.event(from))
-                        }
-                        InboundRouterMessage::Discovery(_) => {
-                            tracing::error!(
-                                ?from,
-                                "receiving discovery messages over UDP is not supported"
-                            );
-                            None
                         }
                     },
                     Err(err) => {
@@ -504,14 +496,10 @@ where
             };
 
             match deserialized_message {
-                InboundRouterMessage::Application(message) => {
+                InboundRouterMessage::AppMessage(message) => {
                     return Poll::Ready(Some(
                         RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
                     ));
-                }
-                InboundRouterMessage::Discovery(discovery_message) => {
-                    // pass message to self.discovery
-                    tracing::warn!(?from_addr, discovery_message = ?discovery_message, "unhandled discovery message");
                 }
             }
         }

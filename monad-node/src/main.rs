@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use chrono::Utc;
 use clap::CommandFactory;
@@ -498,12 +499,13 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>>
         + Deserializable<Bytes>
+        + Decodable
         + From<OM>
         + Send
         + Sync
         + 'static,
     <M as Deserializable<Bytes>>::ReadError: 'static,
-    OM: Serializable<Bytes> + Clone + Send + Sync + 'static,
+    OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
 {
     RaptorCast::new(RaptorCastConfig {
         key: identity,

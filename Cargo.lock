@@ -4463,6 +4463,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "peak_alloc",
+ "zstd",
 ]
 
 [[package]]
@@ -4618,18 +4619,6 @@ dependencies = [
  "monad-validator",
  "serde_json",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "monad-discovery"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "monad-crypto",
- "monad-proto",
- "monad-types",
- "prost 0.12.6",
- "serde",
 ]
 
 [[package]]
@@ -4988,6 +4977,7 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "chrono",
  "clap 4.4.10",
@@ -5133,6 +5123,7 @@ dependencies = [
 name = "monad-raptorcast"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bitvec",
  "bytes",
  "clap 4.4.10",
@@ -5142,10 +5133,10 @@ dependencies = [
  "hex",
  "itertools 0.10.5",
  "lru",
+ "monad-compress",
  "monad-consensus-types",
  "monad-crypto",
  "monad-dataplane",
- "monad-discovery",
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",

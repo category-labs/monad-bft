@@ -35,6 +35,7 @@ monad-updaters = { workspace = true, features = ["monad-triedb", "tokio"] }
 monad-validator = { workspace = true }
 monad-wal = { workspace = true }
 
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

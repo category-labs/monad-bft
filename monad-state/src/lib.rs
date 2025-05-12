@@ -570,24 +570,6 @@ where
     buf.into()
 }
 
-impl<ST, SCT, EPT> monad_types::Serializable<MonadMessage<ST, SCT, EPT>>
-    for VerifiedMonadMessage<ST, SCT, EPT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    EPT: ExecutionProtocol,
-{
-    fn serialize(&self) -> MonadMessage<ST, SCT, EPT> {
-        match self.clone() {
-            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
-            VerifiedMonadMessage::BlockSyncRequest(msg) => MonadMessage::BlockSyncRequest(msg),
-            VerifiedMonadMessage::BlockSyncResponse(msg) => MonadMessage::BlockSyncResponse(msg),
-            VerifiedMonadMessage::ForwardedTx(msg) => MonadMessage::ForwardedTx(msg),
-            VerifiedMonadMessage::StateSyncMessage(msg) => MonadMessage::StateSyncMessage(msg),
-        }
-    }
-}
-
 impl<ST, SCT, EPT> monad_types::Deserializable<Bytes> for MonadMessage<ST, SCT, EPT>
 where
     ST: CertificateSignatureRecoverable,

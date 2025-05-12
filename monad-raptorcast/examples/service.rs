@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
@@ -188,7 +189,7 @@ fn service(
     unreachable!("timed out!");
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, RlpEncodable, RlpDecodable)]
 struct MockMessage {
     id: u32,
     message_len: usize,
