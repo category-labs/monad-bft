@@ -27,6 +27,7 @@ use monad_executor_glue::{
     MempoolEvent, MonadEvent, RouterCommand, StateRootHashCommand, StateSyncEvent, TimeoutVariant,
     TimerCommand, TimestampCommand, TxPoolCommand,
 };
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
@@ -242,7 +243,7 @@ where
     ) -> Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,
@@ -325,7 +326,9 @@ where
 
                 vec![Command::RouterCommand(RouterCommand::Publish {
                     target: RouterTarget::Raptorcast(epoch),
-                    message: VerifiedMonadMessage::Consensus(msg),
+                    message: OutboundRouterMessage::AppMessage(VerifiedMonadMessage::Consensus(
+                        msg,
+                    )),
                 })]
             }
             MempoolEvent::ForwardedTxs { sender, txs } => {
@@ -368,7 +371,9 @@ where
                         // 4. use 1 sendmmsg in the router
                         Command::RouterCommand(RouterCommand::Publish {
                             target: RouterTarget::PointToPoint(target),
-                            message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                            message: OutboundRouterMessage::AppMessage(
+                                VerifiedMonadMessage::ForwardedTx(txs.clone()),
+                            ),
                         })
                     })
                     .collect_vec()
@@ -512,7 +517,7 @@ impl<ST, SCT, EPT, BPT, SBT> From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,
@@ -543,7 +548,9 @@ where
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,
-                    message: VerifiedMonadMessage::Consensus(message),
+                    message: OutboundRouterMessage::AppMessage(VerifiedMonadMessage::Consensus(
+                        message,
+                    )),
                 }))
             }
             ConsensusCommand::Schedule { duration } => {

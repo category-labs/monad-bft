@@ -1,6 +1,8 @@
 use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEncodable};
 use bytes::{Bytes, BytesMut};
 use monad_compress::{zstd::ZstdCompression, CompressionAlgo};
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_peer_discovery::PeerDiscoveryMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
 // compression versions
@@ -22,14 +24,16 @@ impl NetworkMessageVersion {
     }
 }
 
-pub enum OutboundRouterMessage<OM> {
+#[derive(Clone)]
+pub enum OutboundRouterMessage<OM, ST: CertificateSignatureRecoverable> {
     AppMessage(OM),
+    PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
 }
 
 #[derive(Debug)]
 pub struct SerializeError(pub String);
 
-impl<OM: Encodable> OutboundRouterMessage<OM> {
+impl<OM: Encodable, ST: CertificateSignatureRecoverable> OutboundRouterMessage<OM, ST> {
     pub fn try_serialize(self) -> Result<Bytes, SerializeError> {
         let mut buf = BytesMut::new();
 
@@ -58,14 +62,21 @@ impl<OM: Encodable> OutboundRouterMessage<OM> {
                     unreachable!()
                 };
             }
+            Self::PeerDiscoveryMessage(peer_disc_message) => {
+                // TODO: decide whether it should be compressed
+                // encode as uncompressed message
+                let enc: [&dyn Encodable; 3] = [&version, &2u8, &peer_disc_message];
+                encode_list::<_, dyn Encodable>(&enc, &mut buf);
+            }
         };
 
         Ok(buf.into())
     }
 }
 
-pub enum InboundRouterMessage<M> {
+pub enum InboundRouterMessage<M, ST: CertificateSignatureRecoverable> {
     AppMessage(M),
+    PeerDiscoveryMessage(PeerDiscoveryMessage<ST>),
 }
 
 #[derive(Debug)]
@@ -77,7 +88,7 @@ impl From<alloy_rlp::Error> for DeserializeError {
     }
 }
 
-impl<M: Decodable> InboundRouterMessage<M> {
+impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, ST> {
     pub fn try_deserialize(data: &Bytes) -> Result<Self, DeserializeError> {
         let mut payload =
             Header::decode_bytes(&mut data.as_ref(), true).map_err(DeserializeError::from)?;
@@ -112,6 +123,12 @@ impl<M: Decodable> InboundRouterMessage<M> {
                     }
                     _ => Err(DeserializeError("unknown compression version".into())),
                 }
+            }
+            2 => {
+                // TODO: decide if peer discovery message should be compressed
+                let peer_disc_message =
+                    PeerDiscoveryMessage::decode(&mut payload).map_err(DeserializeError::from)?;
+                Ok(Self::PeerDiscoveryMessage(peer_disc_message))
             }
             _ => Err(DeserializeError("unknown message type".into())),
         }

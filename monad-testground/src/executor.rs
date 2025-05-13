@@ -13,7 +13,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{message::OutboundRouterMessage, RaptorCast, RaptorCastConfig};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -34,7 +34,7 @@ where
 {
     Local(
         /// Must be passed ahead-of-time because they can't be instantiated individually
-        LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
+        LocalPeerRouter<ST, MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
     RaptorCast(RaptorCastConfig<ST>),
 }
@@ -74,7 +74,7 @@ pub fn make_monad_executor<ST, SCT>(
         'static,
         RouterCommand<
             CertificateSignaturePubKey<ST>,
-            VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>, ST>,
         >,
         MonadEvent<ST, SCT, MockExecutionProtocol>,
     >,
@@ -175,7 +175,7 @@ pub fn make_monad_state<ST, SCT>(
     Vec<
         Command<
             MonadEvent<ST, SCT, MockExecutionProtocol>,
-            VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>, ST>,
             ST,
             SCT,
             MockExecutionProtocol,

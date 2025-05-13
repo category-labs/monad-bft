@@ -7,9 +7,10 @@ use std::{
 };
 
 use futures::Stream;
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_types::{NodeId, RouterTarget};
 
 /// Implementation of the Router which uses tokio channels (as opposed to network links)
@@ -20,7 +21,7 @@ pub struct LocalRouterConfig<PT: PubKey> {
 }
 
 impl<PT: PubKey> LocalRouterConfig<PT> {
-    pub fn build<M, OM>(self) -> HashMap<NodeId<PT>, LocalPeerRouter<M, OM>>
+    pub fn build<ST, M, OM>(self) -> HashMap<NodeId<PT>, LocalPeerRouter<ST, M, OM>>
     where
         M: Message<NodeIdPubKey = PT> + Send + 'static,
     {
@@ -73,7 +74,7 @@ impl<PT: PubKey> LocalRouterConfig<PT> {
     }
 }
 
-pub struct LocalPeerRouter<M: Message, OM> {
+pub struct LocalPeerRouter<ST, M: Message, OM> {
     me: NodeId<M::NodeIdPubKey>,
     txs: HashMap<
         NodeId<M::NodeIdPubKey>,
@@ -83,10 +84,10 @@ pub struct LocalPeerRouter<M: Message, OM> {
 
     metrics: ExecutorMetrics,
 
-    _pd: PhantomData<OM>,
+    _pd: PhantomData<(ST, OM)>,
 }
 
-impl<M: Message, OM> LocalPeerRouter<M, OM> {
+impl<ST, M: Message, OM> LocalPeerRouter<ST, M, OM> {
     fn new(
         me: NodeId<M::NodeIdPubKey>,
         txs: HashMap<
@@ -105,12 +106,13 @@ impl<M: Message, OM> LocalPeerRouter<M, OM> {
     }
 }
 
-impl<M, OM> Executor for LocalPeerRouter<M, OM>
+impl<ST, M, OM> Executor for LocalPeerRouter<ST, M, OM>
 where
+    ST: CertificateSignatureRecoverable,
     M: Message,
     OM: Into<M>,
 {
-    type Command = RouterCommand<M::NodeIdPubKey, OM>;
+    type Command = RouterCommand<M::NodeIdPubKey, OutboundRouterMessage<OM, ST>>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -118,30 +120,33 @@ where
             match command {
                 RouterCommand::AddEpochValidatorSet { .. } => {}
                 RouterCommand::UpdateCurrentRound(_, _) => {}
-                RouterCommand::Publish { target, message } => match target {
-                    RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
-                        let message = message.into();
-                        for tx in self.txs.values() {
-                            tx.send((now, self.me, message.clone())).unwrap();
+                RouterCommand::Publish { target, message } => match message {
+                    OutboundRouterMessage::AppMessage(message) => match target {
+                        RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+                            let message = message.into();
+                            for tx in self.txs.values() {
+                                tx.send((now, self.me, message.clone())).unwrap();
+                            }
                         }
-                    }
-                    RouterTarget::PointToPoint(peer) => {
-                        self.txs
-                            .get(&peer)
-                            .unwrap()
-                            .send((now, self.me, message.into()))
-                            .unwrap();
-                    }
-                    RouterTarget::TcpPointToPoint { to, completion } => {
-                        if let Some(completion) = completion {
-                            let _ = completion.send(());
+                        RouterTarget::PointToPoint(peer) => {
+                            self.txs
+                                .get(&peer)
+                                .unwrap()
+                                .send((now, self.me, message.into()))
+                                .unwrap();
                         }
-                        self.txs
-                            .get(&to)
-                            .unwrap()
-                            .send((now, self.me, message.into()))
-                            .unwrap();
-                    }
+                        RouterTarget::TcpPointToPoint { to, completion } => {
+                            if let Some(completion) = completion {
+                                let _ = completion.send(());
+                            }
+                            self.txs
+                                .get(&to)
+                                .unwrap()
+                                .send((now, self.me, message.into()))
+                                .unwrap();
+                        }
+                    },
+                    OutboundRouterMessage::PeerDiscoveryMessage(_) => {}
                 },
                 RouterCommand::GetPeers => {}
                 RouterCommand::UpdatePeers(_) => {}
@@ -156,7 +161,7 @@ where
     }
 }
 
-impl<M, OM> Stream for LocalPeerRouter<M, OM>
+impl<ST, M, OM> Stream for LocalPeerRouter<ST, M, OM>
 where
     M: Message,
     Self: Unpin,

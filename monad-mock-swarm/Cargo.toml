@@ -18,6 +18,7 @@ monad-eth-types = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-multi-sig = { workspace = true }
+monad-raptorcast = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }

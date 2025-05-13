@@ -8,6 +8,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{ConsensusEvent, MonadEvent, RouterCommand};
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_state::VerifiedMonadMessage;
 use monad_types::ExecutionProtocol;
 
@@ -24,7 +25,7 @@ where
     R: Executor<
             Command = RouterCommand<
                 CertificateSignaturePubKey<ST>,
-                VerifiedMonadMessage<ST, SCT, EPT>,
+                OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             >,
         > + Stream<Item = MonadEvent<ST, SCT, EPT>>
         + Unpin,
@@ -43,22 +44,30 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
     R: Executor<
-        Command = RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>,
+        Command = RouterCommand<
+            CertificateSignaturePubKey<ST>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
+        >,
     >,
 {
-    type Command =
-        RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT, EPT>>;
+    type Command = RouterCommand<
+        CertificateSignaturePubKey<ST>,
+        OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
+    >;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let filtered = commands
             .into_iter()
             .filter_map(|cmd| match &cmd {
                 RouterCommand::Publish { target: _, message } => match message {
-                    VerifiedMonadMessage::Consensus(_) => None,
-                    VerifiedMonadMessage::BlockSyncRequest(_) => Some(cmd),
-                    VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
-                    VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
-                    VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
+                    OutboundRouterMessage::AppMessage(message) => match message {
+                        VerifiedMonadMessage::Consensus(_) => None,
+                        VerifiedMonadMessage::BlockSyncRequest(_) => Some(cmd),
+                        VerifiedMonadMessage::BlockSyncResponse(_) => Some(cmd),
+                        VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
+                        VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
+                    },
+                    OutboundRouterMessage::PeerDiscoveryMessage(_) => None,
                 },
                 RouterCommand::AddEpochValidatorSet { .. } => Some(cmd),
                 RouterCommand::UpdateCurrentRound(..) => Some(cmd),

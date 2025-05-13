@@ -12,7 +12,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use futures::{channel::oneshot, FutureExt, Stream};
-use message::{DeserializeError, InboundRouterMessage};
+use message::{DeserializeError, InboundRouterMessage, OutboundRouterMessage};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -34,6 +34,7 @@ pub mod util;
 use util::{BuildTarget, EpochValidators, FullNodes, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
+const NEW_ROUTER_MESSAGE_FORMAT: bool = false;
 
 pub struct RaptorCastConfig<ST>
 where
@@ -165,7 +166,7 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
-    type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+    type Command = RouterCommand<CertificateSignaturePubKey<ST>, OutboundRouterMessage<OM, ST>>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let self_id = NodeId::new(self.key.pubkey());
@@ -265,14 +266,23 @@ where
                                 continue;
                             };
 
-                            let app_message = message.serialize();
+                            let router_message = match serialize_message(message.clone()) {
+                                Some(msg) => msg,
+                                None => continue,
+                            };
 
                             if epoch_validators.validators.contains_key(&self_id) {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
+                                match message {
+                                    OutboundRouterMessage::AppMessage(app_msg) => {
+                                        let message: M = app_msg.into();
+                                        self.pending_events.push_back(RaptorCastEvent::Message(
+                                            message.event(self_id),
+                                        ));
+                                        if let Some(waker) = self.waker.take() {
+                                            waker.wake()
+                                        }
+                                    }
+                                    OutboundRouterMessage::PeerDiscoveryMessage(_) => {}
                                 }
                             }
                             let epoch_validators_without_self =
@@ -298,36 +308,55 @@ where
                             self.dataplane.udp_write_unicast(udp_build(
                                 &epoch,
                                 build_target,
-                                app_message,
+                                router_message,
                             ));
                         }
                         RouterTarget::PointToPoint(to) => {
                             if to == self_id {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
+                                match message {
+                                    OutboundRouterMessage::AppMessage(app_msg) => {
+                                        let message: M = app_msg.into();
+                                        self.pending_events.push_back(RaptorCastEvent::Message(
+                                            message.event(self_id),
+                                        ));
+                                        if let Some(waker) = self.waker.take() {
+                                            waker.wake()
+                                        }
+                                    }
+                                    OutboundRouterMessage::PeerDiscoveryMessage(_) => {}
                                 }
                             } else {
-                                let app_message = message.serialize();
+                                let router_message = match serialize_message(message) {
+                                    Some(msg) => msg,
+                                    None => continue,
+                                };
                                 self.dataplane.udp_write_unicast(udp_build(
                                     &self.current_epoch,
                                     BuildTarget::PointToPoint(&to),
-                                    app_message,
+                                    router_message,
                                 ));
                             }
                         }
                         RouterTarget::TcpPointToPoint { to, completion } => {
                             if to == self_id {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
+                                match message {
+                                    OutboundRouterMessage::AppMessage(app_msg) => {
+                                        let message: M = app_msg.into();
+                                        self.pending_events.push_back(RaptorCastEvent::Message(
+                                            message.event(self_id),
+                                        ));
+                                        if let Some(waker) = self.waker.take() {
+                                            waker.wake()
+                                        }
+                                    }
+                                    OutboundRouterMessage::PeerDiscoveryMessage(_) => {}
                                 }
                             } else {
-                                self.tcp_build_and_send(&to, || message.serialize(), completion)
+                                let router_message = match serialize_message(message) {
+                                    Some(msg) => msg,
+                                    None => continue,
+                                };
+                                self.tcp_build_and_send(&to, || router_message, completion)
                             }
                         }
                     };
@@ -370,9 +399,9 @@ fn handle_message<
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M>, DeserializeError> {
+) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M>::try_deserialize(bytes) else {
+    let Ok(inbound) = InboundRouterMessage::<M, ST>::try_deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         return match M::deserialize(bytes) {
             Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
@@ -380,6 +409,33 @@ fn handle_message<
         };
     };
     Ok(inbound)
+}
+
+fn serialize_message<
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
+    OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
+>(
+    message: OutboundRouterMessage<OM, ST>,
+) -> Option<Bytes> {
+    if NEW_ROUTER_MESSAGE_FORMAT {
+        match OutboundRouterMessage::<OM, ST>::try_serialize(message) {
+            Ok(msg) => Some(msg),
+            Err(e) => {
+                tracing::error!("serialization error: {:?}", e);
+                None
+            }
+        }
+    } else {
+        // serialize as old message format type (to be deprecated eventually)
+        match message {
+            OutboundRouterMessage::AppMessage(message) => Some(message.serialize()),
+            OutboundRouterMessage::PeerDiscoveryMessage(_) => {
+                tracing::warn!("old message format does not support peer discovery message");
+                None
+            }
+        }
+    }
 }
 
 impl<ST, M, OM, E> Stream for RaptorCast<ST, M, OM, E>
@@ -450,6 +506,10 @@ where
                         InboundRouterMessage::AppMessage(app_message) => {
                             Some(app_message.event(from))
                         }
+                        InboundRouterMessage::PeerDiscoveryMessage(peer_disc_message) => {
+                            // TODO: handle peer discovery message, currently set to None
+                            None
+                        }
                     },
                     Err(err) => {
                         tracing::warn!(
@@ -500,6 +560,10 @@ where
                     return Poll::Ready(Some(
                         RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
                     ));
+                }
+                InboundRouterMessage::PeerDiscoveryMessage(_) => {
+                    // peer discovery message should come through udp
+                    continue;
                 }
             }
         }

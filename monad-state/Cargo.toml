@@ -18,6 +18,7 @@ monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-proto = { workspace = true }
+monad-raptorcast = { workspace = true }
 monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }

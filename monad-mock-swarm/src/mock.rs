@@ -17,6 +17,7 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
 };
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
@@ -267,10 +268,13 @@ impl<S: SwarmRelation> MockExecutor<S> {
 impl<S: SwarmRelation> Executor for MockExecutor<S> {
     type Command = Command<
         MonadEvent<S::SignatureType, S::SignatureCollectionType, S::ExecutionProtocolType>,
-        VerifiedMonadMessage<
+        OutboundRouterMessage<
+            VerifiedMonadMessage<
+                S::SignatureType,
+                S::SignatureCollectionType,
+                S::ExecutionProtocolType,
+            >,
             S::SignatureType,
-            S::SignatureCollectionType,
-            S::ExecutionProtocolType,
         >,
         S::SignatureType,
         S::SignatureCollectionType,
@@ -328,7 +332,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         for command in router_cmds {
             match command {
                 RouterCommand::Publish { target, message } => {
-                    self.router.send_outbound(self.tick, target, message);
+                    if let OutboundRouterMessage::AppMessage(app_msg) = message {
+                        self.router.send_outbound(self.tick, target, app_msg);
+                    }
                 }
                 RouterCommand::AddEpochValidatorSet { .. } => {
                     // TODO

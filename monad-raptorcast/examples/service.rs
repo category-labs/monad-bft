@@ -15,7 +15,9 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
+use monad_raptorcast::{
+    message::OutboundRouterMessage, RaptorCast, RaptorCastConfig, RaptorCastEvent,
+};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -82,8 +84,9 @@ fn service(
         .iter()
         .copied()
         .map(|peer| {
-            let (sender, receiver) =
-                tokio::sync::mpsc::unbounded_channel::<RouterCommand<PubKeyType, MockMessage>>();
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<
+                RouterCommand<PubKeyType, OutboundRouterMessage<MockMessage, SignatureType>>,
+            >();
             ((peer, sender), receiver)
         })
         .unzip();
@@ -157,14 +160,15 @@ fn service(
     let start = Instant::now();
     let mut expected_message_ids = HashMap::new();
     for broadcast_id in 0..num_broadcast {
-        let message = MockMessage::new(broadcast_id, message_len);
+        let mock_message = MockMessage::new(broadcast_id, message_len);
+        let message = OutboundRouterMessage::AppMessage(mock_message);
         tx_router
             .send(RouterCommand::Publish {
                 target: RouterTarget::Broadcast(Epoch(0)),
                 message,
             })
             .expect("reader should never be dropped");
-        expected_message_ids.insert(message.id, num_peers);
+        expected_message_ids.insert(mock_message.id, num_peers);
     }
     while let Ok((_, MockEvent((tx, msg_id)))) = rx_reader.recv_timeout(Duration::from_secs(100)) {
         if &tx == tx_peer {

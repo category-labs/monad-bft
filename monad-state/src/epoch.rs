@@ -9,6 +9,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValidatorEvent};
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_state_backend::StateBackend;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Stake};
 use monad_validator::{
@@ -84,7 +85,7 @@ impl<ST, SCT, EPT, BPT, SBT> From<EpochCommand<CertificateSignaturePubKey<ST>>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,

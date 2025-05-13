@@ -39,6 +39,7 @@ use monad_executor_glue::{
     StateRootHashCommand, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, TxPoolCommand,
     ValidatorEvent, WriteCommand,
 };
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_state_backend::StateBackend;
 use monad_types::{
     Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, GENESIS_BLOCK_ID,
@@ -713,7 +714,7 @@ where
         Vec<
             Command<
                 MonadEvent<ST, SCT, EPT>,
-                VerifiedMonadMessage<ST, SCT, EPT>,
+                OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
                 ST,
                 SCT,
                 EPT,
@@ -813,7 +814,7 @@ where
     ) -> Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,
@@ -874,7 +875,9 @@ where
                 StateSyncEvent::Outbound(to, message, completion) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
                         target: RouterTarget::TcpPointToPoint { to, completion },
-                        message: VerifiedMonadMessage::StateSyncMessage(message),
+                        message: OutboundRouterMessage::AppMessage(
+                            VerifiedMonadMessage::StateSyncMessage(message),
+                        ),
                     })]
                 }
                 StateSyncEvent::RequestSync {
@@ -1046,7 +1049,7 @@ where
     ) -> Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,

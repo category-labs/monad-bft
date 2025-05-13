@@ -15,6 +15,7 @@ use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, LedgerCommand, LoopbackCommand, MonadEvent,
     RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
 };
+use monad_raptorcast::message::OutboundRouterMessage;
 use monad_state_backend::StateBackend;
 use monad_types::{ExecutionProtocol, NodeId, RouterTarget};
 use monad_validator::{
@@ -144,7 +145,7 @@ impl<ST, SCT, EPT, BPT, SBT> From<WrappedBlockSyncCommand<ST, SCT, EPT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
-            VerifiedMonadMessage<ST, SCT, EPT>,
+            OutboundRouterMessage<VerifiedMonadMessage<ST, SCT, EPT>, ST>,
             ST,
             SCT,
             EPT,
@@ -167,7 +168,9 @@ where
                         to,
                         completion: None,
                     },
-                    message: VerifiedMonadMessage::BlockSyncRequest(request),
+                    message: OutboundRouterMessage::AppMessage(
+                        VerifiedMonadMessage::BlockSyncRequest(request),
+                    ),
                 })]
             }
             BlockSyncCommand::ScheduleTimeout(request) => {
@@ -188,7 +191,9 @@ where
                         to,
                         completion: None,
                     },
-                    message: VerifiedMonadMessage::BlockSyncResponse(response),
+                    message: OutboundRouterMessage::AppMessage(
+                        VerifiedMonadMessage::BlockSyncResponse(response),
+                    ),
                 })]
             }
             BlockSyncCommand::FetchHeaders(block_range) => {
