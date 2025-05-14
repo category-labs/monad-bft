@@ -31,7 +31,7 @@ use monad_types::{
 pub mod message;
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, FullNodes, Validator};
+use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
 
@@ -65,7 +65,10 @@ where
     key: ST::KeyPairType,
     redundancy: u8,
 
+    // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
     epoch_validators: BTreeMap<Epoch, EpochValidators<ST>>,
+    rebroadcast_map: ReBroadcastGroupMap<ST>,
+
     // TODO support dynamic updating
     full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
@@ -100,14 +103,17 @@ where
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
     pub fn new(config: RaptorCastConfig<ST>) -> Self {
+        assert!(config.redundancy >= 1);
         let self_id = NodeId::new(config.key.pubkey());
         let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
         if let Some(buffer_size) = config.buffer_size {
             builder = builder.with_buffer_size(buffer_size);
         }
         let dataplane = builder.build();
+        let is_fullnode = false; // This will come from the config in upcoming PR
         Self {
             epoch_validators: Default::default(),
+            rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
             full_nodes: FullNodes::new(config.full_nodes),
             known_addresses: config.known_addresses,
 
@@ -171,9 +177,10 @@ where
         let self_id = NodeId::new(self.key.pubkey());
         for command in commands {
             match command {
-                RouterCommand::UpdateCurrentRound(epoch, _round) => {
+                RouterCommand::UpdateCurrentRound(epoch, round) => {
                     assert!(epoch >= self.current_epoch);
                     self.current_epoch = epoch;
+                    self.rebroadcast_map.delete_expired_groups(epoch, round);
                     while let Some(entry) = self.epoch_validators.first_entry() {
                         if *entry.key() + Epoch(1) < self.current_epoch {
                             entry.remove();
@@ -186,6 +193,8 @@ where
                     epoch,
                     validator_set,
                 } => {
+                    self.rebroadcast_map
+                        .push_group_validator_set(validator_set.clone(), epoch);
                     if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
                         assert_eq!(validator_set.len(), epoch_validators.validators.len());
                         assert!(validator_set.into_iter().all(
@@ -365,7 +374,7 @@ where
     }
 }
 
-fn handle_message<
+fn try_deserialize_router_message<
     ST: CertificateSignatureRecoverable,
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
@@ -416,12 +425,19 @@ where
                 break;
             };
 
+            // Enter the received raptorcast chunk into the udp_state for reassembly.
+            // If the field "first-hop recipient" in the chunk has our node Id, then
+            // we are responsible for broadcasting this chunk to other validators.
+            // Once we have enough (redundant) raptorcast chunks, recreate the
+            // decoded (AKA parsed, original) message.
+            // Stream the chunks to our dedicated full-nodes as we receive them.
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
                 let dataplane = RefCell::new(&mut this.dataplane);
                 this.udp_state.handle_message(
-                    &mut this.epoch_validators,
+                    &this.rebroadcast_map,
                     |targets, payload, bcast_stride| {
+                        // Callback for re-broadcasting raptorcast chunks to other RC participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
                             .into_iter()
                             .filter_map(|target| this.known_addresses.get(&target).copied())
@@ -444,24 +460,27 @@ where
                     message,
                 )
             };
-            let deserialized_app_messages = decoded_app_messages.into_iter().filter_map(
-                |(from, decoded)| match handle_message::<ST, M>(&decoded) {
-                    Ok(inbound) => match inbound {
-                        InboundRouterMessage::AppMessage(app_message) => {
-                            Some(app_message.event(from))
+            let deserialized_app_messages =
+                decoded_app_messages
+                    .into_iter()
+                    .filter_map(|(from, decoded)| {
+                        match try_deserialize_router_message::<ST, M>(&decoded) {
+                            Ok(inbound) => match inbound {
+                                InboundRouterMessage::AppMessage(app_message) => {
+                                    Some(app_message.event(from))
+                                }
+                            },
+                            Err(err) => {
+                                tracing::warn!(
+                                    ?from,
+                                    ?err,
+                                    decoded = hex::encode(&decoded),
+                                    "failed to deserialize message"
+                                );
+                                None
+                            }
                         }
-                    },
-                    Err(err) => {
-                        tracing::warn!(
-                            ?from,
-                            ?err,
-                            decoded = hex::encode(&decoded),
-                            "failed to deserialize message"
-                        );
-                        None
-                    }
-                },
-            );
+                    });
             this.pending_events
                 .extend(deserialized_app_messages.map(RaptorCastEvent::Message));
             if let Some(event) = this.pending_events.pop_front() {
@@ -480,13 +499,14 @@ where
                 }
             };
             let app_message_bytes = message.slice(SIGNATURE_SIZE..);
-            let deserialized_message = match handle_message::<ST, M>(&app_message_bytes) {
-                Ok(message) => message,
-                Err(err) => {
-                    tracing::warn!(?err, ?from_addr, "failed to deserialize message");
-                    continue;
-                }
-            };
+            let deserialized_message =
+                match try_deserialize_router_message::<ST, M>(&app_message_bytes) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::warn!(?err, ?from_addr, "failed to deserialize message");
+                        continue;
+                    }
+                };
             let from = match signature.recover_pubkey(app_message_bytes.as_ref()) {
                 Ok(from) => from,
                 Err(err) => {
@@ -495,6 +515,7 @@ where
                 }
             };
 
+            // Dispatch messages received via TCP
             match deserialized_message {
                 InboundRouterMessage::AppMessage(message) => {
                     return Poll::Ready(Some(

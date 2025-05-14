@@ -22,7 +22,7 @@ use monad_types::{Epoch, NodeId};
 use rand::seq::SliceRandom;
 
 use crate::{
-    util::{compute_hash, AppMessageHash, BuildTarget, EpochValidators, HexBytes, NodeIdHash},
+    util::{compute_hash, AppMessageHash, BuildTarget, HexBytes, NodeIdHash, ReBroadcastGroupMap},
     SIGNATURE_SIZE,
 };
 
@@ -116,7 +116,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
     /// Given a RecvMsg, emits all decoded messages while rebroadcasting as necessary
     pub fn handle_message(
         &mut self,
-        epoch_validators: &mut BTreeMap<Epoch, EpochValidators<ST>>,
+        group_map: &ReBroadcastGroupMap<ST>,
         rebroadcast: impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>, Bytes, u16),
         forward: impl FnMut(Bytes, u16),
         message: RecvMsg,
@@ -130,7 +130,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         let mut full_node_forward_batcher =
             ForwardBatcher::new(self_id, forward, &message.payload, message.stride);
 
-        let mut messages = Vec::new();
+        let mut messages = Vec::new(); // The return result; decoded messages
 
         for payload_start_idx in (0..message.payload.len()).step_by(message.stride.into()) {
             // scoped variables are dropped in reverse order of declaration.
@@ -144,6 +144,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             let payload_end_idx =
                 (payload_start_idx + usize::from(message.stride)).min(message.payload.len());
             let payload = message.payload.slice(payload_start_idx..payload_end_idx);
+            // "message" here means a raptor-casted chunk (AKA r10 symbol), not the whole final message (proposal)
             let parsed_message = match parse_message::<ST>(&mut self.signature_cache, payload) {
                 Ok(message) => message,
                 Err(err) => {
@@ -166,23 +167,16 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 continue;
             }
 
+            // Note: The check that parsed_message.author is valid is already
+            // done in iterate_rebroadcast_peers(), but we want to drop invalid
+            // chunks ASAP, before changing `recently_decoded_state.
             if parsed_message.broadcast {
-                let Some(epoch_validators) = epoch_validators.get(&Epoch(parsed_message.epoch))
-                else {
-                    tracing::debug!(
-                        epoch =? parsed_message.epoch,
-                        "don't have epoch validators populated",
-                    );
-                    continue;
-                };
-                if !epoch_validators
-                    .validators
-                    .contains_key(&parsed_message.author)
-                {
+                if !group_map.check_source(Epoch(parsed_message.epoch), &parsed_message.author) {
                     tracing::debug!(
                         src_addr = ?message.src_addr,
                         author =? parsed_message.author,
-                        "not in validator set"
+                        epoch =? parsed_message.epoch,
+                        "not in raptorcast group"
                     );
                     continue;
                 }
@@ -217,20 +211,21 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             };
 
             let mut try_rebroadcast_symbol = || {
-                // rebroadcast if necessary
+                // rebroadcast raptorcast chunks if necessary
                 if parsed_message.broadcast {
                     if self_hash == parsed_message.recipient_hash {
-                        let epoch_validators = epoch_validators
-                            .get_mut(&Epoch(parsed_message.epoch))
-                            .expect("parsed message was validated");
-                        let targets =
-                            epoch_validators.view_without(vec![&parsed_message.author, &self_id]);
-                        batch_guard.queue_broadcast(
-                            payload_start_idx,
-                            payload_end_idx,
+                        let maybe_targets = group_map.iterate_rebroadcast_peers(
+                            Epoch(parsed_message.epoch),
                             &parsed_message.author,
-                            || targets.view().keys().copied().collect(),
-                        )
+                        );
+                        if let Some(targets) = maybe_targets {
+                            batch_guard.queue_broadcast(
+                                payload_start_idx,
+                                payload_end_idx,
+                                &parsed_message.author,
+                                || targets.cloned().collect(),
+                            )
+                        }
                     }
 
                     // forward all broadcast packets to full nodes
@@ -480,9 +475,9 @@ const CHUNK_HEADER_LEN: u16 = 20 // Chunk recipient hash
 
 pub fn build_messages<ST>(
     key: &ST::KeyPairType,
-    segment_size: u16,
-    app_message: Bytes,
-    redundancy: u8, // 2 == send 1 extra packet for every 1 original
+    segment_size: u16, // Each chunk in the returned Vec (Bytes element of the tuple) will be limited to this size
+    app_message: Bytes, // This is the actual message that gets raptor-10 encoded and split into UDP chunks
+    redundancy: u8,     // 2 == send 1 extra packet for every 1 original
     epoch_no: u64,
     unix_ts_ms: u64,
     build_target: BuildTarget<ST>,
@@ -526,28 +521,43 @@ pub fn build_messages_with_length<ST>(
 where
     ST: CertificateSignatureRecoverable,
 {
+    // body_size is the amount of space available for payload+proof in a single
+    // UDP datagram. Our raptorcast encoding needs around 108 + 24 = 132 bytes
+    // in each datagram. Typically:
+    //      body_size = 1452 - (108 + 24) = 1320
     let body_size = segment_size
         .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
         .expect("segment_size too small");
 
     let is_broadcast = matches!(
         build_target,
-        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_)
+        BuildTarget::Broadcast(_) | BuildTarget::Raptorcast(_) | BuildTarget::FullNodeRaptorCast(_)
     );
+
+    let self_id = NodeId::new(key.pubkey());
 
     // TODO make this more sophisticated
     let tree_depth: u8 = 6; // corresponds to 32 chunks (2^(h-1))
     assert!(tree_depth >= MIN_MERKLE_TREE_DEPTH);
     assert!(tree_depth <= MAX_MERKLE_TREE_DEPTH);
 
-    let chunks_per_merkle_batch: usize = 2_usize
+    let chunks_per_merkle_batch: usize = 2_usize // = 32
         .checked_pow(u32::from(tree_depth) - 1)
         .expect("tree depth too big");
-    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
+    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1); // = 100
 
+    // data_size is the amount of space available for raw payload (app_message)
+    // in a single UDP datagram. Typically:
+    //      data_size = 1452 - (108 + 24) - 100 = 1220
     let data_size = body_size.checked_sub(proof_size).expect("proof too big");
-    let is_raptor_broadcast = matches!(build_target, BuildTarget::Raptorcast(_));
+    let is_raptor_broadcast = matches!(
+        build_target,
+        BuildTarget::Raptorcast(_) | BuildTarget::FullNodeRaptorCast(_)
+    );
 
+    // Determine how many UDP datagrams (packets) we need to send out. Each
+    // datagram can only effectively transport `data_size` (~1220) bytes out of
+    // a total of `app_message_len` bytes (~18% total overhead).
     let num_packets: usize = {
         let mut num_packets: usize = (app_message_len
             .div_ceil(u32::from(data_size))
@@ -576,6 +586,8 @@ where
         num_packets
     };
 
+    // Create a long flat message, concatenating the (future) UDP bodies of all
+    // datagrams. This includes everything except Ethernet, IP and UDP headers.
     let mut message = BytesMut::zeroed(segment_size as usize * num_packets);
     let app_message_hash: AppMessageHash = HexBytes({
         let mut hasher = HasherType::new();
@@ -583,6 +595,15 @@ where
         hasher.hash().0[..20].try_into().unwrap()
     });
 
+    // Each chunk_data[0..num_packets-1] is a reference to a slice of bytes
+    // from the long flat `message` above. Each slice excludes the UDP buffer
+    // span where we'd write the raptorcast header and proof.
+    // Each chunk_data[ii] is a tuple (chunk_index, slice), where the first 20
+    // bytes of the slice contains the hash of the chunk's destination node id.
+    //                  chunk_datas[0]                  chunk_datas[1]                  chunk_datas[2]
+    // | HEADER, proof, _______________| HEADER, proof, _______________| HEADER, proof, _______________|
+    // |...........................................message.............................................|
+    // |.........MTU UDP DATAGRAM......|
     let mut chunk_datas = message
         .chunks_mut(segment_size.into())
         .map(|chunk| (None, &mut chunk[(HEADER_LEN + proof_size).into()..]))
@@ -592,7 +613,7 @@ where
     // the GSO-aware indices into `message`
     let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
     let mut full_node_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
-    // popuate chunk_recipient and outbound_gso_idx
+    // populate chunk_recipient and outbound_gso_idx
     match build_target {
         BuildTarget::PointToPoint(to) => {
             let Some(addr) = known_addresses.get(to) else {
@@ -639,14 +660,14 @@ where
             assert!(is_broadcast && is_raptor_broadcast);
 
             tracing::trace!(
-                self_id =? key.pubkey(),
+                ?self_id,
                 unix_ts_ms,
                 app_message_len,
                 redundancy,
                 data_size,
                 num_packets,
-                app_message_hash =? app_message_hash,
-                "raptorcasting message"
+                ?app_message_hash,
+                "raptorcasting v2v message"
             );
 
             // FIXME should self be included in total_stake?
@@ -683,6 +704,9 @@ where
                 }
             }
 
+            // Dedicated full nodes get a copy of all raptorcast chunks.
+            // When our node is not the leader, chunks are forwarded in the handle_message path.
+            // When our node is the leader generating chunks, we're forwarding all chunks here.
             for node_id in full_nodes_view.view() {
                 // TODO: assign a sub-segment of range to each full node
                 if let Some(addr) = known_addresses.get(node_id) {
@@ -695,8 +719,52 @@ where
                 }
             }
         }
+        BuildTarget::FullNodeRaptorCast(group) => {
+            assert!(is_broadcast && is_raptor_broadcast);
+
+            tracing::trace!(
+                ?self_id,
+                unix_ts_ms,
+                app_message_len,
+                redundancy,
+                data_size,
+                num_packets,
+                ?app_message_hash,
+                "raptorcasting v2fn message"
+            );
+
+            let total_peers = group.size_excl_self();
+            let mut pp = 0;
+            // Group shuffling so chunks for small proposals aren't always assigned
+            // to the same nodes, before researchers come up with something better.
+            for node_id in group.iter_skip_self_and_author(&self_id, rand::random::<usize>()) {
+                let start_idx: usize = num_packets * pp / total_peers;
+                pp += 1;
+                let end_idx: usize = num_packets * pp / total_peers;
+
+                if start_idx == end_idx {
+                    continue;
+                }
+                if let Some(addr) = known_addresses.get(node_id) {
+                    outbound_gso_idx.push((
+                        *addr,
+                        start_idx * segment_size as usize..end_idx * segment_size as usize,
+                    ));
+                } else {
+                    tracing::warn!(?node_id, "not sending v2fn message, address unknown")
+                }
+                for (chunk_idx, (chunk_symbol_id, chunk_data)) in
+                    chunk_datas[start_idx..end_idx].iter_mut().enumerate()
+                {
+                    // populate chunk_recipient
+                    chunk_data[0..20].copy_from_slice(&compute_hash(node_id).0);
+                    *chunk_symbol_id = Some(chunk_idx as u16);
+                }
+            }
+        }
     };
 
+    // In practice, a "symbol" is a UDP datagram payload of some 1220 bytes
     let encoder = match monad_raptor::Encoder::new(&app_message, usize::from(data_size)) {
         Ok(encoder) => encoder,
         Err(err) => {
@@ -830,13 +898,17 @@ where
 {
     pub message: Bytes,
 
+    // `author` is recovered from the public key in the chunk signature, which
+    // was signed by the validator who encoded the proposal into raptorcast.
+    // This applies to both validator-to-validator and validator-to-full-node
+    // raptorcasting.
     pub author: NodeId<PT>,
     pub epoch: u64,
     pub unix_ts_ms: u64,
     pub app_message_hash: AppMessageHash,
     pub app_message_len: u32,
     pub broadcast: bool,
-    pub recipient_hash: NodeIdHash,
+    pub recipient_hash: NodeIdHash, // if this matches our node_id, then we need to re-broadcast RC chunks
     pub chunk_id: u16,
     pub chunk: Bytes, // raptor-coded portion
 }
@@ -1247,7 +1319,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, HashMap, HashSet},
+        collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, SocketAddr},
     };
 
@@ -1265,7 +1337,7 @@ mod tests {
     use super::UdpState;
     use crate::{
         udp::{build_messages, parse_message, SIGNATURE_CACHE_SIZE},
-        util::{BuildTarget, EpochValidators, FullNodes, Validator},
+        util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator},
     };
 
     type SignatureType = SecpSignature;
@@ -1484,10 +1556,16 @@ mod tests {
     #[test]
     fn test_handle_message_stride_slice() {
         let (key, validators, _known_addresses) = validator_set();
-        let mut epoch_validators: BTreeMap<Epoch, EpochValidators<SignatureType>> =
-            vec![(Epoch(1), validators)].into_iter().collect();
+        let self_id = NodeId::new(key.pubkey());
+        let mut group_map = ReBroadcastGroupMap::new(self_id, false);
+        let node_stake_pairs: Vec<_> = validators
+            .validators
+            .iter()
+            .map(|(node_id, validator)| (*node_id, validator.stake))
+            .collect();
+        group_map.push_group_validator_set(node_stake_pairs, Epoch(1));
 
-        let mut udp_state = UdpState::<SignatureType>::new(NodeId::new(key.pubkey()));
+        let mut udp_state = UdpState::<SignatureType>::new(self_id);
 
         // payload will fail to parse but shouldn't panic on index error
         let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
@@ -1498,7 +1576,7 @@ mod tests {
         };
 
         udp_state.handle_message(
-            &mut epoch_validators,
+            &group_map,
             |_targets, _payload, _stride| {},
             |_payload, _stride| {},
             recv_msg,

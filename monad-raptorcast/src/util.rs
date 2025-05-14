@@ -120,6 +120,8 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
         ),
     ), // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
+    // Group should not be empty after excluding self node Id
+    FullNodeRaptorCast(&'a Group<ST>),
 }
 
 pub fn compute_hash<PT>(id: &NodeId<PT>) -> NodeIdHash
@@ -374,8 +376,6 @@ where
     // = true, then we are a full-node re-raptorcasting to other full-nodes.
     // = false, then we are a validator re-raptorcasting to other validators.
     is_fullnode: bool,
-
-    empty_group: Group<ST>,
 }
 
 impl<ST> ReBroadcastGroupMap<ST>
@@ -383,13 +383,11 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub fn new(our_node_id: NodeId<CertificateSignaturePubKey<ST>>, is_fullnode: bool) -> Self {
-        let empty_group = Group::new_validator_group(Vec::new(), &our_node_id);
         Self {
             our_node_id,
             validator_map: BTreeMap::new(),
             fullnode_map: BTreeMap::new(),
             is_fullnode,
-            empty_group,
         }
     }
 
@@ -421,15 +419,21 @@ where
         &self,
         msg_epoch: Epoch, // for validator-to-validator re-raptorcasting only
         msg_author: &NodeId<CertificateSignaturePubKey<ST>>, // skipped when iterating RC group
-    ) -> GroupIterator<ST> {
+    ) -> Option<GroupIterator<ST>> {
         let maybe_group = if self.is_fullnode {
             self.fullnode_map.get(msg_author)
         } else {
             self.validator_map.get(&msg_epoch)
         };
-        maybe_group
-            .unwrap_or(&self.empty_group)
-            .iter_skip_self_and_author(msg_author, 0) // this validates author_id
+        if let Some(group) = maybe_group {
+            // If the group excluding self only has the author, then there's
+            // nobody to re-broadcast to
+            if group.size_excl_self() == 1 {
+                return None;
+            }
+            return Some(group.iter_skip_self_and_author(msg_author, 0)); // this validates author
+        }
+        None
     }
 
     // As Validator: When we get an AddEpochValidatorSet.
