@@ -260,7 +260,7 @@ where
             group: self,
             num_consumed: usize::MAX,
             author_id_ix: usize::MAX,
-            seed: 0,
+            start_ix: 0,
         }
     }
 
@@ -302,11 +302,17 @@ where
             }
             maybe_pos_author_id.unwrap()
         };
+        // Avoid div by zero and also overflow when adding `num_consumed` later`
+        let start_ix = if self.sorted_other_peers.is_empty() {
+            0
+        } else {
+            seed % self.sorted_other_peers.len()
+        };
         GroupIterator {
             group: self,
             num_consumed: 0,
             author_id_ix,
-            seed,
+            start_ix,
         }
     }
 
@@ -335,7 +341,7 @@ where
     group: &'a Group<ST>,
     num_consumed: usize,
     author_id_ix: usize,
-    seed: usize,
+    start_ix: usize,
 }
 
 impl<'a, ST> Iterator for GroupIterator<'a, ST>
@@ -346,7 +352,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.num_consumed < self.group.sorted_other_peers.len() {
-            let index = (self.num_consumed + self.seed) % self.group.sorted_other_peers.len();
+            let index = (self.num_consumed + self.start_ix) % self.group.sorted_other_peers.len();
             self.num_consumed += 1;
             if index != self.author_id_ix {
                 return Some(&self.group.sorted_other_peers[index]);
