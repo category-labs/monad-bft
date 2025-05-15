@@ -1,10 +1,11 @@
-use std::{marker::PhantomData, time::Duration};
+use std::marker::PhantomData;
 
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::MockValidator,
+    clock::{TestClock, TimestampAdjusterConfig},
     signature_collection::SignatureCollection,
     validator_data::{ValidatorSetData, ValidatorSetDataWithEpoch},
 };
@@ -21,7 +22,7 @@ use monad_updaters::{
     checkpoint::MockCheckpoint, config_loader::MockConfigLoader, ledger::MockLedger,
     local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
     state_root_hash::MockStateRootHashNop, statesync::MockStateSyncExecutor, timer::TokioTimer,
-    tokio_timestamp::TokioTimestamp, txpool::MockTxPoolExecutor, BoxUpdater, Updater,
+    txpool::MockTxPoolExecutor, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use tracing_subscriber::EnvFilter;
@@ -82,7 +83,6 @@ pub fn make_monad_executor<ST, SCT>(
     MockLedger<ST, SCT, MockExecutionProtocol>,
     MockCheckpoint<SCT>,
     BoxUpdater<'static, StateRootHashCommand, MonadEvent<ST, SCT, MockExecutionProtocol>>,
-    TokioTimestamp<ST, SCT, MockExecutionProtocol>,
     MockTxPoolExecutor<ST, SCT, MockExecutionProtocol, PassthruBlockPolicy, InMemoryState>,
     ControlPanelIpcReceiver<ST, SCT, MockExecutionProtocol>,
     LoopbackExecutor<MonadEvent<ST, SCT, MockExecutionProtocol>>,
@@ -120,7 +120,6 @@ where
                 val_set_update_interval,
             )),
         },
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: MockTxPoolExecutor::default(),
         control_panel: ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),
@@ -149,6 +148,7 @@ type MonadStateType<ST, SCT> = MonadState<
     MockValidator,
     MockChainConfig,
     MockChainRevision,
+    TestClock,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -212,7 +212,7 @@ where
         locked_epoch_validators,
         block_sync_override_peers: Default::default(),
         consensus_config: config.consensus_config,
-
+        adjuster_config: TimestampAdjusterConfig::Disabled,
         _phantom: PhantomData,
     }
     .build()

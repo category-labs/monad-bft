@@ -15,15 +15,14 @@ use monad_consensus_types::checkpoint::Checkpoint;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
-    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand, TimestampCommand,
+    Command, Message, MonadEvent, RouterCommand, TimeoutVariant, TimerCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockableLedger, loopback::LoopbackExecutor,
-    state_root_hash::MockableStateRootHash, statesync::MockableStateSync,
-    timestamp::TimestampAdjuster, txpool::MockableTxPool,
+    state_root_hash::MockableStateRootHash, statesync::MockableStateSync, txpool::MockableTxPool,
 };
 use priority_queue::PriorityQueue;
 
@@ -92,8 +91,6 @@ pub struct Timestamper {
     period: Duration,
     timestamp_drift: Duration,
     drift_adjustment: Duration,
-
-    adjuster: TimestampAdjuster,
 }
 
 impl Timestamper {
@@ -103,7 +100,6 @@ impl Timestamper {
             period: config.period,
             timestamp_drift: config.timestamp_drift,
             drift_adjustment: Duration::from_millis(0),
-            adjuster: TimestampAdjuster::new(config.max_adjust_delta_ns, config.adjust_period),
         }
     }
 
@@ -112,21 +108,11 @@ impl Timestamper {
         self.events.push_back(t + self.period);
 
         self.drift_adjustment += self.timestamp_drift;
-        self.adjusted_time(t)
+        t + self.drift_adjustment
     }
 
     pub fn peek_next(&self) -> Option<&Duration> {
         self.events.front()
-    }
-
-    fn adjusted_time(&self, t: Duration) -> Duration {
-        let adjust = self.adjuster.get_adjustment();
-        let delta = Duration::from_millis(adjust.unsigned_abs());
-        if adjust.is_negative() {
-            (t + self.drift_adjustment).saturating_sub(delta)
-        } else {
-            t + self.drift_adjustment + delta
-        }
     }
 }
 
@@ -286,7 +272,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
-            timestamp_cmds,
             txpool_cmds,
             _control_panel_cmds,
             loopback_cmds,
@@ -309,12 +294,6 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                         Reverse(self.tick + duration),
                     );
                 }
-            }
-        }
-
-        for command in timestamp_cmds {
-            match command {
-                TimestampCommand::AdjustDelta(t) => self.timestamper.adjuster.handle_adjustment(t),
             }
         }
 

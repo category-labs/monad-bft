@@ -9,7 +9,6 @@ pub mod loopback;
 pub mod parent;
 pub mod state_root_hash;
 pub mod statesync;
-pub mod timestamp;
 pub mod txpool;
 
 #[cfg(feature = "tokio")]

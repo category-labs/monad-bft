@@ -6,6 +6,7 @@ use monad_chain_config::{
 use monad_consensus_types::{
     block::{BlockPolicy, MockExecutionProtocol, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
+    clock::TestClock,
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{
@@ -45,6 +46,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::ChainConfigType,
     <S as SwarmRelation>::ChainRevisionType,
+    TestClock,
 >;
 pub trait SwarmRelation
 where

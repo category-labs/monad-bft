@@ -6,6 +6,7 @@ use std::{
 
 use itertools::Itertools;
 use monad_consensus_types::{
+    clock::TimestampAdjusterConfig,
     signature_collection::SignatureCollection,
     validator_data::{ValidatorData, ValidatorSetData},
     voting::ValidatorMapping,
@@ -128,7 +129,10 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 locked_epoch_validators: self.state_builder.locked_epoch_validators,
                 block_sync_override_peers: self.state_builder.block_sync_override_peers,
                 consensus_config: self.state_builder.consensus_config,
-
+                adjuster_config: TimestampAdjusterConfig::Enabled {
+                    max_delta: 10000,
+                    adjustment_period: 9,
+                },
                 _phantom: PhantomData,
             },
             router_scheduler: Box::new(self.router_scheduler),

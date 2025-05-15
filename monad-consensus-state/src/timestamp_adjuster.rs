@@ -4,6 +4,7 @@ use monad_consensus_types::quorum_certificate::{
 use sorted_vec::SortedVec;
 use tracing::{info, trace};
 
+#[derive(Debug)]
 pub struct TimestampAdjuster {
     /// track adjustments to make to the local time
     adjustment: i64,

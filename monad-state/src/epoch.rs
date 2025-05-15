@@ -2,8 +2,8 @@ use std::marker::PhantomData;
 
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
-    block::BlockPolicy, block_validator::BlockValidator, signature_collection::SignatureCollection,
-    voting::ValidatorMapping,
+    block::BlockPolicy, block_validator::BlockValidator, clock::Clock,
+    signature_collection::SignatureCollection, voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -52,8 +52,8 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+    pub(super) fn new<CL: Clock>(
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT, CL>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,
