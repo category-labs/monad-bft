@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 
 use alloy_rlp::{Decodable, Encodable};
-use zeroize::Zeroize;
+use blst::BLST_ERROR::BLST_BAD_ENCODING;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The cipher suite
 ///
-/// POP (proof of posession) uses a separate pubkey validation step to defend
+/// POP (proof of possession) uses a separate pubkey validation step to defend
 /// against rogue key attack. It enables fast verification for signatures over
 /// the same message
 /// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature-05#name-proof-of-possession
@@ -141,6 +142,12 @@ impl Ord for BlsPubKey {
 }
 
 impl BlsPubKey {
+    pub fn infinity() -> Self {
+        blst_core::PublicKey::deserialize(INFINITY_PUBKEY.as_slice())
+            .expect("Infinity BLS pubkey")
+            .into()
+    }
+
     /// Validate that the pubkey is a point on the curve. Used to guard against
     /// the subgroup attack
     pub fn validate(&self) -> Result<(), BlsError> {
@@ -151,10 +158,15 @@ impl BlsPubKey {
         self.0.serialize().to_vec()
     }
 
-    pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
-        blst_core::PublicKey::deserialize(message)
+    pub fn deserialize(msg: &[u8]) -> Result<Self, BlsError> {
+        if msg.len() != PUBKEY_BYTE_LEN {
+            return Err(BlsError(BLST_BAD_ENCODING));
+        }
+        let pk = blst_core::PublicKey::deserialize(msg)
             .map(Self)
-            .map_err(BlsError)
+            .map_err(BlsError)?;
+        pk.validate()?;
+        Ok(pk)
     }
 
     pub fn compress(&self) -> [u8; PUBKEY_COMPRESSED_LEN] {
@@ -162,9 +174,14 @@ impl BlsPubKey {
     }
 
     pub fn uncompress(msg: &[u8]) -> Result<Self, BlsError> {
-        blst_core::PublicKey::uncompress(msg)
+        if msg.len() != PUBKEY_COMPRESSED_LEN {
+            return Err(BlsError(BLST_BAD_ENCODING));
+        }
+        let pk = blst_core::PublicKey::uncompress(msg)
             .map(Self)
-            .map_err(BlsError)
+            .map_err(BlsError)?;
+        pk.validate()?;
+        Ok(pk)
     }
 }
 
@@ -186,7 +203,7 @@ impl BlsAggregatePubKey {
     /// The infinity point is the identity element in the group.
     /// Aggregating/adding infinity to anything is the identity function
     pub fn infinity() -> Self {
-        Self::deserialize(&INFINITY_PUBKEY).expect("Infinity BLS pubkey")
+        Self::from_pubkey(&BlsPubKey::infinity())
     }
 
     fn as_pubkey(&self) -> BlsPubKey {
@@ -240,6 +257,7 @@ impl BlsAggregatePubKey {
     }
 }
 
+#[derive(ZeroizeOnDrop)]
 struct BlsSecretKey(blst_core::SecretKey);
 
 /// BLS keypair
@@ -378,6 +396,9 @@ impl BlsSignature {
         self.0.serialize().to_vec()
     }
 
+    /// Deserializes a signature from bytes without performing subgroup checks.
+    /// The subgroup check is performed in verify() by calling underlying BLST's verify function with `sig_groupcheck`
+    /// parameter to true.
     pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
         blst_core::Signature::deserialize(message)
             .map(Self)
@@ -388,6 +409,9 @@ impl BlsSignature {
         self.0.compress().to_vec()
     }
 
+    /// Uncompresses a signature from compressed bytes without performing subgroup checks.
+    /// The subgroup check is performed in verify() by calling underlying BLST's verify function with `sig_groupcheck`
+    /// parameter to true.
     pub fn uncompress(message: &[u8]) -> Result<Self, BlsError> {
         blst_core::Signature::uncompress(message)
             .map(Self)
@@ -429,7 +453,7 @@ impl BlsAggregateSignature {
         Self::deserialize(&INFINITY_SIGNATURE).expect("Infinity BLS signature")
     }
 
-    /// Validate that the point is on the curve
+    /// Validate that the signature is in the correct subgroup
     pub fn validate(&self) -> Result<(), BlsError> {
         self.as_signature().validate(true)
     }
@@ -533,7 +557,8 @@ mod test {
     use std::collections::HashSet;
 
     use super::{
-        BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature,
+        blst_core, BlsAggregatePubKey, BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey,
+        BlsSignature, BLST_BAD_ENCODING, INFINITY_PUBKEY,
     };
 
     fn keygen(secret: u8) -> BlsKeyPair {
@@ -585,6 +610,30 @@ mod test {
             aggsigs.push(aggsig);
         }
         aggsigs
+    }
+
+    #[test]
+    fn test_bad_public_key() {
+        let pubkey = BlsPubKey::uncompress([0u8; 4].as_ref());
+        assert_eq!(pubkey, Err(BlsError(BLST_BAD_ENCODING)));
+
+        let pubkey = BlsPubKey::deserialize([0u8; 4].as_ref());
+        assert_eq!(pubkey, Err(BlsError(BLST_BAD_ENCODING)));
+    }
+
+    #[test]
+    fn test_compressed_public_key_inf() {
+        let pubkey = BlsPubKey::uncompress(&INFINITY_PUBKEY);
+        assert_eq!(pubkey, Err(BlsError(blst::BLST_ERROR::BLST_PK_IS_INFINITY)));
+    }
+
+    #[test]
+    fn test_uncompressed_public_key_inf() {
+        let infinity_pubkey_uncompressed = blst_core::PublicKey::uncompress(&INFINITY_PUBKEY)
+            .unwrap()
+            .serialize();
+        let pubkey = BlsPubKey::deserialize(infinity_pubkey_uncompressed.as_slice());
+        assert_eq!(pubkey, Err(BlsError(blst::BLST_ERROR::BLST_PK_IS_INFINITY)));
     }
 
     #[test]
@@ -669,6 +718,25 @@ mod test {
                 .unwrap()
                 .compress()
         )
+    }
+
+    #[test]
+    fn test_signature_group_check() {
+        let not_in_subgroup_bytes: [u8; 96] = [
+            0xac, 0xb0, 0x12, 0x4c, 0x75, 0x74, 0xf2, 0x81, 0xa2, 0x93, 0xf4, 0x18, 0x5c, 0xad,
+            0x3c, 0xb2, 0x26, 0x81, 0xd5, 0x20, 0x91, 0x7c, 0xe4, 0x66, 0x65, 0x24, 0x3e, 0xac,
+            0xb0, 0x51, 0x00, 0x0d, 0x8b, 0xac, 0xf7, 0x5e, 0x14, 0x51, 0x87, 0x0c, 0xa6, 0xb3,
+            0xb9, 0xe6, 0xc9, 0xd4, 0x1a, 0x7b, 0x02, 0xea, 0xd2, 0x68, 0x5a, 0x84, 0x18, 0x8a,
+            0x4f, 0xaf, 0xd3, 0x82, 0x5d, 0xaf, 0x6a, 0x98, 0x96, 0x25, 0xd7, 0x19, 0xcc, 0xd2,
+            0xd8, 0x3a, 0x40, 0x10, 0x1f, 0x4a, 0x45, 0x3f, 0xca, 0x62, 0x87, 0x8c, 0x89, 0x0e,
+            0xca, 0x62, 0x23, 0x63, 0xf9, 0xdd, 0xb8, 0xf3, 0x67, 0xa9, 0x1e, 0x84,
+        ];
+
+        let sig = BlsSignature::uncompress(&not_in_subgroup_bytes).unwrap();
+        assert_eq!(
+            BlsError(blst::BLST_ERROR::BLST_POINT_NOT_IN_GROUP),
+            sig.validate(false).unwrap_err()
+        );
     }
 
     #[test]
