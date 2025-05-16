@@ -106,6 +106,7 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
     SendPeerLookup {
         to: NodeId<CertificateSignaturePubKey<ST>>,
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        open_discovery: bool,
     },
     PeerLookupRequest {
         from: NodeId<CertificateSignaturePubKey<ST>>,
@@ -120,7 +121,7 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     },
-    Prune,
+    Refresh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -128,7 +129,7 @@ pub enum TimerKind {
     SendPing,
     PingTimeout,
     RetryPeerLookup { lookup_id: u32 },
-    Prune,
+    Refresh,
 }
 
 #[derive(Debug)]
@@ -184,6 +185,7 @@ pub trait PeerDiscoveryAlgo {
         &mut self,
         to: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         target: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        open_discovery: bool,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn handle_peer_lookup_request(
@@ -205,7 +207,7 @@ pub trait PeerDiscoveryAlgo {
         lookup_id: u32,
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
-    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+    fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;
 

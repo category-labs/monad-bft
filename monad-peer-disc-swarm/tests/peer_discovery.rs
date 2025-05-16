@@ -104,9 +104,10 @@ fn test_ping_pong() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(5),
-                        prune_period: Duration::from_secs(30),
+                        refresh_period: Duration::from_secs(30),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -194,9 +195,10 @@ fn test_new_node_joining() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(2),
-                        prune_period: Duration::from_secs(4),
+                        refresh_period: Duration::from_secs(4),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -260,9 +262,10 @@ fn test_update_name_record() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(2),
-                        prune_period: Duration::from_secs(4),
+                        refresh_period: Duration::from_secs(4),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -319,9 +322,10 @@ fn test_update_name_record() {
             self_record: new_name_record,
             peer_info: new_peer_info.clone(),
             ping_period: Duration::from_secs(2),
-            prune_period: Duration::from_secs(4),
+            refresh_period: Duration::from_secs(4),
             request_timeout: Duration::from_secs(1),
             prune_threshold: 3,
+            min_active_connections: 5,
             rng_seed: 123456,
         },
         router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
@@ -383,9 +387,10 @@ fn test_prune_nodes() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(2),
-                        prune_period: Duration::from_secs(10),
+                        refresh_period: Duration::from_secs(10),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -404,7 +409,7 @@ fn test_prune_nodes() {
     while nodes.step_until(Duration::from_secs(10)) {}
     for state in nodes.states().values() {
         let metrics = state.peer_disc_driver.get_peer_disc_state().metrics();
-        assert!(metrics["prune"] == 1);
+        assert!(metrics["refresh"] == 1);
     }
 
     // a node goes offline
@@ -418,7 +423,7 @@ fn test_prune_nodes() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert!(metrics["prune"] == 2);
+        assert!(metrics["refresh"] == 2);
         assert!(state.peer_info.is_empty());
     }
 }
@@ -486,9 +491,10 @@ fn test_peer_lookup_random_nodes() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(2),
-                        prune_period: Duration::from_secs(60),
+                        refresh_period: Duration::from_secs(60),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -507,6 +513,7 @@ fn test_peer_lookup_random_nodes() {
     let lookup_event = PeerDiscoveryEvent::SendPeerLookup {
         to: node_a,
         target: nonexistent_id,
+        open_discovery: true,
     };
     nodes.insert_test_event(&node_b, Duration::from_secs(0), lookup_event);
 
@@ -596,9 +603,10 @@ fn test_peer_lookup_retry() {
                             info
                         },
                         ping_period: Duration::from_secs(15),
-                        prune_period: Duration::from_secs(30),
+                        refresh_period: Duration::from_secs(30),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -623,6 +631,7 @@ fn test_peer_lookup_retry() {
     let lookup_event = PeerDiscoveryEvent::SendPeerLookup {
         to: node_a,
         target: node_c,
+        open_discovery: false,
     };
     nodes.insert_test_event(&node_b, Duration::from_secs(0), lookup_event);
 
@@ -674,9 +683,10 @@ fn test_ping_timeout() {
                         self_record: generate_name_record(key),
                         peer_info,
                         ping_period: Duration::from_secs(5),
-                        prune_period: Duration::from_secs(20),
+                        refresh_period: Duration::from_secs(20),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
+                        min_active_connections: 5,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -710,3 +720,5 @@ fn test_ping_timeout() {
         assert!(state.peer_info.is_empty());
     }
 }
+
+// TODO: swarm tests peer discovery watermark

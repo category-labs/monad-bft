@@ -100,6 +100,7 @@ pub struct Pong {
 pub struct PeerLookupRequest<ST: CertificateSignatureRecoverable> {
     pub lookup_id: u32,
     pub target: NodeId<CertificateSignaturePubKey<ST>>,
+    pub open_discovery: bool,
 }
 
 #[derive(Debug, Clone, RlpDecodable, RlpEncodable)]

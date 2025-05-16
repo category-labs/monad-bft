@@ -8,7 +8,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_types::NodeId;
-use rand::{RngCore, SeedableRng, seq::SliceRandom};
+use rand::{RngCore, SeedableRng, seq::IteratorRandom};
 use rand_chacha::ChaCha8Rng;
 use tracing::{debug, warn};
 
@@ -20,6 +20,8 @@ use crate::{
 
 /// Maximum number of peers to be included in a PeerLookupResponse
 const MAX_PEER_IN_RESPONSE: usize = 16;
+/// Number of peers to send lookup request to if fall below min active connections
+const NUM_LOOKUP_PEERS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
@@ -32,6 +34,7 @@ pub struct PeerInfo<ST: CertificateSignatureRecoverable> {
 pub struct LookupInfo<ST: CertificateSignatureRecoverable> {
     pub num_retries: u32,
     pub receiver: NodeId<CertificateSignaturePubKey<ST>>,
+    pub open_discovery: bool,
 }
 
 pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
@@ -41,10 +44,12 @@ pub struct PeerDiscovery<ST: CertificateSignatureRecoverable> {
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
     pub metrics: PeerDiscMetrics,
     pub ping_period: Duration,
-    pub prune_period: Duration,
+    pub refresh_period: Duration,
     pub request_timeout: Duration,
     // number of unresponsive pings allowed before being pruned
     pub prune_threshold: u32,
+    // minimum number of active connections before actively sending peer lookup requests
+    pub min_active_connections: usize,
     pub rng: ChaCha8Rng,
 }
 
@@ -53,9 +58,10 @@ pub struct PeerDiscoveryBuilder<ST: CertificateSignatureRecoverable> {
     pub self_record: MonadNameRecord<ST>,
     pub peer_info: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, PeerInfo<ST>>,
     pub ping_period: Duration,
-    pub prune_period: Duration,
+    pub refresh_period: Duration,
     pub request_timeout: Duration,
     pub prune_threshold: u32,
+    pub min_active_connections: usize,
     pub rng_seed: u64,
 }
 
@@ -79,9 +85,10 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             outstanding_lookup_requests: Default::default(),
             metrics: Default::default(),
             ping_period: self.ping_period,
-            prune_period: self.prune_period,
+            refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
             prune_threshold: self.prune_threshold,
+            min_active_connections: self.min_active_connections,
             rng: ChaCha8Rng::seed_from_u64(self.rng_seed),
         };
 
@@ -91,7 +98,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             .flat_map(|(node_id, _)| state.send_ping(node_id))
             .collect::<Vec<_>>();
 
-        cmds.extend(state.reset_prune_timer());
+        cmds.extend(state.reset_refresh_timer());
 
         (state, cmds)
     }
@@ -127,17 +134,17 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
         ]
     }
 
-    fn reset_prune_timer(&self) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn reset_refresh_timer(&self) -> Vec<PeerDiscoveryCommand<ST>> {
         vec![
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::ScheduleReset {
                 node_id: self.self_id,
-                timer_kind: TimerKind::Prune,
+                timer_kind: TimerKind::Refresh,
             }),
             PeerDiscoveryCommand::TimerCommand(PeerDiscoveryTimerCommand::Schedule {
                 node_id: self.self_id,
-                timer_kind: TimerKind::Prune,
-                duration: self.prune_period,
-                on_timeout: PeerDiscoveryEvent::Prune,
+                timer_kind: TimerKind::Refresh,
+                duration: self.refresh_period,
+                on_timeout: PeerDiscoveryEvent::Refresh,
             }),
         ]
     }
@@ -363,6 +370,7 @@ where
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        open_discovery: bool,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, ?target, "sending peer lookup request");
 
@@ -378,8 +386,13 @@ where
             .insert(lookup_id, LookupInfo {
                 num_retries: 0,
                 receiver: to,
+                open_discovery,
             });
-        let peer_lookup_request = PeerLookupRequest::<ST> { lookup_id, target };
+        let peer_lookup_request = PeerLookupRequest {
+            lookup_id,
+            target,
+            open_discovery,
+        };
 
         // schedule for peer lookup retry
         cmds.extend(self.schedule_lookup_timer(to, target, lookup_id));
@@ -403,23 +416,27 @@ where
 
         let mut cmds = Vec::new();
         let target = request.target;
-        let name_records = if target == self.self_id {
+
+        let mut name_records = if target == self.self_id {
             vec![self.self_record]
         } else {
             match self.peer_info.get(&target) {
                 Some(info) => vec![info.name_record],
-                None => {
-                    // return random subset of peers up to MAX_PEER_IN_RESPONSE
-                    let mut peers: Vec<_> = self.peer_info.iter().collect();
-                    peers.shuffle(&mut self.rng);
-                    peers
-                        .into_iter()
-                        .take(MAX_PEER_IN_RESPONSE)
-                        .map(|(_k, v)| v.name_record)
-                        .collect()
-                }
+                None => vec![],
             }
         };
+
+        // if open discovery, return more nodes other than requested nodes
+        if request.open_discovery {
+            // return random subset of peers up to MAX_PEER_IN_RESPONSE
+            name_records.extend(
+                self.peer_info
+                    .values()
+                    .choose_multiple(&mut self.rng, MAX_PEER_IN_RESPONSE - name_records.len())
+                    .into_iter()
+                    .map(|peer| peer.name_record),
+            )
+        }
 
         let peer_lookup_response = PeerLookupResponse {
             lookup_id: request.lookup_id,
@@ -520,6 +537,7 @@ where
             self.outstanding_lookup_requests.remove(&lookup_id);
             return cmds;
         }
+        let open_discovery = lookup_info.open_discovery;
         let num_retries = lookup_info.num_retries + 1;
 
         // generate new unique lookup id
@@ -535,11 +553,13 @@ where
             .insert(new_lookup_id, LookupInfo {
                 num_retries,
                 receiver: target,
+                open_discovery,
             });
 
-        let peer_lookup_request = PeerLookupRequest::<ST> {
+        let peer_lookup_request = PeerLookupRequest {
             lookup_id: new_lookup_id,
             target,
+            open_discovery,
         };
 
         // schedule for next peer lookup retry
@@ -555,18 +575,32 @@ where
         cmds
     }
 
-    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("pruning unresponsive peer nodes");
 
-        *self.metrics.entry("prune").or_default() += 1;
+        *self.metrics.entry("refresh").or_default() += 1;
         let mut cmds = Vec::new();
 
         // prune unresponsive nodes
+        // TODO: prioritization of validator vs full node
         self.peer_info
             .retain(|_, info| info.unresponsive_pings < self.prune_threshold);
 
+        // if fall below the min active peers, choose a few peers and lookup for new peers
+        if self.peer_info.len() < self.min_active_connections {
+            let chosen_peers = self
+                .peer_info
+                .keys()
+                .cloned()
+                .choose_multiple(&mut self.rng, NUM_LOOKUP_PEERS);
+
+            for peer in chosen_peers {
+                cmds.extend(self.send_peer_lookup_request(peer, self.self_id, true));
+            }
+        }
+
         // reset timer to schedule for the next prune
-        cmds.extend(self.reset_prune_timer());
+        cmds.extend(self.reset_refresh_timer());
 
         cmds
     }
@@ -696,9 +730,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -749,9 +784,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -783,13 +819,14 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
-        let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey);
+        let cmds = state.send_peer_lookup_request(peer1_pubkey, peer2_pubkey, false);
         assert_eq!(cmds.len(), 2);
         assert_eq!(state.outstanding_lookup_requests.keys().len(), 1);
         assert!(!state.peer_info.contains_key(&peer2_pubkey));
@@ -839,9 +876,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -849,6 +887,7 @@ mod tests {
         let cmds = state.handle_peer_lookup_request(peer1_pubkey, PeerLookupRequest {
             lookup_id: 1,
             target: peer3_pubkey,
+            open_discovery: true,
         });
         assert_eq!(cmds.len(), 1);
 
@@ -888,17 +927,20 @@ mod tests {
                 (1, LookupInfo {
                     num_retries: 0,
                     receiver: peer1_pubkey,
+                    open_discovery: false,
                 }),
                 (2, LookupInfo {
                     num_retries: 0,
                     receiver: peer1_pubkey,
+                    open_discovery: false,
                 }),
             ]),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -952,9 +994,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -984,12 +1027,14 @@ mod tests {
             outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
                 num_retries: 0,
                 receiver: peer1_pubkey,
+                open_discovery: false,
             })]),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 10,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1024,20 +1069,62 @@ mod tests {
             outstanding_lookup_requests: HashMap::from([(lookup_id, LookupInfo {
                 num_retries: 5,
                 receiver: peer1_pubkey,
+                open_discovery: false,
             })]),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 3,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
-        state.prune();
+        state.refresh();
         assert!(state.peer_info.is_empty());
 
         state.handle_peer_lookup_timeout(peer1_pubkey, peer1_pubkey, lookup_id);
         assert!(state.outstanding_lookup_requests.is_empty());
+    }
+
+    #[test]
+    fn test_below_min_active_connections() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer0_pubkey = NodeId::new(peer0.pubkey());
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+
+        let lookup_id = 1;
+        let peer_info = BTreeMap::from([(peer1_pubkey, PeerInfo {
+            last_ping: None,
+            unresponsive_pings: 0,
+            name_record: generate_name_record(peer1, 0),
+        })]);
+        let mut state: PeerDiscovery<SignatureType> = PeerDiscovery {
+            self_id: peer0_pubkey,
+            self_record: generate_name_record(peer0, 0),
+            peer_info,
+            outstanding_lookup_requests: HashMap::new(),
+            metrics: HashMap::new(),
+            ping_period: Duration::from_secs(60),
+            refresh_period: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(5),
+            prune_threshold: 3,
+            min_active_connections: 5,
+            rng: ChaCha8Rng::seed_from_u64(123456),
+        };
+
+        // should send peer lookup request to peer1
+        let cmds = state.refresh();
+        let lookup_requests = extract_lookup_requests(cmds);
+        assert_eq!(lookup_requests.len(), 1);
+        let receiver = state
+            .outstanding_lookup_requests
+            .get(&lookup_requests[0].lookup_id)
+            .unwrap()
+            .receiver;
+        assert_eq!(receiver, peer1_pubkey);
     }
 
     #[test]
@@ -1059,9 +1146,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 3,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 
@@ -1144,9 +1232,10 @@ mod tests {
             outstanding_lookup_requests: HashMap::new(),
             metrics: HashMap::new(),
             ping_period: Duration::from_secs(60),
-            prune_period: Duration::from_secs(120),
+            refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             prune_threshold: 3,
+            min_active_connections: 5,
             rng: ChaCha8Rng::seed_from_u64(123456),
         };
 

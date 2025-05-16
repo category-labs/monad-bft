@@ -149,9 +149,11 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
                 self.pd.handle_ping_timeout(to, ping_id)
             }
-            PeerDiscoveryEvent::SendPeerLookup { to, target } => {
-                self.pd.send_peer_lookup_request(to, target)
-            }
+            PeerDiscoveryEvent::SendPeerLookup {
+                to,
+                target,
+                open_discovery,
+            } => self.pd.send_peer_lookup_request(to, target, open_discovery),
             PeerDiscoveryEvent::PeerLookupRequest { from, request } => {
                 self.pd.handle_peer_lookup_request(from, request)
             }
@@ -163,7 +165,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 target,
                 lookup_id,
             } => self.pd.handle_peer_lookup_timeout(to, target, lookup_id),
-            PeerDiscoveryEvent::Prune => self.pd.prune(),
+            PeerDiscoveryEvent::Refresh => self.pd.refresh(),
         };
 
         let emits = self.exec_and_emit(cmds);

@@ -96,6 +96,7 @@ where
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
         target: NodeId<CertificateSignaturePubKey<ST>>,
+        open_discovery: bool,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, ?target, "sending peer lookup request");
 
@@ -133,7 +134,7 @@ where
         Vec::new()
     }
 
-    fn prune(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+    fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("pruning unresponsive peer nodes");
 
         Vec::new()

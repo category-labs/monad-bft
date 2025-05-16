@@ -139,9 +139,13 @@ where
             PeerDiscoveryEvent::PingTimeout { to, ping_id } => {
                 self.algo.handle_ping_timeout(to, ping_id)
             }
-            PeerDiscoveryEvent::SendPeerLookup { to, target } => {
-                self.algo.send_peer_lookup_request(to, target)
-            }
+            PeerDiscoveryEvent::SendPeerLookup {
+                to,
+                target,
+                open_discovery,
+            } => self
+                .algo
+                .send_peer_lookup_request(to, target, open_discovery),
             PeerDiscoveryEvent::PeerLookupRequest { from, request } => {
                 self.algo.handle_peer_lookup_request(from, request)
             }
@@ -153,7 +157,7 @@ where
                 target,
                 lookup_id,
             } => self.algo.handle_peer_lookup_timeout(to, target, lookup_id),
-            PeerDiscoveryEvent::Prune => self.algo.prune(),
+            PeerDiscoveryEvent::Refresh => self.algo.refresh(),
         };
 
         self.filter_and_exec(cmds)

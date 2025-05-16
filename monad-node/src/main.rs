@@ -567,9 +567,10 @@ where
         self_record,
         peer_info,
         ping_period: Duration::from_secs(30),
-        prune_period: Duration::from_secs(600),
+        refresh_period: Duration::from_secs(600),
         request_timeout: Duration::from_secs(10),
         prune_threshold: 3,
+        min_active_connections: 10,
         rng_seed: 123456,
     };
     RaptorCast::new(RaptorCastConfig {
