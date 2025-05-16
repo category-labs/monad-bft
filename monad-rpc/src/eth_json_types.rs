@@ -243,14 +243,47 @@ impl<'de, const N: usize> Deserialize<'de> for FixedData<N> {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(untagged)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum BlockTags {
     Number(Quantity), // voted or finalized
     #[default]
     Latest, // voted
     Safe,             // voted
     Finalized,        // finalized
+}
+
+impl schemars::JsonSchema for BlockTags {
+    fn schema_name() -> String {
+        "BlockTags".to_string()
+    }
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        block_tags_schema(gen)
+    }
+}
+
+fn block_tags_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    use schemars::schema::*;
+
+    let quantity_schema = gen.subschema_for::<Quantity>();
+
+    let string_enum_schema = SchemaObject {
+        instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
+        enum_values: Some(vec![
+            "latest".into(),
+            "safe".into(),
+            "finalized".into(),
+            "pending".into(),
+        ]),
+        ..Default::default()
+    };
+
+    Schema::Object(SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            any_of: Some(vec![quantity_schema, Schema::Object(string_enum_schema)]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 impl FromStr for BlockTags {
