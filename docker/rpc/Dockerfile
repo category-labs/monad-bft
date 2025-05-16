@@ -16,7 +16,8 @@ RUN apt update && apt install -y \
   cgroup-tools \
   libstdc++-13-dev \
   gcc-13 \
-  g++-13
+  g++-13 \
+  protobuf-compiler
 
 RUN apt update && apt install -y \
   libboost-atomic1.83.0 \

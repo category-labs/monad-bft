@@ -76,6 +76,8 @@ monad-updaters = { path = "./monad-updaters" }
 monad-validator = { path = "./monad-validator" }
 monad-wal = { path = "./monad-wal" }
 
+tracing-perfetto-sdk-layer = { git = "https://github.com/dshulyak/tracing-perfetto-sdk", branch = "main"}
+
 actix = "0.13"
 actix-http = "3.6.0"
 actix-test = "0.1"

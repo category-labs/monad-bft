@@ -62,6 +62,7 @@ tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+tracing-perfetto-sdk-layer = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }

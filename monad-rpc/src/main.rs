@@ -20,6 +20,9 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
+use tokio::spawn;
+use tokio::sync::{Mutex, Semaphore};
+use tracing::{debug, debug_span, error, info, level_filters::LevelFilter, warn, Instrument, Span};
 use tracing_actix_web::{RootSpan, RootSpanBuilder, TracingLogger};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -88,6 +91,8 @@ mod trace_handlers;
 mod txpool;
 mod vpool;
 mod websocket;
+
+const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
 
 pub(crate) async fn rpc_handler(
     root_span: RootSpan,
@@ -764,26 +769,41 @@ async fn main() -> std::io::Result<()> {
         .with_writer(std::io::stdout)
         .with_ansi(false);
 
+    let perfetto_layer = tracing_perfetto_sdk_layer::SdkLayer::new("monad-rpc").with_filter(
+        EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .with_env_var("PERFETTO_LOG_LEVEL")
+            .from_env_lossy(),
+    );
+
     match otel_span_telemetry {
         Some(telemetry) => {
             let s = Registry::default()
                 .with(EnvFilter::from_default_env())
                 .with(telemetry)
-                .with(fmt_layer);
+                .with(fmt_layer)
+                .with(perfetto_layer);
             tracing::subscriber::set_global_default(s).expect("failed to set logger");
         }
         None => {
-            let s = Registry::default()
-                .with(EnvFilter::from_default_env())
-                .with(
-                    FmtLayer::default()
-                        .json()
-                        .with_span_events(FmtSpan::NONE)
-                        .with_current_span(false)
-                        .with_span_list(false)
-                        .with_writer(std::io::stdout)
-                        .with_ansi(false),
+            // NOTE(dshulyak) there is some problem here, it doesn't make sense that it has
+            // a different type from the definition above
+            let fmt_layer = FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false)
+                .with_filter(EnvFilter::from_default_env());
+            let perfetto_layer = tracing_perfetto_sdk_layer::SdkLayer::new("monad-rpc")
+                .with_filter(
+                    EnvFilter::builder()
+                        .with_default_directive(LevelFilter::INFO.into())
+                        .with_env_var("PERFETTO_LOG_LEVEL")
+                        .from_env_lossy(),
                 );
+            let s = Registry::default().with(fmt_layer).with(perfetto_layer);
             tracing::subscriber::set_global_default(s).expect("failed to set logger");
         }
     };
