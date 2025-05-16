@@ -25,6 +25,7 @@ pub struct PeerConfig<ST: CertificateSignatureRecoverable> {
     pub request_timeout: u64,
     pub prune_threshold: u32,
     pub min_active_connections: usize,
+    pub max_active_connections: usize,
 
     #[serde(bound = "ST: CertificateSignatureRecoverable")]
     pub peers: Vec<PeerDiscoveryConfig<ST>>,

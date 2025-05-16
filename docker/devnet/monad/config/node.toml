@@ -42,6 +42,7 @@ refresh_period = 120
 request_timeout = 5
 prune_threshold = 5
 min_active_connections = 0
+max_active_connections = 200
 peers = []
 # [[peer_discovery.peers]]
 # address = "x.x.x.x:xxxx"

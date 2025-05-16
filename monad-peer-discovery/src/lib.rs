@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddrV4},
     time::Duration,
 };
@@ -9,7 +9,7 @@ use message::{PeerLookupRequest, PeerLookupResponse, Ping, Pong};
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::NodeId;
+use monad_types::{Epoch, NodeId};
 use tracing::warn;
 
 pub mod discovery;
@@ -121,6 +121,13 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         target: NodeId<CertificateSignaturePubKey<ST>>,
         lookup_id: u32,
     },
+    UpdateCurrentEpoch {
+        epoch: Epoch,
+    },
+    UpdateValidatorSet {
+        epoch: Epoch,
+        validators: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    },
     Refresh,
 }
 
@@ -208,6 +215,17 @@ pub trait PeerDiscoveryAlgo {
     ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn update_current_epoch(
+        &mut self,
+        epoch: Epoch,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
+
+    fn update_validator_set(
+        &mut self,
+        epoch: Epoch,
+        validators: BTreeSet<NodeId<CertificateSignaturePubKey<Self::SignatureType>>>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>>;
 
     fn metrics(&self) -> &PeerDiscMetrics;
 

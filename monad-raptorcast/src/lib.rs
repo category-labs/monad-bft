@@ -26,7 +26,7 @@ use monad_executor_glue::{
 };
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
-    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder,
+    PeerDiscoveryAlgo, PeerDiscoveryAlgoBuilder, PeerDiscoveryEvent,
 };
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
@@ -206,6 +206,8 @@ where
                             break;
                         }
                     }
+                    self.peer_discovery_driver
+                        .update(PeerDiscoveryEvent::UpdateCurrentEpoch { epoch });
                 }
                 RouterCommand::AddEpochValidatorSet {
                     epoch,
@@ -215,7 +217,7 @@ where
                         .push_group_validator_set(validator_set.clone(), epoch);
                     if let Some(epoch_validators) = self.epoch_validators.get(&epoch) {
                         assert_eq!(validator_set.len(), epoch_validators.validators.len());
-                        assert!(validator_set.into_iter().all(
+                        assert!(validator_set.clone().into_iter().all(
                             |(validator_key, validator_stake)| epoch_validators
                                 .validators
                                 .get(&validator_key)
@@ -228,6 +230,7 @@ where
                             epoch,
                             EpochValidators {
                                 validators: validator_set
+                                    .clone()
                                     .into_iter()
                                     .map(|(validator_key, validator_stake)| {
                                         (
@@ -242,7 +245,11 @@ where
                         );
                         assert!(removed.is_none());
                     }
-                    // TODO: peer discovery to discover new peers
+                    self.peer_discovery_driver
+                        .update(PeerDiscoveryEvent::UpdateValidatorSet {
+                            epoch,
+                            validators: validator_set.into_iter().map(|(id, _)| id).collect(),
+                        });
                 }
                 RouterCommand::Publish { target, message } => {
                     let _timer = DropTimer::start(Duration::from_millis(20), |elapsed| {

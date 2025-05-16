@@ -1,9 +1,13 @@
-use std::{collections::HashMap, marker::PhantomData, net::SocketAddrV4};
+use std::{
+    collections::{BTreeSet, HashMap},
+    marker::PhantomData,
+    net::SocketAddrV4,
+};
 
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::NodeId;
+use monad_types::{Epoch, NodeId};
 use tracing::debug;
 
 use crate::{
@@ -96,7 +100,7 @@ where
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
         target: NodeId<CertificateSignaturePubKey<ST>>,
-        open_discovery: bool,
+        _open_discovery: bool,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, ?target, "sending peer lookup request");
 
@@ -136,6 +140,22 @@ where
 
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("pruning unresponsive peer nodes");
+
+        Vec::new()
+    }
+
+    fn update_current_epoch(&mut self, epoch: Epoch) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!(?epoch, "updating current epoch");
+
+        Vec::new()
+    }
+
+    fn update_validator_set(
+        &mut self,
+        _epoch: Epoch,
+        _validators: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        debug!("updating validator set");
 
         Vec::new()
     }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::{Ipv4Addr, SocketAddrV4},
     str::FromStr,
     time::Duration,
@@ -24,7 +24,7 @@ use monad_peer_discovery::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_testutil::signing::create_keys;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
-use monad_types::NodeId;
+use monad_types::{Epoch, NodeId};
 use tracing_test::traced_test;
 struct PeerDiscSwarm {}
 
@@ -102,12 +102,16 @@ fn test_ping_pong() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(5),
                         refresh_period: Duration::from_secs(30),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -193,12 +197,16 @@ fn test_new_node_joining() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(2),
                         refresh_period: Duration::from_secs(4),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -260,12 +268,16 @@ fn test_update_name_record() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(2),
                         refresh_period: Duration::from_secs(4),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -320,12 +332,16 @@ fn test_update_name_record() {
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_a,
             self_record: new_name_record,
+            current_epoch: Epoch(1),
+            epoch_validators: BTreeMap::new(),
+            dedicated_full_nodes: BTreeSet::new(),
             peer_info: new_peer_info.clone(),
             ping_period: Duration::from_secs(2),
             refresh_period: Duration::from_secs(4),
             request_timeout: Duration::from_secs(1),
             prune_threshold: 3,
             min_active_connections: 5,
+            max_active_connections: 50,
             rng_seed: 123456,
         },
         router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect()).build(),
@@ -385,12 +401,16 @@ fn test_prune_nodes() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(2),
                         refresh_period: Duration::from_secs(10),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -439,6 +459,8 @@ fn test_peer_lookup_random_nodes() {
 
     let node_a = NodeId::new(all_keys[0].pubkey());
     let node_b = NodeId::new(all_keys[1].pubkey());
+    let node_c = NodeId::new(all_keys[2].pubkey());
+    let node_d = NodeId::new(all_keys[3].pubkey());
     let nonexistent_id = NodeId::new(non_existent_key.pubkey());
 
     // initialize peer info
@@ -489,12 +511,19 @@ fn test_peer_lookup_random_nodes() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::from([(
+                            Epoch(1),
+                            BTreeSet::from([node_a, node_b, node_c, node_d]),
+                        )]),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(2),
                         refresh_period: Duration::from_secs(60),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -580,6 +609,9 @@ fn test_peer_lookup_retry() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info: if self_id == node_a {
                             let mut info = BTreeMap::new();
                             info.insert(node_b, PeerInfo {
@@ -607,6 +639,7 @@ fn test_peer_lookup_retry() {
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())
@@ -681,12 +714,16 @@ fn test_ping_timeout() {
                     algo_builder: PeerDiscoveryBuilder {
                         self_id,
                         self_record: generate_name_record(key),
+                        current_epoch: Epoch(1),
+                        epoch_validators: BTreeMap::new(),
+                        dedicated_full_nodes: BTreeSet::new(),
                         peer_info,
                         ping_period: Duration::from_secs(5),
                         refresh_period: Duration::from_secs(20),
                         request_timeout: Duration::from_secs(1),
                         prune_threshold: 3,
                         min_active_connections: 5,
+                        max_active_connections: 50,
                         rng_seed: 123456,
                     },
                     router_scheduler: NoSerRouterConfig::new(all_peers.keys().cloned().collect())

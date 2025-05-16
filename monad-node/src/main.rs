@@ -13,7 +13,9 @@ use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    metrics::Metrics, signature_collection::SignatureCollection, validator_data::ValidatorsConfig,
+    metrics::Metrics,
+    signature_collection::SignatureCollection,
+    validator_data::{ValidatorSetDataWithEpoch, ValidatorsConfig},
 };
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
@@ -39,7 +41,7 @@ use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{
-    Deserializable, DropTimer, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
+    Deserializable, DropTimer, Epoch, NodeId, Round, SeqNum, Serializable, GENESIS_SEQ_NUM,
 };
 use monad_updaters::{
     checkpoint::FileCheckpoint, config_loader::ConfigLoader, loopback::LoopbackExecutor,
@@ -158,6 +160,7 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
         })
         .collect();
 
+    let current_epoch = node_state.forkpoint_config.high_qc.get_epoch();
     let router: BoxUpdater<_, _> = {
         let raptor_router = build_raptorcast_router::<
             SignatureType,
@@ -174,6 +177,8 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
                 .collect(),
             &node_state.node_config.fullnode.identities,
+            locked_epoch_validators.clone(),
+            current_epoch,
         )
         .await;
 
@@ -500,6 +505,8 @@ async fn build_raptorcast_router<ST, SCT, M, OM>(
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
     full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
+    locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
+    current_epoch: Epoch,
 ) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>, PeerDiscovery<ST>>
 where
     ST: CertificateSignatureRecoverable,
@@ -561,15 +568,38 @@ where
         })
         .collect();
 
+    // TODO: make it configurable in node.toml
+    let epoch_validators = locked_epoch_validators
+        .iter()
+        .map(|epoch_validators| {
+            (
+                epoch_validators.epoch,
+                epoch_validators
+                    .validators
+                    .0
+                    .iter()
+                    .map(|validator| validator.node_id)
+                    .collect(),
+            )
+        })
+        .collect();
+    let dedicated_full_nodes = full_nodes
+        .iter()
+        .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
+        .collect();
     let peer_discovery_builder = PeerDiscoveryBuilder {
         self_id: NodeId::new(identity.pubkey()),
         self_record,
+        current_epoch,
+        epoch_validators,
+        dedicated_full_nodes,
         peer_info,
         ping_period: Duration::from_secs(peer_discovery_config.ping_period),
         refresh_period: Duration::from_secs(peer_discovery_config.refresh_period),
         request_timeout: Duration::from_secs(peer_discovery_config.request_timeout),
         prune_threshold: peer_discovery_config.prune_threshold,
         min_active_connections: peer_discovery_config.min_active_connections,
+        max_active_connections: peer_discovery_config.max_active_connections,
         rng_seed: 123456,
     };
     RaptorCast::new(RaptorCastConfig {

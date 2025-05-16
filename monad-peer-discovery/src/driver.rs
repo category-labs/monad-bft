@@ -165,6 +165,10 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 target,
                 lookup_id,
             } => self.pd.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::UpdateCurrentEpoch { epoch } => self.pd.update_current_epoch(epoch),
+            PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
+                self.pd.update_validator_set(epoch, validators)
+            }
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
         };
 

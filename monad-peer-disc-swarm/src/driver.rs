@@ -157,6 +157,12 @@ where
                 target,
                 lookup_id,
             } => self.algo.handle_peer_lookup_timeout(to, target, lookup_id),
+            PeerDiscoveryEvent::UpdateCurrentEpoch { epoch } => {
+                self.algo.update_current_epoch(epoch)
+            }
+            PeerDiscoveryEvent::UpdateValidatorSet { epoch, validators } => {
+                self.algo.update_validator_set(epoch, validators)
+            }
             PeerDiscoveryEvent::Refresh => self.algo.refresh(),
         };
 
