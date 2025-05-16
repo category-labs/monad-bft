@@ -428,13 +428,19 @@ fn test_prune_nodes() {
 fn test_peer_lookup_random_nodes() {
     let keys = create_keys::<SignatureType>(5);
 
-    let subset_keys = &keys[0..2];
+    let subset_keys = &keys[0..1];
     let all_keys = &keys[0..4];
     let non_existent_key = &keys[4];
+
+    let node_a = NodeId::new(all_keys[0].pubkey());
+    let node_b = NodeId::new(all_keys[1].pubkey());
+    let nonexistent_id = NodeId::new(non_existent_key.pubkey());
 
     // initialize peer info
     // NodeA name record: NodeB, NodeC, NodeD
     // NodeB name record: NodeA
+    // NodeC name record: <empty>
+    // NodeD name record: <empty>
     let subset_peers: BTreeMap<NodeId<PubKeyType>, PeerInfo<SignatureType>> = subset_keys
         .iter()
         .map(|k| {
@@ -456,15 +462,17 @@ fn test_peer_lookup_random_nodes() {
         })
         .collect();
     let swarm_builder = PeerDiscSwarmBuilder::<PeerDiscSwarm, PeerDiscoveryBuilder<SignatureType>> {
-        builders: subset_keys
+        builders: all_keys
             .iter()
             .enumerate()
             .map(|(i, key)| {
                 let self_id = NodeId::new(key.pubkey());
-                let peers = if key.pubkey() == subset_keys.first().unwrap().pubkey() {
+                let peers = if key.pubkey() == node_a.pubkey() {
                     all_peers.clone()
-                } else {
+                } else if key.pubkey() == node_b.pubkey() {
                     subset_peers.clone()
+                } else {
+                    BTreeMap::new()
                 };
                 let peer_info = peers
                     .into_iter()
@@ -495,21 +503,6 @@ fn test_peer_lookup_random_nodes() {
     let mut nodes = swarm_builder.build();
     while nodes.step_until(Duration::from_secs(0)) {}
 
-    // NodeA and NodeB should now have peer_info of each other
-    for state in nodes.states().values() {
-        let state = state.peer_disc_driver.get_peer_disc_state();
-        for node_id in subset_peers.keys() {
-            if node_id == &state.self_id {
-                continue;
-            }
-            assert!(state.peer_info.contains_key(node_id));
-        }
-    }
-
-    let node_a = NodeId::new(subset_keys[0].pubkey());
-    let node_b = NodeId::new(subset_keys[1].pubkey());
-    let nonexistent_id = NodeId::new(non_existent_key.pubkey());
-
     // NodeB send lookup request to NodeA for nonexistent node
     let lookup_event = PeerDiscoveryEvent::SendPeerLookup {
         to: node_a,
@@ -519,7 +512,7 @@ fn test_peer_lookup_random_nodes() {
 
     while nodes.step_until(Duration::from_secs(0)) {}
 
-    // NodeB should know about all subset peers through the random response
+    // NodeB should know about NodeC and NodeD through the random response
     let node_b_state = nodes
         .states()
         .get(&node_b)
@@ -527,7 +520,23 @@ fn test_peer_lookup_random_nodes() {
         .peer_disc_driver
         .get_peer_disc_state();
     for node_id in all_peers.keys() {
+        if node_id == &node_b_state.self_id {
+            continue;
+        }
         assert!(node_b_state.peer_info.contains_key(node_id));
+    }
+
+    // check that NodeB sends pings to new nodes
+    let metrics = node_b_state.metrics();
+    assert_eq!(metrics["send_ping"], 3);
+
+    // check that NodeC and NodeD now has name record of NodeB
+    for (node_id, state) in nodes.states() {
+        let state = state.peer_disc_driver.get_peer_disc_state();
+        if node_id == &node_b {
+            continue;
+        }
+        assert!(state.peer_info.contains_key(&node_b));
     }
 }
 

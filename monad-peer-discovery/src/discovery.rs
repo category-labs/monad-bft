@@ -424,7 +424,7 @@ where
         debug!(?from, ?response, "handling peer lookup response");
         *self.metrics.entry("recv_lookup_response").or_default() += 1;
 
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
 
         // if lookup id is not in outstanding requests, drop the response
         if self
@@ -453,7 +453,12 @@ where
         for name_record in response.name_records {
             // verify signature of name record
             let node_id = match name_record.recover_pubkey() {
-                Ok(node_id) => node_id,
+                Ok(node_id) => {
+                    if node_id == self.self_id {
+                        continue;
+                    }
+                    node_id
+                }
                 Err(e) => {
                     warn!(?e, "invalid name record signature, dropping record...");
                     continue;
@@ -473,6 +478,9 @@ where
                     unresponsive_pings: 0,
                     name_record,
                 });
+
+            // send pings to newly modified/added peers
+            cmds.extend(self.send_ping(node_id));
         }
 
         // drop from outstanding requests
