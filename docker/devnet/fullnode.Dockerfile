@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS base
+FROM ubuntu:25.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
@@ -16,9 +16,9 @@ RUN apt update && apt install -y \
   git \
   python-is-python3 \
   cgroup-tools \
-  libstdc++-13-dev \
-  gcc-13 \
-  g++-13
+  libstdc++-15-dev \
+  gcc-15 \
+  g++-15
 
 RUN apt update && apt install -y \
   libboost-atomic1.83.0 \
@@ -70,7 +70,7 @@ ARG TRIEDB_TARGET=triedb_driver
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
+    CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-node --features full-node --bin monad-keystore --bin monad-debug-node --example ledger-tail --example wal2json --example wal-tool --example triedb-debug --example triedb-bench && \
     mv target/release/monad-node monad-node && \
     mv target/release/monad-keystore keystore && \
     mv target/release/monad-debug-node monad-debug-node && \

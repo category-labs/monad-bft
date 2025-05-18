@@ -1,14 +1,11 @@
 # Builder
-FROM ubuntu:24.04 AS base
+FROM ubuntu:25.04 AS base
 
 RUN apt update && apt upgrade -y
 RUN apt update && apt install -y binutils ca-certificates curl iproute2 pkg-config gnupg software-properties-common wget cgroup-tools
 
-RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
-RUN add-apt-repository -y ppa:mhier/libboost-latest
-RUN apt update
-RUN apt install -y libstdc++-13-dev
-RUN apt install -y gcc-13 g++-13
+RUN apt install -y libstdc++-15-dev
+RUN apt install -y gcc-15 g++-15
 
 RUN apt-get install -y \
   libboost-atomic1.83.0 \

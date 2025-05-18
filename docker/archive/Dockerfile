@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS base
+FROM ubuntu:25.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
@@ -16,9 +16,9 @@ RUN apt update && apt install -y \
   git \
   python-is-python3 \
   cgroup-tools \
-  libstdc++-13-dev \
-  gcc-13 \
-  g++-13
+  libstdc++-15-dev \
+  gcc-15 \
+  g++-15
 
 RUN apt update && apt install -y \
   libboost-atomic1.83.0 \
@@ -69,8 +69,10 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
-    CC=gcc-13 CXX=g++-13 cargo build --release \
+# the -include cstdint is for compiling rocksdb under gcc-15
+# ref: https://github.com/facebook/rocksdb/issues/13365
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL -include cstdint" \
+    CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
     --bin monad-indexer \

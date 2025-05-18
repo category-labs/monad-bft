@@ -57,7 +57,7 @@ First, make sure you have wireshark installed:
 
 ```
 # dnf install wireshark    # Fedora 41
-# apt install wireshark    # Ubuntu 24.04
+# apt install wireshark    # Ubuntu 25.04
 ```
 
 If you care only about the command-line interface to Wireshark, run
@@ -65,7 +65,7 @@ this instead:
 
 ```
 # dnf install wireshark-cli   # Fedora 41
-# apt install tshark          # Ubuntu 24.04
+# apt install tshark          # Ubuntu 25.04
 ```
 
 Then build the dissector (see below), and copy the `raptorcast.so` file
@@ -76,7 +76,7 @@ to the wireshark plug-in directory in your home directory, as follows:
 mkdir -p ~/.local/lib/wireshark/plugins/4.4/epan
 cp raptorcast.so ~/.local/lib/wireshark/plugins/4.4/epan/
 
-# Ubuntu 24.04
+# Ubuntu 25.04
 mkdir -p ~/.local/lib/wireshark/plugins/4.2/epan
 cp raptorcast.so ~/.local/lib/wireshark/plugins/4.2/epan/
 ```
@@ -101,15 +101,15 @@ cmake ..
 make
 ```
 
-Building the dissector for Ubuntu 24.04
+Building the dissector for Ubuntu 25.04
 ---------------------------------------
 
-Ubuntu 24.04 doesn't ship with `blake3`, so the Docker build is a
+Ubuntu 25.04 doesn't ship with `blake3`, so the Docker build is a
 little bit more involved:
 
 ```
-docker image pull ubuntu:24.04
-docker run --interactive --mount type=bind,src=/home/$USER,dst=/home/$USER --tty --env HOME=$HOME --env SRCDIR=`pwd` ubuntu:24.04 /bin/bash
+docker image pull ubuntu:25.04
+docker run --interactive --mount type=bind,src=/home/$USER,dst=/home/$USER --tty --env HOME=$HOME --env SRCDIR=`pwd` ubuntu:25.04 /bin/bash
 apt update
 ln -s /usr/share/zoneinfo/posix/UTC /etc/localtime
 apt -y dist-upgrade
