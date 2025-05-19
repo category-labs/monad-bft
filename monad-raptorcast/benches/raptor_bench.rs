@@ -56,9 +56,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 &keys[0],
                 DEFAULT_SEGMENT_SIZE, // segment_size
                 message.clone(),
-                2.0, // redundancy,
-                0,   // epoch_no
-                0,   // unix_ts_ms
+                2, // redundancy,
+                0, // epoch_no
+                0, // unix_ts_ms
                 BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
                 &known_addresses,
             );
@@ -98,9 +98,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             &keys[0],
             DEFAULT_SEGMENT_SIZE, // segment_size
             message.clone(),
-            2.0, // redundancy,
-            0,   // epoch_no
-            0,   // unix_ts_ms
+            2, // redundancy,
+            0, // epoch_no
+            0, // unix_ts_ms
             BuildTarget::Raptorcast((epoch_validators, full_nodes.view())),
             &known_addresses,
         )
