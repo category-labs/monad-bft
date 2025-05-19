@@ -201,8 +201,6 @@ fn polling_thread(
     max_async_read_concurrency: usize,
     receiver_traverse: mpsc::Receiver<TriedbRequest>,
     max_async_traverse_concurrency: usize,
-    max_finalized_block_cache_len: usize,
-    max_voted_block_cache_len: usize,
 ) {
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
@@ -668,8 +666,6 @@ impl TriedbEnv {
                 max_async_read_concurrency,
                 receiver_traverse,
                 max_async_traverse_concurrency,
-                max_finalized_block_cache_len,
-                max_voted_block_cache_len,
             );
         });
 

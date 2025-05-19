@@ -146,7 +146,7 @@ where
                 RouterCommand::GetPeers => {}
                 RouterCommand::UpdatePeers(_) => {}
                 RouterCommand::GetFullNodes => {}
-                RouterCommand::UpdateFullNodes(vec) => {}
+                RouterCommand::UpdateFullNodes(_) => {}
             }
         }
     }

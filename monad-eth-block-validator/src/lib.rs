@@ -167,7 +167,7 @@ where
 
         let ProposedEthHeader {
             ommers_hash,
-            beneficiary,
+            beneficiary: _,
             transactions_root,
             withdrawals_root,
             difficulty,

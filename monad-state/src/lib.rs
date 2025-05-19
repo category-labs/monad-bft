@@ -521,7 +521,7 @@ where
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
-        let monad_version = MonadVersion::decode(&mut payload)?;
+        let _monad_version = MonadVersion::decode(&mut payload)?;
 
         match u8::decode(&mut payload)? {
             1 => Ok(Self::Consensus(Unverified::<
@@ -941,7 +941,7 @@ where
                     }
                 }
                 StateSyncEvent::BlockSync {
-                    block_range,
+                    block_range: _,
                     full_blocks,
                 } => {
                     let ConsensusMode::Sync { block_buffer, .. } = &mut self.consensus else {

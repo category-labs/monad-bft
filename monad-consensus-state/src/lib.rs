@@ -422,7 +422,7 @@ where
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
-        let original_round = self.consensus.pacemaker.get_current_round();
+        let _original_round = self.consensus.pacemaker.get_current_round();
         cmds.extend(self.proposal_certificate_handling(&p));
 
         // author, leader, round checks

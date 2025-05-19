@@ -40,7 +40,7 @@ impl EthTxPoolIpcServer {
     pub fn new(
         EthTxPoolIpcConfig {
             bind_path,
-            tx_batch_size,
+            tx_batch_size: _,
             max_queued_batches,
             queued_batches_watermark,
         }: EthTxPoolIpcConfig,

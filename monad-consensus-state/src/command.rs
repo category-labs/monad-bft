@@ -138,7 +138,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    fn from(value: VoteStateCommand) -> Self {
+    fn from(_value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection
         todo!()
     }
