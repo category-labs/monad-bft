@@ -161,6 +161,35 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscovery<ST> {
             },
         )]
     }
+
+    fn insert_new_peers(
+        &mut self,
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        name_record: MonadNameRecord<ST>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        // insert name record
+        if let Some(info) = self.peer_info.get_mut(&node_id) {
+            if name_record.seq() > info.name_record.seq() {
+                // update name record
+                debug!(?node_id, ?name_record, "name record updated");
+                info.name_record = name_record;
+            } else {
+                // exit if seq num is not incremented
+                return vec![];
+            }
+        } else {
+            // peer is not present, insert peer
+            debug!(?node_id, ?name_record, "name record inserted");
+            self.peer_info.insert(node_id, PeerInfo {
+                last_ping: None,
+                unresponsive_pings: 0,
+                name_record,
+            });
+        }
+
+        // send pings to newly modified/added peers
+        self.send_ping(node_id)
+    }
 }
 
 impl<ST> PeerDiscoveryAlgo for PeerDiscovery<ST>
@@ -227,16 +256,7 @@ where
                     .is_ok_and(|recovered_node_id| recovered_node_id == from);
 
                 if verified {
-                    self.peer_info
-                        .entry(from)
-                        .and_modify(|info| {
-                            info.name_record = peer_name_record;
-                        })
-                        .or_insert_with(|| PeerInfo {
-                            last_ping: None,
-                            unresponsive_pings: 0,
-                            name_record: peer_name_record,
-                        });
+                    cmds.extend(self.insert_new_peers(from, peer_name_record));
                 } else {
                     debug!("invalid signature in ping.local_name_record");
                     return cmds;
@@ -465,22 +485,7 @@ where
                 }
             };
 
-            // insert name record
-            self.peer_info
-                .entry(node_id)
-                .and_modify(|info| {
-                    if name_record.seq() > info.name_record.seq() {
-                        info.name_record = name_record;
-                    }
-                })
-                .or_insert_with(|| PeerInfo {
-                    last_ping: None,
-                    unresponsive_pings: 0,
-                    name_record,
-                });
-
-            // send pings to newly modified/added peers
-            cmds.extend(self.send_ping(node_id));
+            cmds.extend(self.insert_new_peers(node_id, name_record));
         }
 
         // drop from outstanding requests
@@ -1105,16 +1110,17 @@ mod tests {
     const OLD_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(7, 7, 7, 7), 8000);
     const NEW_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000);
 
-    #[test_case(None, NameRecord { address: NEW_ADDR, seq: 1 }, true, NameRecord { address: NEW_ADDR, seq: 1 }; "first record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 2 }, true, NameRecord { address: NEW_ADDR, seq: 2 }; "newer record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: OLD_ADDR, seq: 1 }, true, NameRecord { address: OLD_ADDR, seq: 1 }; "same record")]
-    #[test_case(Some(NameRecord { address: NEW_ADDR, seq: 2 }), NameRecord { address: OLD_ADDR, seq: 1 }, false, NameRecord { address: NEW_ADDR, seq: 2 }; "older record")]
-    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 1 }, false, NameRecord { address: OLD_ADDR, seq: 1 }; "conflicting record")]
+    #[test_case(None, NameRecord { address: NEW_ADDR, seq: 1 }, true, NameRecord { address: NEW_ADDR, seq: 1 }, true; "first record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 2 }, true, NameRecord { address: NEW_ADDR, seq: 2 }, true; "newer record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: OLD_ADDR, seq: 1 }, true, NameRecord { address: OLD_ADDR, seq: 1 }, false; "same record")]
+    #[test_case(Some(NameRecord { address: NEW_ADDR, seq: 2 }), NameRecord { address: OLD_ADDR, seq: 1 }, false, NameRecord { address: NEW_ADDR, seq: 2 }, false; "older record")]
+    #[test_case(Some(NameRecord { address: OLD_ADDR, seq: 1 }), NameRecord { address: NEW_ADDR, seq: 1 }, false, NameRecord { address: OLD_ADDR, seq: 1 }, false; "conflicting record")]
     fn test_ping_record(
         known_record: Option<NameRecord>,
         incoming_record: NameRecord,
         expected_pong: bool,
         expected_record: NameRecord,
+        expected_ping_to_sender: bool,
     ) {
         let keys = create_keys::<SignatureType>(2);
         let node0_key = &keys[0];
@@ -1150,7 +1156,13 @@ mod tests {
         });
 
         if expected_pong {
-            assert_eq!(cmds.len(), 1);
+            if expected_ping_to_sender {
+                // 4 timer cmds, 1 SendPing cmd, 1 Pong cmd
+                assert_eq!(cmds.len(), 6);
+            } else {
+                // 1 Pong cmd
+                assert_eq!(cmds.len(), 1);
+            }
             let pong = extract_pong(cmds)[0];
             assert_eq!(pong, Pong {
                 ping_id: 7,
