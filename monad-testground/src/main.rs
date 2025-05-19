@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -21,7 +22,9 @@ use monad_crypto::certificate_signature::{
 use monad_dataplane::udp::DEFAULT_MTU;
 use monad_eth_types::Balance;
 use monad_executor::Executor;
-use monad_raptorcast::RaptorCastConfig;
+use monad_raptorcast::config::{
+    RaptorCastConfig, RaptorCastConfigSecondaryPublisher, SecondaryRcModeConfig,
+};
 use monad_secp::SecpSignature;
 use monad_state_backend::InMemoryStateInner;
 use monad_types::{NodeId, Round, SeqNum, Stake};
@@ -29,7 +32,9 @@ use monad_updaters::{ledger::MockableLedger, local_router::LocalRouterConfig};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use tracing::{event, instrument::WithSubscriber, Instrument, Level};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -61,6 +66,12 @@ struct Args {
     /// addresses
     #[arg(short, long, required=true, num_args=1..)]
     addresses: Vec<String>,
+    /// how long to run the simulation for, in seconds
+    #[arg(short, long)]
+    simulation_length_s: Option<u64>,
+    /// use MultiRouter raptorcast to full-nodes and generate this many full nodes
+    #[arg(short, long)]
+    num_raptorcast_fullnodes: Option<u16>,
 }
 
 struct TestgroundArgs {
@@ -77,6 +88,7 @@ struct TestgroundArgs {
 enum RouterArgs {
     Local { external_latency_ms: u64 },
     RaptorCast,
+    MultiRaptorCast { num_full_nodes: u16 },
 }
 
 enum GossipArgs {
@@ -101,6 +113,9 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 };
 
+//==============================================================================
+// Metrics/tracing, for Prometheus/Grafana
+//==============================================================================
 fn make_provider(
     otel_endpoint: String,
     service_name: String,
@@ -124,6 +139,9 @@ fn make_provider(
     provider_builder.build()
 }
 
+//==============================================================================
+// Entry point
+//==============================================================================
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -146,14 +164,19 @@ async fn main() {
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureTypeConfig>>;
     // TODO parse this from CLI args
     let testground_args = TestgroundArgs {
-        simulation_length_s: 3600,
+        simulation_length_s: args.simulation_length_s.unwrap_or(3600),
         delta_ms: 4000,
         proposal_size: 5_000,
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
-        router: RouterArgs::RaptorCast,
         ledger: LedgerArgs::Mock,
+
+        //router: RouterArgs::RaptorCast,
+        router: match args.num_raptorcast_fullnodes {
+            Some(num_full_nodes) => RouterArgs::MultiRaptorCast { num_full_nodes },
+            None => RouterArgs::RaptorCast,
+        },
     };
 
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
@@ -175,6 +198,9 @@ async fn main() {
             let context = context.clone();
             let (wg_tx, wg_rx) = (wg_tx.clone(), wg_tx.subscribe());
             let fut = async move {
+                //--------------------------------------------------------------
+                // Run and do telemetry
+                //--------------------------------------------------------------
                 let fut = run(index, context, wg_tx, wg_rx, config);
                 if let Some(provider) = &maybe_provider {
                     fut.with_subscriber({
@@ -184,13 +210,19 @@ async fn main() {
                         let tracer = provider.tracer("opentelemetry");
                         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
+                        let log_dest = std::io::stdout;
+                        let log_name = format!("testground_node_{}.log", index);
+                        let _ = std::fs::remove_file(&log_name);
+                        let log_dest = RollingFileAppender::new(Rotation::NEVER, ".", log_name);
+
                         Registry::default()
                             .with(EnvFilter::from_default_env())
                             .with(
                                 FmtLayer::default()
-                                    .with_writer(std::io::stdout)
+                                    .with_writer(log_dest)
                                     .with_span_events(FmtSpan::CLOSE)
-                                    .with_ansi(false),
+                                    .with_ansi(false)
+                                    .without_time(),
                             )
                             .with(telemetry)
                     })
@@ -215,24 +247,29 @@ async fn main() {
     .unwrap();
 }
 
+//==============================================================================
+// Creates all the configurations
+//==============================================================================
 fn testnet<ST, SCT>(addresses: &[String], args: &TestgroundArgs) -> Vec<Config<ST, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    let mut rng = StdRng::seed_from_u64(42);
     let configs = std::iter::repeat_with(|| {
         // RaptorCast wants to own the specified keypair, and we can't clone these later,
         // so we have to instantiate two copies here.
-        let keypair_bytes = rand::random::<[u8; 32]>();
+        let keypair_bytes = rng.gen::<[u8; 32]>();
         let keypair = ST::KeyPairType::from_bytes(keypair_bytes.clone().as_mut_slice()).unwrap();
         let keypair2 = ST::KeyPairType::from_bytes(keypair_bytes.clone().as_mut_slice()).unwrap();
+        let keypair3 = ST::KeyPairType::from_bytes(keypair_bytes.clone().as_mut_slice()).unwrap();
 
         let cert_keypair = <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(
-            rand::random::<[u8; 32]>().as_mut_slice(),
+            rng.gen::<[u8; 32]>().as_mut_slice(),
         )
         .unwrap();
 
-        (keypair, keypair2, cert_keypair)
+        (keypair, keypair2, keypair3, cert_keypair)
     })
     .take(addresses.len())
     .collect::<Vec<_>>();
@@ -240,7 +277,7 @@ where
     let validators = ValidatorSetData(
         configs
             .iter()
-            .map(|(keypair, _, cert_keypair)| ValidatorData {
+            .map(|(keypair, _, _, cert_keypair)| ValidatorData {
                 node_id: NodeId::new(keypair.pubkey()),
                 stake: Stake(1),
                 cert_pubkey: cert_keypair.pubkey(),
@@ -267,33 +304,53 @@ where
     let known_addresses: HashMap<_, _> = addresses
         .iter()
         .zip(configs.iter())
-        .map(|(address, (keypair, _, _))| (NodeId::new(keypair.pubkey()), address.parse().unwrap()))
+        .map(|(address, (keypair, _, _, _))| {
+            (NodeId::new(keypair.pubkey()), address.parse().unwrap())
+        })
         .collect();
 
-    addresses
+    let cfg_list: Vec<Config<ST, SCT>> = addresses
         .iter()
         .zip(configs)
-        .map(|(address, (keypair, keypair2, cert_keypair))| {
+        .map(|(address, (keypair, keypair2, keypair3, cert_keypair))| {
             let me = NodeId::new(keypair.pubkey());
+            let shared_key = Arc::new(keypair);
             Config {
                 num_nodes: addresses.len(),
                 simulation_length: Duration::from_secs(args.simulation_length_s),
                 executor_config: ExecutorConfig {
+                    local_addr: address.parse().unwrap(),
+
                     router_config: match &args.router {
                         RouterArgs::Local { .. } => RouterConfig::Local(
                             maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
                         ),
+
                         RouterArgs::RaptorCast => RouterConfig::RaptorCast(RaptorCastConfig {
-                            key: keypair,
+                            shared_key,
                             known_addresses: known_addresses.clone(),
-                            full_nodes: Default::default(),
-                            redundancy: 3,
-                            local_addr: address.parse().unwrap(),
-                            up_bandwidth_mbps: 1_000,
                             mtu: DEFAULT_MTU,
-                            buffer_size: Some(62_500_000),
+                            primary_instance: Default::default(),
+                            secondary_instance: SecondaryRcModeConfig::None,
                         }),
-                    },
+
+                        RouterArgs::MultiRaptorCast { num_full_nodes } => {
+                            RouterConfig::MultiRaptorCast(RaptorCastConfig {
+                                shared_key,
+                                known_addresses: known_addresses.clone(),
+                                mtu: DEFAULT_MTU,
+                                primary_instance: Default::default(),
+                                secondary_instance: SecondaryRcModeConfig::Publisher(
+                                    RaptorCastConfigSecondaryPublisher {
+                                        full_nodes_prioritized: Default::default(),
+                                        group_scheduling: Default::default(),
+                                        raptor10_redundancy: 2,
+                                    },
+                                ),
+                            })
+                        }
+                    }, // router_config
+
                     ledger_config: match args.ledger {
                         LedgerArgs::Mock => LedgerConfig::Mock,
                     },
@@ -302,7 +359,8 @@ where
                         val_set_update_interval: SeqNum(args.val_set_update_interval),
                     },
                     nodeid: me,
-                },
+                }, // executor_config
+
                 state_config: StateConfig {
                     key: keypair2,
                     cert_key: cert_keypair,
@@ -322,9 +380,14 @@ where
                 },
             }
         })
-        .collect()
+        .collect();
+    let _x1 = cfg_list.len(); // 1 per addr in --addresses
+    cfg_list
 }
 
+//==============================================================================
+// Main run, executed by many threads
+//==============================================================================
 async fn run<ST, SCT>(
     index: usize,
     cx: Option<opentelemetry::Context>,
@@ -339,7 +402,10 @@ async fn run<ST, SCT>(
 {
     let state_backend = InMemoryStateInner::genesis(Balance::MAX, SeqNum(4));
     let nodeid = config.executor_config.nodeid;
+    // Instantiates MonadState -> ConsensusChildState
     let (mut state, init_commands) = make_monad_state(state_backend.clone(), config.state_config);
+
+    // The (ParentExecutor) executor instantiates embedded RaptorCast router and all other executors
     let mut executor = make_monad_executor(index, state_backend, config.executor_config);
 
     executor.exec(init_commands);
@@ -357,8 +423,12 @@ async fn run<ST, SCT>(
 
     while let Some(event) = executor.next().instrument(ledger_span.clone()).await {
         {
+            // Kernel of main loop
             let _ledger_span = ledger_span.enter();
             let commands = state.update(event);
+            if !commands.is_empty() {
+                tracing::info!("state.update() produced {} commands", commands.len());
+            }
             executor.exec(commands);
         }
         let ledger_len = executor.ledger().get_finalized_blocks().len();

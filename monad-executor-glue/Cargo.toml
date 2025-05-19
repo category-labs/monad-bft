@@ -24,6 +24,7 @@ chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+tracing = "0.1"
 
 [dev-dependencies]
 criterion = { workspace = true }

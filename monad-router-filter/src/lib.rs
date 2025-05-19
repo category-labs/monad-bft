@@ -60,6 +60,7 @@ where
                     VerifiedMonadMessage::ForwardedTx(_) => Some(cmd),
                     VerifiedMonadMessage::StateSyncMessage(_) => Some(cmd),
                 },
+                RouterCommand::PublishToFullNodes { .. } => None,
                 RouterCommand::AddEpochValidatorSet { .. } => Some(cmd),
                 RouterCommand::UpdateCurrentRound(..) => Some(cmd),
                 RouterCommand::GetPeers => Some(cmd),

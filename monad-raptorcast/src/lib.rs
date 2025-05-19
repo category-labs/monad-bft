@@ -1,24 +1,28 @@
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     net::SocketAddr,
     ops::DerefMut,
     pin::{pin, Pin},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Arc, Mutex,
+    },
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use futures::{channel::oneshot, FutureExt, Stream};
-use message::{DeserializeError, InboundRouterMessage};
+use futures::{FutureExt, Stream};
+use message::InboundRouterMessage;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::{
-    udp::segment_size_for_mtu, BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
+    udp::{segment_size_for_mtu, DEFAULT_MTU},
+    BroadcastMsg, Dataplane, DataplaneBuilder, TcpMsg, UnicastMsg,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -27,34 +31,17 @@ use monad_executor_glue::{
 use monad_types::{
     Deserializable, DropTimer, Epoch, ExecutionProtocol, NodeId, RouterTarget, Serializable,
 };
+use rlp::DeserializeError;
+use util::{BuildTarget, EpochValidators, FullNodes, Group, ReBroadcastGroupMap, Validator};
 
+pub mod config;
 pub mod message;
+pub mod raptorcast_secondary;
+pub mod rlp;
 pub mod udp;
 pub mod util;
-use util::{BuildTarget, EpochValidators, FullNodes, ReBroadcastGroupMap, Validator};
 
 const SIGNATURE_SIZE: usize = 65;
-
-pub struct RaptorCastConfig<ST>
-where
-    ST: CertificateSignatureRecoverable,
-{
-    // TODO support dynamic updating
-    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
-    pub full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
-
-    pub key: ST::KeyPairType,
-    /// amount of redundancy to send
-    /// a value of 2 == send 2x total payload size total
-    pub redundancy: u8,
-
-    pub local_addr: SocketAddr,
-
-    /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    pub up_bandwidth_mbps: u64,
-    pub mtu: u16,
-    pub buffer_size: Option<usize>,
-}
 
 pub struct RaptorCast<ST, M, OM, SE>
 where
@@ -62,7 +49,7 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
-    key: ST::KeyPairType,
+    signing_key: Arc<ST::KeyPairType>,
     redundancy: u8,
 
     // Raptorcast group with stake information. For the send side (i.e., initiating proposals)
@@ -70,7 +57,7 @@ where
     rebroadcast_map: ReBroadcastGroupMap<ST>,
 
     // TODO support dynamic updating
-    full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
+    dedicated_full_nodes: FullNodes<CertificateSignaturePubKey<ST>>,
     known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
 
     current_epoch: Epoch,
@@ -78,8 +65,11 @@ where
     udp_state: udp::UdpState<ST>,
     mtu: u16,
 
-    dataplane: Dataplane,
+    dataplane: Arc<Mutex<Dataplane>>,
     pending_events: VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+    channel_to_secondary:
+        Option<Sender<raptorcast_secondary::group_message::FullNodesGroupMessage<ST>>>,
+    channel_from_secondary: Option<Receiver<Group<ST>>>,
 
     waker: Option<Waker>,
     metrics: ExecutorMetrics,
@@ -102,31 +92,35 @@ where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
     OM: Serializable<Bytes> + Encodable + Into<M> + Clone,
 {
-    pub fn new(config: RaptorCastConfig<ST>) -> Self {
-        assert!(config.redundancy >= 1);
-        let self_id = NodeId::new(config.key.pubkey());
-        let mut builder = DataplaneBuilder::new(&config.local_addr, config.up_bandwidth_mbps);
-        if let Some(buffer_size) = config.buffer_size {
-            builder = builder.with_buffer_size(buffer_size);
-        }
-        let dataplane = builder.build();
-        let is_fullnode = false; // This will come from the config in upcoming PR
+    pub fn new(
+        config: &config::RaptorCastConfig<ST>,
+        shared_dataplane: Arc<Mutex<Dataplane>>,
+    ) -> Self {
+        let self_id = NodeId::new(config.shared_key.pubkey());
+        let is_fullnode = matches!(
+            config.secondary_instance,
+            config::SecondaryRcModeConfig::Client(_)
+        );
         Self {
             epoch_validators: Default::default(),
             rebroadcast_map: ReBroadcastGroupMap::new(self_id, is_fullnode),
-            full_nodes: FullNodes::new(config.full_nodes),
-            known_addresses: config.known_addresses,
+            dedicated_full_nodes: FullNodes::new(
+                config.primary_instance.full_nodes_dedicated.clone(),
+            ),
+            known_addresses: config.known_addresses.clone(),
 
-            key: config.key,
-            redundancy: config.redundancy,
+            signing_key: config.shared_key.clone(),
+            redundancy: config.primary_instance.raptor10_redundancy,
 
             current_epoch: Epoch(0),
 
             udp_state: udp::UdpState::new(self_id),
             mtu: config.mtu,
 
-            dataplane,
+            dataplane: shared_dataplane,
             pending_events: Default::default(),
+            channel_to_secondary: None,
+            channel_from_secondary: None,
 
             waker: None,
             metrics: Default::default(),
@@ -134,34 +128,83 @@ where
         }
     }
 
-    fn tcp_build_and_send(
-        &mut self,
-        to: &NodeId<CertificateSignaturePubKey<ST>>,
-        make_app_message: impl FnOnce() -> Bytes,
-        completion: Option<oneshot::Sender<()>>,
-    ) {
-        match self.known_addresses.get(to) {
-            None => {
-                tracing::warn!(?to, "not sending message, address unknown");
-            }
-            Some(address) => {
-                let app_message = make_app_message();
-                // TODO make this more sophisticated
-                // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = ST::sign(&app_message, &self.key).serialize();
-                assert_eq!(signature.len(), SIGNATURE_SIZE);
-                signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.dataplane.tcp_write(
-                    *address,
-                    TcpMsg {
-                        msg: signed_message.freeze(),
-                        completion,
-                    },
-                );
-            }
+    // Convenience constructor for tests, which were previously using this default via copy-paste
+    pub fn new_defaulted_for_tests(
+        local_addr: &SocketAddr,
+        known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+        shared_key: Arc<ST::KeyPairType>,
+    ) -> Self {
+        let up_bandwidth_mbps = 1_000;
+        let dp_builder = DataplaneBuilder::new(local_addr, up_bandwidth_mbps);
+        let shared_dataplane = Arc::new(Mutex::new(dp_builder.build()));
+        let cfg = config::RaptorCastConfig {
+            shared_key,
+            known_addresses,
+            mtu: DEFAULT_MTU,
+            primary_instance: Default::default(),
+            secondary_instance: config::SecondaryRcModeConfig::None,
         };
+        Self::new(&cfg, shared_dataplane)
+    }
+
+    pub fn bind_channel_to_secondary_raptorcast(
+        mut self,
+        channel_to_secondary: Sender<
+            raptorcast_secondary::group_message::FullNodesGroupMessage<ST>,
+        >,
+        channel_from_secondary: Receiver<Group<ST>>,
+    ) -> Self {
+        self.channel_to_secondary = Some(channel_to_secondary);
+        self.channel_from_secondary = Some(channel_from_secondary);
+        self
+    }
+
+    fn enqueue_message_to_self(
+        a_message: OM,
+        pending_events: &mut VecDeque<RaptorCastEvent<M::Event, CertificateSignaturePubKey<ST>>>,
+        waker: &mut Option<Waker>,
+        self_id: NodeId<CertificateSignaturePubKey<ST>>,
+    ) {
+        let message: M = a_message.into();
+        pending_events.push_back(RaptorCastEvent::Message(message.event(self_id)));
+        if let Some(waker) = waker.take() {
+            waker.wake()
+        }
+    }
+
+    fn build_rc_chunks(
+        epoch: &Epoch,
+        build_target: BuildTarget<ST>,
+        app_message: Bytes,
+        mtu: u16,
+        signing_key: &Arc<ST::KeyPairType>,
+        redundancy: u8,
+        known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+    ) -> UnicastMsg {
+        let segment_size = segment_size_for_mtu(mtu);
+
+        let unix_ts_ms = std::time::UNIX_EPOCH
+            .elapsed()
+            .expect("time went backwards")
+            .as_millis()
+            .try_into()
+            .expect("unix epoch doesn't fit in u64");
+
+        let messages = udp::build_messages::<ST>(
+            signing_key,
+            segment_size,
+            app_message,
+            redundancy,
+            epoch.0,
+            unix_ts_ms,
+            build_target,
+            known_addresses,
+        );
+
+        UnicastMsg {
+            msgs: messages,
+            stride: segment_size,
+        }
     }
 }
 
@@ -174,7 +217,8 @@ where
     type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let self_id = NodeId::new(self.key.pubkey());
+        let self_id = NodeId::new(self.signing_key.pubkey());
+
         for command in commands {
             match command {
                 RouterCommand::UpdateCurrentRound(epoch, round) => {
@@ -232,37 +276,6 @@ where
                         tracing::warn!(?elapsed, "long time to publish message")
                     });
 
-                    let udp_build = |epoch: &Epoch,
-                                     build_target: BuildTarget<ST>,
-                                     app_message: Bytes|
-                     -> UnicastMsg {
-                        let segment_size = segment_size_for_mtu(self.mtu);
-
-                        let unix_ts_ms = std::time::UNIX_EPOCH
-                            .elapsed()
-                            .expect("time went backwards")
-                            .as_millis()
-                            .try_into()
-                            .expect("unix epoch doesn't fit in u64");
-
-                        let messages = udp::build_messages::<ST>(
-                            &self.key,
-                            segment_size,
-                            app_message,
-                            self.redundancy,
-                            epoch.0,
-                            unix_ts_ms,
-                            build_target,
-                            &self.known_addresses,
-                        );
-
-                        UnicastMsg {
-                            msgs: messages,
-                            stride: segment_size,
-                        }
-                    };
-
-                    // send message to self if applicable
                     match target {
                         RouterTarget::Broadcast(epoch) | RouterTarget::Raptorcast(epoch) => {
                             let Some(epoch_validators) = self.epoch_validators.get_mut(&epoch)
@@ -277,12 +290,12 @@ where
                             let app_message = message.serialize();
 
                             if epoch_validators.validators.contains_key(&self_id) {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
-                                }
+                                Self::enqueue_message_to_self(
+                                    message,
+                                    &mut self.pending_events,
+                                    &mut self.waker,
+                                    self_id,
+                                );
                             }
                             let epoch_validators_without_self =
                                 epoch_validators.view_without(vec![&self_id]);
@@ -291,10 +304,12 @@ where
                                 continue;
                             }
 
-                            let full_nodes_view = self.full_nodes.view();
+                            let full_nodes_view = self.dedicated_full_nodes.view();
 
+                            // Create the UDP message(s) to send to validators and dedicated full-nodes
                             let build_target = match &target {
                                 RouterTarget::Broadcast(_) => {
+                                    // <-- current testground
                                     BuildTarget::Broadcast(epoch_validators_without_self)
                                 }
                                 RouterTarget::Raptorcast(_) => BuildTarget::Raptorcast((
@@ -304,43 +319,81 @@ where
                                 _ => unreachable!(),
                             };
 
-                            self.dataplane.udp_write_unicast(udp_build(
+                            let rc_chunks: UnicastMsg = Self::build_rc_chunks(
                                 &epoch,
                                 build_target,
                                 app_message,
-                            ));
+                                self.mtu,
+                                &self.signing_key,
+                                self.redundancy,
+                                &self.known_addresses,
+                            );
+                            self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
                         }
+
                         RouterTarget::PointToPoint(to) => {
                             if to == self_id {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
-                                }
+                                Self::enqueue_message_to_self(
+                                    message,
+                                    &mut self.pending_events,
+                                    &mut self.waker,
+                                    self_id,
+                                );
                             } else {
                                 let app_message = message.serialize();
-                                self.dataplane.udp_write_unicast(udp_build(
+                                let rc_chunks: UnicastMsg = Self::build_rc_chunks(
                                     &self.current_epoch,
                                     BuildTarget::PointToPoint(&to),
                                     app_message,
-                                ));
+                                    self.mtu,
+                                    &self.signing_key,
+                                    self.redundancy,
+                                    &self.known_addresses,
+                                );
+                                self.dataplane.lock().unwrap().udp_write_unicast(rc_chunks);
                             }
                         }
+
                         RouterTarget::TcpPointToPoint { to, completion } => {
                             if to == self_id {
-                                let message: M = message.into();
-                                self.pending_events
-                                    .push_back(RaptorCastEvent::Message(message.event(self_id)));
-                                if let Some(waker) = self.waker.take() {
-                                    waker.wake()
-                                }
+                                Self::enqueue_message_to_self(
+                                    message,
+                                    &mut self.pending_events,
+                                    &mut self.waker,
+                                    self_id,
+                                );
                             } else {
-                                self.tcp_build_and_send(&to, || message.serialize(), completion)
+                                match self.known_addresses.get(&to) {
+                                    None => {
+                                        tracing::warn!(?to, "not sending message, address unknown");
+                                    }
+                                    Some(address) => {
+                                        let app_message = message.serialize(); //make_app_message();
+                                                                               // TODO make this more sophisticated
+                                                                               // include timestamp, etc
+                                        let mut signed_message =
+                                            BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
+                                        let signature =
+                                            ST::sign(&app_message, &self.signing_key).serialize();
+                                        assert_eq!(signature.len(), SIGNATURE_SIZE);
+                                        signed_message[..SIGNATURE_SIZE]
+                                            .copy_from_slice(&signature);
+                                        signed_message[SIGNATURE_SIZE..]
+                                            .copy_from_slice(&app_message);
+                                        self.dataplane.lock().unwrap().tcp_write(
+                                            *address,
+                                            TcpMsg {
+                                                msg: signed_message.freeze(),
+                                                completion,
+                                            },
+                                        );
+                                    }
+                                }
                             }
                         }
                     };
                 }
+                RouterCommand::PublishToFullNodes { .. } => {}
                 RouterCommand::GetPeers => {
                     let peer_list = self
                         .known_addresses
@@ -356,14 +409,14 @@ where
                     self.known_addresses = new_peers.into_iter().collect();
                 }
                 RouterCommand::GetFullNodes => {
-                    let full_nodes = self.full_nodes.list.clone();
+                    let full_nodes = self.dedicated_full_nodes.list.clone();
                     self.pending_events
                         .push_back(RaptorCastEvent::PeerManagerResponse(
                             PeerManagerResponse::FullNodes(full_nodes),
                         ));
                 }
                 RouterCommand::UpdateFullNodes(new_full_nodes) => {
-                    self.full_nodes.list = new_full_nodes;
+                    self.dedicated_full_nodes.list = new_full_nodes;
                 }
             }
         }
@@ -379,9 +432,9 @@ fn try_deserialize_router_message<
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes> + Decodable,
 >(
     bytes: &Bytes,
-) -> Result<InboundRouterMessage<M>, DeserializeError> {
+) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
     // try to deserialize as a new message first
-    let Ok(inbound) = InboundRouterMessage::<M>::try_deserialize(bytes) else {
+    let Ok(inbound) = InboundRouterMessage::<M, ST>::try_deserialize(bytes) else {
         // if that fails, try to deserialize as an old message instead
         return match M::deserialize(bytes) {
             Ok(old_message) => Ok(InboundRouterMessage::AppMessage(old_message)),
@@ -413,7 +466,7 @@ where
         }
 
         let full_node_addrs = this
-            .full_nodes
+            .dedicated_full_nodes
             .list
             .iter()
             .filter_map(|node_id| this.known_addresses.get(node_id).copied())
@@ -421,7 +474,9 @@ where
 
         loop {
             // while let doesn't compile
-            let Poll::Ready(message) = pin!(this.dataplane.udp_read()).poll_unpin(cx) else {
+            let Poll::Ready(message) =
+                pin!(this.dataplane.lock().unwrap().udp_read()).poll_unpin(cx)
+            else {
                 break;
             };
 
@@ -433,9 +488,8 @@ where
             // Stream the chunks to our dedicated full-nodes as we receive them.
             let decoded_app_messages = {
                 // FIXME: pass dataplane as arg to handle_message
-                let dataplane = RefCell::new(&mut this.dataplane);
                 this.udp_state.handle_message(
-                    &this.rebroadcast_map,
+                    &this.rebroadcast_map, // contains the NodeIds for all the RC participants for each epoch
                     |targets, payload, bcast_stride| {
                         // Callback for re-broadcasting raptorcast chunks to other RC participants (validator peers)
                         let target_addrs: Vec<SocketAddr> = targets
@@ -443,19 +497,25 @@ where
                             .filter_map(|target| this.known_addresses.get(&target).copied())
                             .collect();
 
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: target_addrs,
-                            payload,
-                            stride: bcast_stride,
-                        });
+                        this.dataplane
+                            .lock()
+                            .unwrap()
+                            .udp_write_broadcast(BroadcastMsg {
+                                targets: target_addrs,
+                                payload,
+                                stride: bcast_stride,
+                            });
                     },
                     |payload, bcast_stride| {
-                        // callback for forwarding chunks to full nodes
-                        dataplane.borrow_mut().udp_write_broadcast(BroadcastMsg {
-                            targets: full_node_addrs.clone(),
-                            payload,
-                            stride: bcast_stride,
-                        });
+                        // Callback for forwarding complete messages to full nodes
+                        this.dataplane
+                            .lock()
+                            .unwrap()
+                            .udp_write_broadcast(BroadcastMsg {
+                                targets: full_node_addrs.clone(),
+                                payload,
+                                stride: bcast_stride,
+                            });
                     },
                     message,
                 )
@@ -468,6 +528,29 @@ where
                             Ok(inbound) => match inbound {
                                 InboundRouterMessage::AppMessage(app_message) => {
                                     Some(app_message.event(from))
+                                }
+                                InboundRouterMessage::FullNodesGroup(full_nodes_group_message) => {
+                                    match &this.channel_to_secondary {
+                                        Some(channel) => {
+                                            if let Err(err) = channel.send(full_nodes_group_message)
+                                            {
+                                                tracing::error!(
+                                                    "Could not send InboundRouterMessage to \
+                                    secondary Raptorcast instance: {}",
+                                                    err
+                                                );
+                                            }
+                                        }
+                                        None => {
+                                            tracing::warn!(
+                                                ?from,
+                                                "Received FullNodesGroup message but the primary \
+                                Raptorcast instance is not setup to forward messages \
+                                to a secondary instance."
+                                            );
+                                        }
+                                    }
+                                    None
                                 }
                             },
                             Err(err) => {
@@ -488,7 +571,8 @@ where
             }
         }
 
-        while let Poll::Ready((from_addr, message)) = pin!(this.dataplane.tcp_read()).poll_unpin(cx)
+        while let Poll::Ready((from_addr, message)) =
+            pin!(this.dataplane.lock().unwrap().tcp_read()).poll_unpin(cx)
         {
             let signature_bytes = &message[..SIGNATURE_SIZE];
             let signature = match ST::deserialize(signature_bytes) {
@@ -521,6 +605,28 @@ where
                     return Poll::Ready(Some(
                         RaptorCastEvent::Message(message.event(NodeId::new(from))).into(),
                     ));
+                }
+                InboundRouterMessage::FullNodesGroup(_group_message) => {
+                    // pass TCP message to MultiRouter
+                    unimplemented!("FullNodesGroup protocol via TCP not implemented");
+                }
+            }
+        }
+
+        // The secondary Raptorcast instance (Client) will be periodically sending us
+        // updates about new rc groups that we should use when re-broadcasting
+        if let Some(channel_from_secondary) = &this.channel_from_secondary {
+            loop {
+                match channel_from_secondary.try_recv() {
+                    Ok(group) => {
+                        this.rebroadcast_map.push_group_fullnodes(group);
+                    }
+                    Err(err) => {
+                        if let std::sync::mpsc::TryRecvError::Disconnected = err {
+                            tracing::error!("RaptorCastPrimary channel disconnected.");
+                        }
+                        break;
+                    }
                 }
             }
         }

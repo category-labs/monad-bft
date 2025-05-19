@@ -3883,6 +3883,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "iset"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "855de4169757ca6b92b396d7a0380ef234e9a1ec2ec603c80779453ed0ab45e4"
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4863,6 +4869,7 @@ dependencies = [
  "monad-types",
  "prost 0.12.6",
  "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -4992,6 +4999,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-control-panel",
  "monad-crypto",
+ "monad-dataplane",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
@@ -5002,6 +5010,7 @@ dependencies = [
  "monad-node-config",
  "monad-raptorcast",
  "monad-router-filter",
+ "monad-router-multi",
  "monad-secp",
  "monad-state",
  "monad-statesync",
@@ -5133,6 +5142,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "iset",
  "itertools 0.10.5",
  "lru",
  "monad-compress",
@@ -5142,11 +5152,14 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-merkle",
+ "monad-peer-discovery",
+ "monad-proto",
  "monad-raptor",
  "monad-secp",
  "monad-testutil",
  "monad-types",
  "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5162,6 +5175,24 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-state",
+ "monad-types",
+]
+
+[[package]]
+name = "monad-router-multi"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "futures",
+ "itertools 0.10.5",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-dataplane",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-raptorcast",
  "monad-state",
  "monad-types",
 ]
@@ -5345,6 +5376,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-raptorcast",
+ "monad-router-multi",
  "monad-secp",
  "monad-state",
  "monad-state-backend",
@@ -5358,6 +5390,7 @@ dependencies = [
  "rand 0.8.5",
  "tokio",
  "tracing",
+ "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
 ]
@@ -8399,6 +8432,18 @@ dependencies = [
  "pin-project",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 1.0.50",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]

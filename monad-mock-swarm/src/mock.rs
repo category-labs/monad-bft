@@ -348,6 +348,9 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::UpdateFullNodes(vec) => {
                     // TODO
                 }
+                RouterCommand::PublishToFullNodes { .. } => {
+                    // TODO
+                }
             }
         }
     }

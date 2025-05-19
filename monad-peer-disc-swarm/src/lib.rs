@@ -138,6 +138,7 @@ impl<S: PeerDiscSwarmRelation> Executor for MockPeerDiscExecutor<S> {
                 RouterCommand::UpdatePeers(_) => {}
                 RouterCommand::GetFullNodes => {}
                 RouterCommand::UpdateFullNodes(_) => {}
+                RouterCommand::PublishToFullNodes { .. } => {}
             }
         }
     }

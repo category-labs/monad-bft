@@ -115,10 +115,13 @@ pub enum BuildTarget<'a, ST: CertificateSignatureRecoverable> {
         (
             // validator stakes for given epoch_no, not including self
             // this MUST NOT BE EMPTY
+            // Contains Stake information per validator node id
             ValidatorsView<'a, ST>,
+            // Dedicated full-nodes (rather than priority nodes, not using RC)
             FullNodesView<'a, CertificateSignaturePubKey<ST>>,
         ),
-    ), // sharded raptor-aware broadcast
+    ),
+    // sharded raptor-aware broadcast
     PointToPoint(&'a NodeId<CertificateSignaturePubKey<ST>>),
     // Group should not be empty after excluding self node Id
     FullNodeRaptorCast(&'a Group<ST>),
@@ -154,7 +157,7 @@ pub type AppMessageHash = HexBytes<20>;
 // 3) Validator->FullNode raptorcast send (when initiating proposals)
 // Validator->Validator send group is presented by EpochValidators instead, as
 // that contains stake info per validator.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)] // For some reason Default doesn't work
 pub struct Group<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -175,6 +178,19 @@ where
             .field("end", &self.round_span.end.0)
             .field("other_peers", &self.sorted_other_peers.len())
             .finish()
+    }
+}
+
+impl<ST> Default for Group<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn default() -> Self {
+        Self {
+            validator_id: None,
+            round_span: RoundSpan::default(),
+            sorted_other_peers: Vec::new(),
+        }
     }
 }
 

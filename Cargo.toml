@@ -4,7 +4,8 @@ members = ["monad-*"]
 exclude = ["monad-cxx", "monad-scripts"]
 
 [profile.dev]
-opt-level = 1
+opt-level = 0
+debug = true
 
 [profile.release]
 debug = true
@@ -58,6 +59,7 @@ monad-proto = { path = "./monad-proto" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
 monad-router-filter = { path = "./monad-router-filter" }
+monad-router-multi = { path = "./monad-router-multi" }
 monad-router-scheduler = { path = "./monad-router-scheduler" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }
 monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-derive" }
@@ -133,6 +135,7 @@ hex = "0.4"
 indexmap = "2.4.0"
 inotify = "0.11"
 inventory = "0.3"
+iset = "0.3.1"
 itertools = "0.10"
 libc = "0.2.153"
 lru = "0.12"

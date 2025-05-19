@@ -41,6 +41,10 @@ where
         target: RouterTarget<SCT::NodeIdPubKey>,
         message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
     },
+    PublishToFullNodes {
+        epoch: Epoch,
+        message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
+    },
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
         duration: Duration,
@@ -138,7 +142,7 @@ where
     BPT: BlockPolicy<ST, SCT, EPT, SBT>,
     SBT: StateBackend,
 {
-    fn from(value: VoteStateCommand) -> Self {
+    fn from(_value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection
         todo!()
     }

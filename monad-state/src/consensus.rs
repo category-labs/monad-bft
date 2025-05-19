@@ -171,7 +171,7 @@ where
                 tracing::trace!(?event, "ignoring ConsensusEvent, not live yet");
                 return cmds;
             }
-        };
+        }; // match self.consensus
 
         let mut consensus = ConsensusStateWrapper {
             consensus: live,
@@ -195,11 +195,13 @@ where
             cert_keypair: self.cert_keypair,
         };
 
+        // Return commands before being wrapped into a Vec of WrappedConsensusCommand
         let consensus_cmds = match event {
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
             } => {
+                // Key spot where received message is validated (before re-raptor-casting)
                 match Self::verify_and_validate_consensus_message(
                     consensus.epoch_manager,
                     consensus.val_epoch_map,
@@ -209,7 +211,20 @@ where
                     unverified_message,
                 ) {
                     Ok((author, ProtocolMessage::Proposal(msg))) => {
-                        consensus.handle_proposal_message(author, msg)
+                        let msg2 = msg.clone();
+                        let mut proposal_cmds = consensus.handle_proposal_message(author, msg);
+                        let init_len = proposal_cmds.len();
+                        let epoch = msg2.block_header.epoch;
+                        let cons_msg = ConsensusMessage {
+                            version: consensus.version.to_owned(),
+                            message: ProtocolMessage::Proposal(msg2),
+                        }
+                        .sign(self.keypair);
+                        proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
+                            epoch,
+                            message: cons_msg,
+                        });
+                        proposal_cmds
                     }
                     Ok((author, ProtocolMessage::Vote(msg))) => {
                         consensus.handle_vote_message(author, msg)
@@ -227,7 +242,7 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
-        consensus_cmds
+        consensus_cmds // <-- return values: commands to be executed
             .into_iter()
             .map(|cmd| WrappedConsensusCommand {
                 state_root_delay: consensus.config.execution_delay,
@@ -543,6 +558,12 @@ where
             ConsensusCommand::Publish { target, message } => {
                 parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
                     target,
+                    message: VerifiedMonadMessage::Consensus(message),
+                }))
+            }
+            ConsensusCommand::PublishToFullNodes { epoch, message } => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
+                    epoch,
                     message: VerifiedMonadMessage::Consensus(message),
                 }))
             }

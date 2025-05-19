@@ -403,7 +403,7 @@ where
         debug!(proposal = ?p, "proposal message");
         self.metrics.consensus_events.handle_proposal += 1;
 
-        let mut cmds = Vec::new();
+        let mut cmds = Vec::new(); // Our resulting commands; generated from state transition
 
         let epoch = self
             .epoch_manager
@@ -422,7 +422,7 @@ where
 
         // a valid proposal will advance the pacemaker round so capture the original round before
         // handling the proposal certificate
-        let original_round = self.consensus.pacemaker.get_current_round();
+        let _original_round = self.consensus.pacemaker.get_current_round();
         cmds.extend(self.proposal_certificate_handling(&p));
 
         // author, leader, round checks

@@ -20,9 +20,13 @@ mod bootstrap;
 mod consensus;
 mod fullnode;
 mod network;
+
+pub mod fullnode_raptorcast;
+pub use fullnode_raptorcast::FullNodeRaptorCastConfig;
+
 mod sync_peers;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig<P: PubKey> {
     /////////////////////////////////
@@ -44,13 +48,21 @@ pub struct NodeConfig<P: PubKey> {
 
     #[serde(bound = "P:PubKey")]
     pub bootstrap: NodeBootstrapConfig<P>,
-    #[serde(bound = "P:PubKey")]
-    pub fullnode: FullNodeConfig<P>,
+
     #[serde(bound = "P:PubKey")]
     pub blocksync_override: BlockSyncPeersConfig<P>,
+
     #[serde(bound = "P:PubKey")]
     pub statesync: StateSyncPeersConfig<P>,
     pub network: NodeNetworkConfig,
+
+    pub raptor10_redundancy_validators: f64, // validator -> validator
+
+    #[serde(bound = "P:PubKey")]
+    pub full_nodes_dedicated: FullNodeConfig<P>,
+
+    #[serde(bound = "P:PubKey")]
+    pub fullnode_raptorcast: FullNodeRaptorCastConfig<P>,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////

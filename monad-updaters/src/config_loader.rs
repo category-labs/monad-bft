@@ -144,7 +144,7 @@ where
         node_config: NodeConfig<SCT::NodeIdPubKey>,
     ) -> ConfigEvent<SCT> {
         let full_nodes = node_config
-            .fullnode
+            .full_nodes_dedicated
             .identities
             .iter()
             .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))

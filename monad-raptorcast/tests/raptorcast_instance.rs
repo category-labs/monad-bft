@@ -3,7 +3,7 @@ use std::{
     io::ErrorKind,
     net::{SocketAddr, UdpSocket},
     num::ParseIntError,
-    sync::Once,
+    sync::{Arc, Once},
     time::Duration,
 };
 
@@ -13,14 +13,14 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
-use monad_dataplane::udp::{DEFAULT_MTU, DEFAULT_SEGMENT_SIZE};
+use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptor::SOURCE_SYMBOLS_MAX;
 use monad_raptorcast::{
     udp::{build_messages, build_messages_with_length, MAX_REDUNDANCY},
     util::{BuildTarget, EpochValidators, FullNodes, Validator},
-    RaptorCast, RaptorCastConfig, RaptorCastEvent,
+    RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Serializable, Stake};
@@ -313,6 +313,7 @@ pub fn valid_rebroadcast() {
 
 static ONCE_SETUP: Once = Once::new();
 
+#[cfg(test)]
 pub fn set_up_test(
     tx_addr: &SocketAddr,
     rx_addr: &SocketAddr,
@@ -386,23 +387,14 @@ pub fn set_up_test(
         ));
 
         rt.spawn(async move {
-            let service_config = RaptorCastConfig {
-                key: rx_keypair,
-                full_nodes: Default::default(),
-                known_addresses,
-                redundancy: 2,
-                local_addr: rx_addr,
-                up_bandwidth_mbps: 1_000,
-                mtu: DEFAULT_MTU,
-                buffer_size: None,
-            };
-
             let mut service = RaptorCast::<
                 SignatureType,
                 MockMessage,
                 MockMessage,
                 <MockMessage as Message>::Event,
-            >::new(service_config);
+            >::new_defaulted_for_tests(
+                &rx_addr, known_addresses, Arc::new(rx_keypair)
+            );
 
             service.exec(vec![RouterCommand::AddEpochValidatorSet {
                 epoch: Epoch(0),

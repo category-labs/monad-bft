@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -19,6 +20,7 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_dataplane::DataplaneBuilder;
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
@@ -26,10 +28,13 @@ use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeNetworkConfig, SignatureCollectionType,
-    SignatureType,
+    ExecutionProtocolType, NodeConfig, SignatureCollectionType, SignatureType,
 };
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::config::{
+    GroupSchedulingConfig, RaptorCastConfig, RaptorCastConfigPrimary,
+    RaptorCastConfigSecondaryClient, RaptorCastConfigSecondaryPublisher, SecondaryRcModeConfig,
+};
+use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
 use monad_triedb_cache::StateBackendCache;
@@ -160,21 +165,20 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
             MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
             VerifiedMonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(
-            node_state.node_config.network.clone(),
+            node_state.node_config.clone(), // .network.clone(),
             node_state.router_identity,
             known_addresses
                 .iter()
                 .cloned()
                 .filter_map(|(node_id, maybe_addr)| Some((node_id, maybe_addr?)))
                 .collect(),
-            &node_state.node_config.fullnode.identities,
         )
         .await;
 
         #[cfg(feature = "full-node")]
         let raptor_router = monad_router_filter::FullNodeRouterFilter::new(raptor_router);
 
-        <_ as Updater<_>>::boxed(raptor_router)
+        <_ as Updater<_>>::boxed(raptor_router) // error[E0277]: `Rc<RefCell<KeyPair>>` cannot be sent between threads safely
     };
 
     let val_set_update_interval = SeqNum(50_000); // TODO configurable
@@ -489,11 +493,10 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
 }
 
 async fn build_raptorcast_router<ST, SCT, M, OM>(
-    network_config: NodeNetworkConfig,
+    node_config: NodeConfig<SCT::NodeIdPubKey>,
     identity: ST::KeyPairType,
     known_addresses: Vec<(NodeId<SCT::NodeIdPubKey>, SocketAddr)>,
-    full_nodes: &[FullNodeIdentityConfig<CertificateSignaturePubKey<ST>>],
-) -> RaptorCast<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
+) -> MultiRouter<ST, M, OM, MonadEvent<ST, SCT, ExecutionProtocolType>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -507,22 +510,78 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Encodable + Clone + Send + Sync + 'static,
 {
-    RaptorCast::new(RaptorCastConfig {
-        key: identity,
-        known_addresses: known_addresses.into_iter().collect(),
-        full_nodes: full_nodes
-            .iter()
-            .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
-            .collect(),
-        redundancy: 3,
-        local_addr: SocketAddr::V4(SocketAddrV4::new(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        )),
-        up_bandwidth_mbps: network_config.max_mbps.into(),
-        mtu: network_config.mtu,
-        buffer_size: network_config.buffer_size,
-    })
+    let network_config = node_config.network;
+    let local_addr = SocketAddr::V4(SocketAddrV4::new(
+        network_config.bind_address_host,
+        network_config.bind_address_port,
+    ));
+
+    let mut dp_builder = DataplaneBuilder::new(&local_addr, network_config.max_mbps.into());
+    if let Some(buffer_size) = network_config.buffer_size {
+        dp_builder = dp_builder.with_buffer_size(buffer_size);
+    }
+    let shared_dataplane = Arc::new(Mutex::new(dp_builder.build()));
+
+    let secondary_instance = {
+        let cfg_2nd = node_config.fullnode_raptorcast;
+        // mode = monad_node_config::fullnode_raptorcast::SecondaryRcModeConfig::Client;
+        // We should soon be able to switch between full-node and validator with a
+        // config reload rather than rebuild, so let configuration decide what mode to play.
+        match cfg_2nd.mode {
+            monad_node_config::fullnode_raptorcast::SecondaryRcModeConfig::None => {
+                SecondaryRcModeConfig::None
+            }
+
+            monad_node_config::fullnode_raptorcast::SecondaryRcModeConfig::Client => {
+                SecondaryRcModeConfig::Client(RaptorCastConfigSecondaryClient {
+                    bandwidth_cost_per_group_member: cfg_2nd.bandwidth_cost_per_group_member,
+                    bandwidth_capacity: cfg_2nd.bandwidth_capacity,
+                    invite_future_dist_min: cfg_2nd.invite_future_dist_min,
+                    invite_future_dist_max: cfg_2nd.invite_future_dist_max,
+                })
+            }
+
+            monad_node_config::fullnode_raptorcast::SecondaryRcModeConfig::Publisher => {
+                let full_nodes_prioritized: Vec<_> = cfg_2nd
+                    .full_nodes_prioritized
+                    .identities
+                    .iter()
+                    .map(|id| NodeId::new(id.secp256k1_pubkey))
+                    .collect();
+                SecondaryRcModeConfig::Publisher(RaptorCastConfigSecondaryPublisher {
+                    full_nodes_prioritized,
+                    group_scheduling: GroupSchedulingConfig {
+                        max_group_size: cfg_2nd.max_group_size,
+                        round_span: cfg_2nd.round_span,
+                        invite_lookahead: cfg_2nd.invite_lookahead,
+                        max_invite_wait: cfg_2nd.max_invite_wait,
+                        deadline_round_dist: cfg_2nd.deadline_round_dist,
+                        init_empty_round_span: cfg_2nd.init_empty_round_span,
+                    },
+                    raptor10_redundancy: cfg_2nd.raptor10_redundancy_fullnodes,
+                })
+            }
+        }
+    };
+
+    MultiRouter::new(
+        &RaptorCastConfig {
+            shared_key: Arc::new(identity),
+            known_addresses: known_addresses.into_iter().collect(),
+            mtu: network_config.mtu,
+            primary_instance: RaptorCastConfigPrimary {
+                raptor10_redundancy: node_config.raptor10_redundancy_validators,
+                full_nodes_dedicated: node_config
+                    .full_nodes_dedicated
+                    .identities
+                    .iter()
+                    .map(|full_node| NodeId::new(full_node.secp256k1_pubkey))
+                    .collect(),
+            },
+            secondary_instance,
+        },
+        shared_dataplane,
+    )
 }
 
 fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {

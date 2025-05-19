@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     num::ParseIntError,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -12,10 +13,9 @@ use futures_util::StreamExt;
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
 };
-use monad_dataplane::udp::DEFAULT_MTU;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig, RaptorCastEvent};
+use monad_raptorcast::{RaptorCast, RaptorCastEvent};
 use monad_secp::SecpSignature;
 use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -52,6 +52,7 @@ fn service(
     num_broadcast: u32,
     message_len: usize,
 ) {
+    // Configure peers (5 in the example)
     assert!(message_len >= 4);
     let num_peers = addresses.len() as u32;
     let keys: Vec<_> = (0..num_peers)
@@ -91,7 +92,7 @@ fn service(
         std::sync::mpsc::channel::<(NodeId<PubKeyType>, <MockMessage as Message>::Event)>();
 
     let rts: Vec<_> = std::iter::repeat_with(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        tokio::runtime::Builder::new_multi_thread() // The MultiThread builder spawn a thread
             .enable_all()
             .worker_threads(threads_per_rt)
             .build()
@@ -99,7 +100,7 @@ fn service(
     })
     .take(num_rt)
     .collect();
-
+    // Iterate the 2 runtime cycles
     rts.iter()
         .cycle()
         .zip(keys.into_iter().zip(tx_reader))
@@ -111,29 +112,33 @@ fn service(
             let known_addresses = known_addresses.clone();
 
             rt.spawn(async move {
-                let service_config = RaptorCastConfig {
-                    key,
-                    full_nodes: Default::default(),
-                    known_addresses,
-                    redundancy: 2,
-                    local_addr: server_address,
-                    up_bandwidth_mbps: 1_000,
-                    mtu: DEFAULT_MTU,
-                    buffer_size: None,
-                };
-
+                // This closure (lambda) creates a RaptorCast
+                // Create a RaptorCast::new() service, which will spawn a Dataplane thread
                 let mut service = RaptorCast::<
                     SignatureType,
                     MockMessage,
                     MockMessage,
                     <MockMessage as Message>::Event,
-                >::new(service_config);
+                >::new_defaulted_for_tests(
+                    &server_address, known_addresses, Arc::new(key)
+                );
+
+                // Call RaptorCast::exec() with just 1 command in vec<>,
+                // that 1 command contains all 5 peers, they are joining Epoch 0
+                // Each peer has stake 1?
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
-                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(0))).collect(),
+                    validator_set: all_peers.iter().map(|peer| (*peer, Stake(1))).collect(),
                 }]);
+
                 loop {
                     tokio::select! {
+                        // service.next() retrieves the next event from the RaptorCast service.
+                        // This method is part of the Stream trait, which allows
+                        // asynchronous iteration over a sequence of values.
+                        // In Rust, the Stream trait is similar to the Iterator
+                        // trait but for asynchronous operations. It provides a
+                        // way to asynchronously yield a sequence of values.
                         maybe_message = service.next() => {
                             let message = maybe_message.expect("never terminates");
                             rx_writer
@@ -143,26 +148,31 @@ fn service(
                         maybe_tx = tx_reader.recv() => {
                             let tx = maybe_tx.expect("tx_writer should never be dropped");
                             // TODO batch these?
+                            // Picks up a scheduled command from the tx_reader and execs it.
+                            // Calls the main thing, RaptorCast RouterCommand::Publish -> RouterTarget::Raptorcast
+                            // This ends up producing messages in ring-buffer for Tokio thread to sendmmsg()
                             service.exec(vec![tx]);
                         }
                     };
                 }
-            });
+            }); // lambda end, rt.spawn() end
         });
 
     let (tx_peer, tx_router) = tx_writer.first_key_value().expect("at least 1 tx");
-
+    // Here: 1 `service` main thread + `9 `tokio-runtime-w` threads
     std::thread::sleep(Duration::from_secs(1));
 
     let start = Instant::now();
     let mut expected_message_ids = HashMap::new();
     for broadcast_id in 0..num_broadcast {
         let message = MockMessage::new(broadcast_id, message_len);
+        let command = RouterCommand::Publish {
+            target: RouterTarget::Raptorcast(Epoch(0)),
+            message,
+        };
+        // This schedules the RouterCommand::Publish -> RouterTarget::Raptorcast
         tx_router
-            .send(RouterCommand::Publish {
-                target: RouterTarget::Broadcast(Epoch(0)),
-                message,
-            })
+            .send(command)
             .expect("reader should never be dropped");
         expected_message_ids.insert(message.id, num_peers);
     }

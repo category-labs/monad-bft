@@ -593,7 +593,7 @@ where
                         ),
                     )?;
                     match req_resp {
-                        proto_get_full_nodes_event::ReqResp::Req(proto_get_full_node_req) => {
+                        proto_get_full_nodes_event::ReqResp::Req(_proto_get_full_node_req) => {
                             ControlPanelEvent::GetFullNodes(GetFullNodes::Request)
                         }
                         proto_get_full_nodes_event::ReqResp::Resp(proto_get_full_node_resp) => {

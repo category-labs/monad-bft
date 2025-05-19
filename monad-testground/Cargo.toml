@@ -21,6 +21,7 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
 monad-raptorcast = { workspace = true }
+monad-router-multi = { workspace = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-state-backend = { workspace = true }
@@ -39,3 +40,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-appender = "0.2"

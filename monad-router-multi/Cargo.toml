@@ -1,0 +1,19 @@
+[package]
+name = "monad-router-multi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-dataplane = { path = "../monad-dataplane" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-state = { path = "../monad-state" }
+monad-types = { path = "../monad-types" }
+monad-raptorcast = { path = "../monad-raptorcast" }
+
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+itertools = { workspace = true }
+bytes = { workspace = true }

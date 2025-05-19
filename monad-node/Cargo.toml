@@ -15,6 +15,7 @@ monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-control-panel = { workspace = true }
 monad-crypto = { workspace = true }
+monad-dataplane = { workspace = true }
 monad-eth-block-policy = { workspace = true }
 monad-eth-block-validator = { workspace = true }
 monad-eth-txpool-executor = { workspace = true }
@@ -25,6 +26,7 @@ monad-ledger = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-raptorcast = { workspace = true }
 monad-router-filter = { workspace = true, optional = true }
+monad-router-multi = { workspace = true}
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-statesync = { workspace = true }

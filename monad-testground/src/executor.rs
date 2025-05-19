@@ -1,4 +1,9 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{
+    marker::PhantomData,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};
 use monad_consensus_state::ConsensusConfig;
@@ -12,8 +17,10 @@ use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_dataplane::DataplaneBuilder;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_raptorcast::{RaptorCast, RaptorCastConfig};
+use monad_raptorcast::{config::RaptorCastConfig, RaptorCast};
+use monad_router_multi::MultiRouter;
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
 use monad_types::{ExecutionProtocol, NodeId, Round, SeqNum};
@@ -37,6 +44,7 @@ where
         LocalPeerRouter<MonadMessage<ST, SCT, EPT>, VerifiedMonadMessage<ST, SCT, EPT>>,
     ),
     RaptorCast(RaptorCastConfig<ST>),
+    MultiRaptorCast(RaptorCastConfig<ST>),
 }
 
 pub enum LedgerConfig {
@@ -59,6 +67,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    pub local_addr: SocketAddr,
     pub router_config: RouterConfig<ST, SCT, EPT>,
     pub ledger_config: LedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
@@ -96,16 +105,37 @@ where
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let (_, reload_handle) = tracing_subscriber::reload::Layer::new(EnvFilter::from_default_env());
+
+    let shared_dataplane = Arc::new(Mutex::new(
+        DataplaneBuilder::new(&config.local_addr, 1_000)
+            .with_buffer_size(62_500_000)
+            .build(),
+    ));
+
     ParentExecutor {
         router: match config.router_config {
+            // router_validators
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::RaptorCast(config) => Updater::boxed(RaptorCast::<
-                ST,
-                MonadMessage<ST, SCT, MockExecutionProtocol>,
-                VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
-                MonadEvent<ST, SCT, MockExecutionProtocol>,
-            >::new(config)),
+
+            RouterConfig::RaptorCast(cfg) => {
+                Updater::boxed(RaptorCast::<
+                    ST,
+                    MonadMessage<ST, SCT, MockExecutionProtocol>,
+                    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                    MonadEvent<ST, SCT, MockExecutionProtocol>,
+                >::new(&cfg, shared_dataplane))
+            }
+
+            RouterConfig::MultiRaptorCast(cfg) => {
+                Updater::boxed(MultiRouter::<
+                    ST,
+                    MonadMessage<ST, SCT, MockExecutionProtocol>,
+                    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                    MonadEvent<ST, SCT, MockExecutionProtocol>,
+                >::new(&cfg, shared_dataplane))
+            }
         },
+
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
             LedgerConfig::Mock => MockLedger::new(state_backend.clone()),
