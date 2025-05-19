@@ -6,10 +6,8 @@ use tracing_actix_web::RootSpan;
 use self::{
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
-        monad_debug_getRawTransaction,
-    },
-    debug_trace::{
-        monad_debug_traceBlockByHash, monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
+        monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
+        monad_debug_traceBlockByNumber, monad_debug_traceTransaction,
     },
     eth::{
         account::{
@@ -47,7 +45,6 @@ use crate::{
 };
 
 mod debug;
-mod debug_trace;
 pub mod eth;
 mod meta;
 pub mod resources;

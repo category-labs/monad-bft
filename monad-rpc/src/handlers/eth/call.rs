@@ -25,7 +25,7 @@ use tracing::trace;
 use super::block::get_block_key_from_tag_or_hash;
 use crate::{
     eth_json_types::BlockTagOrHash,
-    handlers::debug_trace::{decode_call_frame, MonadCallFrame, TracerObject},
+    handlers::debug::{decode_call_frame, MonadCallFrame, TracerObject},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     timing::RequestId,

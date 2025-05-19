@@ -1,8 +1,6 @@
 use monad_rpc_docs::rpc;
 
-use crate::jsonrpc::JsonRpcResult;
-
-const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
+use crate::{jsonrpc::JsonRpcResult, WEB3_RPC_CLIENT_VERSION};
 
 #[rpc(method = "net_version", ignore = "chain_id")]
 pub fn monad_net_version(chain_id: u64) -> JsonRpcResult<String> {

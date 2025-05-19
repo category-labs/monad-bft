@@ -10,3 +10,5 @@ pub mod trace;
 pub mod txpool;
 pub mod vpool;
 pub mod websocket;
+
+pub const WEB3_RPC_CLIENT_VERSION: &str = concat!("Monad/", env!("VERGEN_GIT_DESCRIBE"));
