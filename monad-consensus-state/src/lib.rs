@@ -400,7 +400,7 @@ where
         let _handle_proposal_span =
             tracing::info_span!("handle_proposal_span", "{}", author).entered();
         info!(round = ?p.block_header.round, "received proposal");
-        debug!(proposal = ?p, "proposal message");
+        debug!(?author, proposal = ?p, "proposal message");
         self.metrics.consensus_events.handle_proposal += 1;
 
         let mut cmds = Vec::new();
@@ -603,7 +603,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT>> {
-        debug!(?vote_msg, "Vote Message");
+        debug!(?author, ?vote_msg, "Vote Message");
         if vote_msg.vote.round < self.consensus.pacemaker.get_current_round() {
             self.metrics.consensus_events.old_vote_received += 1;
             return Default::default();
@@ -657,7 +657,7 @@ where
             return cmds;
         }
 
-        debug!(timeout_msg = ?tm, "Remote timeout msg");
+        debug!(?author, timeout_msg = ?tm, "Remote timeout msg");
         self.metrics.consensus_events.remote_timeout_msg += 1;
 
         let epoch = self
