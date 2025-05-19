@@ -37,7 +37,6 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     SBT: StateBackend,
 {
-    do_local_insert: bool,
     pending: PendingTxMap,
     tracked: TrackedTxMap<ST, SCT, SBT>,
     // current proposal_gas_limit. On insert_tx, we validate that tx.gas_limit
@@ -55,14 +54,12 @@ where
     SBT: StateBackend,
 {
     pub fn new(
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         proposal_gas_limit: u64,
         max_code_size: usize,
     ) -> Self {
         Self {
-            do_local_insert,
             pending: PendingTxMap::default(),
             tracked: TrackedTxMap::new(soft_tx_expiry, hard_tx_expiry),
             proposal_gas_limit,
@@ -74,7 +71,6 @@ where
         const PROPOSAL_GAS_LIMIT: u64 = 300_000_000;
         const MAX_CODE_SIZE: usize = 0x6000;
         Self::new(
-            true,
             Duration::from_secs(60),
             Duration::from_secs(60),
             PROPOSAL_GAS_LIMIT,
@@ -110,11 +106,6 @@ where
         owned: bool,
         mut on_insert: impl FnMut(&ValidEthTransaction),
     ) {
-        if !self.do_local_insert {
-            event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
-            return;
-        }
-
         let Some(last_commit) = self.tracked.last_commit() else {
             event_tracker.drop_all(txs.into_iter(), EthTxPoolDropReason::PoolNotReady);
             return;

@@ -259,7 +259,6 @@ async fn run(node_state: NodeState, reload_handle: ReloadHandle) -> Result<(), (
                 queued_batches_watermark: node_state.node_config.ipc_queued_batches_watermark
                     as usize,
             },
-            true,
             // TODO(andr-dev): Add tx_expiry to node config
             Duration::from_secs(15),
             Duration::from_secs(5 * 60),

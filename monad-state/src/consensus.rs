@@ -227,8 +227,10 @@ where
             } => consensus.handle_block_sync(block_range, full_blocks),
             ConsensusEvent::SendVote(round) => consensus.handle_vote_timer(round),
         };
+        consensus.update_role();
         consensus_cmds
             .into_iter()
+            .filter(|cmd| consensus.filter_cmd(cmd))
             .map(|cmd| WrappedConsensusCommand {
                 state_root_delay: consensus.config.execution_delay,
                 command: cmd,

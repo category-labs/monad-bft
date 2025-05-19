@@ -69,7 +69,6 @@ where
         block_policy: EthBlockPolicy<ST, SCT>,
         state_backend: SBT,
         ipc_config: EthTxPoolIpcConfig,
-        do_local_insert: bool,
         soft_tx_expiry: Duration,
         hard_tx_expiry: Duration,
         chain_config: CCT,
@@ -78,7 +77,6 @@ where
         let (events_tx, events) = mpsc::unbounded_channel();
 
         let pool = EthTxPool::new(
-            do_local_insert,
             soft_tx_expiry,
             hard_tx_expiry,
             proposal_gas_limit,
