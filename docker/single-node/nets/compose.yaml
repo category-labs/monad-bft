@@ -22,7 +22,6 @@ services:
       --db /monad/triedb/test.db
       --block_db /monad/ledger
       --nblocks 0
-      --genesis /monad/config/genesis.json
       --log_level ERROR
     ulimits:
       memlock:

@@ -1104,7 +1104,7 @@ where
             {
                 let delayed_execution_result = block_buffer
                     .root_delayed_execution_result()
-                    .expect("is DB state empty? load genesis.json file if so");
+                    .expect("is DB state empty? use execution to populate genesis if so");
                 assert_eq!(
                     delayed_execution_result.len(),
                     1,
