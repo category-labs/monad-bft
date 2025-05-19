@@ -45,10 +45,7 @@ impl EthTxPoolBridgeStateView {
 
         Some(statuses)
     }
-}
 
-#[cfg(test)]
-impl EthTxPoolBridgeStateView {
     pub fn for_testing() -> Self {
         Self {
             status: Default::default(),

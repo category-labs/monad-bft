@@ -49,10 +49,7 @@ impl EthTxPoolBridgeClient {
     pub fn get_status_by_address(&self, address: &Address) -> Option<HashMap<TxHash, TxStatus>> {
         self.state.get_status_by_address(address)
     }
-}
 
-#[cfg(test)]
-impl EthTxPoolBridgeClient {
     pub fn for_testing() -> Self {
         let (tx_sender, _) = flume::bounded(0);
 

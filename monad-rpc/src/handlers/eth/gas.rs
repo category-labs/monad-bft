@@ -15,9 +15,11 @@ use tokio::sync::Mutex;
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_key_from_tag,
-    call::{fill_gas_params, CallRequest},
     eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
+    handlers::eth::{
+        block::get_block_key_from_tag,
+        call::{fill_gas_params, CallRequest},
+    },
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -454,6 +456,7 @@ mod tests {
     use monad_ethcall::{FailureCallResult, SuccessCallResult};
 
     use super::*;
+    use crate::handlers::eth::call::CallRequest;
 
     struct MockGasEstimator {
         gas_used: u64,

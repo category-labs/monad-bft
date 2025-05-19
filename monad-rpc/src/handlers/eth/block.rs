@@ -14,7 +14,7 @@ use crate::{
     eth_json_types::{
         BlockTagOrHash, BlockTags, EthHash, MonadBlock, MonadTransactionReceipt, Quantity,
     },
-    eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
+    handlers::eth::txn::{parse_tx_content, parse_tx_receipt},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 

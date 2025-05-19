@@ -37,7 +37,7 @@ pub struct RequestId {
 }
 
 impl RequestId {
-    pub fn new() -> Self {
+    pub fn random() -> Self {
         Self {
             id: rand::random::<u64>(),
         }
@@ -51,7 +51,7 @@ impl FromRequest for RequestId {
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
         match req.extensions().get::<RequestId>() {
             Some(request_id) => ready(Ok(request_id.clone())),
-            None => ready(Ok(RequestId::new())),
+            None => ready(Ok(RequestId::random())),
         }
     }
 }
@@ -74,7 +74,7 @@ where
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let start_time = Instant::now();
 
-        let request_id = RequestId::new();
+        let request_id = RequestId::random();
         let (request, payload) = req.into_parts();
         let id_int = request_id.id;
         request.extensions_mut().insert(request_id);

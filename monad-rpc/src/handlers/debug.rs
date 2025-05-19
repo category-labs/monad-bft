@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    block_handlers::get_block_key_from_tag,
     eth_json_types::{BlockTags, EthHash},
+    handlers::eth::block::get_block_key_from_tag,
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };

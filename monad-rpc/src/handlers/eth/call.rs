@@ -22,13 +22,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::trace;
 
+use super::block::get_block_key_from_tag_or_hash;
 use crate::{
-    block_handlers::get_block_key_from_tag_or_hash,
     eth_json_types::BlockTagOrHash,
+    handlers::debug_trace::{decode_call_frame, MonadCallFrame, TracerObject},
     hex,
     jsonrpc::{JsonRpcError, JsonRpcResult},
     timing::RequestId,
-    trace_handlers::{decode_call_frame, MonadCallFrame, TracerObject},
 };
 
 #[derive(Debug)]
@@ -63,20 +63,13 @@ impl Clone for CumulativeStats {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EthCallStatsTracker {
     active_requests: Arc<Mutex<HashMap<RequestId, EthCallRequestStats>>>,
     stats: CumulativeStats,
 }
 
 impl EthCallStatsTracker {
-    pub fn new() -> Self {
-        Self {
-            active_requests: Arc::new(Mutex::new(HashMap::new())),
-            stats: CumulativeStats::default(),
-        }
-    }
-
     pub async fn record_request_start(&self, request_id: &RequestId) {
         let mut requests = self.active_requests.lock().await;
         requests.insert(
@@ -788,6 +781,7 @@ mod tests {
 
     use alloy_consensus::{Header, TxEnvelope};
     use alloy_primitives::{Address, Bytes, U256};
+    use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{StateOverrideObject, StateOverrideSet};
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -796,7 +790,11 @@ mod tests {
     use monad_types::SeqNum;
     use serde_json::json;
 
-    use super::*;
+    use super::{fill_gas_params, CallRequest, GasPriceDetails};
+    use crate::{
+        handlers::eth::call::{sender_gas_allowance, CallInput},
+        jsonrpc::JsonRpcError,
+    };
 
     #[test]
     fn parse_call_request() {

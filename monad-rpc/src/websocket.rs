@@ -6,7 +6,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use tracing::debug;
 
-use crate::MonadRpcResources;
+use crate::handlers::resources::MonadRpcResources;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -105,8 +105,12 @@ mod tests {
     use tracing_actix_web::TracingLogger;
 
     use crate::{
-        call::EthCallStatsTracker, txpool::EthTxPoolBridgeClient, FixedFee,
-        MonadJsonRootSpanBuilder, MonadRpcResources,
+        fee::FixedFee,
+        handlers::{
+            eth::call::EthCallStatsTracker,
+            resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
+        },
+        txpool::EthTxPoolBridgeClient,
     };
 
     fn create_test_server() -> actix_test::TestServer {
@@ -115,7 +119,7 @@ mod tests {
             triedb_reader: None,
             eth_call_executor: None,
             eth_call_executor_fibers: 64,
-            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::new())),
+            eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 41454,
@@ -138,7 +142,7 @@ mod tests {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::PayloadConfig::default().limit(8192))
                 .app_data(web::Data::new(resources.clone()))
-                .service(web::resource("/").route(web::post().to(crate::rpc_handler)))
+                .service(web::resource("/").route(web::post().to(crate::handlers::rpc_handler)))
                 .service(web::resource("/ws/").route(web::get().to(crate::websocket::handler)))
         })
     }

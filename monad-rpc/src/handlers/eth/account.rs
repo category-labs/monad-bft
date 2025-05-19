@@ -5,8 +5,8 @@ use serde::Deserialize;
 use tracing::trace;
 
 use crate::{
-    block_handlers::get_block_key_from_tag_or_hash,
     eth_json_types::{BlockTagOrHash, EthAddress, MonadU256},
+    handlers::eth::block::get_block_key_from_tag_or_hash,
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 

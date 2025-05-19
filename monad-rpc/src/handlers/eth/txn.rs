@@ -25,12 +25,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    block_handlers::{block_receipts, get_block_key_from_tag},
     eth_json_types::{
         BlockTags, EthHash, MonadLog, MonadTransaction, MonadTransactionReceipt, Quantity,
         UnformattedData,
     },
     fee::BaseFeePerGas,
+    handlers::eth::block::{block_receipts, get_block_key_from_tag},
     jsonrpc::{JsonRpcError, JsonRpcResult},
     txpool::{EthTxPoolBridgeClient, TxStatus},
 };
