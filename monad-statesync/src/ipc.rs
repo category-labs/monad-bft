@@ -54,8 +54,11 @@ pub enum ExecutionMessage {
     SyncDone(bindings::monad_sync_done),
 }
 
+/// maximum number of upserts we can send in a single response
 /// at 75 bytes per upsert, approx 1.5MB
 const MAX_UPSERTS_PER_RESPONSE: usize = 20_000;
+/// maximum amount of data in upserts we can send in a single response
+const MAX_RESPONSE_SIZE: usize = 1_500_000;
 /// max number of chunked responses to send out before blocking on completions
 const MAX_PENDING_RESPONSES: usize = 2;
 
@@ -148,6 +151,9 @@ struct WipResponse<PT: PubKey> {
     /// last completion message received from the client
     completion_time: Instant,
 
+    /// number of bytes used by upserts in the response
+    response_size: usize,
+
     response: StateSyncResponse,
 
     /// outstanding unacknowledged responses
@@ -173,6 +179,7 @@ impl<PT: PubKey> WipResponse<PT> {
             service_start_time: Instant::now(),
             next_message_schedule: Instant::now() + MESSAGE_SCHEDULE_DURATION,
             completion_time: Instant::now(),
+            response_size: 0,
             response: StateSyncResponse {
                 version: request.version,
                 nonce: rand::random(),
@@ -197,7 +204,8 @@ impl<PT: PubKey> WipResponse<PT> {
 
     // Check if we have more space in the buffer
     pub fn has_space(&self) -> bool {
-        self.response.response.len() < MAX_UPSERTS_PER_RESPONSE
+        self.response_size < MAX_RESPONSE_SIZE
+            && self.response.response.len() < MAX_UPSERTS_PER_RESPONSE
     }
 }
 
@@ -341,6 +349,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         wip_response.response.response_index += 1;
         // unnecessary but keeping for clarity
         wip_response.response.response.clear();
+        wip_response.response_size = 0;
 
         // Reset timeout when sending message
         wip_response.next_message_schedule = Instant::now() + MESSAGE_SCHEDULE_DURATION;
@@ -366,9 +375,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
 
     fn maybe_send_batch(&mut self) {
         if let Some(wip_response) = &mut self.wip_response {
-            if wip_response.response.response.len() >= MAX_UPSERTS_PER_RESPONSE
-                && wip_response.can_send()
-            {
+            if !wip_response.has_space() && wip_response.can_send() {
                 self.send_batch()
             }
         }
@@ -387,13 +394,12 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                     .wip_response
                     .as_mut()
                     .expect("SyncUpsert with no pending_response");
+                wip_response.response_size += data.len();
                 wip_response
                     .response
                     .response
                     .push(StateSyncUpsertV1::new(upsert_type, data.into()));
-                if wip_response.response.response.len() == MAX_UPSERTS_PER_RESPONSE {
-                    self.maybe_send_batch();
-                }
+                self.maybe_send_batch();
             }
             ExecutionMessage::SyncDone(done) => {
                 // only one request can be handled at once - because no way of identifying which
