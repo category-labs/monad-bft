@@ -15,11 +15,9 @@ use tokio::sync::Mutex;
 use tracing::trace;
 
 use crate::{
-    eth_json_types::{BlockTags, MonadFeeHistory, Quantity},
-    handlers::eth::{
-        block::get_block_key_from_tag,
-        call::{fill_gas_params, CallRequest},
-    },
+    chainstate::{get_block_key_from_tag, ChainState},
+    eth_json_types::{BlockTagOrHash, BlockTags, MonadFeeHistory, Quantity},
+    handlers::eth::call::{fill_gas_params, CallRequest},
     jsonrpc::{JsonRpcError, JsonRpcResult},
 };
 
@@ -333,25 +331,16 @@ pub async fn suggested_priority_fee() -> Result<u64, JsonRpcError> {
 #[rpc(method = "eth_gasPrice")]
 #[allow(non_snake_case)]
 /// Returns the current price per gas in wei.
-pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_gasPrice<T: Triedb>(chain_state: &ChainState<T>) -> JsonRpcResult<Quantity> {
     trace!("monad_eth_gasPrice");
 
-    let block_key = get_block_key_from_tag(triedb_env, BlockTags::Latest);
-    let header = match triedb_env
-        .get_block_header(block_key)
+    let header = chain_state
+        .get_block_header(BlockTagOrHash::BlockTags(BlockTags::Latest))
         .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        Some(header) => header,
-        None => {
-            return Err(JsonRpcError::internal_error(
-                "error getting latest block header".into(),
-            ))
-        }
-    };
+        .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
 
     // Obtain base fee from latest block header
-    let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
+    let base_fee_per_gas = header.base_fee_per_gas.unwrap_or_default();
 
     // Obtain suggested priority fee
     let priority_fee = suggested_priority_fee().await.unwrap_or_default();
@@ -362,7 +351,7 @@ pub async fn monad_eth_gasPrice<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quan
 #[rpc(method = "eth_maxPriorityFeePerGas")]
 #[allow(non_snake_case)]
 /// Returns the current maxPriorityFeePerGas per gas in wei.
-pub async fn monad_eth_maxPriorityFeePerGas<T: Triedb>(triedb_env: &T) -> JsonRpcResult<Quantity> {
+pub async fn monad_eth_maxPriorityFeePerGas() -> JsonRpcResult<Quantity> {
     trace!("monad_eth_maxPriorityFeePerGas");
 
     let priority_fee = suggested_priority_fee().await.unwrap_or_default();
@@ -382,7 +371,7 @@ pub struct MonadEthHistoryParams {
 /// Transaction fee history
 /// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
 pub async fn monad_eth_feeHistory<T: Triedb>(
-    triedb_env: &T,
+    chain_state: &ChainState<T>,
     params: MonadEthHistoryParams,
 ) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
@@ -395,24 +384,15 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         ));
     }
 
-    let block_key = get_block_key_from_tag(triedb_env, params.newest_block);
-    let header = match triedb_env
-        .get_block_header(block_key)
+    let header = chain_state
+        .get_block_header(BlockTagOrHash::BlockTags(params.newest_block))
         .await
-        .map_err(JsonRpcError::internal_error)?
-    {
-        Some(header) => header,
-        None => {
-            return Err(JsonRpcError::internal_error(
-                "Unable to retrieve specified block".into(),
-            ))
-        }
-    };
+        .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
 
-    let base_fee_per_gas = header.header.base_fee_per_gas.unwrap_or_default();
-    let gas_used_ratio = (header.header.gas_used as f64).div(header.header.gas_limit as f64);
-    let blob_gas_used = header.header.blob_gas_used.unwrap_or_default();
-    let blob_gas_used_ratio = (blob_gas_used as f64).div(header.header.gas_limit as f64);
+    let base_fee_per_gas = header.base_fee_per_gas.unwrap_or_default();
+    let gas_used_ratio = (header.gas_used as f64).div(header.gas_limit as f64);
+    let blob_gas_used = header.blob_gas_used.unwrap_or_default();
+    let blob_gas_used_ratio = (blob_gas_used as f64).div(header.gas_limit as f64);
 
     let reward = match params.reward_percentiles {
         Some(percentiles) => {
@@ -446,7 +426,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         // TODO: proper calculation of blob fee
         base_fee_per_blob_gas: vec![base_fee_per_gas.into(); (block_count + 1) as usize],
         blob_gas_used_ratio: vec![blob_gas_used_ratio; block_count as usize],
-        oldest_block: header.header.number.saturating_sub(block_count),
+        oldest_block: header.number.saturating_sub(block_count),
         reward,
     }))
 }

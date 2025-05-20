@@ -123,6 +123,7 @@ mod tests {
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 41454,
+            chain_state: None,
             batch_request_limit: 1000,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,

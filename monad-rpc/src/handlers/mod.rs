@@ -187,9 +187,9 @@ async fn debug_getRawBlock(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_debug_getRawBlock(triedb_env, &app_state.archive_reader, params)
+    monad_debug_getRawBlock(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -200,9 +200,9 @@ async fn debug_getRawHeader(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_debug_getRawHeader(triedb_env, &app_state.archive_reader, params)
+    monad_debug_getRawHeader(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -213,9 +213,9 @@ async fn debug_getRawReceipts(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_debug_getRawReceipts(triedb_env, &app_state.archive_reader, params)
+    monad_debug_getRawReceipts(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -226,9 +226,9 @@ async fn debug_getRawTransaction(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let triedb_env = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_debug_getRawTransaction(triedb_env, &app_state.archive_reader, params)
+    monad_debug_getRawTransaction(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -395,9 +395,9 @@ async fn eth_getTransactionByHash(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+    if let Some(chain_state) = app_state.chain_state.as_ref() {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getTransactionByHash(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getTransactionByHash(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -411,9 +411,9 @@ async fn eth_getBlockByHash(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
+    if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getBlockByHash(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getBlockByHash(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -427,9 +427,9 @@ async fn eth_getBlockByNumber(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(reader) = &app_state.triedb_reader {
+    if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getBlockByNumber(reader, &app_state.archive_reader, params)
+        monad_eth_getBlockByNumber(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -443,9 +443,9 @@ async fn eth_getTransactionByBlockHashAndIndex(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
+    if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getTransactionByBlockHashAndIndex(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getTransactionByBlockHashAndIndex(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -459,9 +459,9 @@ async fn eth_getTransactionByBlockNumberAndIndex(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
+    if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getTransactionByBlockNumberAndIndex(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getTransactionByBlockNumberAndIndex(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -475,9 +475,9 @@ async fn eth_getBlockTransactionCountByHash(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+    if let Some(chain_state) = app_state.chain_state.as_ref() {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getBlockTransactionCountByHash(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getBlockTransactionCountByHash(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -491,9 +491,9 @@ async fn eth_getBlockTransactionCountByNumber(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = app_state.triedb_reader.as_ref() {
+    if let Some(chain_state) = app_state.chain_state.as_ref() {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_getBlockTransactionCountByNumber(triedb_env, &app_state.archive_reader, params)
+        monad_eth_getBlockTransactionCountByNumber(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -571,8 +571,10 @@ async fn eth_blockNumber(
     app_state: &MonadRpcResources,
     _params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(reader) = &app_state.triedb_reader {
-        monad_eth_blockNumber(reader).await.map(serialize_result)?
+    if let Some(chain_state) = &app_state.chain_state {
+        monad_eth_blockNumber(chain_state)
+            .await
+            .map(serialize_result)?
     } else {
         Err(JsonRpcError::method_not_supported())
     }
@@ -652,21 +654,8 @@ async fn eth_gasPrice(
     app_state: &MonadRpcResources,
     _params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
-        monad_eth_gasPrice(triedb_env).await.map(serialize_result)?
-    } else {
-        Err(JsonRpcError::method_not_supported())
-    }
-}
-
-#[allow(non_snake_case)]
-async fn eth_maxPriorityFeePerGas(
-    _: RequestId,
-    app_state: &MonadRpcResources,
-    _params: Value,
-) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
-        monad_eth_maxPriorityFeePerGas(triedb_env)
+    if let Some(chain_state) = &app_state.chain_state {
+        monad_eth_gasPrice(chain_state)
             .await
             .map(serialize_result)?
     } else {
@@ -675,14 +664,25 @@ async fn eth_maxPriorityFeePerGas(
 }
 
 #[allow(non_snake_case)]
+async fn eth_maxPriorityFeePerGas(
+    _: RequestId,
+    _app_state: &MonadRpcResources,
+    _params: Value,
+) -> Result<Value, JsonRpcError> {
+    monad_eth_maxPriorityFeePerGas()
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
 async fn eth_feeHistory(
     _: RequestId,
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    if let Some(triedb_env) = &app_state.triedb_reader {
+    if let Some(chain_state) = &app_state.chain_state {
         let params = serde_json::from_value(params).invalid_params()?;
-        monad_eth_feeHistory(triedb_env, params)
+        monad_eth_feeHistory(chain_state, params)
             .await
             .map(serialize_result)?
     } else {
@@ -696,12 +696,12 @@ async fn eth_getTransactionReceipt(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let Some(triedb_reader) = &app_state.triedb_reader else {
+    let Some(chain_state) = &app_state.chain_state else {
         return Err(JsonRpcError::method_not_supported());
     };
 
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_eth_getTransactionReceipt(triedb_reader, &app_state.archive_reader, params)
+    monad_eth_getTransactionReceipt(chain_state, params)
         .await
         .map(serialize_result)?
 }
@@ -712,9 +712,9 @@ async fn eth_getBlockReceipts(
     app_state: &MonadRpcResources,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    let triedb_reader = app_state.triedb_reader.as_ref().method_not_supported()?;
+    let chain_state = app_state.chain_state.as_ref().method_not_supported()?;
     let params = serde_json::from_value(params).invalid_params()?;
-    monad_eth_getBlockReceipts(triedb_reader, &app_state.archive_reader, params)
+    monad_eth_getBlockReceipts(chain_state, params)
         .await
         .map(serialize_result)?
 }

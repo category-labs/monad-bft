@@ -8,6 +8,7 @@ use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
 use monad_pprof::start_pprof_server;
 use monad_rpc::{
+    chainstate::ChainState,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
@@ -222,6 +223,10 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|provider| metrics::Metrics::new(provider.clone().meter("opentelemetry")));
 
+    let chain_state = triedb_env
+        .clone()
+        .map(|t| ChainState::new(t, archive_reader.clone()));
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         triedb_env,
@@ -230,6 +235,7 @@ async fn main() -> std::io::Result<()> {
         archive_reader,
         BASE_FEE_PER_GAS.into(),
         node_config.chain_id,
+        chain_state,
         args.batch_request_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
@@ -320,6 +326,7 @@ mod tests {
             archive_reader: None,
             base_fee_per_gas: FixedFee::new(2000),
             chain_id: 1337,
+            chain_state: None,
             batch_request_limit: 5,
             max_response_size: 25_000_000,
             allow_unprotected_txs: false,

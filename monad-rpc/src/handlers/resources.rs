@@ -14,7 +14,8 @@ use tracing_actix_web::RootSpanBuilder;
 
 use super::eth::call::EthCallStatsTracker;
 use crate::{
-    fee::FixedFee, metrics::Metrics, txpool::EthTxPoolBridgeClient, websocket::Disconnect,
+    chainstate::ChainState, fee::FixedFee, metrics::Metrics, txpool::EthTxPoolBridgeClient,
+    websocket::Disconnect,
 };
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub struct MonadRpcResources {
     pub archive_reader: Option<ArchiveReader>,
     pub base_fee_per_gas: FixedFee,
     pub chain_id: u64,
+    pub chain_state: Option<ChainState<TriedbEnv>>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
@@ -59,6 +61,7 @@ impl MonadRpcResources {
         archive_reader: Option<ArchiveReader>,
         fixed_base_fee: u128,
         chain_id: u64,
+        chain_state: Option<ChainState<TriedbEnv>>,
         batch_request_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
@@ -86,6 +89,7 @@ impl MonadRpcResources {
             archive_reader,
             base_fee_per_gas: FixedFee::new(fixed_base_fee),
             chain_id,
+            chain_state,
             batch_request_limit,
             max_response_size,
             allow_unprotected_txs,
