@@ -5228,7 +5228,6 @@ dependencies = [
  "toml 0.7.8",
  "tracing",
  "tracing-actix-web",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "vergen-git2",
 ]

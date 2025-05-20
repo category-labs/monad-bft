@@ -61,7 +61,6 @@ tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [dev-dependencies]
