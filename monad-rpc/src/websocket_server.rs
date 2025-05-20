@@ -40,7 +40,10 @@ pub enum Event {
 }
 
 impl WebSocketServer {
-    pub fn new(rx: flume::Receiver<PollResult>, broadcaster: tokio::sync::broadcast::Sender<Event>) -> Self {
+    pub fn new(
+        rx: flume::Receiver<PollResult>,
+        broadcaster: tokio::sync::broadcast::Sender<Event>,
+    ) -> Self {
         Self {
             rx,
             block_builder: BlockBuilder::new(),
@@ -90,27 +93,37 @@ impl WebSocketServer {
                             outcome,
                         } = &event
                         {
-                            if let ConsensusStateResult::Finalization {
-                                finalized_proposal: _,
-                                abandoned_proposals,
-                            } = self.consensus_state_tracker.update_proposal(
+                            match self.consensus_state_tracker.update_proposal(
                                 proposal_meta.block_number,
                                 &proposal_meta.id,
                                 *outcome,
                             ) {
-                                for abandoned in abandoned_proposals {
+                                ConsensusStateResult::Finalization {
+                                    finalized_proposal: _,
+                                    abandoned_proposals,
+                                } => {
+                                    for abandoned in abandoned_proposals {
+                                        self.process_block_update(
+                                            &abandoned.user_data,
+                                            ReferendumOutcome::Abandoned,
+                                        )
+                                        .await;
+                                        self.process_event_stream_item(
+                                            StreamEvent::AbandonedProposal {
+                                                proposal_meta: abandoned.proposal_meta,
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                }
+                                ConsensusStateResult::Verification(verified_proposal) => {
                                     self.process_block_update(
-                                        &abandoned.user_data,
-                                        ReferendumOutcome::Abandoned,
-                                    )
-                                    .await;
-                                    self.process_event_stream_item(
-                                        StreamEvent::AbandonedProposal {
-                                            proposal_meta: abandoned.proposal_meta,
-                                        },
+                                        &verified_proposal.user_data,
+                                        ReferendumOutcome::Advanced(*outcome),
                                     )
                                     .await;
                                 }
+                                _ => {}
                             }
 
                             if let Some(opt_proposal_state) = self

@@ -725,7 +725,8 @@ mod tests {
     }
 
     fn create_test_server(rx_exec_events: Receiver<PollResult>) -> actix_test::TestServer {
-        let (websocket_broadcast_tx, websocket_broadcast_rx) = tokio::sync::broadcast::channel::<Event>(10_000);
+        let (websocket_broadcast_tx, websocket_broadcast_rx) =
+            tokio::sync::broadcast::channel::<Event>(10_000);
 
         let ws_server = WebSocketServer::new(rx_exec_events, websocket_broadcast_tx.clone());
         tokio::spawn(async move {
@@ -1080,6 +1081,8 @@ mod tests {
         // finalized (1)
         // voted (2)
         // finalized (2)
+        // verified (1)
+        // verified (2)
         let block_one_id = BlockId(Hash([1; 32]));
         let block_two_id = BlockId(Hash([2; 32]));
 
@@ -1164,8 +1167,27 @@ mod tests {
         .unwrap();
         event_counter += 1;
 
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_one,
+                outcome: ConsensusState::Verified,
+            },
+        })
+        .unwrap();
+        event_counter += 1;
+
+        tx.send(PollResult::Ready {
+            seqno: event_counter,
+            event: ExecEvent::Referendum {
+                proposal_meta: proposal_two,
+                outcome: ConsensusState::Verified,
+            },
+        })
+        .unwrap();
+
         // Assert the order of notifications received by client.
-        for idx in 0..6 {
+        for idx in 0..8 {
             let frame = framed.next().await.unwrap().unwrap();
             if let Frame::Text(update) = frame {
                 let update: serde_json::Value = serde_json::from_slice(&update).unwrap();
@@ -1202,6 +1224,14 @@ mod tests {
                         5 => {
                             assert_eq!(block_id, block_two_id);
                             assert!(matches!(commit_state, BlockCommitState::Finalized));
+                        }
+                        6 => {
+                            assert_eq!(block_id, block_one_id);
+                            assert!(matches!(commit_state, BlockCommitState::Verified));
+                        }
+                        7 => {
+                            assert_eq!(block_id, block_two_id);
+                            assert!(matches!(commit_state, BlockCommitState::Verified));
                         }
                         _ => {
                             panic!("Unexpected speculative new head");
