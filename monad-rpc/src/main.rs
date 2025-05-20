@@ -6,6 +6,7 @@ use monad_archive::archive_reader::ArchiveReader;
 use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
+use monad_pprof::start_pprof_server;
 use monad_rpc::{
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -19,7 +20,7 @@ use monad_rpc::{
 use monad_tracing_timing::TimingsLayer;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::metrics::MeterProvider;
-use tokio::sync::Semaphore;
+use tokio::{spawn, sync::Semaphore};
 use tracing::{debug, error, info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{
@@ -32,9 +33,19 @@ use self::cli::Cli;
 
 mod cli;
 
+#[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemallocator")]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
+
     let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
         .expect("node toml parse error");
 
@@ -51,6 +62,21 @@ async fn main() -> std::io::Result<()> {
                 .with_ansi(false),
         );
     tracing::subscriber::set_global_default(s).expect("failed to set logger");
+
+    if !args.pprof.is_empty() {
+        spawn(async {
+            let server = match start_pprof_server(args.pprof) {
+                Ok(server) => server,
+                Err(err) => {
+                    error!("failed to start pprof server: {}", err);
+                    return;
+                }
+            };
+            if let Err(err) = server.await {
+                error!("pprof server faiiled: {}", err);
+            }
+        });
+    }
 
     // initialize concurrent requests limiter
     let concurrent_requests_limiter = Arc::new(Semaphore::new(

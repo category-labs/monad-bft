@@ -139,4 +139,11 @@ pub struct Cli {
     /// Dry run using mongo index for eth_getLogs
     #[arg(long)]
     pub dry_run_get_logs_index: bool,
+
+    #[arg(
+        long,
+        help = "listen address for pprof server. pprof server won't be enabled if address is empty",
+        default_value = ""
+    )]
+    pub pprof: String,
 }

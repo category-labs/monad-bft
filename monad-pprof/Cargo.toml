@@ -1,0 +1,13 @@
+[package]
+name = "monad-pprof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = { workspace = true }
+actix-server = { workspace = true }
+serde = { workspace = true }
+jemalloc_pprof = { workspace = true, optional = true }
+
+[features]
+jemallocator = ["dep:jemalloc_pprof"]

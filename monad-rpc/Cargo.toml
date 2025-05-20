@@ -17,6 +17,10 @@ path = "./bin/docs.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["jemallocator"]
+jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
+
 [dependencies]
 monad-chain-config = { workspace = true }
 monad-archive = { workspace = true }
@@ -26,9 +30,10 @@ monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
 monad-node-config = { workspace = true }
 monad-rpc-docs = { workspace = true }
+monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
-monad-tracing-timing = { workspace = true }
+monad-pprof = { workspace = true }
 
 actix = { workspace = true }
 actix-http = { workspace = true }
@@ -63,6 +68,10 @@ toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-actix-web = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+[target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
+workspace = true
+features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"]
+optional = true
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }

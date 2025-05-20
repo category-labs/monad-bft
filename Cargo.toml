@@ -54,6 +54,7 @@ monad-node-config = { path = "./monad-node-config" }
 monad-peer-disc-swarm = { path = "./monad-peer-disc-swarm" }
 monad-peer-discovery = { path = "./monad-peer-discovery" }
 monad-perf-util = { path = "./monad-perf-util" }
+monad-pprof = { path = "./monad-pprof" }
 monad-proto = { path = "./monad-proto" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
@@ -78,6 +79,7 @@ monad-validator = { path = "./monad-validator" }
 monad-wal = { path = "./monad-wal" }
 
 actix = "0.13"
+actix-server = "2.5.1"
 actix-http = "3.6.0"
 actix-test = "0.1"
 actix-web = "4.5.1"
@@ -135,6 +137,7 @@ indexmap = "2.4.0"
 inotify = "0.11"
 inventory = "0.3"
 itertools = "0.10"
+jemalloc_pprof = "0.7"
 libc = "0.2.153"
 lru = "0.12"
 lz4 = "1.28"
@@ -182,6 +185,7 @@ syn = { version = "1.0.0", features = ["full"] }
 tempfile = "3.5"
 test-case = "3.0"
 thiserror = "1.0"
+tikv-jemallocator = "0.6"
 tiny-bip39 = "1.0"
 tiny-keccak = "2"
 tokio = { version = "1.39", features = ["sync"] }
