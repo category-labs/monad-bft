@@ -13,7 +13,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, StateRootHashCommand};
-use monad_peer_discovery::mock::{PingPongDiscovery, PingPongDiscoveryBuilder};
+use monad_peer_discovery::mock::{NopDiscovery, NopDiscoveryBuilder};
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_state_backend::InMemoryState;
@@ -69,7 +69,7 @@ where
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
     state_backend: InMemoryState,
-    config: ExecutorConfig<ST, SCT, MockExecutionProtocol, PingPongDiscoveryBuilder<ST>>,
+    config: ExecutorConfig<ST, SCT, MockExecutionProtocol, NopDiscoveryBuilder<ST>>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
@@ -105,7 +105,7 @@ where
                 MonadMessage<ST, SCT, MockExecutionProtocol>,
                 VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
                 MonadEvent<ST, SCT, MockExecutionProtocol>,
-                PingPongDiscovery<ST>,
+                NopDiscovery<ST>,
             >::new(config)),
         },
         timer: TokioTimer::default(),
