@@ -2,7 +2,6 @@ pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod memory;
 pub mod mongo;
-pub mod rocksdb_storage;
 pub mod s3;
 pub mod triedb_reader;
 
@@ -17,16 +16,12 @@ use tokio_retry::{
     RetryIf,
 };
 
-use self::{
-    cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage,
-    rocksdb_storage::RocksDbClient,
-};
+use self::{cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage};
 use crate::prelude::*;
 
 #[enum_dispatch(KVStore, KVReader)]
 #[derive(Clone)]
 pub enum KVStoreErased {
-    RocksDbClient,
     S3Bucket,
     DynamoDBArchive,
     MemoryStorage,
@@ -36,7 +31,6 @@ pub enum KVStoreErased {
 #[enum_dispatch(KVReader)]
 #[derive(Clone)]
 pub enum KVReaderErased {
-    RocksDbClient,
     S3Bucket,
     MemoryStorage,
     DynamoDBArchive,
@@ -47,7 +41,6 @@ pub enum KVReaderErased {
 impl From<KVStoreErased> for KVReaderErased {
     fn from(value: KVStoreErased) -> Self {
         match value {
-            KVStoreErased::RocksDbClient(x) => KVReaderErased::RocksDbClient(x),
             KVStoreErased::S3Bucket(x) => KVReaderErased::S3Bucket(x),
             KVStoreErased::MemoryStorage(x) => KVReaderErased::MemoryStorage(x),
             KVStoreErased::DynamoDBArchive(x) => KVReaderErased::DynamoDBArchive(x),

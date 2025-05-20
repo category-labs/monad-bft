@@ -165,7 +165,6 @@ ratatui = "0.26.0"
 rayon = "1.7"
 regex = "1.10.2"
 reqwest = { version = "0.11", features = ["json"] }
-rocksdb = "0.23.0"
 schemars = "0.8.21"
 scrypt = { version = "0.11", default-features = false }
 secp256k1 = "0.26"

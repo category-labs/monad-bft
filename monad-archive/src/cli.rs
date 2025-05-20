@@ -8,10 +8,7 @@ use eyre::{bail, OptionExt};
 use futures::join;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    kvstore::{mongo::MongoDbStorage, rocksdb_storage::RocksDbClient},
-    prelude::*,
-};
+use crate::{kvstore::mongo::MongoDbStorage, prelude::*};
 
 const DEFAULT_BLOB_STORE_TIMEOUT: u64 = 30;
 const DEFAULT_INDEX_STORE_TIMEOUT: u64 = 20;
@@ -49,7 +46,6 @@ pub async fn get_aws_config(region: Option<String>, timeout_secs: u64) -> SdkCon
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum BlockDataReaderArgs {
     Aws(AwsCliArgs),
-    RocksDb(RocksDbCliArgs),
     Triedb(TrieDbCliArgs),
     MongoDb(MongoDbCliArgs),
 }
@@ -57,7 +53,6 @@ pub enum BlockDataReaderArgs {
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum ArchiveArgs {
     Aws(AwsCliArgs),
-    RocksDb(RocksDbCliArgs),
     MongoDb(MongoDbCliArgs),
 }
 
@@ -76,7 +71,6 @@ impl FromStr for BlockDataReaderArgs {
 
         Ok(match first.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(next)?),
-            "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
             "triedb" => Triedb(TrieDbCliArgs::parse(next)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
             _ => {
@@ -101,7 +95,6 @@ impl FromStr for ArchiveArgs {
 
         Ok(match first.to_lowercase().as_str() {
             "aws" => Aws(AwsCliArgs::parse(next)?),
-            "rocksdb" => RocksDb(RocksDbCliArgs::parse(next)?),
             "mongodb" => MongoDb(MongoDbCliArgs::parse(next)?),
             _ => {
                 bail!("Unrecognized storage args variant: {first}");
@@ -115,7 +108,6 @@ impl BlockDataReaderArgs {
         use BlockDataReaderArgs::*;
         Ok(match self {
             Aws(args) => BlockDataArchive::new(args.build_blob_store(metrics).await).into(),
-            RocksDb(args) => BlockDataArchive::new(RocksDbClient::try_from(args)?).into(),
             Triedb(args) => TriedbReader::new(args).into(),
             MongoDb(args) => BlockDataArchive::new(
                 MongoDbStorage::new_block_store(&args.url, &args.db, None).await?,
@@ -128,7 +120,6 @@ impl BlockDataReaderArgs {
         use BlockDataReaderArgs::*;
         match self {
             Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
-            RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
             Triedb(trie_db_cli_args) => trie_db_cli_args.triedb_path.clone(),
             MongoDb(mongo_db_cli_args) => {
                 format!("{}:{}", mongo_db_cli_args.url, mongo_db_cli_args.db)
@@ -141,7 +132,6 @@ impl ArchiveArgs {
     pub async fn build_block_data_archive(&self, metrics: &Metrics) -> Result<BlockDataArchive> {
         let store = match self {
             ArchiveArgs::Aws(args) => args.build_blob_store(metrics).await,
-            ArchiveArgs::RocksDb(args) => RocksDbClient::try_from(args)?.into(),
             ArchiveArgs::MongoDb(args) => {
                 MongoDbStorage::new_block_store(&args.url, &args.db, args.capped_size_gb)
                     .await?
@@ -162,10 +152,6 @@ impl ArchiveArgs {
                     args.build_blob_store(metrics),
                     args.build_index_store(metrics)
                 )
-            }
-            ArchiveArgs::RocksDb(args) => {
-                let store = KVStoreErased::from(args.build()?);
-                (store.clone(), store)
             }
             ArchiveArgs::MongoDb(args) => (
                 MongoDbStorage::new_block_store(&args.url, &args.db, None)
@@ -191,10 +177,6 @@ impl ArchiveArgs {
                     args.build_index_store(metrics)
                 )
             }
-            ArchiveArgs::RocksDb(args) => {
-                let store = KVStoreErased::from(args.build()?);
-                (store.clone(), store)
-            }
             ArchiveArgs::MongoDb(args) => (
                 MongoDbStorage::new_block_store(&args.url, &args.db, None)
                     .await?
@@ -216,7 +198,6 @@ impl ArchiveArgs {
     pub fn replica_name(&self) -> String {
         match self {
             ArchiveArgs::Aws(aws_cli_args) => aws_cli_args.bucket.clone(),
-            ArchiveArgs::RocksDb(rocks_db_cli_args) => rocks_db_cli_args.db_path.clone(),
             ArchiveArgs::MongoDb(mongo_db_cli_args) => mongo_db_cli_args.db.clone(),
         }
     }
@@ -258,23 +239,6 @@ impl AwsCliArgs {
             metrics.clone(),
         )
         .into()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
-pub struct RocksDbCliArgs {
-    pub db_path: String,
-}
-
-impl RocksDbCliArgs {
-    pub fn parse(mut next: impl FnMut(&'static str) -> Result<String>) -> Result<Self> {
-        Ok(Self {
-            db_path: next("rocksdb args missing db path")?,
-        })
-    }
-
-    pub fn build(&self) -> Result<RocksDbClient> {
-        RocksDbClient::new(&self.db_path)
     }
 }
 

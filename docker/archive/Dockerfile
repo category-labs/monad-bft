@@ -69,9 +69,7 @@ ARG TRIEDB_TARGET=triedb_driver
 
 # Builder
 COPY . .
-# the -include cstdint is for compiling rocksdb under gcc-15
-# ref: https://github.com/facebook/rocksdb/issues/13365
-RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL -include cstdint" \
+RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
     CC=gcc-15 CXX=g++-15 cargo build --release \
     --bin monad-archiver \
     --bin monad-archive-checker \
