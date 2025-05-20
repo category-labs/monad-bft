@@ -14,8 +14,7 @@ use monad_eth_types::BASE_FEE_PER_GAS;
 use monad_ethcall::EthCallExecutor;
 use monad_node_config::MonadNodeConfig;
 use monad_triedb_utils::triedb_env::TriedbEnv;
-use opentelemetry::{metrics::MeterProvider, trace::TracerProvider, KeyValue};
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry::metrics::MeterProvider;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -728,69 +727,18 @@ async fn main() -> std::io::Result<()> {
     let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
         .expect("node toml parse error");
 
-    let otlp_exporter: Option<opentelemetry_otlp::SpanExporter> =
-        args.otel_endpoint.as_ref().map(|endpoint| {
-            opentelemetry_otlp::SpanExporterBuilder::Tonic(
-                opentelemetry_otlp::new_exporter()
-                    .tonic()
-                    .with_endpoint(endpoint),
-            )
-            .build_span_exporter()
-            .expect("cannot build span exporter for otel_endpoint")
-        });
-
-    let rt = opentelemetry_sdk::runtime::Tokio;
-
-    let otel_span_telemetry = match otlp_exporter {
-        Some(exporter) => {
-            let otel_config = opentelemetry_sdk::trace::Config::default().with_resource(
-                opentelemetry_sdk::Resource::new(vec![KeyValue::new(
-                    "service.name".to_string(),
-                    node_config.node_name.clone(),
-                )]),
-            );
-
-            let trace_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-                .with_config(otel_config)
-                .with_batch_exporter(exporter, rt)
-                .build();
-            let tracer = trace_provider.tracer("monad-rpc");
-            Some(tracing_opentelemetry::layer().with_tracer(tracer))
-        }
-        None => None,
-    };
-
-    let fmt_layer = FmtLayer::default()
-        .json()
-        .with_span_events(FmtSpan::NONE)
-        .with_current_span(false)
-        .with_span_list(false)
-        .with_writer(std::io::stdout)
-        .with_ansi(false);
-
-    match otel_span_telemetry {
-        Some(telemetry) => {
-            let s = Registry::default()
-                .with(EnvFilter::from_default_env())
-                .with(telemetry)
-                .with(fmt_layer);
-            tracing::subscriber::set_global_default(s).expect("failed to set logger");
-        }
-        None => {
-            let s = Registry::default()
-                .with(EnvFilter::from_default_env())
-                .with(
-                    FmtLayer::default()
-                        .json()
-                        .with_span_events(FmtSpan::NONE)
-                        .with_current_span(false)
-                        .with_span_list(false)
-                        .with_writer(std::io::stdout)
-                        .with_ansi(false),
-                );
-            tracing::subscriber::set_global_default(s).expect("failed to set logger");
-        }
-    };
+    let s = Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(
+            FmtLayer::default()
+                .json()
+                .with_span_events(FmtSpan::NONE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_writer(std::io::stdout)
+                .with_ansi(false),
+        );
+    tracing::subscriber::set_global_default(s).expect("failed to set logger");
 
     // initialize concurrent requests limiter
     let concurrent_requests_limiter = Arc::new(Semaphore::new(
