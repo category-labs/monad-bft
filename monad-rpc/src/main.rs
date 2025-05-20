@@ -832,6 +832,7 @@ async fn main() -> std::io::Result<()> {
 
     // Used for compute heavy tasks
     rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("monad-rpc-rn-{i}"))
         .num_threads(args.compute_threadpool_size)
         .build_global()
         .unwrap();

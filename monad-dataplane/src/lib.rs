@@ -45,25 +45,28 @@ impl DataplaneBuilder {
         let (udp_ingress_tx, udp_ingress_rx) = mpsc::channel(UDP_INGRESS_CHANNEL_SIZE);
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
 
-        thread::spawn(move || {
-            RuntimeBuilder::<IoUringDriver>::new()
-                .enable_timer()
-                .build()
-                .expect("Failed building the Runtime")
-                .block_on(async move {
-                    tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx, buffer_size);
+        thread::Builder::new()
+            .name("monad-dataplane".into())
+            .spawn(move || {
+                RuntimeBuilder::<IoUringDriver>::new()
+                    .enable_timer()
+                    .build()
+                    .expect("Failed building the Runtime")
+                    .block_on(async move {
+                        tcp::spawn_tasks(local_addr, tcp_ingress_tx, tcp_egress_rx, buffer_size);
 
-                    udp::spawn_tasks(
-                        local_addr,
-                        udp_ingress_tx,
-                        udp_egress_rx,
-                        up_bandwidth_mbps,
-                        buffer_size,
-                    );
+                        udp::spawn_tasks(
+                            local_addr,
+                            udp_ingress_tx,
+                            udp_egress_rx,
+                            up_bandwidth_mbps,
+                            buffer_size,
+                        );
 
-                    futures::future::pending::<()>().await;
-                });
-        });
+                        futures::future::pending::<()>().await;
+                    });
+            })
+            .expect("failed to spawn dataplane thread");
 
         Dataplane {
             tcp_ingress_rx,

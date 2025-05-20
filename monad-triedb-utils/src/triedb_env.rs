@@ -657,17 +657,21 @@ impl TriedbEnv {
         let meta_cloned = meta.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
         let tokio_handle = tokio::runtime::Handle::current();
-        thread::spawn(move || {
-            polling_thread(
-                tokio_handle,
-                triedb_path_cloned,
-                meta_cloned,
-                receiver_read,
-                max_async_read_concurrency,
-                receiver_traverse,
-                max_async_traverse_concurrency,
-            );
-        });
+
+        thread::Builder::new()
+            .name("monad-rpc-poll".into())
+            .spawn(move || {
+                polling_thread(
+                    tokio_handle,
+                    triedb_path_cloned,
+                    meta_cloned,
+                    receiver_read,
+                    max_async_read_concurrency,
+                    receiver_traverse,
+                    max_async_traverse_concurrency,
+                );
+            })
+            .expect("failed to spawn rpc poll");
 
         Self {
             triedb_path: triedb_path.to_path_buf(),

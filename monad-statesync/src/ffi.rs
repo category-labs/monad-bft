@@ -4,6 +4,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
+    thread,
     time::Duration,
 };
 
@@ -158,7 +159,7 @@ impl<PT: PubKey> StateSync<PT> {
         let progress = Arc::new(Mutex::new(Progress::default()));
         let progress_clone = Arc::clone(&progress);
 
-        std::thread::spawn(move || {
+        thread::Builder::new().name("monad-statesync".to_string()).spawn(move || {
             let db_paths_ptrs: Vec<*const i8> = db_paths.iter().map(|s| s.as_ptr()).collect();
             let db_paths_ptr = db_paths_ptrs.as_ptr();
             let num_db_paths = db_paths_ptrs.len();
@@ -317,7 +318,7 @@ impl<PT: PubKey> StateSync<PT> {
             }
             // this loop exits when execution is about to start
             assert!(sync_ctx.ctx.is_none());
-        });
+        }).expect("failed to spawn statesync thread");
 
         Self {
             state_sync_peers: state_sync_peers.to_vec(),

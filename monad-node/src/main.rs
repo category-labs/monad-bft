@@ -78,6 +78,7 @@ fn main() {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(8)
+        .thread_name(|i| format!("monad-bft-rn-{}", i))
         .build_global()
         .map_err(Into::into)
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
