@@ -189,7 +189,7 @@ fn process_blocks(
 }
 
 /// Processes a single block across all replicas
-fn process_single_block(
+pub fn process_single_block(
     block_num: u64,
     replica_data: &HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>>,
     faults_by_replica: &mut HashMap<String, Vec<Fault>>,

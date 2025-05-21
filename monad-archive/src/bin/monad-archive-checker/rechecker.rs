@@ -5,7 +5,8 @@ use opentelemetry::KeyValue;
 use tokio::time::interval;
 
 use crate::{
-    model::{CheckerModel, Fault, FaultKind, InconsistentBlockReason},
+    checker::process_single_block,
+    model::{CheckerModel, Fault, FaultKind, GoodBlocks, InconsistentBlockReason},
     CHUNK_SIZE,
 };
 
@@ -163,9 +164,19 @@ pub(crate) async fn recheck_fault_chunk(
         )
     });
 
+    let all_faulty_blocks: Vec<(u64, Option<(Block, BlockReceipts, BlockTraces)>)> =
+        join_all(faulty_blocks).await;
+
+    let good_blocks = find_or_update_good_block(model, chunk_start, &all_faulty_blocks).await?;
+
+    // Ensure we have a good block for each faulty block
+    eyre::ensure!(
+        good_blocks.len() == all_faulty_blocks.len(),
+        "Should have a good block for every faulty block"
+    );
+
     // Process fetched blocks, recording any that are still missing
-    let faulty_blocks = join_all(faulty_blocks)
-        .await
+    let faulty_blocks = all_faulty_blocks
         .into_iter()
         .filter_map(|(block_num, data)| {
             if data.is_none() {
@@ -203,43 +214,24 @@ pub(crate) async fn recheck_fault_chunk(
         return Ok(new_faults);
     }
 
-    // Get mapping of which replica has the "good" version of each block
-    let good_block_mapping = &model
-        .get_good_blocks(chunk_start)
-        .await?
-        .block_num_to_replica;
-
-    // Fetch the corresponding "good" blocks to compare against
-    let faulty_block_nums = faulty_blocks
-        .iter()
-        .map(|(block, _, _)| block.header.number);
-
-    let good_blocks = faulty_block_nums.map(|block_num| async move {
-        let good_replica = good_block_mapping.get(&block_num).unwrap();
-        debug!(
-            block_num,
-            %good_replica,
-            "Fetching good block for comparison"
-        );
-        model
-            .fetch_block_data_for_replica(block_num, good_replica)
-            .await
-            .expect("Should not fail fetching good block")
-    });
-    // Todo: investigate why stream::iter and buffered cause lifetime issue
-    let good_blocks = join_all(good_blocks).await.into_iter().collect::<Vec<_>>();
-
-    // Ensure we have a good block for each faulty block
-    eyre::ensure!(
-        good_blocks.len() == faulty_blocks.len(),
-        "Should have a good block for every faulty block"
-    );
-
     // Compare blocks and record any inconsistencies
     let mut fixed_count = 0;
     let mut still_inconsistent = 0;
     for (good, faulty) in good_blocks.into_iter().zip(faulty_blocks) {
         let block_num = faulty.0.header.number;
+
+        let good = match good {
+            Ok(good) => good,
+            Err(e) => {
+                error!(
+                    %replica,
+                    block_num,
+                    "Good block not found for comparison: {:?}",
+                    e
+                );
+                continue;
+            }
+        };
 
         if good != faulty {
             new_faults.push(Fault {
@@ -274,6 +266,102 @@ pub(crate) async fn recheck_fault_chunk(
     }
 
     Ok(new_faults)
+}
+
+async fn find_or_update_good_block(
+    model: &CheckerModel,
+    chunk_start: u64,
+    faulty_blocks: &[(u64, Option<(Block, BlockReceipts, BlockTraces)>)],
+) -> Result<Vec<Result<(Block, BlockReceipts, BlockTraces)>>> {
+    // Get mapping of which replica has the "good" version of each block
+    let mut good_block_mapping = model
+        .get_good_blocks(chunk_start)
+        .await?
+        .block_num_to_replica;
+
+    // Fetch the corresponding "good" blocks to compare against
+    let faulty_block_nums = faulty_blocks.iter().map(|(block_num, _)| *block_num);
+
+    let good_blocks = faulty_block_nums.map(|block_num| {
+        let good_block_mapping = good_block_mapping.clone();
+        async move {
+            let good_replica = good_block_mapping
+                .get(&block_num)
+                .wrap_err("Good block not found for comparison")?;
+
+            debug!(
+                block_num,
+                %good_replica,
+                "Fetching good block for comparison"
+            );
+            model
+                .fetch_block_data_for_replica(block_num, good_replica)
+                .await
+                .wrap_err("Should not fail fetching good block")
+        }
+    });
+    // Todo: investigate why stream::iter and buffered cause lifetime issue
+    let mut good_blocks = join_all(good_blocks).await.into_iter().collect::<Vec<_>>();
+
+    let mut updated_good_blocks = Vec::new();
+    for (i, replica) in good_blocks.iter_mut().enumerate() {
+        let block_num = chunk_start + 1 + i as u64;
+        match replica {
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    block_num,
+                    "Good block not found for comparison: {e:?}, trying to determine good block by refetching all replicas",
+                );
+
+                let mut replica_data: HashMap<String, Option<(Block, BlockReceipts, BlockTraces)>> =
+                    futures::stream::iter(model.block_data_readers.keys())
+                        .then(|replica| async move {
+                            (
+                                replica.clone(),
+                                model.fetch_block_data_for_replica(block_num, replica).await,
+                            )
+                        })
+                        .collect::<_>()
+                        .await;
+                let mut good_blocks_strings = GoodBlocks::default();
+                process_single_block(
+                    block_num,
+                    &replica_data,
+                    &mut HashMap::default(),
+                    &mut good_blocks_strings,
+                );
+
+                if let Some(good_replica) =
+                    good_blocks_strings.block_num_to_replica.remove(&block_num)
+                {
+                    *replica = Ok(replica_data
+                        .remove(&good_replica)
+                        .expect("replica data must contain good replica")
+                        .expect("replica data must be 'Some' to be chosen as good replica"));
+                    updated_good_blocks.push((block_num, good_replica));
+                } else {
+                    error!(block_num, "Failed to determine good block");
+                }
+            }
+        }
+    }
+
+    if !updated_good_blocks.is_empty() {
+        info!(chunk_start, "Updating good blocks mapping");
+
+        good_block_mapping.extend(updated_good_blocks.into_iter());
+        model
+            .set_good_blocks(
+                chunk_start,
+                GoodBlocks {
+                    block_num_to_replica: good_block_mapping.clone(),
+                },
+            )
+            .await
+            .wrap_err("Should not fail updating good blocks")?;
+    }
+    Ok(good_blocks)
 }
 
 pub fn find_inconsistent_reason(
@@ -474,6 +562,190 @@ mod tests {
         good_blocks
             .block_num_to_replica
             .insert(chunk_start + 2, "replica2".to_owned());
+
+        // Store the good blocks mapping
+        model
+            .set_good_blocks(chunk_start, good_blocks)
+            .await
+            .unwrap();
+
+        // Add the "good" blocks to replica2
+        if let Some(archiver) = model.block_data_readers.get("replica2") {
+            // Add block data for both blocks
+            for block_num in [chunk_start + 1, chunk_start + 2] {
+                let (block, receipts, traces) = create_test_block_data(block_num, 1);
+                archiver.archive_block(block).await.unwrap();
+                archiver
+                    .archive_receipts(receipts, block_num)
+                    .await
+                    .unwrap();
+                archiver.archive_traces(traces, block_num).await.unwrap();
+            }
+
+            archiver
+                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // First recheck - both blocks should still be faulty since we haven't fixed anything
+        let faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
+
+        // Verify both faults are still present
+        assert_eq!(faults.len(), 2);
+        assert!(faults
+            .iter()
+            .any(|f| f.block_num == chunk_start + 1 && matches!(f.fault, FaultKind::MissingBlock)));
+        assert!(faults
+            .iter()
+            .any(|f| f.block_num == chunk_start + 2 && matches!(f.fault, FaultKind::MissingBlock)));
+
+        // Now fix the missing block but make it inconsistent
+        if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            // Add the first block (was missing)
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 1, 1);
+            archiver.archive_block(block).await.unwrap();
+            archiver
+                .archive_receipts(receipts, chunk_start + 1)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 1)
+                .await
+                .unwrap();
+
+            // Add the second block but with different data (will be inconsistent)
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 2); // Different variant
+            archiver.archive_block(block).await.unwrap();
+            archiver
+                .archive_receipts(receipts, chunk_start + 2)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 2)
+                .await
+                .unwrap();
+
+            archiver
+                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // Recheck again - first block should be fixed, second should be inconsistent
+        let faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
+
+        // Verify only the inconsistent fault remains
+        assert_eq!(faults.len(), 1);
+        assert!(faults.iter().any(|f| f.block_num == chunk_start + 2
+            && matches!(
+                f.fault,
+                FaultKind::InconsistentBlock(InconsistentBlockReason::Header)
+            )));
+
+        // Change the 2nd to have different receipts len to test correct reason
+        if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            // Add the second block but with different data (will be inconsistent)
+            let (block, receipts, traces) =
+                create_test_block_data_with_len(chunk_start + 2, 1, 3, 2); // Different variant
+            archiver.archive_block(block).await.unwrap();
+            archiver
+                .archive_receipts(receipts, chunk_start + 2)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 2)
+                .await
+                .unwrap();
+
+            archiver
+                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // Recheck again - first block should be fixed, second should be inconsistent
+        let faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
+
+        // Verify only the inconsistent fault remains
+        assert_eq!(faults.len(), 1);
+        assert!(faults.iter().any(|f| f.block_num == chunk_start + 2
+            && matches!(
+                f.fault,
+                FaultKind::InconsistentBlock(InconsistentBlockReason::TracesLen)
+            )));
+
+        // Now fix the inconsistent block
+        if let Some(archiver) = model.block_data_readers.get(replica_name) {
+            // Add the second block with correct data
+            let (block, receipts, traces) = create_test_block_data(chunk_start + 2, 1); // Same as the "good" block
+            archiver.archive_block(block).await.unwrap();
+            archiver
+                .archive_receipts(receipts, chunk_start + 2)
+                .await
+                .unwrap();
+            archiver
+                .archive_traces(traces, chunk_start + 2)
+                .await
+                .unwrap();
+
+            archiver
+                .update_latest(chunk_start + 2, LatestKind::Uploaded)
+                .await
+                .unwrap();
+        }
+
+        // Final recheck - all blocks should be fixed
+        let faults = recheck_fault_chunk(&model, chunk_start, replica_name)
+            .await
+            .unwrap();
+
+        // Verify no faults remain
+        assert_eq!(faults.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_recheck_fault_chunk_missing_good_block() {
+        // Setup test model with memory storage
+        let model = setup_test_model();
+        let chunk_start = 100;
+        let replica_name = "replica1";
+
+        // Create some initial faults
+        let initial_faults = vec![
+            Fault {
+                block_num: chunk_start + 1,
+                replica: replica_name.to_owned(),
+                fault: FaultKind::MissingBlock,
+            },
+            Fault {
+                block_num: chunk_start + 2,
+                replica: replica_name.to_owned(),
+                fault: FaultKind::InconsistentBlock(InconsistentBlockReason::Header),
+            },
+        ];
+
+        // Store the initial faults
+        model
+            .set_faults_chunk(replica_name, chunk_start, initial_faults.clone())
+            .await
+            .unwrap();
+
+        // Create good blocks mapping, only add 1 good block, leave other missing
+        let mut good_blocks = GoodBlocks {
+            block_num_to_replica: HashMap::new(),
+        };
+
+        // Set replica2 as having the "good" versions of the blocks
+        good_blocks
+            .block_num_to_replica
+            .insert(chunk_start + 1, "replica2".to_owned());
 
         // Store the good blocks mapping
         model

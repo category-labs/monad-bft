@@ -363,7 +363,7 @@ pub struct Fault {
 }
 
 /// Maps block numbers to the replica with the canonical version
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct GoodBlocks {
     pub block_num_to_replica: HashMap<u64, String>,
 }
