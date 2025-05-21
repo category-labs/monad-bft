@@ -70,4 +70,11 @@ pub struct Cli {
     /// Set the time interval for metrics collection
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,
+
+    #[arg(
+        long,
+        help = "listen address for pprof server. pprof server won't be enabled if address is empty",
+        default_value = ""
+    )]
+    pub pprof: String,
 }

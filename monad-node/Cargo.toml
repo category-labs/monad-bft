@@ -29,6 +29,7 @@ monad-router-filter = { workspace = true, optional = true }
 monad-secp = { workspace = true }
 monad-state = { workspace = true }
 monad-statesync = { workspace = true }
+monad-pprof = { workspace = true }
 monad-triedb-cache = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
@@ -52,6 +53,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+[target.'cfg(not(target_env = "msvc"))'.dependencies.tikv-jemallocator]
+workspace = true
+features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"]
+optional = true
 
 [dev-dependencies]
 monad-block-persist = { workspace = true }
@@ -63,4 +68,6 @@ lru = { workspace = true }
 vergen-git2 = { workspace = true }
 
 [features]
+default = ["jemallocator"]
 full-node = ["monad-router-filter"]
+jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]

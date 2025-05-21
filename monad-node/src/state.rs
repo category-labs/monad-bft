@@ -34,6 +34,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
 
     pub otel_endpoint_interval: Option<(String, Duration)>,
+    pub pprof: String,
 }
 
 impl NodeState {
@@ -55,6 +56,7 @@ impl NodeState {
             keystore_password,
             otel_endpoint,
             record_metrics_interval_seconds,
+            pprof,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
@@ -139,6 +141,7 @@ impl NodeState {
             statesync_sq_thread_cpu,
 
             otel_endpoint_interval,
+            pprof,
         })
     }
 }

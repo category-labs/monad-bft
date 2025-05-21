@@ -35,6 +35,7 @@ use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder, PeerInfo},
     MonadNameRecord, NameRecord,
 };
+use monad_pprof::start_pprof_server;
 use monad_raptorcast::{RaptorCast, RaptorCastConfig};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync::StateSync;
@@ -55,7 +56,7 @@ use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{event, info, warn, Instrument, Level};
+use tracing::{error, event, info, warn, Instrument, Level};
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
@@ -66,6 +67,15 @@ use self::{cli::Cli, error::NodeSetupError, state::NodeState};
 mod cli;
 mod error;
 mod state;
+
+#[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemallocator")]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 type ReloadHandle =
     tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
@@ -95,6 +105,24 @@ fn main() {
         setup_tracing().unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
     drop(cmd);
+
+    if !node_state.pprof.is_empty() {
+        runtime.spawn({
+            let pprof = node_state.pprof.clone();
+            async {
+                let server = match start_pprof_server(pprof) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("failed to start pprof server: {}", err);
+                        return;
+                    }
+                };
+                if let Err(err) = server.await {
+                    error!("pprof server failed: {}", err);
+                }
+            }
+        });
+    }
 
     if let Err(e) = runtime.block_on(run(node_state, reload_handle)) {
         tracing::error!("monad consensus node crashed: {:?}", e);
